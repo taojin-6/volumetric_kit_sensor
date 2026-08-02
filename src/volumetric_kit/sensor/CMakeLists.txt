@@ -8,10 +8,17 @@
 # 2026-08-02 decision), so a platform-bound source such as ARKit lives with the
 # application that can.
 #
-# Depends on recon_tsdf for ColorCameraParams and (transitively) recon_volume
-# for DepthCameraParams -- both to its left, so the strict tier rule holds. No
-# Vulkan of its own: this tier is host-side types and arithmetic, which is why
-# its tests run everywhere rather than only where a device exists.
+# Depends on recon_tsdf for ColorCameraParams and recon_volume for
+# DepthCameraParams -- both to its left, so the strict tier rule holds. It
+# writes no Vulkan of its own (host-side types and arithmetic, which is why its
+# tests need no device), and its public headers *include* none either: they take
+# the two camera-parameter types from the Vulkan-free volume/camera_params.hpp +
+# tsdf/camera_params.hpp rather than from voxel_hash_map.hpp / tsdf_integrator.
+# hpp, which reach core/vulkan.hpp. That matters because this tier's whole point
+# is being implemented out of tree -- an ARKit driver in volumetric_kit_ios is
+# Objective-C++, and it should not preprocess the Vulkan surface to fill in an
+# intrinsics struct. The tier targets stay linked (the types are theirs, so a
+# consumer needs their headers installed); only the include weight is gone.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 

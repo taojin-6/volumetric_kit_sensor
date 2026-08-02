@@ -20,8 +20,8 @@
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/export.hpp"
-#include "volumetric_kit/recon/tsdf/tsdf_integrator.hpp"
-#include "volumetric_kit/recon/volume/voxel_hash_map.hpp"
+#include "volumetric_kit/recon/tsdf/camera_params.hpp"
+#include "volumetric_kit/recon/volume/camera_params.hpp"
 
 namespace volumetric_kit::recon::sensor {
 
@@ -78,8 +78,10 @@ VR_SENSOR_API Mat4f cv_from_gl_camera(const Mat4f& cam_to_world);
 /// @param max_depth     Reject depth samples farther than this (metres).
 /// @return The depth camera, sharing @p color's pose; or
 ///         @ref Status::Code::InvalidArgument if either requested size is zero,
-///         if @p color carries a zero size, or if @p min_depth is negative or
-///         not below @p max_depth.
+///         if @p color carries a zero size or a focal length that is not finite
+///         and positive (the unprojection divides by it, so a bad one yields
+///         inf/NaN rays rather than an error), or if @p min_depth is negative
+///         or not below @p max_depth.
 VR_SENSOR_API Result<volume::DepthCameraParams> depth_from_registered_color(
     const tsdf::ColorCameraParams& color, std::uint32_t depth_width,
     std::uint32_t depth_height, float min_depth, float max_depth);

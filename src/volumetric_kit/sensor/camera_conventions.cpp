@@ -53,6 +53,17 @@ Result<volume::DepthCameraParams> depth_from_registered_color(
     return Status::invalid_argument(
         "depth_from_registered_color: require 0 <= min_depth < max_depth");
   }
+  // The unprojection this camera feeds divides by the focal length
+  // (x = (u - cx)*d/fx), so a zero or non-finite focal makes every ray inf/NaN
+  // -- fusion then reads garbage block coordinates rather than reporting
+  // anything. Reject it here, where the argument still has a name. The
+  // comparisons are written to reject NaN (every NaN compare is false).
+  if (!(color.fx > 0.0f) || !(color.fy > 0.0f) || !std::isfinite(color.fx) ||
+      !std::isfinite(color.fy)) {
+    return Status::invalid_argument(
+        "depth_from_registered_color: color focal lengths must be finite and "
+        "positive");
+  }
 
   volume::DepthCameraParams depth{};
   depth.fx = color.fx;
