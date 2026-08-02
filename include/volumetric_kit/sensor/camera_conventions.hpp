@@ -17,11 +17,10 @@
 
 #include <cstdint>
 
+#include "volumetric_kit/recon/core/camera_params.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/export.hpp"
-#include "volumetric_kit/recon/tsdf/camera_params.hpp"
-#include "volumetric_kit/recon/volume/camera_params.hpp"
 
 namespace volumetric_kit::recon::sensor {
 
@@ -47,7 +46,7 @@ namespace volumetric_kit::recon::sensor {
 /// @param cam_to_world  Camera-to-world transform in the OpenGL/ARKit
 ///                      convention.
 /// @return The same pose expressed in the computer-vision convention, ready for
-///         @ref volume::DepthCameraParams::cam_to_world.
+///         @ref DepthCameraParams::cam_to_world.
 VR_SENSOR_API Mat4f cv_from_gl_camera(const Mat4f& cam_to_world);
 
 /// @brief Derive depth-camera parameters from a colour camera the depth is
@@ -63,7 +62,7 @@ VR_SENSOR_API Mat4f cv_from_gl_camera(const Mat4f& cam_to_world);
 ///
 /// Focal lengths scale with the size ratio. The principal point does **not**
 /// scale naively: with pixel centres at integer coordinates (this repo's
-/// convention — @ref volume::DepthCameraParams feeds
+/// convention — @ref DepthCameraParams feeds
 /// `x = (u − cx)·d/fx` on integer pixels), an image of width `W` spans
 /// `[−0.5, W−0.5]`, so the correct map is
 /// `c' = (c + 0.5)·s − 0.5`, not `c·s`. The difference is `0.5·(1 − s)`, which
@@ -82,8 +81,8 @@ VR_SENSOR_API Mat4f cv_from_gl_camera(const Mat4f& cam_to_world);
 ///         and positive (the unprojection divides by it, so a bad one yields
 ///         inf/NaN rays rather than an error), or if @p min_depth is negative
 ///         or not below @p max_depth.
-VR_SENSOR_API Result<volume::DepthCameraParams> depth_from_registered_color(
-    const tsdf::ColorCameraParams& color, std::uint32_t depth_width,
+VR_SENSOR_API Result<DepthCameraParams> depth_from_registered_color(
+    const ColorCameraParams& color, std::uint32_t depth_width,
     std::uint32_t depth_height, float min_depth, float max_depth);
 
 }  // namespace volumetric_kit::recon::sensor

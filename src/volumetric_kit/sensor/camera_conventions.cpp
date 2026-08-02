@@ -35,8 +35,8 @@ Mat4f cv_from_gl_camera(const Mat4f& cam_to_world) {
   return out;
 }
 
-Result<volume::DepthCameraParams> depth_from_registered_color(
-    const tsdf::ColorCameraParams& color, std::uint32_t depth_width,
+Result<DepthCameraParams> depth_from_registered_color(
+    const ColorCameraParams& color, std::uint32_t depth_width,
     std::uint32_t depth_height, float min_depth, float max_depth) {
   if (color.width == 0 || color.height == 0) {
     return Status::invalid_argument(
@@ -65,7 +65,7 @@ Result<volume::DepthCameraParams> depth_from_registered_color(
         "positive");
   }
 
-  volume::DepthCameraParams depth{};
+  DepthCameraParams depth{};
   depth.fx = color.fx;
   depth.fy = color.fy;
   depth.cx = color.cx;

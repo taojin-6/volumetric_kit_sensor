@@ -20,9 +20,11 @@
 #include "volumetric_kit/recon/sensor/camera_capture.hpp"
 #include "volumetric_kit/recon/sensor/camera_conventions.hpp"
 
+// Only two namespaces: the sensor contract, and core for the camera types and
+// Status/Result. That this test never names the volume or tsdf tier is the
+// point -- it is the same surface an out-of-tree driver compiles against.
 namespace vr = volumetric_kit::recon;
 namespace sensor = volumetric_kit::recon::sensor;
-namespace tsdf = volumetric_kit::recon::tsdf;
 
 #define CHECK(cond)                                                        \
   do {                                                                     \
@@ -44,8 +46,8 @@ bool close(const vr::Vec4f& a, float x, float y, float z, float w) {
 
 // A colour camera shaped like ARKit's: 1920x1440 with a centred principal
 // point, which is what makes the centred-stays-centred property below testable.
-tsdf::ColorCameraParams arkit_like_color() {
-  tsdf::ColorCameraParams c{};
+vr::ColorCameraParams arkit_like_color() {
+  vr::ColorCameraParams c{};
   c.fx = 1440.0f;
   c.fy = 1440.0f;
   c.width = 1920;
@@ -95,9 +97,8 @@ class FakeCapture final : public sensor::ICameraCapture {
   sensor::CapturedFrame make_frame() const {
     sensor::CapturedFrame frame{};
     frame.depth = depth_;
-    vr::Result<vr::volume::DepthCameraParams> cam =
-        sensor::depth_from_registered_color(arkit_like_color(), 256, 192, 0.1f,
-                                            5.0f);
+    vr::Result<vr::DepthCameraParams> cam = sensor::depth_from_registered_color(
+        arkit_like_color(), 256, 192, 0.1f, 5.0f);
     if (cam.ok()) frame.depth_camera = cam.value();
     frame.timestamp_ns = 1;
     return frame;
@@ -169,14 +170,14 @@ int main() {
   }
 
   // --- Intrinsics: registered depth derived from colour --------------------
-  const tsdf::ColorCameraParams color = arkit_like_color();
+  const vr::ColorCameraParams color = arkit_like_color();
 
   // ARKit's real shape: 1920x1440 colour -> 256x192 depth, both 1/7.5 scale.
   {
-    vr::Result<vr::volume::DepthCameraParams> r =
+    vr::Result<vr::DepthCameraParams> r =
         sensor::depth_from_registered_color(color, 256, 192, 0.1f, 5.0f);
     CHECK(r.ok());
-    const vr::volume::DepthCameraParams& d = r.value();
+    const vr::DepthCameraParams& d = r.value();
 
     // Focal lengths scale with the size ratio.
     const float s = 256.0f / 1920.0f;
@@ -199,10 +200,10 @@ int main() {
   // Registered means one physical camera: the depth pose is the colour pose,
   // never separately assigned.
   {
-    tsdf::ColorCameraParams posed = color;
+    vr::ColorCameraParams posed = color;
     posed.cam_to_world[3] = vr::Vec4f(0.25f, -1.5f, 4.0f, 1.0f);
     posed.cam_to_world[1] = vr::Vec4f(0.0f, 0.0f, 1.0f, 0.0f);
-    vr::Result<vr::volume::DepthCameraParams> r =
+    vr::Result<vr::DepthCameraParams> r =
         sensor::depth_from_registered_color(posed, 256, 192, 0.1f, 5.0f);
     CHECK(r.ok());
     for (int c = 0; c < 4; ++c) {
@@ -214,9 +215,8 @@ int main() {
   // Rescaling to the same size is the identity -- the half-pixel term cancels
   // at s == 1, so an unscaled camera must come back untouched.
   {
-    vr::Result<vr::volume::DepthCameraParams> r =
-        sensor::depth_from_registered_color(color, color.width, color.height,
-                                            0.1f, 5.0f);
+    vr::Result<vr::DepthCameraParams> r = sensor::depth_from_registered_color(
+        color, color.width, color.height, 0.1f, 5.0f);
     CHECK(r.ok());
     CHECK(close(r.value().fx, color.fx) && close(r.value().fy, color.fy));
     CHECK(close(r.value().cx, color.cx) && close(r.value().cy, color.cy));
@@ -225,7 +225,7 @@ int main() {
   // Non-square scaling: each axis rescales independently, so a size change in
   // one axis must not disturb the other.
   {
-    vr::Result<vr::volume::DepthCameraParams> r =
+    vr::Result<vr::DepthCameraParams> r =
         sensor::depth_from_registered_color(color, 960, 1440, 0.1f, 5.0f);
     CHECK(r.ok());
     CHECK(close(r.value().fx, 720.0f));    // halved
@@ -244,7 +244,7 @@ int main() {
         !sensor::depth_from_registered_color(color, 256, 192, 5.0f, 0.1f).ok());
     CHECK(!sensor::depth_from_registered_color(color, 256, 192, -0.1f, 5.0f)
                .ok());
-    tsdf::ColorCameraParams empty = color;
+    vr::ColorCameraParams empty = color;
     empty.width = 0;
     CHECK(
         !sensor::depth_from_registered_color(empty, 256, 192, 0.1f, 5.0f).ok());
@@ -255,11 +255,11 @@ int main() {
     for (const float bad :
          {0.0f, -1440.0f, std::numeric_limits<float>::infinity(),
           std::numeric_limits<float>::quiet_NaN()}) {
-      tsdf::ColorCameraParams bad_fx = color;
+      vr::ColorCameraParams bad_fx = color;
       bad_fx.fx = bad;
       CHECK(!sensor::depth_from_registered_color(bad_fx, 256, 192, 0.1f, 5.0f)
                  .ok());
-      tsdf::ColorCameraParams bad_fy = color;
+      vr::ColorCameraParams bad_fy = color;
       bad_fy.fy = bad;
       CHECK(!sensor::depth_from_registered_color(bad_fy, 256, 192, 0.1f, 5.0f)
                  .ok());

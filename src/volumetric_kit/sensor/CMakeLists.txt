@@ -8,17 +8,14 @@
 # 2026-08-02 decision), so a platform-bound source such as ARKit lives with the
 # application that can.
 #
-# Depends on recon_tsdf for ColorCameraParams and recon_volume for
-# DepthCameraParams -- both to its left, so the strict tier rule holds. It
-# writes no Vulkan of its own (host-side types and arithmetic, which is why its
-# tests need no device), and its public headers *include* none either: they take
-# the two camera-parameter types from the Vulkan-free volume/camera_params.hpp +
-# tsdf/camera_params.hpp rather than from voxel_hash_map.hpp / tsdf_integrator.
-# hpp, which reach core/vulkan.hpp. That matters because this tier's whole point
-# is being implemented out of tree -- an ARKit driver in volumetric_kit_ios is
-# Objective-C++, and it should not preprocess the Vulkan surface to fill in an
-# intrinsics struct. The tier targets stay linked (the types are theirs, so a
-# consumer needs their headers installed); only the include weight is gone.
+# Depends on recon_core alone -- the whole tier is host types and arithmetic
+# over the core math vocabulary, so it needs neither the volume nor the tsdf
+# tier: DepthCameraParams and ColorCameraParams live in core/camera_params.hpp
+# (they are posed pinhole cameras, not voxels or fusion). That is what makes
+# this tier's contract implementable from outside: an ARKit driver in
+# volumetric_kit_ios is Objective-C++, and it now compiles and links against
+# core alone rather than preprocessing the Vulkan surface to fill in an
+# intrinsics struct. It is also why the tests need no device.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -53,10 +50,10 @@ endif()
 
 target_compile_features(recon_sensor PUBLIC cxx_std_17)
 
-# PUBLIC: the sensor public headers expose tsdf types (ColorCameraParams /
-# ColorFrame) and volume types (DepthCameraParams), so consumers compile against
-# recon_tsdf + recon_volume (and, transitively, recon_core) too.
-target_link_libraries(recon_sensor PUBLIC recon_tsdf recon_volume)
+# PUBLIC: the sensor public headers expose core types only (DepthCameraParams /
+# ColorCameraParams / Result), so a consumer compiles against recon_core and
+# nothing else.
+target_link_libraries(recon_sensor PUBLIC recon_core)
 
 target_include_directories(
   recon_sensor
