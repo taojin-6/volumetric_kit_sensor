@@ -32,6 +32,7 @@
 
 #include "volumetric_kit/recon/core/color_space.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
+#include "volumetric_kit/recon/sensor/export.hpp"
 
 namespace volumetric_kit::recon::sensor {
 
@@ -43,9 +44,10 @@ namespace volumetric_kit::recon::sensor {
 /// Skipping the second step is the quiet failure this exists to prevent --
 /// "linear" alone does not name a space.
 ///
-/// When @ref is_canonical already holds this is a straight copy (or nothing at
-/// all, if @p dst == @p src), which is the common case by construction: the
-/// canonical form was chosen to match what the sensors in hand produce.
+/// When @ref is_canonical already holds, the colour is carried across verbatim
+/// -- no round trip through the curve -- and only the alpha byte is forced.
+/// That is the common case by construction: the canonical form was chosen to
+/// match what the sensors in hand produce.
 ///
 /// **Wide-gamut sources clip**, knowingly. BT.709 is the narrowest declarable
 /// gamut, so a saturated Display P3 or BT.2020 colour lands outside [0, 1] and
@@ -53,11 +55,17 @@ namespace volumetric_kit::recon::sensor {
 /// regardless. See `core/color_space.hpp` for why widening the working space
 /// and widening the storage are one move.
 ///
-/// @param src   `count` packed words, R/G/B in the low three bytes.
+/// @param src   `count` packed words, R/G/B in the low three bytes. The high
+///              byte is ignored, whatever the driver left there.
 /// @param count Number of pixels.
 /// @param enc   What the driver declared @p src to be.
-/// @param dst   `count` packed words, written with alpha `0xFF`. May alias
-///              @p src exactly (in-place); may not partially overlap.
+/// @param dst   `count` packed words, always written with alpha `0xFF` -- on
+///              the identity path too, so the guarantee holds for every
+///              declaration rather than for the ones that walk the curve. That
+///              is what lets a converted frame double as a projective-texturing
+///              atlas, and what keeps the `tsdf` tier's "colour unobserved"
+///              sentinel exact. May alias @p src exactly (in-place); may not
+///              partially overlap.
 /// @return OK, or:
 ///         - @ref Status::Code::InvalidArgument if @p src or @p dst is null
 ///           with a non-zero @p count;
@@ -66,7 +74,7 @@ namespace volumetric_kit::recon::sensor {
 ///           HDR curve needs tone mapping into an 8-bit SDR form -- something
 ///           this repo does not do, and reports rather than approximating into
 ///           a quietly wrong result.
-Status to_canonical(const std::uint32_t* src, std::size_t count,
-                    const ColorEncoding& enc, std::uint32_t* dst);
+VR_SENSOR_API Status to_canonical(const std::uint32_t* src, std::size_t count,
+                                  const ColorEncoding& enc, std::uint32_t* dst);
 
 }  // namespace volumetric_kit::recon::sensor

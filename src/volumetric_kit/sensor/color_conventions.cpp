@@ -3,19 +3,14 @@
 
 #include "volumetric_kit/recon/sensor/color_conventions.hpp"
 
-#include <cstring>
-
 namespace volumetric_kit::recon::sensor {
 
 Status to_canonical(const std::uint32_t* src, std::size_t count,
                     const ColorEncoding& enc, std::uint32_t* dst) {
-  if (count == 0) {
-    return Status{};
-  }
-  if (src == nullptr || dst == nullptr) {
-    return Status::invalid_argument(
-        "to_canonical: src and dst must be non-null for a non-zero count");
-  }
+  // Ahead of the empty-frame shortcut: a declaration this repo cannot convert
+  // is wrong however many pixels carry it, and reporting OK for a zero-length
+  // PQ frame would let a driver's first (empty) poll validate a label its next
+  // frame is refused for.
   if (enc.transfer == ColorEncoding::Transfer::Bt2020Pq) {
     // PQ is an absolute-luminance HDR curve; landing it in an 8-bit SDR
     // canonical form is a tone-mapping problem, not a transfer conversion.
@@ -25,14 +20,30 @@ Status to_canonical(const std::uint32_t* src, std::size_t count,
         "to_canonical: Transfer::Bt2020Pq needs tone mapping into the 8-bit "
         "canonical form, which is not implemented");
   }
+  if (count == 0) {
+    return Status{};
+  }
+  if (src == nullptr || dst == nullptr) {
+    return Status::invalid_argument(
+        "to_canonical: src and dst must be non-null for a non-zero count");
+  }
 
   if (is_canonical(enc)) {
     // The common path by construction: the canonical form was chosen to match
-    // what the sensors in hand produce, so an ARKit frame lands here. Copy the
-    // bytes (or nothing, in place) rather than round-tripping every pixel
-    // through the curve -- an identity conversion should cost an identity.
-    if (dst != src) {
-      std::memcpy(dst, src, count * sizeof(std::uint32_t));
+    // what the sensors in hand produce, so an ARKit frame lands here. The
+    // colour is already right, so it is carried across verbatim rather than
+    // round-tripped through the curve -- an identity conversion should cost an
+    // identity.
+    //
+    // Alpha is nonetheless forced, which is why this is a masked copy and not a
+    // memcpy: the documented output is "alpha 0xFF", and a guarantee that holds
+    // only on the paths that walk the curve is not one. A driver whose packing
+    // leaves the high byte at 0 would otherwise hand the same buffer to the
+    // projective-texturing atlas and sample it fully transparent -- and the
+    // "colour unobserved" sentinel rests on a written colour never being 0.
+    // One masked pass is still far below a per-pixel transfer function.
+    for (std::size_t i = 0; i < count; ++i) {
+      dst[i] = (src[i] & 0x00FFFFFFu) | 0xFF000000u;
     }
     return Status{};
   }

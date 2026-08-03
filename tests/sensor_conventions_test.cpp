@@ -336,6 +336,25 @@ int main() {
     CHECK(sensor::to_canonical(inplace, 2, vr::ColorEncoding{}, inplace).ok());
     CHECK(inplace[0] == 0xFF804020u && inplace[1] == 0xFF010203u);
 
+    // Alpha is forced to 0xFF on the identity path too, not only where the
+    // curve runs -- a guarantee that held on one branch would be worth nothing
+    // to the driver relying on it. The colour bytes still cross verbatim. This
+    // is what lets a converted frame double as the projective-texturing atlas
+    // (alpha 0 would sample fully transparent), and it is what keeps the tsdf
+    // tier's "colour unobserved" sentinel exact, since a written colour is then
+    // never 0 -- a source that packs its high byte as 0 is not exotic.
+    const std::uint32_t no_alpha[2] = {0x00123456u, 0x00000000u};
+    std::uint32_t alpha_dst[2] = {0u, 0u};
+    CHECK(
+        sensor::to_canonical(no_alpha, 2, vr::ColorEncoding{}, alpha_dst).ok());
+    CHECK(alpha_dst[0] == 0xFF123456u);  // colour verbatim, alpha forced
+    CHECK(alpha_dst[1] == 0xFF000000u);  // pure black is non-zero: the sentinel
+    std::uint32_t alpha_inplace[1] = {0x00654321u};
+    CHECK(sensor::to_canonical(alpha_inplace, 1, vr::ColorEncoding{},
+                               alpha_inplace)
+              .ok());
+    CHECK(alpha_inplace[0] == 0xFF654321u);
+
     // A LINEAR 8-bit source is encoded on the way in: mid-grey 128/255 linear
     // becomes ~0.7356 encoded, i.e. code ~188. Getting this backwards (or
     // skipping it) is the washed-out/darkened frame that has no error message.
@@ -381,6 +400,15 @@ int main() {
                                 {vr::ColorEncoding::Transfer::Bt2020Pq,
                                  vr::ColorEncoding::Primaries::Bt2020},
                                 dst)
+               .ok());
+    // ...and refused for an EMPTY frame too, ahead of the zero-count shortcut:
+    // the declaration is unsupported however many pixels carry it, and a
+    // driver whose first poll returns nothing should not have the label it will
+    // be refused for on the next frame validated here.
+    CHECK(!sensor::to_canonical(nullptr, 0,
+                                {vr::ColorEncoding::Transfer::Bt2020Pq,
+                                 vr::ColorEncoding::Primaries::Bt2020},
+                                nullptr)
                .ok());
 
     // Degenerate arguments.
