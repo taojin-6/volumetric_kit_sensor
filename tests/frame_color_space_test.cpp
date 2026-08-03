@@ -14,6 +14,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+// The braced-init range-for below deduces std::initializer_list. libc++ pulls
+// this in transitively; libstdc++ does not, so name it.
+#include <initializer_list>
 
 #include "volumetric_kit/recon/core/color_space.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
