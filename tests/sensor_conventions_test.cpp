@@ -12,6 +12,7 @@
 // 2026-08-02 sensor-tier decision).
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <optional>
@@ -19,6 +20,7 @@
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/camera_capture.hpp"
 #include "volumetric_kit/recon/sensor/camera_conventions.hpp"
+#include "volumetric_kit/recon/sensor/color_conventions.hpp"
 
 // Only two namespaces: the sensor contract, and core for the camera types and
 // Status/Result. That this test never names the volume or tsdf tier is the
@@ -312,6 +314,83 @@ int main() {
     device.stop();  // idempotent, and safe after a failure
   }
 
-  std::printf("sensor camera-convention tests passed\n");
+  // --- to_canonical: the colour half of the capture boundary ----------------
+  {
+    // A declaration that is already canonical costs an identity. This is the
+    // common path by construction -- the canonical form was chosen to match
+    // what the sensors in hand produce -- and ARKit's `{Bt709, Bt709}` takes
+    // it, so the frame is not walked at all.
+    const std::uint32_t src[3] = {0xFF0000FFu, 0xFF00FF00u, 0xFF123456u};
+    std::uint32_t dst[3] = {0u, 0u, 0u};
+    CHECK(sensor::to_canonical(src, 3, vr::ColorEncoding{}, dst).ok());
+    CHECK(dst[0] == src[0] && dst[1] == src[1] && dst[2] == src[2]);
+    CHECK(sensor::to_canonical(src, 3,
+                               {vr::ColorEncoding::Transfer::Bt709,
+                                vr::ColorEncoding::Primaries::Bt709},
+                               dst)
+              .ok());
+    CHECK(dst[0] == src[0]);
+
+    // In-place is allowed and is the same identity.
+    std::uint32_t inplace[2] = {0xFF804020u, 0xFF010203u};
+    CHECK(sensor::to_canonical(inplace, 2, vr::ColorEncoding{}, inplace).ok());
+    CHECK(inplace[0] == 0xFF804020u && inplace[1] == 0xFF010203u);
+
+    // A LINEAR 8-bit source is encoded on the way in: mid-grey 128/255 linear
+    // becomes ~0.7356 encoded, i.e. code ~188. Getting this backwards (or
+    // skipping it) is the washed-out/darkened frame that has no error message.
+    const std::uint32_t linear_src[1] = {0xFF808080u};
+    std::uint32_t linear_dst[1] = {0u};
+    CHECK(sensor::to_canonical(linear_src, 1,
+                               {vr::ColorEncoding::Transfer::Linear,
+                                vr::ColorEncoding::Primaries::Bt709},
+                               linear_dst)
+              .ok());
+    CHECK((linear_dst[0] & 0xFFu) >= 186u && (linear_dst[0] & 0xFFu) <= 190u);
+    CHECK((linear_dst[0] >> 24) == 0xFFu);  // alpha always forced
+
+    // A wide-gamut source is ROTATED, not merely decoded -- the step that makes
+    // ColorEncoding::Primaries a value something converts. A saturated P3 green
+    // lies outside BT.709, so it clips to full green with the off-channels
+    // driven to zero; a decode-only implementation would leave it unchanged at
+    // (0, 255, 0)'s exact encoding with a non-zero red, so this discriminates.
+    const std::uint32_t p3_green[1] = {0xFF00FF00u};
+    std::uint32_t rotated[1] = {0u};
+    CHECK(sensor::to_canonical(p3_green, 1,
+                               {vr::ColorEncoding::Transfer::Srgb,
+                                vr::ColorEncoding::Primaries::DisplayP3},
+                               rotated)
+              .ok());
+    CHECK((rotated[0] & 0xFFu) == 0u);           // R clipped from negative
+    CHECK(((rotated[0] >> 8) & 0xFFu) == 255u);  // G saturated past 1.0
+    // White survives the rotation exactly, since every declarable primary set
+    // is D65 -- the invariant that catches a transposed matrix.
+    const std::uint32_t p3_white[1] = {0xFFFFFFFFu};
+    CHECK(sensor::to_canonical(p3_white, 1,
+                               {vr::ColorEncoding::Transfer::Srgb,
+                                vr::ColorEncoding::Primaries::DisplayP3},
+                               rotated)
+              .ok());
+    CHECK((rotated[0] & 0xFFFFFFu) == 0xFFFFFFu);
+
+    // PQ is refused rather than approximated: mapping an absolute-luminance HDR
+    // curve into an 8-bit SDR form is tone mapping, which this repo does not
+    // do. A driver that declares it gets an inspectable error instead of a
+    // quietly wrong reconstruction -- the point of declaring at all.
+    CHECK(!sensor::to_canonical(src, 3,
+                                {vr::ColorEncoding::Transfer::Bt2020Pq,
+                                 vr::ColorEncoding::Primaries::Bt2020},
+                                dst)
+               .ok());
+
+    // Degenerate arguments.
+    CHECK(sensor::to_canonical(nullptr, 0, vr::ColorEncoding{}, nullptr).ok());
+    CHECK(!sensor::to_canonical(nullptr, 3, vr::ColorEncoding{}, dst).ok());
+  }
+
+  std::printf(
+      "sensor camera- and colour-convention tests passed (canonical encodings "
+      "convert by identity, a linear source is encoded, a P3 source is rotated "
+      "into BT.709 and clips, and PQ is refused)\n");
   return 0;
 }

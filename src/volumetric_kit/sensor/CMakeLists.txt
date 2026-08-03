@@ -24,7 +24,8 @@ set(_vr_sensor_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 add_library(recon_sensor)
 add_library(volumetric_kit::recon_sensor ALIAS recon_sensor)
 
-target_sources(recon_sensor PRIVATE camera_conventions.cpp)
+target_sources(recon_sensor PRIVATE camera_conventions.cpp
+                                    color_conventions.cpp)
 
 # Per-tier export header (VR_SENSOR_API / VR_SENSOR_STATIC_DEFINE), isolated so
 # the macros never collide with another tier's on one include path.
