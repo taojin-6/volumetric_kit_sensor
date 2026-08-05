@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 // The braced-init range-for below deduces std::initializer_list. libc++ pulls
 // this in transitively; libstdc++ does not, so name it.
 #include <initializer_list>
@@ -144,6 +145,32 @@ int main() {
                            vr::ColorEncoding::Primaries::Bt709}));
   CHECK(!vr::is_canonical({vr::ColorEncoding::Transfer::Bt2020Pq,
                            vr::ColorEncoding::Primaries::Bt2020}));
+
+  // --- pack_linear_to_srgb is total over every float, NaN included ----------
+  // The clamp was `e < 0 ? 0 : (e > 1 ? 1 : e)`, which NaN slips through --
+  // it compares false to both bounds -- straight into a float-to-unsigned
+  // conversion that is **undefined** for a value it cannot represent. In a
+  // header this library installs, and one the -fno-sanitize-recover UBSan leg
+  // would abort on rather than merely produce a wrong colour. A NaN here is a
+  // caller bug, but it must not be undefined behaviour.
+  //
+  // The assertion is only that these are the documented in-range results; the
+  // teeth are that the sanitizer legs execute the line at all.
+  {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    // NaN takes the same road as every other out-of-range input: 0.
+    CHECK(vr::pack_linear_to_srgb(vr::Vec3f{nan, nan, nan}) == 0xFF000000u);
+    // ...and the ordinary out-of-range cases still saturate the way they did.
+    CHECK(vr::pack_linear_to_srgb(vr::Vec3f{-inf, -1.0f, -0.0f}) ==
+          0xFF000000u);
+    CHECK(vr::pack_linear_to_srgb(vr::Vec3f{inf, 2.0f, 1.0f}) == 0xFFFFFFFFu);
+    // Mixed, so a channel-independent clamp is what is being tested rather than
+    // an all-or-nothing early out.
+    CHECK(vr::pack_linear_to_srgb(vr::Vec3f{nan, 1.0f, 0.0f}) == 0xFF00FF00u);
+    // Alpha is forced on every path, including this one.
+    CHECK((vr::pack_linear_to_srgb(vr::Vec3f{nan, nan, nan}) >> 24) == 0xFFu);
+  }
 
   // --- The running mean latches, and THAT is the storage trigger ------------
   // The 2026-08-02 decision picks `uint32` + convert-in-shader and says the

@@ -193,10 +193,18 @@ inline Vec3f unpack_srgb_to_linear(std::uint32_t packed) noexcept {
 /// Always sets alpha to `0xFF`, which is what keeps the `tsdf` tier's
 /// "color unobserved" sentinel exact: a written color is never `0`, not even
 /// pure black.
+///
+/// NaN maps to 0, like every other out-of-range input. Spelled as "keep only
+/// what is provably in range" rather than the two-comparison clamp, because
+/// NaN compares false to both bounds and so passed straight through to a
+/// float-to-unsigned conversion, which is **undefined** for a value that is not
+/// representable -- in a header this library installs, and one the
+/// `-fno-sanitize-recover` UBSan leg would abort on. A NaN reaching here is a
+/// caller bug either way; it must not be undefined behaviour.
 inline std::uint32_t pack_linear_to_srgb(const Vec3f& linear) noexcept {
   auto to_u8 = [](float v) -> std::uint32_t {
     const float e = linear_to_srgb(v);
-    const float c = e < 0.0f ? 0.0f : (e > 1.0f ? 1.0f : e);
+    const float c = (e > 0.0f) ? (e < 1.0f ? e : 1.0f) : 0.0f;
     return static_cast<std::uint32_t>(c * 255.0f + 0.5f);
   };
   return to_u8(linear.x) | (to_u8(linear.y) << 8) | (to_u8(linear.z) << 16) |
