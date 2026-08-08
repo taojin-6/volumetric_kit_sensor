@@ -324,12 +324,20 @@ int main() {
     std::uint32_t dst[3] = {0u, 0u, 0u};
     CHECK(sensor::to_canonical(src, 3, vr::ColorEncoding{}, dst).ok());
     CHECK(dst[0] == src[0] && dst[1] == src[1] && dst[2] == src[2]);
+    // Zeroed first, and all three checked. Left holding the previous call's
+    // output, `dst` already satisfied this, so the assertion could not tell a
+    // call that carried all three words across from one that wrote nothing.
+    // It still cannot tell the canonical path from the conversion path -- for
+    // 8-bit input the decode/encode round trip is the identity, which is
+    // exactly why Bt709 is accepted as sRGB rather than converted -- so the
+    // predicate itself is pinned where it lives, in core_color_space_test.
+    dst[0] = dst[1] = dst[2] = 0u;
     CHECK(sensor::to_canonical(src, 3,
                                {vr::ColorEncoding::Transfer::Bt709,
                                 vr::ColorEncoding::Primaries::Bt709},
                                dst)
               .ok());
-    CHECK(dst[0] == src[0]);
+    CHECK(dst[0] == src[0] && dst[1] == src[1] && dst[2] == src[2]);
 
     // In-place is allowed and is the same identity.
     std::uint32_t inplace[2] = {0xFF804020u, 0xFF010203u};
