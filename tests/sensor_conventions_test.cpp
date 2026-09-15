@@ -305,6 +305,11 @@ int main() {
     // the ordinary case, and must read as "nothing yet", never as an error.
     vr::Result<std::optional<sensor::CapturedFrame>> second = device.poll();
     CHECK(second.ok() && !second.value().has_value());
+    // ...and "nothing yet" is not "nothing ever": a live device never reports
+    // itself exhausted, which is the contract's default so a driver that does
+    // not override it (this fake, the ARKit source out of tree) keeps a
+    // consumer waiting rather than ending its run on the first idle tick.
+    CHECK(!device.exhausted());
 
     // A device failure is distinguishable from an empty poll.
     capture.fail();
