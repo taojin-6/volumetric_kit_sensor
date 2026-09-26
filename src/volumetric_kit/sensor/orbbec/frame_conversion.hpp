@@ -29,6 +29,12 @@ namespace volumetric_kit::recon::sensor::orbbec {
 Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
                                             const Mat4f& cam_to_world);
 
+/// Whether @p intrinsic is the pinhole camera @p cam: fx, fy, cx and cy each
+/// within @p tol pixels. Tested for agreement rather than for a difference, so
+/// a NaN on either side is a mismatch instead of passing every comparison.
+bool same_pinhole(const OBCameraIntrinsic& intrinsic,
+                  const ColorCameraParams& cam, float tol) noexcept;
+
 /// Raw depth units to metres: `metres = raw * value_scale_mm / 1000`, the SDK
 /// defining a depth frame's value scale as millimetres per unit. A raw 0 is the
 /// camera's "no return" and stays exactly 0, which the fusion kernels skip.

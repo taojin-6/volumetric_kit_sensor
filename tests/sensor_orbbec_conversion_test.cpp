@@ -80,6 +80,29 @@ int test_color_camera() {
   return 0;
 }
 
+int test_same_pinhole() {
+  // The first-pair check: the SDK's intrinsics of a processed frame against
+  // the camera the frame is stamped with.
+  const auto cam = orbbec::color_camera_from(femto_color_720p(), vr::Mat4f(1));
+  CHECK(cam.ok());
+  const float tol = 1e-3f;
+  CHECK(orbbec::same_pinhole(femto_color_720p(), cam.value(), tol));
+  OBCameraIntrinsic k = femto_color_720p();
+  k.cx += 0.5f * tol;  // within tolerance
+  CHECK(orbbec::same_pinhole(k, cam.value(), tol));
+  k = femto_color_720p();
+  k.fy += 1.0f;  // a re-projected camera matrix
+  CHECK(!orbbec::same_pinhole(k, cam.value(), tol));
+  // NaN compares false against everything; a `> tol` test would pass it.
+  k = femto_color_720p();
+  k.fx = std::numeric_limits<float>::quiet_NaN();
+  CHECK(!orbbec::same_pinhole(k, cam.value(), tol));
+  k = femto_color_720p();
+  k.cy = std::numeric_limits<float>::quiet_NaN();
+  CHECK(!orbbec::same_pinhole(k, cam.value(), tol));
+  return 0;
+}
+
 int test_depth_to_metres() {
   // The Femto Mega reports a value scale of 1.0 mm per unit; other Orbbec
   // cameras report fractions. 0 is "no return" and must stay exactly 0.
@@ -126,6 +149,8 @@ int test_sync_mode() {
   CHECK(sensor::waits_for_primary(sensor::OrbbecSyncMode::Secondary));
   CHECK(sensor::waits_for_primary(sensor::OrbbecSyncMode::SecondarySynced));
   CHECK(sensor::waits_for_primary(sensor::OrbbecSyncMode::HardwareTriggering));
+  // Waits for the host, not another camera -- and open() refuses it.
+  CHECK(!sensor::waits_for_primary(sensor::OrbbecSyncMode::SoftwareTriggering));
 
   CHECK(std::string(sensor::to_string(sensor::OrbbecSyncMode::Primary)) ==
         "primary");
@@ -178,6 +203,7 @@ int test_validate() {
 
 int main() {
   if (test_color_camera() != 0) return 1;
+  if (test_same_pinhole() != 0) return 1;
   if (test_depth_to_metres() != 0) return 1;
   if (test_pack_rgb() != 0) return 1;
   if (test_sync_mode() != 0) return 1;

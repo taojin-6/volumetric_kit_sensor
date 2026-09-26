@@ -37,6 +37,13 @@ Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
   return cam;
 }
 
+bool same_pinhole(const OBCameraIntrinsic& intrinsic,
+                  const ColorCameraParams& cam, float tol) noexcept {
+  const auto near = [tol](float a, float b) { return std::fabs(a - b) <= tol; };
+  return near(intrinsic.fx, cam.fx) && near(intrinsic.fy, cam.fy) &&
+         near(intrinsic.cx, cam.cx) && near(intrinsic.cy, cam.cy);
+}
+
 void depth_to_metres(const std::uint16_t* src, std::size_t count,
                      float value_scale_mm, float* dst) {
   const float metres_per_unit = value_scale_mm * 0.001f;
