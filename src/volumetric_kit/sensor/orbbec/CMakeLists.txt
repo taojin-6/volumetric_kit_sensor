@@ -2,16 +2,11 @@
 # Copyright (c) 2026 Tao Jin
 
 # --- recon_sensor_orbbec: the Orbbec (Femto Mega) capture driver -------------
-# An ICameraCapture over the Orbbec SDK, built only with VR_WITH_ORBBEC (the SDK
-# is a prerequisite you install; see cmake/vr_orbbec.cmake). It is the one
-# driver this repo hosts, allowed by the 2026-08-02 rule because CI builds and
-# tests against the SDK, and it is its own target so recon_sensor -- the
-# contract an out-of-tree driver compiles against -- stays free of the SDK.
-#
-# The SDK is PRIVATE: no SDK type reaches the public header, so a consumer
-# compiles without the SDK's headers. Linking still needs its library, which the
-# exported target names, so the package config re-finds the SDK when this target
-# was built.
+# An ICameraCapture over the Orbbec SDK, built only with VR_WITH_ORBBEC (see
+# cmake/vr_orbbec.cmake). Its own target so recon_sensor -- the contract an
+# out-of-tree driver compiles against -- stays free of the SDK (the 2026-09-26
+# decision). The SDK is PRIVATE and no SDK type reaches the public header, but
+# linking still needs its library, so the package config re-finds the SDK.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -63,9 +58,8 @@ target_include_directories(
 
 vr_target_warnings(recon_sensor_orbbec)
 
-# The target, the sensor/orbbec/ headers (recon_sensor's own install leaves them
-# out, so a build without the SDK never ships one), and the generated export
-# header.
+# The target, its headers (recon_sensor's install leaves them out) and the
+# generated export header.
 if(VR_INSTALL)
   install(
     TARGETS recon_sensor_orbbec

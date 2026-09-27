@@ -4,10 +4,8 @@
 #pragma once
 
 // Internal (not installed): the arithmetic between the Orbbec SDK's types and
-// the contract's -- units, packing, and the camera struct -- kept out of the
-// capture's .cpp so host tests pin it with no camera attached. Each function is
-// a place a unit or a byte order can be silently wrong, which is why they are
-// small, separate and tested rather than inlined into the frame path.
+// the contract's -- units, packing, the camera struct -- kept out of the
+// capture's .cpp so host tests pin it with no camera attached.
 
 #include <cstddef>
 #include <cstdint>
