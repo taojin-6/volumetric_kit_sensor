@@ -3,10 +3,11 @@
 
 # --- recon_sensor: capture contract -----------------------------------------
 # The ICameraCapture interface, the CapturedFrame view the fusion tiers already
-# consume, and the camera-convention conversions. Deliberately carries no driver
-# implementations: one ships here only if this repo can build *and* test it (the
-# 2026-08-02 decision), so a platform-bound source such as ARKit lives with the
-# application that can.
+# consume, and the camera-convention conversions. Carries no driver itself: one
+# ships in this repo only if this repo can build *and* test it (the 2026-08-02
+# decision), so a platform-bound source such as ARKit lives with the application
+# that can -- and the driver that does qualify, Orbbec, is a target of its own
+# (orbbec/, below), so this one never links a vendor SDK.
 #
 # Depends on recon_core alone -- the whole tier is host types and arithmetic
 # over the core math vocabulary, so it needs neither the volume nor the tsdf
@@ -74,14 +75,23 @@ if(VR_INSTALL)
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+  # orbbec/ is excluded: recon_sensor_orbbec installs those headers itself, and
+  # only when it is built.
   install(
     DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/sensor"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon"
     FILES_MATCHING
-    PATTERN "*.hpp")
+    PATTERN "*.hpp"
+    PATTERN "orbbec" EXCLUDE)
   install(
     DIRECTORY "${_vr_sensor_generated_inc}/"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     FILES_MATCHING
     PATTERN "*.hpp")
+endif()
+
+# The Orbbec driver (VR_WITH_ORBBEC only): an ICameraCapture over the Orbbec
+# SDK, built on this contract. See orbbec/CMakeLists.txt.
+if(VR_WITH_ORBBEC)
+  add_subdirectory(orbbec)
 endif()
