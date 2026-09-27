@@ -3,10 +3,7 @@
 
 // The Orbbec driver's arithmetic, with no camera: the SDK-to-contract unit and
 // layout conversions, the sync-mode mapping, and the option checks open() makes
-// before it touches the SDK. Each is a place the driver can be silently wrong
-// -- depth in the wrong unit fuses a room at a thousandth of its size, a
-// swapped byte order paints it blue -- and none needs hardware to pin, so these
-// run on every leg that builds VR_WITH_ORBBEC, camera or not.
+// before it touches the SDK -- each a place the driver can be silently wrong.
 
 #include <cmath>
 #include <cstdint>
