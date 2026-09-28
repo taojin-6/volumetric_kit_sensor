@@ -258,6 +258,7 @@ int test_hardware_matches_software() {
               soft_yuv.value()[static_cast<std::size_t>(f)].planes[i]);
       }
     }
+    std::printf("  hardware back end: %s, rgb\n", sensor::to_string(backend));
     auto rgb = decode_with(backend, VideoPixelLayout::Rgb24);
     CHECK(rgb.ok());
     if (check_clip_shape(rgb.value()) != 0) return 1;
@@ -317,6 +318,7 @@ int test_cropped() {
     HevcDecoder::Options options;
     options.backend = backend;
     options.layout = VideoPixelLayout::Yuv420;
+    std::printf("  cropped on %s\n", sensor::to_string(backend));
     auto decoder = HevcDecoder::create(options);
     CHECK(decoder.ok());
     auto pictures = decode_clip(decoder.value(), units);
@@ -355,6 +357,7 @@ int test_fallback() {
     HevcDecoder::Options options;
     options.backend = backend;
     options.layout = VideoPixelLayout::Yuv420;
+    std::printf("  fallback on %s\n", sensor::to_string(backend));
     auto decoder = HevcDecoder::create(options);
     CHECK(decoder.ok());
     auto pictures = decode_clip(decoder.value(), units);
@@ -496,6 +499,9 @@ int test_names() {
 }  // namespace
 
 int main() {
+  // Unbuffered, so a crash inside FFmpeg or a driver still shows which back
+  // end and clip it was on.
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
   if (access_units(kPatches).size() != static_cast<std::size_t>(kFrames)) {
     std::fprintf(stderr, "FAIL: cannot split %s into %d access units\n",
                  kPatches, kFrames);
