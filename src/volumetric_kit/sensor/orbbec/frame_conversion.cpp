@@ -277,11 +277,6 @@ Status validate(const OrbbecCapture::Options& options) {
 
 Status validate(const OrbbecRig::Options& options) {
   VR_TRY(validate_streams(options, "OrbbecRig"));
-  if (options.raw) {
-    // TODO(sensor): raw sets from the rig, one GPU pass per camera.
-    return Status::unsupported(
-        "OrbbecRig: raw frames are single-camera for now (OrbbecCapture)");
-  }
   if (options.sync.devices.size() < 2) {
     return Status::invalid_argument(
         "OrbbecRig: a rig needs at least two cameras; OrbbecCapture opens "

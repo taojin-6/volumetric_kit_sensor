@@ -8,7 +8,10 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 #include "undistort_color_comp.spv.hpp"
@@ -77,14 +80,23 @@ Status check_camera(const char* what, const LensCamera& c) {
   return {};
 }
 
-// An input of at least `bytes`, kept when it is big enough. Device-local, and
-// filled through the pass's batch, so the kernels never read the raw frame
-// across the bus.
-Status ensure_input(const Device& device, Allocator& allocator, Buffer& buffer,
-                    VkDeviceSize bytes, const char* name) {
+// A buffer of at least `bytes`, kept when it is big enough: a device-local
+// input, filled through the pass's batch so the kernels never read the raw
+// frame across the bus, or the host-visible staging the frame is written
+// into. The staging is kept too: a batch stages through a buffer of its own
+// per call, and four passes doing that at once with 4K frames had VMA
+// allocate and free a block for every set.
+Status ensure_buffer(const Device& device, Allocator& allocator, Buffer& buffer,
+                     VkDeviceSize bytes, bool staging, const char* name) {
   if (buffer.valid() && buffer.size() >= bytes) return {};
   buffer = Buffer();
-  VR_ASSIGN(buffer, device_storage_buffer(allocator, bytes));
+  if (staging) {
+    VR_ASSIGN(buffer,
+              storage_buffer(allocator, bytes, HostAccess::SequentialWrite,
+                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+  } else {
+    VR_ASSIGN(buffer, device_storage_buffer(allocator, bytes));
+  }
   device.set_object_name(VK_OBJECT_TYPE_BUFFER,
                          debug_object_handle(buffer.handle()), name);
   return {};
@@ -252,33 +264,32 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     VR_ASSIGN(color, check_color(frame, max_pixels, max_storage_buffer_range_));
   }
 
-  VR_TRY(ensure_input(*device_, *allocator_, depth_in_, depth.in_bytes,
-                      "sensor.raw_depth"));
+  VR_TRY(ensure_buffer(*device_, *allocator_, depth_in_, depth.in_bytes, false,
+                       "sensor.raw_depth"));
   VR_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame"));
   if (frame.has_color()) {
-    VR_TRY(ensure_input(*device_, *allocator_, color_in_, color.in_bytes,
-                        "sensor.raw_color"));
+    VR_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.in_bytes,
+                         false, "sensor.raw_color"));
     VR_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame"));
   }
 
-  // One batch: both uploads, then both passes, one submit a frame. The
-  // uploads are timed with the passes, so the row's device half counts
-  // moving the frame too.
-  CommandBatch batch(*device_, *allocator_);
-  VR_TRY(batch.upload(depth_in_, 0, frame.depth,
-                      VkDeviceSize{depth.pixels} * sizeof(std::uint16_t),
-                      &stage));
+  VR_TRY(ensure_buffer(*device_, *allocator_, staging_,
+                       depth.in_bytes + color.in_bytes, true,
+                       "sensor.raw_staging"));
+
+  // The frame staged as the inputs lay it out: depth, then the three planes
+  // packed tightly whatever the decoder's strides. A tight plane is one
+  // memcpy: row by row, it cost the 5090 0.2 ms a 4K frame.
+  auto* staged = static_cast<std::uint8_t*>(staging_.mapped());
+  const VkDeviceSize depth_bytes =
+      VkDeviceSize{depth.pixels} * sizeof(std::uint16_t);
+  std::memcpy(staged, frame.depth, static_cast<std::size_t>(depth_bytes));
   if (frame.has_color()) {
-    // The three planes packed tightly into one staging buffer, whatever the
-    // decoder's strides, and copied up as one. A tight plane is one memcpy:
-    // row by row, it cost the 5090 0.2 ms a 4K frame.
     const YuvImage& image = frame.color;
     const std::uint32_t widths[3] = {image.width, color.cw, color.cw};
     const std::uint32_t heights[3] = {image.height, color.ch, color.ch};
     const VkDeviceSize offsets[3] = {0, color.cb_offset, color.cr_offset};
-    VR_ASSIGN(void* staging,
-              batch.reserve_upload(color_in_, 0, color.in_bytes, &stage));
-    auto* dst = static_cast<std::uint8_t*>(staging);
+    std::uint8_t* dst = staged + depth.in_bytes;
     for (int p = 0; p < 3; ++p) {
       if (image.stride[p] == widths[p]) {
         std::memcpy(dst + offsets[p], image.plane[p],
@@ -291,6 +302,16 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                     widths[p]);
       }
     }
+  }
+
+  // One batch: both copies up, then both passes, one submit a frame. The
+  // copies are timed with the passes, so the row's device half counts moving
+  // the frame too.
+  CommandBatch batch(*device_, *allocator_);
+  VR_TRY(batch.copy(staging_, 0, depth_in_, 0, depth_bytes, &stage));
+  if (frame.has_color()) {
+    VR_TRY(batch.copy(staging_, depth.in_bytes, color_in_, 0, color.in_bytes,
+                      &stage));
   }
 
   depth_kernel_.set.write_storage_buffer(0, depth_in_.handle(), 0,
@@ -318,7 +339,13 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                           group_count(color.pixels, kLocalSize),
                           max_workgroup_count_x_, &stage));
   }
-  VR_TRY(batch.submit());
+  const Status submitted = batch.submit();
+  if (!submitted.ok()) {
+    // A failed wait may leave the copy running, so the staging is let go
+    // rather than rewritten or freed, as the batch lets go of its own.
+    static_cast<void>(new Buffer(std::move(staging_)));
+    return submitted;
+  }
 
   const LensCamera& d = frame.depth_camera;
   DeviceFrame out;
@@ -359,6 +386,62 @@ Status GpuFramePrep::ensure_output(std::shared_ptr<Buffer>& buffer,
                            debug_object_handle(created.handle()), name);
   buffer = std::make_shared<Buffer>(std::move(created));
   return {};
+}
+
+Result<std::vector<std::optional<DeviceFrame>>> prepare_set(
+    std::vector<GpuFramePrep>& preps,
+    const std::vector<std::optional<RawFrame>>& frames) {
+  if (preps.size() < frames.size()) {
+    return Status::invalid_argument(
+        "prepare_set: " + std::to_string(frames.size()) + " frames for " +
+        std::to_string(preps.size()) + " passes");
+  }
+  std::vector<std::optional<DeviceFrame>> out(frames.size());
+  std::vector<Status> status(frames.size());
+  // Never throws: an exception leaving a thread would end the process.
+  const auto run = [&](std::size_t i) noexcept {
+    try {
+      Result<DeviceFrame> prepared = preps[i].prepare(*frames[i]);
+      if (prepared.ok()) {
+        out[i] = std::move(prepared).value();
+      } else {
+        status[i] = prepared.status();
+      }
+    } catch (const std::bad_alloc&) {
+      status[i] = Status::out_of_memory("prepare_set: out of host memory");
+    }
+  };
+  // Joined on every way out, a throw included, so no thread outlives what it
+  // writes to.
+  struct Workers {
+    std::vector<std::thread> threads;
+    ~Workers() {
+      for (std::thread& t : threads) t.join();
+    }
+  };
+  {
+    Workers workers;
+    workers.threads.reserve(frames.size());
+    // Every frame but the last on a thread of its own, the last on this one.
+    // A thread that cannot be started runs its frame here instead.
+    std::optional<std::size_t> last;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+      if (!frames[i]) continue;
+      if (last) {
+        try {
+          workers.threads.emplace_back(run, *last);
+        } catch (const std::system_error&) {
+          run(*last);
+        }
+      }
+      last = i;
+    }
+    if (last) run(*last);
+  }
+  for (const Status& s : status) {
+    if (!s.ok()) return s;
+  }
+  return out;
 }
 
 }  // namespace volumetric_kit::recon::sensor

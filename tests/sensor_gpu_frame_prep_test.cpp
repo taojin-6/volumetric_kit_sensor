@@ -452,6 +452,67 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
   return 0;
 }
 
+// prepare_set runs each camera's pass on its own thread. Each frame comes out
+// as a pass of its own alone makes it, an empty slot stays empty, a refused
+// frame fails the set, and too few passes are refused.
+int test_prepare_set(vr::Device& device, vr::Allocator& allocator) {
+  constexpr std::size_t kCams = 4;
+  std::vector<sensor::GpuFramePrep> preps;
+  for (std::size_t c = 0; c < kCams; ++c) {
+    auto made = sensor::GpuFramePrep::create(device, allocator);
+    CHECK(made.ok());
+    preps.push_back(std::move(made).value());
+  }
+  auto alone = sensor::GpuFramePrep::create(device, allocator);
+  CHECK(alone.ok());
+  const sensor::LensCamera cam = lensed();
+  std::vector<std::vector<std::uint16_t>> raws(kCams);
+  std::vector<Planes> planes(kCams);
+  std::vector<std::optional<sensor::RawFrame>> frames(kCams);
+  for (std::size_t c = 0; c < kCams; ++c) {
+    raws[c].resize(std::size_t{kWidth} * kHeight);
+    for (std::size_t i = 0; i < raws[c].size(); ++i) {
+      raws[c][i] = static_cast<std::uint16_t>(500 + 300 * c + i % 97);
+    }
+    planes[c] = make_planes();
+    for (std::size_t i = 0; i < planes[c].y.size(); ++i) {
+      planes[c].y[i] = static_cast<std::uint8_t>(40 * c + i % 150);
+    }
+    std::fill(planes[c].cb.begin(), planes[c].cb.end(),
+              static_cast<std::uint8_t>(100 + 10 * c));
+    std::fill(planes[c].cr.begin(), planes[c].cr.end(),
+              static_cast<std::uint8_t>(150 - 10 * c));
+    frames[c] = frame_of(raws[c], cam);
+    frames[c]->color = planes[c].image(0.2126f, 0.0722f, false);
+    frames[c]->color_camera = cam;
+  }
+  frames[2].reset();  // a camera whose frame never arrived
+
+  for (int round = 0; round < 10; ++round) {
+    auto set = sensor::prepare_set(preps, frames);
+    CHECK(set.ok());
+    CHECK(set.value().size() == kCams && !set.value()[2]);
+    for (std::size_t c = 0; c < kCams; ++c) {
+      if (!frames[c]) continue;
+      CHECK(set.value()[c].has_value());
+      auto one = alone.value().prepare(*frames[c]);
+      CHECK(one.ok());
+      CHECK(depth_of(*set.value()[c]) == depth_of(one.value()));
+      CHECK(color_of(*set.value()[c]) == color_of(one.value()));
+    }
+  }
+
+  std::vector<std::optional<sensor::RawFrame>> refused = frames;
+  refused[1]->depth = nullptr;
+  CHECK(sensor::prepare_set(preps, refused).status().domain() ==
+        vr::Status::Code::InvalidArgument);
+  std::vector<sensor::GpuFramePrep> too_few;
+  too_few.push_back(std::move(alone).value());
+  CHECK(sensor::prepare_set(too_few, frames).status().domain() ==
+        vr::Status::Code::InvalidArgument);
+  return 0;
+}
+
 // A pincushion lens maps the pinhole image's corners outside the captured
 // picture. There colour is a 0 word, coverage and all, so that fusion skips
 // it rather than fusing black; everywhere else its coverage byte is 0xFF,
@@ -690,6 +751,7 @@ int main() {
   if (test_fuses(device.value(), allocator.value(), prep.value()) != 0) {
     return 1;
   }
+  if (test_prepare_set(device.value(), allocator.value()) != 0) return 1;
 
   sensor::GpuFramePrep moved = std::move(prep).value();
   CHECK(moved.valid());
