@@ -140,6 +140,7 @@ struct HevcDecoder::Impl {
   bool may_fall_back = false;  // Auto: software if the hardware refuses
   AVPixelFormat hw_format = AV_PIX_FMT_NONE;
   VideoPixelLayout layout = VideoPixelLayout::Rgb24;
+  std::optional<VideoColorDescription> color;  // Options::color
   bool ended = false;
   bool left_top_crop = false;  // an SPS so far crops the left or top
   std::string refusal;         // why the named back end gave up, if it did
@@ -318,7 +319,10 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
       if (!Impl::decodes(b)) continue;
       auto opened = Impl::open(b, /*may_fall_back=*/true, options.layout,
                                options.threads);
-      if (opened) return HevcDecoder(std::move(opened).value());
+      if (opened) {
+        opened.value()->color = options.color;
+        return HevcDecoder(std::move(opened).value());
+      }
     }
     backend = VideoDecodeBackend::Software;
   } else if (backend != VideoDecodeBackend::Software &&
@@ -329,6 +333,7 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   }
   VR_ASSIGN(auto impl, Impl::open(backend, /*may_fall_back=*/false,
                                   options.layout, options.threads));
+  impl->color = options.color;
   return HevcDecoder(std::move(impl));
 }
 
@@ -411,7 +416,7 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
     host = impl_->transferred.get();
   }
   VR_ASSIGN(DecodedPicture picture,
-            impl_->converter.convert(*host, impl_->layout));
+            impl_->converter.convert(*host, impl_->layout, impl_->color));
   picture.pts = decoded->pts != AV_NOPTS_VALUE ? decoded->pts
                                                : decoded->best_effort_timestamp;
   return std::optional<DecodedPicture>(picture);

@@ -135,11 +135,13 @@ vr::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder) {
   return decode_clip(decoder, access_units(kPatches));
 }
 
-vr::Result<std::vector<Picture>> decode_with(VideoDecodeBackend backend,
-                                             VideoPixelLayout layout) {
+vr::Result<std::vector<Picture>> decode_with(
+    VideoDecodeBackend backend, VideoPixelLayout layout,
+    std::optional<sensor::VideoColorDescription> color = std::nullopt) {
   HevcDecoder::Options options;
   options.backend = backend;
   options.layout = layout;
+  options.color = color;
   VR_ASSIGN(HevcDecoder decoder, HevcDecoder::create(options));
   if (backend != VideoDecodeBackend::Auto && decoder.backend() != backend) {
     return vr::Status::io_error("decoder runs elsewhere");
@@ -231,6 +233,49 @@ int test_software_rgb() {
             std::fprintf(stderr, "frame %d patch %d,%d channel %d: %d vs %d\n",
                          f, col, row, k, got, want[k]);
             CHECK(false);
+          }
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+// Options::color in place of the clip's BT.709 limited label, on every back
+// end: reported on each picture, followed by Rgb24, and the Yuv420 bytes as
+// decoded without it.
+int test_color_override() {
+  const sensor::VideoColorDescription femto{sensor::VideoColorMatrix::Bt601,
+                                            true};
+  auto plain =
+      decode_with(VideoDecodeBackend::Software, VideoPixelLayout::Yuv420);
+  CHECK(plain.ok());
+  for (const VideoDecodeBackend backend : every_backend()) {
+    std::printf("  colour override on %s\n", sensor::to_string(backend));
+    auto yuv = decode_with(backend, VideoPixelLayout::Yuv420, femto);
+    auto rgb = decode_with(backend, VideoPixelLayout::Rgb24, femto);
+    CHECK(yuv.ok() && rgb.ok());
+    CHECK(yuv.value().size() == plain.value().size());
+    for (std::size_t f = 0; f < yuv.value().size(); ++f) {
+      const Picture& y = yuv.value()[f];
+      CHECK(y.meta.matrix == sensor::VideoColorMatrix::Bt601);
+      CHECK(y.meta.full_range);
+      for (int i = 0; i < 3; ++i)
+        CHECK(y.planes[i] == plain.value()[f].planes[i]);
+      const Picture& pic = rgb.value()[f];
+      CHECK(pic.meta.matrix == sensor::VideoColorMatrix::Bt601);
+      CHECK(pic.meta.full_range);
+      for (int row = 0; row < 2; ++row) {
+        for (int col = 0; col < 8; ++col) {
+          const int p = patch(col, row, static_cast<int>(f));
+          const auto want =
+              yuv_reference::rgb(patch_y(p), patch_u(p), patch_v(p),
+                                 sensor::VideoColorMatrix::Bt601, true);
+          const int x = 32 * col + 16;
+          const int yy = 72 * row + 36;
+          for (int k = 0; k < 3; ++k) {
+            CHECK(std::abs(pic.planes[0][3 * (yy * kWidth + x) + k] -
+                           want[k]) <= 3);
           }
         }
       }
@@ -511,6 +556,7 @@ int main() {
   if (test_software_yuv() != 0) return 1;
   if (test_software_rgb() != 0) return 1;
   if (test_hardware_matches_software() != 0) return 1;
+  if (test_color_override() != 0) return 1;
   if (test_cropped() != 0) return 1;
   if (test_fallback() != 0) return 1;
   if (test_auto_choice() != 0) return 1;

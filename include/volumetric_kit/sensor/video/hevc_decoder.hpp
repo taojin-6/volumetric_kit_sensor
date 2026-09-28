@@ -49,6 +49,11 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// threads: they hold nothing back, but help only a stream coded in
     /// wavefronts (WPP, as x265 codes by default).
     int threads = 0;
+    /// The matrix and range to decode by in place of the stream's, for a
+    /// source that labels its stream wrongly or not at all: the Femto Mega
+    /// writes no colour description and codes BT.601 full range. Empty: as
+    /// the stream declares (@ref DecodedPicture::matrix).
+    std::optional<VideoColorDescription> color;
     /// Set FFmpeg's log level to ERROR. Process-wide: FFmpeg has one logger.
     bool configure_ffmpeg_logging = true;
   };
