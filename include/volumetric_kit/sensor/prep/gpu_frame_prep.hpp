@@ -97,8 +97,9 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///        over as buffers on the device.
   /// @param frame    The frame; read during the call only.
   /// @param metrics  Optional @ref StageMetrics collecting a `"frame prep"`
-  ///                 row: the upload and both passes on the host, the two
-  ///                 dispatches on the device. `nullptr` measures nothing.
+  ///                 row: the upload and both passes on the host, and on the
+  ///                 device the frame's copy up and the two dispatches.
+  ///                 `nullptr` measures nothing.
   /// @return The frame, which holds its buffers; @ref
   ///         Status::Code::InvalidArgument for a moved-from pass, a frame
   ///         without depth, a depth range that is not finite with

@@ -116,17 +116,18 @@ float edge_distance(vr::Vec2f p) {
 
 struct Planes {
   std::vector<std::uint8_t> y, cb, cr;
+  std::uint32_t w = 0, h = 0;
   std::uint32_t cw = 0, ch = 0;
   sensor::YuvImage image(float kr, float kb, bool full) {
     sensor::YuvImage im;
     im.plane[0] = y.data();
     im.plane[1] = cb.data();
     im.plane[2] = cr.data();
-    im.stride[0] = kWidth;
+    im.stride[0] = w;
     im.stride[1] = cw;
     im.stride[2] = cw;
-    im.width = kWidth;
-    im.height = kHeight;
+    im.width = w;
+    im.height = h;
     im.kr = kr;
     im.kb = kb;
     im.full_range = full;
@@ -134,11 +135,13 @@ struct Planes {
   }
 };
 
-Planes make_planes() {
+Planes make_planes(std::uint32_t w = kWidth, std::uint32_t h = kHeight) {
   Planes p;
-  p.cw = (kWidth + 1) / 2;
-  p.ch = (kHeight + 1) / 2;
-  p.y.resize(std::size_t{kWidth} * kHeight);
+  p.w = w;
+  p.h = h;
+  p.cw = (w + 1) / 2;
+  p.ch = (h + 1) / 2;
+  p.y.resize(std::size_t{w} * h);
   p.cb.resize(std::size_t{p.cw} * p.ch);
   p.cr.resize(std::size_t{p.cw} * p.ch);
   return p;
@@ -165,8 +168,8 @@ void forward(float r, float g, float b, float kr, float kb, bool full,
 std::uint32_t reference_color(const Planes& p, const sensor::LensCamera& c,
                               float kr, float kb, bool full, float u, float v) {
   const vr::Vec2f s = source_pixel(c, u, v);
-  if (!(s.x >= -0.5f && s.y >= -0.5f && s.x <= kWidth - 0.5f &&
-        s.y <= kHeight - 0.5f)) {
+  if (!(s.x >= -0.5f && s.y >= -0.5f && s.x <= p.w - 0.5f &&
+        s.y <= p.h - 0.5f)) {
     return 0;
   }
   const auto bilinear = [](const std::vector<std::uint8_t>& plane,
@@ -185,7 +188,7 @@ std::uint32_t reference_color(const Planes& p, const sensor::LensCamera& c,
     const float bottom = t(x0, y1) + (t(x1, y1) - t(x0, y1)) * fx;
     return top + (bottom - top) * fy;
   };
-  const float yv = bilinear(p.y, kWidth, kHeight, s.x, s.y);
+  const float yv = bilinear(p.y, p.w, p.h, s.x, s.y);
   const float cbv = bilinear(p.cb, p.cw, p.ch, s.x * 0.5f, (s.y - 0.5f) * 0.5f);
   const float crv = bilinear(p.cr, p.cw, p.ch, s.x * 0.5f, (s.y - 0.5f) * 0.5f);
   const float luma = full ? yv / 255.0f : (yv - 16.0f) / 219.0f;
@@ -364,17 +367,21 @@ int test_undistorts(sensor::GpuFramePrep& prep) {
 }
 
 // Both passes against the host reference of the same sampling, on smooth
-// planes and random depth.
-int test_matches_reference(sensor::GpuFramePrep& prep) {
-  const sensor::LensCamera cam = lensed();
-  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight);
+// planes and random depth, at w x h. `padded` gives the planes rows longer
+// than their width, full of junk, as a decoder can hand them out.
+int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
+                           std::uint32_t h, bool padded) {
+  sensor::LensCamera cam = lensed();
+  cam.width = w;
+  cam.height = h;
+  std::vector<std::uint16_t> raw(std::size_t{w} * h);
   for (std::size_t i = 0; i < raw.size(); ++i) {
     raw[i] = static_cast<std::uint16_t>(500 + (i * 2654435761u) % 4000u);
   }
-  Planes p = make_planes();
-  for (std::uint32_t y = 0; y < kHeight; ++y) {
-    for (std::uint32_t x = 0; x < kWidth; ++x) {
-      p.y[std::size_t{y} * kWidth + x] =
+  Planes p = make_planes(w, h);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      p.y[std::size_t{y} * w + x] =
           static_cast<std::uint8_t>(128 + 100 * std::sin(0.05 * x + 0.03 * y));
     }
   }
@@ -389,21 +396,38 @@ int test_matches_reference(sensor::GpuFramePrep& prep) {
   sensor::RawFrame f = frame_of(raw, cam);
   f.color = p.image(0.2126f, 0.0722f, false);
   f.color_camera = cam;
+  std::vector<std::uint8_t> strided[3];
+  if (padded) {
+    const std::vector<std::uint8_t>* tight[3] = {&p.y, &p.cb, &p.cr};
+    const std::uint32_t pw[3] = {w, p.cw, p.cw};
+    const std::uint32_t ph[3] = {h, p.ch, p.ch};
+    const std::uint32_t pad[3] = {7, 5, 3};
+    for (int k = 0; k < 3; ++k) {
+      const std::uint32_t stride = pw[k] + pad[k];
+      strided[k].assign(std::size_t{stride} * ph[k], 0xAB);
+      for (std::uint32_t y = 0; y < ph[k]; ++y) {
+        std::memcpy(strided[k].data() + std::size_t{y} * stride,
+                    tight[k]->data() + std::size_t{y} * pw[k], pw[k]);
+      }
+      f.color.plane[k] = strided[k].data();
+      f.color.stride[k] = stride;
+    }
+  }
   auto out = prep.prepare(f);
   CHECK(out.ok());
   const std::vector<float> d = depth_of(out.value());
   const std::vector<std::uint32_t> c = color_of(out.value());
   CHECK(d.size() == raw.size() && c.size() == raw.size());
   int depth_off = 0, color_worst = 0, color_off = 0, coverage_off = 0;
-  for (std::uint32_t v = 0; v < kHeight; ++v) {
-    for (std::uint32_t u = 0; u < kWidth; ++u) {
-      const std::size_t i = std::size_t{v} * kWidth + u;
+  for (std::uint32_t v = 0; v < h; ++v) {
+    for (std::uint32_t u = 0; u < w; ++u) {
+      const std::size_t i = std::size_t{v} * w + u;
       const vr::Vec2f s =
           source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
       const float rx = std::floor(s.x + 0.5f), ry = std::floor(s.y + 0.5f);
       float want = 0.0f;
-      if (rx >= 0 && ry >= 0 && rx < kWidth && ry < kHeight) {
-        want = static_cast<float>(raw[static_cast<std::size_t>(ry) * kWidth +
+      if (rx >= 0 && ry >= 0 && rx < w && ry < h) {
+        want = static_cast<float>(raw[static_cast<std::size_t>(ry) * w +
                                       static_cast<std::size_t>(rx)]) *
                kScale;
       }
@@ -418,37 +442,13 @@ int test_matches_reference(sensor::GpuFramePrep& prep) {
     }
   }
   std::printf(
-      "  reference: depth %d of %u differ, colour %d differ, worst %d\n",
-      depth_off, kWidth * kHeight, color_off, color_worst);
+      "  reference %ux%u%s: depth %d differ, colour %d differ, worst %d\n", w,
+      h, padded ? " padded" : "", depth_off, color_off, color_worst);
   // A source coordinate within float round-off of a pixel boundary may round
   // the other way on the device; nothing else may differ.
   CHECK(depth_off <= 20);
   CHECK(color_worst <= 1);
   CHECK(coverage_off == 0);
-
-  // The same planes with padded rows, as a decoder hands them out, give the
-  // same colour to the byte: a strided plane is packed before it goes up.
-  {
-    const std::vector<std::uint8_t>* tight[3] = {&p.y, &p.cb, &p.cr};
-    const std::uint32_t w[3] = {kWidth, p.cw, p.cw};
-    const std::uint32_t h[3] = {kHeight, p.ch, p.ch};
-    const std::uint32_t pad[3] = {7, 5, 3};
-    std::vector<std::uint8_t> padded[3];
-    sensor::RawFrame g = f;
-    for (int k = 0; k < 3; ++k) {
-      const std::uint32_t stride = w[k] + pad[k];
-      padded[k].assign(std::size_t{stride} * h[k], 0xAB);
-      for (std::uint32_t y = 0; y < h[k]; ++y) {
-        std::memcpy(padded[k].data() + std::size_t{y} * stride,
-                    tight[k]->data() + std::size_t{y} * w[k], w[k]);
-      }
-      g.color.plane[k] = padded[k].data();
-      g.color.stride[k] = stride;
-    }
-    auto strided = prep.prepare(g);
-    CHECK(strided.ok());
-    CHECK(color_of(strided.value()) == c);
-  }
   return 0;
 }
 
@@ -676,7 +676,14 @@ int main() {
 
   if (test_pinhole(prep.value()) != 0) return 1;
   if (test_undistorts(prep.value()) != 0) return 1;
-  if (test_matches_reference(prep.value()) != 0) return 1;
+  if (test_matches_reference(prep.value(), kWidth, kHeight, false) != 0) {
+    return 1;
+  }
+  // Odd, so the chroma planes' offsets are rounded up to a word.
+  if (test_matches_reference(prep.value(), kWidth + 1, kHeight + 1, true) !=
+      0) {
+    return 1;
+  }
   if (test_coverage(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;
   if (test_frames_hold_buffers(prep.value()) != 0) return 1;
