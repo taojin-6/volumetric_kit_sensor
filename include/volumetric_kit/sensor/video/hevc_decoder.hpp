@@ -55,7 +55,7 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
 
   /// @return The hardware back ends that decode HEVC here, in the order
   ///         @ref VideoDecodeBackend::Auto tries them: VideoToolbox on Apple;
-  ///         Cuda, then Vulkan, then Vaapi on Linux, so an NVIDIA GPU is
+  ///         Cuda, then Vaapi on Linux, so an NVIDIA GPU is
   ///         chosen over an integrated one; Cuda, then D3d11va, on Windows.
   ///         Each is listed only if it opens and decodes HEVC: VideoToolbox
   ///         as VTIsHardwareDecodeSupported answers, the others by decoding a
