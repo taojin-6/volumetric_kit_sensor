@@ -113,6 +113,9 @@ class CameraStream {
   Status take_all(std::vector<std::shared_ptr<ob::FrameSet>>* out);
   // A taken pair that will never be processed, counted as dropped.
   void discard() noexcept;
+  // A pair process() delivered that the caller will not hand out after all,
+  // recounted as dropped.
+  void withdraw() noexcept;
   // The device timestamp of a pair's depth frame (us), or 0 when it has none.
   static std::uint64_t timestamp_us(const ob::FrameSet& pair) noexcept;
 

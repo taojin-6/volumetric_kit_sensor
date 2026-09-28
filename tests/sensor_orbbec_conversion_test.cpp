@@ -196,6 +196,37 @@ int test_validate() {
   return 0;
 }
 
+int test_validate_rig() {
+  sensor::OrbbecRig::Options r;
+  r.cameras = {{"A", vr::Mat4f(1.0f)}, {"B", vr::Mat4f(1.0f)}};
+  CHECK(orbbec::validate(r).ok());
+
+  auto o = r;
+  o.cameras.pop_back();
+  CHECK(invalid(orbbec::validate(o)));
+  o = r;
+  o.cameras[1].serial = "A";
+  CHECK(invalid(orbbec::validate(o)));
+  // The pose file's own checks, rigidity included.
+  o = r;
+  o.cameras[1].cam_to_world = vr::Mat4f(2.0f);
+  CHECK(invalid(orbbec::validate(o)));
+
+  // The tolerance must be under half a frame period (16 666 us at 30 fps),
+  // or one secondary frame can match two neighbouring triggers.
+  o = r;
+  o.sync_tolerance_us = 0;
+  CHECK(invalid(orbbec::validate(o)));
+  o.sync_tolerance_us = 16666;
+  CHECK(invalid(orbbec::validate(o)));
+  o.sync_tolerance_us = 16665;
+  CHECK(orbbec::validate(o).ok());
+  o.fps = 15;
+  o.sync_tolerance_us = 20000;
+  CHECK(orbbec::validate(o).ok());
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -205,6 +236,7 @@ int main() {
   if (test_pack_rgb() != 0) return 1;
   if (test_sync_mode() != 0) return 1;
   if (test_validate() != 0) return 1;
+  if (test_validate_rig() != 0) return 1;
   std::printf("orbbec conversion tests passed\n");
   return 0;
 }

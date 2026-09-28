@@ -54,8 +54,9 @@ OrbbecSyncMode sync_mode_from(OBMultiDeviceSyncMode mode) noexcept;
 /// makes, before it touches the SDK.
 Status validate(const OrbbecCapture::Options& options);
 
-/// The same for a rig, plus what only a rig has: at least two cameras, each
-/// named once, and a non-zero sync tolerance.
+/// The same for a rig, plus what only a rig has: at least two cameras, poses
+/// @ref validate_rig_poses accepts, and a sync tolerance under half a frame
+/// period.
 Status validate(const OrbbecRig::Options& options);
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

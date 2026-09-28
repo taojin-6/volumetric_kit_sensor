@@ -132,24 +132,21 @@ Status validate(const OrbbecRig::Options& options) {
         "OrbbecRig: a rig needs at least two cameras; OrbbecCapture opens "
         "one");
   }
-  for (std::size_t i = 0; i < options.cameras.size(); ++i) {
-    const RigCameraPose& camera = options.cameras[i];
-    if (camera.serial.empty()) {
-      return Status::invalid_argument("OrbbecRig: camera " + std::to_string(i) +
-                                      " has no serial");
-    }
-    for (std::size_t j = 0; j < i; ++j) {
-      if (options.cameras[j].serial == camera.serial) {
-        return Status::invalid_argument("OrbbecRig: camera " + camera.serial +
-                                        " is named twice");
-      }
-    }
-    VR_TRY(validate_pose(camera.cam_to_world,
-                         "OrbbecRig: camera " + camera.serial));
+  const Status poses = validate_rig_poses(options.cameras);
+  if (!poses.ok()) {
+    return Status::invalid_argument("OrbbecRig: " + poses.message());
   }
-  if (options.sync_tolerance_us == 0) {
+  // At half a frame period or more, a secondary's frame can sit within the
+  // tolerance of two neighbouring triggers' primary frames.
+  const std::uint64_t half_period_us = 500000u / options.fps;
+  if (options.sync_tolerance_us == 0 ||
+      options.sync_tolerance_us >= half_period_us) {
     return Status::invalid_argument(
-        "OrbbecRig: sync_tolerance_us must be non-zero");
+        "OrbbecRig: sync_tolerance_us is " +
+        std::to_string(options.sync_tolerance_us) +
+        "; it must be non-zero and under half a frame period (" +
+        std::to_string(half_period_us) + " us at " +
+        std::to_string(options.fps) + " fps)");
   }
   return {};
 }

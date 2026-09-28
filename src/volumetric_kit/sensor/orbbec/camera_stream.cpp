@@ -412,6 +412,11 @@ Status CameraStream::take_all(std::vector<std::shared_ptr<ob::FrameSet>>* out) {
 
 void CameraStream::discard() noexcept { ++discarded_; }
 
+void CameraStream::withdraw() noexcept {
+  --delivered_;
+  ++discarded_;
+}
+
 std::uint64_t CameraStream::timestamp_us(const ob::FrameSet& pair) noexcept {
   try {
     const auto depth = pair.getDepthFrame();
