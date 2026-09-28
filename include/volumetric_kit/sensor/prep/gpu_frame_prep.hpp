@@ -134,7 +134,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   DescriptorPool pool_;
   GpuTimer gpu_timer_;
 
-  // The inputs the host writes, grown to the largest frame seen and kept.
+  // The raw inputs, device-local and filled through the pass's batch, grown
+  // to the largest frame seen and kept.
   // TODO(sensor): zero-copy inputs from a hardware decoder's frames.
   Buffer depth_in_;
   Buffer color_in_;

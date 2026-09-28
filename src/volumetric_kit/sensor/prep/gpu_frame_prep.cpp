@@ -10,9 +10,11 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "undistort_color_comp.spv.hpp"
 #include "undistort_depth_comp.spv.hpp"
+#include "volumetric_kit/recon/core/command_batch.hpp"
 #include "volumetric_kit/recon/core/compute_util.hpp"
 
 namespace volumetric_kit::recon::sensor {
@@ -76,12 +78,13 @@ Status check_camera(const char* what, const LensCamera& c) {
   return {};
 }
 
-// An input of at least `bytes`, host-written, kept when it is big enough.
+// An input of at least `bytes`, kept when it is big enough. Device-local, and
+// filled through the pass's batch, so the kernels never read the raw frame
+// across the bus.
 Status ensure_input(Allocator& allocator, Buffer& buffer, VkDeviceSize bytes) {
   if (buffer.valid() && buffer.size() >= bytes) return {};
   buffer = Buffer();
-  VR_ASSIGN(buffer,
-            storage_buffer(allocator, bytes, HostAccess::SequentialWrite));
+  VR_ASSIGN(buffer, device_storage_buffer(allocator, bytes));
   return {};
 }
 
@@ -254,37 +257,43 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     VR_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame"));
   }
 
-  // Both uploads, then both passes.
-  std::memcpy(depth_in_.mapped(), frame.depth,
-              std::size_t{depth.pixels} * sizeof(std::uint16_t));
+  // One batch: both uploads, then both passes, one submit a frame.
+  CommandBatch batch(*device_, *allocator_);
+  VR_TRY(batch.upload(depth_in_, 0, frame.depth,
+                      VkDeviceSize{depth.pixels} * sizeof(std::uint16_t)));
   if (frame.has_color()) {
-    // Rows packed tightly, whatever the decoder's strides.
+    // Planes packed tightly, whatever the decoder's strides: a plane whose
+    // rows already are goes up as it is, and any other is packed first.
     const YuvImage& image = frame.color;
-    auto* dst = static_cast<std::uint8_t*>(color_in_.mapped());
     const std::uint32_t widths[3] = {image.width, color.cw, color.cw};
     const std::uint32_t heights[3] = {image.height, color.ch, color.ch};
     const VkDeviceSize offsets[3] = {0, color.cb_offset, color.cr_offset};
+    std::vector<std::uint8_t> packed;
     for (int p = 0; p < 3; ++p) {
-      for (std::uint32_t row = 0; row < heights[p]; ++row) {
-        std::memcpy(dst + offsets[p] + std::size_t{row} * widths[p],
-                    image.plane[p] + std::size_t{row} * image.stride[p],
-                    widths[p]);
+      const std::size_t row = widths[p];
+      const std::uint8_t* src = image.plane[p];
+      if (image.stride[p] != widths[p]) {
+        packed.resize(row * heights[p]);
+        for (std::uint32_t y = 0; y < heights[p]; ++y) {
+          std::memcpy(packed.data() + y * row,
+                      image.plane[p] + std::size_t{y} * image.stride[p], row);
+        }
+        src = packed.data();
       }
+      VR_TRY(batch.upload(color_in_, offsets[p], src,
+                          VkDeviceSize{row} * heights[p]));
     }
   }
 
-  // TODO(sensor): both passes in one submit, saving a fence wait a frame,
-  // once core has a several-kernel dispatch (ExtractTimings' device half
-  // wants the same).
   depth_kernel_.set.write_storage_buffer(0, depth_in_.handle(), 0,
                                          depth.in_bytes);
   depth_kernel_.set.write_storage_buffer(1, depth_out_->handle(), 0,
                                          depth.out_bytes);
   const DepthParams depth_params{lens_params(frame.depth_camera),
                                  frame.metres_per_unit};
-  VR_TRY(dispatch(*device_, depth_kernel_, &depth_params, sizeof(depth_params),
-                  group_count(depth.pixels, kLocalSize), max_workgroup_count_x_,
-                  &stage));
+  VR_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
+                        group_count(depth.pixels, kLocalSize),
+                        max_workgroup_count_x_, &stage));
   if (frame.has_color()) {
     color_kernel_.set.write_storage_buffer(0, color_in_.handle(), 0,
                                            color.in_bytes);
@@ -297,10 +306,11 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                                    image.kr,
                                    image.kb,
                                    image.full_range ? 1u : 0u};
-    VR_TRY(dispatch(*device_, color_kernel_, &color_params,
-                    sizeof(color_params), group_count(color.pixels, kLocalSize),
-                    max_workgroup_count_x_, &stage));
+    VR_TRY(batch.dispatch(color_kernel_, &color_params, sizeof(color_params),
+                          group_count(color.pixels, kLocalSize),
+                          max_workgroup_count_x_, &stage));
   }
+  VR_TRY(batch.submit());
 
   const LensCamera& d = frame.depth_camera;
   DeviceFrame out;

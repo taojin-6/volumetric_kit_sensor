@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 #include <vector>
 
@@ -424,6 +425,30 @@ int test_matches_reference(sensor::GpuFramePrep& prep) {
   CHECK(depth_off <= 20);
   CHECK(color_worst <= 1);
   CHECK(coverage_off == 0);
+
+  // The same planes with padded rows, as a decoder hands them out, give the
+  // same colour to the byte: a strided plane is packed before it goes up.
+  {
+    const std::vector<std::uint8_t>* tight[3] = {&p.y, &p.cb, &p.cr};
+    const std::uint32_t w[3] = {kWidth, p.cw, p.cw};
+    const std::uint32_t h[3] = {kHeight, p.ch, p.ch};
+    const std::uint32_t pad[3] = {7, 5, 3};
+    std::vector<std::uint8_t> padded[3];
+    sensor::RawFrame g = f;
+    for (int k = 0; k < 3; ++k) {
+      const std::uint32_t stride = w[k] + pad[k];
+      padded[k].assign(std::size_t{stride} * h[k], 0xAB);
+      for (std::uint32_t y = 0; y < h[k]; ++y) {
+        std::memcpy(padded[k].data() + std::size_t{y} * stride,
+                    tight[k]->data() + std::size_t{y} * w[k], w[k]);
+      }
+      g.color.plane[k] = padded[k].data();
+      g.color.stride[k] = stride;
+    }
+    auto strided = prep.prepare(g);
+    CHECK(strided.ok());
+    CHECK(color_of(strided.value()) == c);
+  }
   return 0;
 }
 
