@@ -4,6 +4,7 @@
 #include "hevc_color.hpp"
 
 #include <cstring>
+#include <system_error>
 #include <utility>
 
 namespace volumetric_kit::recon::sensor::orbbec {
@@ -14,6 +15,12 @@ namespace {
 // rate. A decoder that far behind is not catching up, and what is queued is
 // dropped and the stream picked up at the next key frame.
 constexpr std::uint32_t kQueueSeconds = 2;
+
+// Access units after its own by which a picture has come out, if it ever
+// will: H.265 holds at most 16 pictures back for display, and one decoding
+// thread holds none. A pair sent longer ago with no picture is one the
+// decoder skipped -- a CRA's leading pictures after a restart, say.
+constexpr std::int64_t kMaxPictureDelay = 16;
 
 }  // namespace
 
@@ -34,16 +41,29 @@ Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
   d->sink_ = std::move(sink);
   HevcDecoder::Options decoding;
   decoding.layout = VideoPixelLayout::Rgb24;
-  decoding.threads = 1;  // a live stream: no picture held back
-  decoding.color = kFemtoMegaHevcColor;
+  // One thread, so no picture is held back. That leaves software decoding
+  // little headroom at 4K25 (the 2026-09-28 decision).
+  // TODO(sensor): frame threads in software alone, or the conversion on the
+  // GPU (hevc_decoder.cpp's TODO), once a host without a hardware HEVC
+  // decoder needs 4K.
+  decoding.threads = 1;
+  decoding.unlabelled_color = kFemtoMegaHevcColor;
   decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
   auto decoder = HevcDecoder::create(decoding);
   if (!decoder) {
-    return Status::unsupported(
-        options.who + ": no HEVC decoder: " + decoder.status().message());
+    const std::string why = options.who + ": opening the HEVC decoder: " +
+                            decoder.status().message();
+    return decoder.status().domain() == Status::Code::Unsupported
+               ? Status::unsupported(why)
+               : Status::io_error(why);
   }
   d->decoder_.emplace(std::move(decoder).value());
-  d->thread_ = std::thread([raw = d.get()] { raw->run(); });
+  try {
+    d->thread_ = std::thread([raw = d.get()] { raw->run(); });
+  } catch (const std::system_error& e) {
+    return Status::io_error(
+        options.who + ": starting the colour decoding thread: " + e.what());
+  }
   return d;
 }
 
@@ -51,20 +71,25 @@ HevcColorDecoder::~HevcColorDecoder() { stop(); }
 
 void HevcColorDecoder::push(std::shared_ptr<ob::FrameSet> pair) noexcept {
   if (pair == nullptr) return;
-  std::size_t overflow = 0;
+  std::uint64_t lost = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) return;
     const std::size_t limit =
         static_cast<std::size_t>(options_.fps) * kQueueSeconds;
     if (queue_.size() >= limit) {
-      overflow = queue_.size();
+      lost = queue_.size();
       queue_.clear();
       resync_ = true;  // and so is everything up to the next key frame
     }
-    queue_.push_back(std::move(pair));
+    try {
+      queue_.push_back(std::move(pair));
+    } catch (...) {  // out of memory: this pair goes, as an overflow's do
+      ++lost;
+      resync_ = true;
+    }
   }
-  if (overflow != 0) lose(overflow);
+  if (lost != 0) lose(lost);
   wake_.notify_one();
 }
 
@@ -77,7 +102,12 @@ void HevcColorDecoder::stop() noexcept {
   }
   wake_.notify_one();
   if (thread_.joinable()) thread_.join();
+  // Now, not with the last reference: the SDK may keep the frame callback
+  // that holds one past the context, and the decoder may hold a hardware
+  // session. Nothing reads them once the thread is gone.
   in_flight_.clear();
+  decoder_.reset();
+  options_.rgb_profile.reset();
 }
 
 void HevcColorDecoder::run() {
@@ -115,9 +145,31 @@ void HevcColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
   const std::size_t size = color->getDataSize();
   const std::uint64_t index =
       options_.frame_index ? options_.frame_index(*color) : color->getIndex();
-  if (!gate_.admit(index, is_key_frame(data, size))) {
+  // No access unit, and sending none would end the stream: as a frame lost
+  // on the wire.
+  if (data == nullptr || size == 0) {
     lose();
+    gate_.resync();
     return;
+  }
+  switch (gate_.admit(index, is_key_frame(data, size))) {
+    case ColorStreamGate::Admission::Drop:
+      lose();
+      return;
+    case ColorStreamGate::Admission::Restart:
+      // What the decoder still holds belongs to pairs from before the loss,
+      // and a CRA's leading pictures refer to frames it never had: reset, so
+      // it drops the one and skips the other.
+      lose(in_flight_.size());
+      in_flight_.clear();
+      if (!decoder_->reset()) {
+        lose();
+        gate_.resync();
+        return;
+      }
+      break;
+    case ColorStreamGate::Admission::Decode:
+      break;
   }
 
   const std::int64_t pts = next_pts_++;
@@ -136,24 +188,31 @@ void HevcColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
       gate_.resync();
       return;
     }
-    if (!picture.value()) return;
+    if (!picture.value()) break;
     hand_on(*picture.value());
+  }
+  while (!in_flight_.empty() &&
+         in_flight_.begin()->first + kMaxPictureDelay < next_pts_) {
+    in_flight_.erase(in_flight_.begin());
+    lose();
   }
 }
 
 void HevcColorDecoder::hand_on(const DecodedPicture& picture) {
+  // Pictures come out in display order, which B-frames are not sent in, so a
+  // picture settles its own pair and no other.
   const auto found = in_flight_.find(picture.pts);
   if (found == in_flight_.end()) return;
-  // Pairs sent before this one that produced no picture never will.
-  lose(static_cast<std::uint64_t>(std::distance(in_flight_.begin(), found)));
-  const std::shared_ptr<ob::FrameSet> pair = found->second;
-  in_flight_.erase(in_flight_.begin(), std::next(found));
+  const std::shared_ptr<ob::FrameSet> pair = std::move(found->second);
+  in_flight_.erase(found);
   if (pair->getDepthFrame() == nullptr) {
     lose();
     return;
   }
 
   const auto color = pair->getColorFrame();
+  // A frame allocated and copied per picture: 0.5 ms at 4K against the
+  // decode's 24 (the 2026-09-28 decision).
   const std::size_t row = 3u * picture.width;
   auto rgb = ob::FrameFactory::createVideoFrame(
       OB_FRAME_COLOR, OB_FORMAT_RGB, picture.width, picture.height,

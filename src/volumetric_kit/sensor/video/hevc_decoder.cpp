@@ -140,7 +140,7 @@ struct HevcDecoder::Impl {
   bool may_fall_back = false;  // Auto: software if the hardware refuses
   AVPixelFormat hw_format = AV_PIX_FMT_NONE;
   VideoPixelLayout layout = VideoPixelLayout::Rgb24;
-  std::optional<VideoColorDescription> color;  // Options::color
+  std::optional<VideoColorDescription> unlabelled_color;  // as in Options
   bool ended = false;
   bool left_top_crop = false;  // an SPS so far crops the left or top
   std::string refusal;         // why the named back end gave up, if it did
@@ -320,7 +320,7 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
       auto opened = Impl::open(b, /*may_fall_back=*/true, options.layout,
                                options.threads);
       if (opened) {
-        opened.value()->color = options.color;
+        opened.value()->unlabelled_color = options.unlabelled_color;
         return HevcDecoder(std::move(opened).value());
       }
     }
@@ -333,7 +333,7 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   }
   VR_ASSIGN(auto impl, Impl::open(backend, /*may_fall_back=*/false,
                                   options.layout, options.threads));
-  impl->color = options.color;
+  impl->unlabelled_color = options.unlabelled_color;
   return HevcDecoder(std::move(impl));
 }
 
@@ -415,11 +415,23 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
     VR_TRY(impl_->copy_to_host(*decoded));
     host = impl_->transferred.get();
   }
-  VR_ASSIGN(DecodedPicture picture,
-            impl_->converter.convert(*host, impl_->layout, impl_->color));
+  VR_ASSIGN(
+      DecodedPicture picture,
+      impl_->converter.convert(*host, impl_->layout, impl_->unlabelled_color));
   picture.pts = decoded->pts != AV_NOPTS_VALUE ? decoded->pts
                                                : decoded->best_effort_timestamp;
   return std::optional<DecodedPicture>(picture);
+}
+
+Status HevcDecoder::reset() {
+  if (impl_ == nullptr) {
+    return Status::invalid_argument(std::string(kWho) + ": moved from");
+  }
+  // As for a seek: FFmpeg drops what it holds, leaves draining, and takes the
+  // next key frame as the first, skipping the pictures that lead it.
+  avcodec_flush_buffers(impl_->codec.get());
+  impl_->ended = false;
+  return {};
 }
 
 }  // namespace volumetric_kit::recon::sensor

@@ -4,7 +4,7 @@
 #
 # Regenerates the committed HEVC clips with the ffmpeg CLI (built with
 # libx265). All are Annex B, headers repeated on every key frame and an access
-# unit delimiter before each frame, BT.709 limited range.
+# unit delimiter before each frame, BT.709 limited range but one.
 #
 #   tests/data/hevc/patches_256x144.h265   8 frames (IPPP) of 8x2 solid
 #       patches that shift one patch left per frame; the test recomputes each
@@ -13,6 +13,12 @@
 #   tests/data/hevc/cropped_240x128.h265   the same frames, their display
 #       window moved 16 right and 16 down (a conformance window; only the
 #       SPS differs).
+#   tests/data/hevc/unlabelled_256x144.h265  the same frames, their matrix,
+#       primaries and transfer unspecified: what FFmpeg reads off the Femto
+#       Mega's stream, which has no VUI (only the SPS differs).
+#   tests/data/hevc/open_gop_256x144.h265  16 frames of the same pattern in
+#       open GOPs: a CRA every 6, the 2 B-frames shown before each sent after
+#       it as its leading (RASL) pictures, predicted across it.
 #   tests/data/hevc/fallback_256x144.h265  the same 8 frames with B-frames,
 #       then 2 frames of 4:0:0 grey, which no hardware back end decodes: Auto
 #       moves to software with pictures still held for display.
@@ -41,6 +47,17 @@ ffmpeg -hide_banner -loglevel error -y \
   -i "$root/tests/data/hevc/patches_256x144.h265" -c copy \
   -bsf:v hevc_metadata=crop_left=16:crop_top=16 -f hevc \
   "$root/tests/data/hevc/cropped_240x128.h265"
+
+ffmpeg -hide_banner -loglevel error -y \
+  -i "$root/tests/data/hevc/patches_256x144.h265" -c copy \
+  -bsf:v hevc_metadata=colour_primaries=2:transfer_characteristics=2:matrix_coefficients=2 \
+  -f hevc "$root/tests/data/hevc/unlabelled_256x144.h265"
+
+ffmpeg -hide_banner -loglevel error -y -f lavfi \
+  -i "nullsrc=s=256x144:r=30,format=yuv420p,geq=lum='40+24*${p_luma}':cb='64+16*mod(3*${p_chroma},8)':cr='64+16*mod(5*${p_chroma},8)'" \
+  -frames:v 16 -c:v libx265 \
+  -x265-params "${x265/keyint=4:min-keyint=4:bframes=0:scenecut=0:open-gop=0/keyint=6:min-keyint=6:bframes=2:b-adapt=0:scenecut=0:open-gop=1}" \
+  -f hevc "$root/tests/data/hevc/open_gop_256x144.h265"
 
 tmp="$(mktemp)"
 grey="$(mktemp)"

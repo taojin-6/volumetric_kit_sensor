@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <thread>
 #include <utility>
 
@@ -101,11 +102,40 @@ Status check_orientation(ob::Device& device, const std::string& who) {
   return {};
 }
 
+// Whether two of the SDK's calibration structs hold the same bytes: the
+// comparison the H.265 mode's calibration was measured to pass.
+template <typename T>
+bool same_bytes(const T& a, const T& b) noexcept {
+  return std::memcmp(&a, &b, sizeof(T)) == 0;
+}
+// None has padding, whose bytes would be indeterminate.
+static_assert(sizeof(OBCameraIntrinsic) ==
+              4 * sizeof(float) + 2 * sizeof(std::int16_t));
+static_assert(sizeof(OBCameraDistortion) ==
+              8 * sizeof(float) + sizeof(OBCameraDistortionModel));
+static_assert(sizeof(OBExtrinsic) == 12 * sizeof(float));
+
 }  // namespace
 
 Status sdk_error(const std::string& who, const std::string& what,
                  const std::exception& e) {
   return Status::io_error(who + ": " + what + ": " + e.what());
+}
+
+Status check_color_codec(const OrbbecStreamOptions& streams,
+                         const std::string& who) {
+#if VR_ORBBEC_WITH_HEVC
+  (void)streams;
+  (void)who;
+#else
+  if (streams.color_codec == OrbbecColorCodec::Hevc) {
+    return Status::unsupported(
+        who +
+        ": H.265 colour needs the HEVC decoder, which this build left out "
+        "(configure with -DVR_WITH_FFMPEG=ON)");
+  }
+#endif
+  return {};
 }
 
 void configure_sdk_logging() {
@@ -212,7 +242,7 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
     bool configure_logging, const std::string& who) {
   std::unique_ptr<CameraStream> s(new CameraStream());
   s->fps_ = streams.fps;
-  s->configure_logging_ = configure_logging;
+  s->configure_ffmpeg_logging_ = configure_logging;
   s->context_ = std::move(context);
   s->device_ = std::move(device);
   try {
@@ -257,8 +287,12 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
                                  std::to_string(streams.fps) +
                                  " Y16; it offers " + list_modes(*depth_modes));
     }
+#if VR_ORBBEC_WITH_HEVC  // without it, open has refused Hevc
     if (streams.color_codec == OrbbecColorCodec::Hevc) {
-#if VR_ORBBEC_WITH_HEVC
+      // TODO(sensor): the camera's H.265 encoder settings -- its key-frame
+      // interval above all, since a lost frame costs the frames up to the
+      // next key frame (30 at the default) -- are left as the camera has
+      // them (the 2026-09-28 decision).
       try {
         s->wire_color_profile_ = color_modes->getVideoStreamProfile(
             static_cast<int>(streams.color_width),
@@ -272,13 +306,8 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
                                    " H265; it offers " +
                                    list_modes(*color_modes));
       }
-#else
-      return Status::unsupported(
-          s->who_ +
-          ": H.265 colour needs the HEVC decoder, which this build left out "
-          "(configure with -DVR_WITH_FFMPEG=ON)");
-#endif
     }
+#endif
     try {
       // RGB: MJPG on the wire, decoded on the SDK's thread -- or, for H.265,
       // the mode whose calibration the decoded frames carry.
@@ -314,6 +343,24 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
               depth_from_registered_color(
                   s->color_camera_, streams.color_width, streams.color_height,
                   streams.min_depth, streams.max_depth));
+    // The decoded frames carry the RGB mode's profile, so the H.265 mode
+    // must have its calibration: undistortion and registration read it off
+    // the frame. The two matched byte for byte on the Femto Mega at 720p,
+    // 1080p and 4K; a camera where they do not is refused, not trusted.
+    if (s->wire_color_profile_ != nullptr) {
+      const auto wire = s->wire_color_profile_->as<ob::VideoStreamProfile>();
+      const auto rgb = s->color_profile_->as<ob::VideoStreamProfile>();
+      if (!same_bytes(wire->getIntrinsic(), rgb->getIntrinsic()) ||
+          !same_bytes(wire->getDistortion(), rgb->getDistortion()) ||
+          !same_bytes(wire->getExtrinsicTo(s->depth_profile_),
+                      rgb->getExtrinsicTo(s->depth_profile_))) {
+        return Status::unsupported(
+            s->who_ +
+            "'s H.265 colour mode reports a calibration other than its RGB "
+            "mode's, which the decoded frames are undistorted and registered "
+            "with; stream MJPEG");
+      }
+    }
 
     s->undistort_color_ =
         std::make_shared<ob::UnDistortionFilter>(OB_STREAM_COLOR);
@@ -383,7 +430,10 @@ Status CameraStream::start() {
     HevcColorDecoder::Options decoding;
     decoding.fps = fps_;
     decoding.rgb_profile = color_profile_;
-    decoding.configure_ffmpeg_logging = configure_logging_;
+    // Once: the first start sets FFmpeg's level, and a later one leaves it
+    // to whoever changed it since.
+    decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
+    configure_ffmpeg_logging_ = false;
     decoding.who = who_;
     VR_ASSIGN(
         auto decoder,

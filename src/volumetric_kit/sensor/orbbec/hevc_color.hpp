@@ -42,15 +42,21 @@ bool is_key_frame(const std::uint8_t* data, std::size_t size) noexcept;
 // seconds later, with no frame between (measured on the rig).
 class ColorStreamGate {
  public:
-  // Whether frame `index` (0: unnumbered, never a gap) goes to the decoder.
-  bool admit(std::uint64_t index, bool key_frame) noexcept {
+  enum class Admission {
+    Drop,     // waiting for a key frame: not decodable
+    Decode,   // the next frame of an unbroken stream
+    Restart,  // the key frame that ends a wait: the stream starts afresh
+  };
+  // What to do with frame `index` (0: unnumbered, never a gap).
+  Admission admit(std::uint64_t index, bool key_frame) noexcept {
     if (index != 0 && last_index_ != 0 && index != last_index_ + 1) {
       waiting_for_key_ = true;
     }
     last_index_ = index;
-    if (waiting_for_key_ && !key_frame) return false;
+    if (!waiting_for_key_) return Admission::Decode;
+    if (!key_frame) return Admission::Drop;
     waiting_for_key_ = false;
-    return true;
+    return Admission::Restart;
   }
   // Wait for the next key frame: a decode failed, or frames were dropped.
   void resync() noexcept { waiting_for_key_ = true; }
@@ -61,7 +67,8 @@ class ColorStreamGate {
 };
 
 // The Femto Mega's colour stream: BT.601 full range, which it writes no VUI
-// to say (the 2026-09-28 decision).
+// to say (the 2026-09-28 decision). Taken for a stream that declares no
+// matrix; one that declares its own is decoded by it.
 constexpr VideoColorDescription kFemtoMegaHevcColor{VideoColorMatrix::Bt601,
                                                     true};
 
@@ -94,16 +101,18 @@ class HevcColorDecoder {
   // Queue a pair (H.265 colour, and depth when the SDK paired one) for
   // decoding. Every colour frame must come through here, a lone one too: the
   // frames after it are predicted from it. Called on the SDK's thread; it
-  // never waits for a decode. A call after stop() is ignored.
+  // never waits for a decode, and a pair it cannot queue is lost, not
+  // thrown. A call after stop() is ignored.
   void push(std::shared_ptr<ob::FrameSet> pair) noexcept;
 
-  // Stop the thread and drop what is queued, uncounted. Idempotent.
+  // Stop the thread, drop what is queued, uncounted, and release the decoder
+  // and the RGB profile. Idempotent.
   void stop() noexcept;
 
   // Pairs that will not be handed on: from a gap in the colour stream's frame
-  // indices, a decode error or an overflowing queue until the next key frame,
-  // and any without both frames (decoded, if it has colour, and dropped
-  // after). The first key frame is waited for too.
+  // indices, an empty colour frame, a decode error or an overflowing queue
+  // until the next key frame, and any without both frames (decoded, if it
+  // has colour, and dropped after). The first key frame is waited for too.
   std::uint64_t lost() const noexcept {
     return lost_.load(std::memory_order_relaxed);
   }

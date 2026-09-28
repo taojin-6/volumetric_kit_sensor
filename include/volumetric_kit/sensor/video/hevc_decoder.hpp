@@ -49,11 +49,13 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// threads: they hold nothing back, but help only a stream coded in
     /// wavefronts (WPP, as x265 codes by default).
     int threads = 0;
-    /// The matrix and range to decode by in place of the stream's, for a
-    /// source that labels its stream wrongly or not at all: the Femto Mega
-    /// writes no colour description and codes BT.601 full range. Empty: as
-    /// the stream declares (@ref DecodedPicture::matrix).
-    std::optional<VideoColorDescription> color;
+    /// The matrix and range to decode a stream by when it declares no matrix,
+    /// for a source known to code one it does not name: the Femto Mega writes
+    /// no colour description and codes BT.601 full range. The range goes with
+    /// the matrix, since FFmpeg reads a stream that declares neither as
+    /// limited. A stream that declares a matrix is decoded as it declares.
+    /// Empty: an unlabelled stream is guessed at (@ref DecodedPicture::matrix).
+    std::optional<VideoColorDescription> unlabelled_color;
     /// Set FFmpeg's log level to ERROR. Process-wide: FFmpeg has one logger.
     bool configure_ffmpeg_logging = true;
   };
@@ -102,6 +104,16 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   ///         @ref Status::Code::IoError if decoding failed; or
   ///         @ref Status::Code::InvalidArgument on a moved-from decoder.
   Result<std::optional<DecodedPicture>> receive();
+
+  /// @brief Start the stream afresh, as after a seek: the pictures still held
+  ///        are dropped, the end of the stream is undone, and the next key
+  ///        frame is decoded as the stream's first -- so the pictures that
+  ///        lead a CRA key frame, predicted from before it, are skipped
+  ///        rather than decoded from references the decoder never had. For a
+  ///        caller that lost access units. A refusal
+  ///        (@ref Status::Code::Unsupported) stands.
+  /// @return OK; @ref Status::Code::InvalidArgument on a moved-from decoder.
+  Status reset();
 
  private:
   struct Impl;

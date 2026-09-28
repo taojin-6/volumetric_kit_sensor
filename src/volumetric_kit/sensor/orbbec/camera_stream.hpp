@@ -41,6 +41,11 @@ Status sdk_error(const std::string& who, const std::string& what,
 // per sink -- setLoggerSeverity sets every sink, the file one included.
 void configure_sdk_logging();
 
+// Unsupported for H.265 colour in a build without the decoder; OK otherwise.
+// Asked by open before the SDK is touched.
+Status check_color_codec(const OrbbecStreamOptions& streams,
+                         const std::string& who);
+
 // Find cameras on the network, re-querying until they answer or the window
 // closes; one query is not proof of absence for an Ethernet camera. Named
 // cameras (in `serials`' order) are returned the moment all have answered.
@@ -82,8 +87,10 @@ class CameraStream {
  public:
   // Read the camera's identity and role, check its orientation, find the
   // modes, derive the frame's cameras, and build the filters. Does not start.
-  // Refuses a software-triggered camera. Messages name `who` and the serial.
-  // `configure_logging` sets FFmpeg's log level too, for H.265 colour.
+  // Refuses a software-triggered camera, and an H.265 mode whose calibration
+  // is not the RGB mode's. Messages name `who` and the serial.
+  // `configure_logging` sets FFmpeg's log level at the first start, for
+  // H.265 colour.
   static Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
       const OrbbecStreamOptions& streams, const Mat4f& cam_to_world,
@@ -110,7 +117,8 @@ class CameraStream {
   OrbbecCaptureStats stats() const noexcept;
 
   // Start both streams, with fresh counters. OK if already running; IoError
-  // once the camera has disconnected, or if the SDK refuses.
+  // once the camera has disconnected, or if the SDK refuses. For H.265
+  // colour, Unsupported or IoError if the decoder does not open or start.
   Status start();
   // Stop both streams; drop the pending pair and the processed frame's
   // storage. Idempotent. The camera stays open, and held.
@@ -156,11 +164,11 @@ class CameraStream {
   // The RGB mode: the colour camera's calibration, and the profile of the
   // frames process() is handed. It is also what the wire carries, unless
   // `wire_color_profile_` is set: the H.265 mode of the same size, whose
-  // calibration is the same (measured, byte for byte, at 720p, 1080p, 4K).
+  // calibration create() holds to be the same, byte for byte.
   std::shared_ptr<ob::StreamProfile> color_profile_;
   std::shared_ptr<ob::StreamProfile> wire_color_profile_;
   std::uint32_t fps_ = 0;
-  bool configure_logging_ = true;
+  bool configure_ffmpeg_logging_ = true;  // cleared by the first start
   // Decodes the H.265 colour, between the SDK and the mailbox; null for
   // MJPEG. Replaced at each start, so its counters start fresh with the rest.
   std::shared_ptr<HevcColorDecoder> hevc_;

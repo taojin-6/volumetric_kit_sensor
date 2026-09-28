@@ -4,7 +4,8 @@
 // The HEVC decoder on committed clips (tools/make_hevc_fixtures.sh): the
 // software decoder against the pattern the clip was made from, each hardware
 // back end against software (a conformant decoder is bit-exact), a display
-// window off the coded picture's corner, Auto's move to software with
+// window off the coded picture's corner, the colour an unlabelled stream
+// takes, a reset mid-stream and after the end, Auto's move to software with
 // pictures still held for display, Auto's choice, the refusals, and moves.
 //
 // VR_TEST_HEVC_BACKEND=<name> requires that back end: it must decode here and
@@ -49,6 +50,7 @@ constexpr int kFrames = 8;
 constexpr const char* kPatches = VR_HEVC_DATA "/patches_256x144.h265";
 constexpr const char* kCropped = VR_HEVC_DATA "/cropped_240x128.h265";
 constexpr const char* kFallback = VR_HEVC_DATA "/fallback_256x144.h265";
+constexpr const char* kUnlabelled = VR_HEVC_DATA "/unlabelled_256x144.h265";
 constexpr int kCropLeft = 16;  // the cropped clip's window
 constexpr int kCropTop = 16;
 
@@ -137,16 +139,18 @@ vr::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder) {
 
 vr::Result<std::vector<Picture>> decode_with(
     VideoDecodeBackend backend, VideoPixelLayout layout,
-    std::optional<sensor::VideoColorDescription> color = std::nullopt) {
+    std::optional<sensor::VideoColorDescription> unlabelled_color =
+        std::nullopt,
+    const char* clip = kPatches) {
   HevcDecoder::Options options;
   options.backend = backend;
   options.layout = layout;
-  options.color = color;
+  options.unlabelled_color = unlabelled_color;
   VR_ASSIGN(HevcDecoder decoder, HevcDecoder::create(options));
   if (backend != VideoDecodeBackend::Auto && decoder.backend() != backend) {
     return vr::Status::io_error("decoder runs elsewhere");
   }
-  return decode_clip(decoder);
+  return decode_clip(decoder, access_units(clip));
 }
 
 // Software, then every hardware back end found.
@@ -241,19 +245,21 @@ int test_software_rgb() {
   return 0;
 }
 
-// Options::color in place of the clip's BT.709 limited label, on every back
-// end: reported on each picture, followed by Rgb24, and the Yuv420 bytes as
-// decoded without it.
-int test_color_override() {
+// Options::unlabelled_color on every back end. The unlabelled clip takes it:
+// it is reported on each picture and followed by Rgb24, and the Yuv420 bytes
+// are those decoded without it. The labelled clip keeps its BT.709 limited.
+int test_unlabelled_color() {
   const sensor::VideoColorDescription femto{sensor::VideoColorMatrix::Bt601,
                                             true};
   auto plain =
       decode_with(VideoDecodeBackend::Software, VideoPixelLayout::Yuv420);
   CHECK(plain.ok());
   for (const VideoDecodeBackend backend : every_backend()) {
-    std::printf("  colour override on %s\n", sensor::to_string(backend));
-    auto yuv = decode_with(backend, VideoPixelLayout::Yuv420, femto);
-    auto rgb = decode_with(backend, VideoPixelLayout::Rgb24, femto);
+    std::printf("  unlabelled colour on %s\n", sensor::to_string(backend));
+    auto yuv =
+        decode_with(backend, VideoPixelLayout::Yuv420, femto, kUnlabelled);
+    auto rgb =
+        decode_with(backend, VideoPixelLayout::Rgb24, femto, kUnlabelled);
     CHECK(yuv.ok() && rgb.ok());
     CHECK(yuv.value().size() == plain.value().size());
     for (std::size_t f = 0; f < yuv.value().size(); ++f) {
@@ -280,6 +286,50 @@ int test_color_override() {
         }
       }
     }
+    auto labelled = decode_with(backend, VideoPixelLayout::Rgb24, femto);
+    CHECK(labelled.ok());
+    if (check_clip_shape(labelled.value()) != 0) return 1;
+  }
+  return 0;
+}
+
+// reset() on every back end: the pictures held for display are dropped, a
+// stream ended with size 0 takes data again, and the next key frame decodes
+// as the first.
+int test_reset() {
+  const AccessUnits b_frames = access_units(kFallback);
+  const AccessUnits patches = access_units(kPatches);
+  for (const VideoDecodeBackend backend : every_backend()) {
+    std::printf("  reset on %s\n", sensor::to_string(backend));
+    HevcDecoder::Options options;
+    options.backend = backend;
+    options.layout = VideoPixelLayout::Yuv420;
+    auto decoder = HevcDecoder::create(options);
+    CHECK(decoder.ok());
+    int out = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+      CHECK(decoder
+                ->send(b_frames[i].data(), b_frames[i].size(),
+                       pts_of(static_cast<int>(i)))
+                .ok());
+      for (;;) {
+        auto picture = decoder->receive();
+        CHECK(picture.ok());
+        if (!picture.value()) break;
+        ++out;
+      }
+    }
+    CHECK(out < 4);  // B-frames: some are held for display
+    CHECK(decoder->reset().ok());
+    auto dropped = decoder->receive();
+    CHECK(dropped.ok() && !dropped.value());
+    CHECK(decoder->send(nullptr, 0, 0).ok());
+    CHECK(decoder->send(patches[0].data(), patches[0].size(), 0).domain() ==
+          vr::Status::Code::InvalidArgument);  // after the end
+    CHECK(decoder->reset().ok());
+    auto pictures = decode_clip(decoder.value(), patches);
+    CHECK(pictures.ok());
+    if (check_clip_shape(pictures.value()) != 0) return 1;
   }
   return 0;
 }
@@ -515,6 +565,7 @@ int test_moves() {
   CHECK(a.backend() == VideoDecodeBackend::Auto);  // NOLINT: moved from
   CHECK(a.send(nullptr, 0, 0).domain() == vr::Status::Code::InvalidArgument);
   CHECK(a.receive().status().domain() == vr::Status::Code::InvalidArgument);
+  CHECK(a.reset().domain() == vr::Status::Code::InvalidArgument);
   CHECK(b.backend() == VideoDecodeBackend::Software);
 
   auto other = HevcDecoder::create(options);
@@ -556,7 +607,8 @@ int main() {
   if (test_software_yuv() != 0) return 1;
   if (test_software_rgb() != 0) return 1;
   if (test_hardware_matches_software() != 0) return 1;
-  if (test_color_override() != 0) return 1;
+  if (test_unlabelled_color() != 0) return 1;
+  if (test_reset() != 0) return 1;
   if (test_cropped() != 0) return 1;
   if (test_fallback() != 0) return 1;
   if (test_auto_choice() != 0) return 1;
