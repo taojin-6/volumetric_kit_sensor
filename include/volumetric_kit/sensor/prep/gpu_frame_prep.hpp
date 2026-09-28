@@ -41,8 +41,8 @@ namespace volumetric_kit::recon::sensor {
 /// as `ColorFrame::buffer` with @ref color_camera and
 /// `ColorFrame::coverage_in_alpha` set.
 ///
-/// The frame holds its buffers, which are device-local storage buffers that
-/// can also be copied from (`TRANSFER_SRC`). One kept past the next
+/// The frame holds its buffers, which are `device_storage_buffer`s, so a
+/// `CommandBatch` can copy or read them back. One kept past the next
 /// @ref GpuFramePrep::prepare keeps its contents, and that call writes to new
 /// buffers instead; drop a frame once it is fused and the pass reuses them.
 /// The @ref Allocator must outlive the frame, as it must the pass.

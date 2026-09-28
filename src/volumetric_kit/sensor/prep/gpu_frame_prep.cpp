@@ -333,14 +333,8 @@ Status GpuFramePrep::ensure_output(std::shared_ptr<Buffer>& buffer,
     return {};
   }
   // Device-local: only the kernels touch it, and on a discrete GPU the
-  // fusion kernels' reads would otherwise cross the bus. TRANSFER_SRC so a
-  // consumer, or a test, can copy it out.
-  BufferDesc desc;
-  desc.size = bytes;
-  desc.usage =
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  desc.memory = MemoryUsage::DeviceLocal;
-  VR_ASSIGN(Buffer created, allocator_->create_buffer(desc));
+  // fusion kernels' reads would otherwise cross the bus.
+  VR_ASSIGN(Buffer created, device_storage_buffer(*allocator_, bytes));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
                            debug_object_handle(created.handle()), name);
   buffer = std::make_shared<Buffer>(std::move(created));
