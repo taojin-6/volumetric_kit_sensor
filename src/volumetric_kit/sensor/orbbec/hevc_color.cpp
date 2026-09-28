@@ -53,6 +53,13 @@ std::shared_ptr<ob::VideoFrame> i420_frame(const DecodedPicture& picture) {
 
 }  // namespace
 
+std::optional<PlanesColor> planes_color(const ob::Frame& frame) {
+  if (frame.getMetadataSize() != sizeof(PlanesColor)) return std::nullopt;
+  PlanesColor color;
+  std::memcpy(&color, frame.getMetadata(), sizeof(color));
+  return color;
+}
+
 bool is_key_frame(const std::uint8_t* data, std::size_t size) noexcept {
   for (std::size_t i = 0; i + 3 < size; ++i) {
     if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1) continue;
@@ -246,6 +253,15 @@ void HevcColorDecoder::hand_on(const DecodedPicture& picture) {
   std::shared_ptr<ob::VideoFrame> rgb;
   if (options_.yuv) {
     rgb = i420_frame(picture);
+    // The matrix, range and encoding travel with the planes, which the pass
+    // converts by them rather than by a guess.
+    PlanesColor described;
+    described.matrix = picture.matrix;
+    described.full_range = picture.full_range;
+    described.has_encoding = picture.encoding.has_value();
+    if (picture.encoding) described.encoding = *picture.encoding;
+    rgb->updateMetadata(reinterpret_cast<const std::uint8_t*>(&described),
+                        static_cast<std::uint32_t>(sizeof(described)));
   } else {
     const std::size_t row = 3u * picture.width;
     rgb = ob::FrameFactory::createVideoFrame(OB_FRAME_COLOR, OB_FORMAT_RGB,

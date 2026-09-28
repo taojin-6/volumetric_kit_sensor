@@ -9,23 +9,28 @@
 
 namespace volumetric_kit::recon::sensor::orbbec {
 
-Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
-                                            const Mat4f& cam_to_world) {
+namespace {
+
+// A stream's pinhole camera, checked; `what` names the stream in the errors.
+Result<ColorCameraParams> pinhole_from(const OBCameraIntrinsic& intrinsic,
+                                       const Mat4f& cam_to_world,
+                                       const std::string& what) {
   if (intrinsic.width <= 0 || intrinsic.height <= 0) {
-    return Status::invalid_argument(
-        "Orbbec colour intrinsics report a " + std::to_string(intrinsic.width) +
-        "x" + std::to_string(intrinsic.height) + " image");
+    return Status::invalid_argument("Orbbec " + what + " intrinsics report a " +
+                                    std::to_string(intrinsic.width) + "x" +
+                                    std::to_string(intrinsic.height) +
+                                    " image");
   }
   for (const float f : {intrinsic.fx, intrinsic.fy}) {
     if (!std::isfinite(f) || !(f > 0.0f)) {
       return Status::invalid_argument(
-          "Orbbec colour intrinsics report a focal length that is not finite "
-          "and positive");
+          "Orbbec " + what +
+          " intrinsics report a focal length that is not finite and positive");
     }
   }
   if (!std::isfinite(intrinsic.cx) || !std::isfinite(intrinsic.cy)) {
     return Status::invalid_argument(
-        "Orbbec colour intrinsics report a non-finite principal point");
+        "Orbbec " + what + " intrinsics report a non-finite principal point");
   }
   ColorCameraParams cam{};
   cam.fx = intrinsic.fx;
@@ -38,11 +43,18 @@ Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
   return cam;
 }
 
+}  // namespace
+
+Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
+                                            const Mat4f& cam_to_world) {
+  return pinhole_from(intrinsic, cam_to_world, "colour");
+}
+
 Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
                                     const OBCameraDistortion& distortion,
                                     const std::string& what) {
   VR_ASSIGN(const ColorCameraParams pinhole,
-            color_camera_from(intrinsic, Mat4f(1.0f)));
+            pinhole_from(intrinsic, Mat4f(1.0f), what));
   switch (distortion.model) {
     case OB_DISTORTION_NONE:
     case OB_DISTORTION_BROWN_CONRADY:
@@ -63,8 +75,15 @@ Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
   cam.height = pinhole.height;
   if (distortion.model != OB_DISTORTION_NONE) {
     cam.lens = LensDistortion{distortion.k1, distortion.k2, distortion.p1,
-                              distortion.p2, distortion.k3, distortion.k4,
-                              distortion.k5, distortion.k6};
+                              distortion.p2, distortion.k3};
+  }
+  // Only the K6 model has the rational denominator: the plain one is the
+  // polynomial k1..k3, so whatever the SDK leaves in k4..k6 there is not a
+  // term of it.
+  if (distortion.model == OB_DISTORTION_BROWN_CONRADY_K6) {
+    cam.lens.k4 = distortion.k4;
+    cam.lens.k5 = distortion.k5;
+    cam.lens.k6 = distortion.k6;
   }
   for (const float k : {cam.lens.k1, cam.lens.k2, cam.lens.p1, cam.lens.p2,
                         cam.lens.k3, cam.lens.k4, cam.lens.k5, cam.lens.k6}) {

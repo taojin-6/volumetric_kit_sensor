@@ -16,6 +16,7 @@
 /// it.
 
 #include <cstdint>
+#include <memory>
 
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/buffer.hpp"
@@ -33,20 +34,28 @@
 namespace volumetric_kit::recon::sensor {
 
 /// @brief One frame on the device, pinhole and R'G'B', in the shapes the
-///        fusion tiers read: a non-owning view of @ref GpuFramePrep's buffers,
-///        valid until its next @ref GpuFramePrep::prepare.
+///        fusion tiers read.
 ///
 /// Depth and colour keep their own cameras. Pass @ref depth to
 /// `allocate_from_depth` and `integrate` with @ref depth_camera, and @ref color
-/// as `ColorFrame::buffer` with @ref color_camera.
+/// as `ColorFrame::buffer` with @ref color_camera and
+/// `ColorFrame::coverage_in_alpha` set.
+///
+/// The frame holds its buffers, which are device-local storage buffers that
+/// can also be copied from (`TRANSFER_SRC`). One kept past the next
+/// @ref GpuFramePrep::prepare keeps its contents, and that call writes to new
+/// buffers instead; drop a frame once it is fused and the pass reuses them.
+/// The @ref Allocator must outlive the frame, as it must the pass.
 struct DeviceFrame {
   /// Row-major depth in metres, `depth_camera.width * height` floats; 0 where
   /// the sensor had no return or the lens maps outside its image.
-  const Buffer* depth = nullptr;
-  /// Row-major colour, `color_camera.width * height` words, RGB packed in each
-  /// word's low three bytes; black where the lens maps outside the image.
-  /// Null when the frame has no colour.
-  const Buffer* color = nullptr;
+  std::shared_ptr<const Buffer> depth;
+  /// Row-major colour, `color_camera.width * height` words: R, G and B in the
+  /// low three bytes, and the pixel's coverage in the high one -- 0xFF where
+  /// the lens maps inside the captured picture, 0 (and black) where it maps
+  /// outside, which `ColorFrame::coverage_in_alpha` has fusion skip. Null
+  /// when the frame has no colour.
+  std::shared_ptr<const Buffer> color;
   DepthCameraParams depth_camera{};  ///< The undistorted depth camera.
   ColorCameraParams color_camera{};  ///< The undistorted colour camera.
   ColorEncoding color_encoding{};    ///< What @ref color is encoded as.
@@ -65,6 +74,9 @@ struct DeviceFrame {
 /// its own siting, and converted by the picture's matrix and range; depth is
 /// sampled at the nearest pixel, so an edge never blends a foreground and a
 /// background depth into a point between them.
+///
+/// Every check on the frame is made before anything is uploaded, so a refused
+/// frame leaves the pass and the frames it handed out as they were.
 ///
 /// @warning The @ref Device and @ref Allocator passed to @ref create must
 ///          outlive this object; it stores references to them. Not
@@ -87,13 +99,15 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   /// @param metrics  Optional @ref StageMetrics collecting a `"frame prep"`
   ///                 row: the upload and both passes on the host, the two
   ///                 dispatches on the device. `nullptr` measures nothing.
-  /// @return The frame, valid until the next call; @ref
+  /// @return The frame, which holds its buffers; @ref
   ///         Status::Code::InvalidArgument for a moved-from pass, a frame
-  ///         without depth, a camera or picture that is empty, not finite or
-  ///         disagrees with its image, or an image past a single dispatch
-  ///         (16.7 M pixels); @ref Status::Code::Unsupported for a colour
-  ///         encoding @ref is_canonical refuses; otherwise a buffer or
-  ///         dispatch failure.
+  ///         without depth, a depth range that is not finite with
+  ///         `0 < min_depth < max_depth` (0 being the pass's "no return"), a
+  ///         camera or picture that is empty, not finite or disagrees with
+  ///         its image, or an image past a single dispatch (16.7 M pixels);
+  ///         @ref Status::Code::Unsupported for a colour encoding
+  ///         @ref is_canonical refuses; otherwise a buffer or dispatch
+  ///         failure.
   Result<DeviceFrame> prepare(const RawFrame& frame,
                               StageMetrics* metrics = nullptr);
 
@@ -103,8 +117,10 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
  private:
   GpuFramePrep() = default;
 
-  Status prepare_depth(const RawFrame& frame, GpuStageScope& stage);
-  Status prepare_color(const RawFrame& frame, GpuStageScope& stage);
+  // An output of at least `bytes`: the one held, when no DeviceFrame still
+  // holds it too and it is big enough, else a new one.
+  Status ensure_output(std::shared_ptr<Buffer>& buffer, VkDeviceSize bytes,
+                       const char* name);
 
   // Borrowed (must outlive this).
   Device* device_ = nullptr;
@@ -118,14 +134,14 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   DescriptorPool pool_;
   GpuTimer gpu_timer_;
 
-  // Grown to the largest frame seen and kept: the inputs the host writes, the
-  // outputs the fusion tiers read.
-  // TODO(sensor): device-local outputs, and zero-copy inputs from a hardware
-  // decoder, once a discrete GPU is measured reading these over the bus.
+  // The inputs the host writes, grown to the largest frame seen and kept.
+  // TODO(sensor): zero-copy inputs from a hardware decoder's frames.
   Buffer depth_in_;
   Buffer color_in_;
-  Buffer depth_out_;
-  Buffer color_out_;
+  // The outputs the fusion tiers read, device-local, shared with the
+  // DeviceFrames handed out; reused only once no frame holds them.
+  std::shared_ptr<Buffer> depth_out_;
+  std::shared_ptr<Buffer> color_out_;
 };
 
 }  // namespace volumetric_kit::recon::sensor

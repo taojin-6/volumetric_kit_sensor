@@ -184,14 +184,27 @@ int test_lens_camera() {
   CHECK(orbbec::lens_camera_from(femto_color_720p(), d, "colour")
             .status()
             .domain() == vr::Status::Code::Unsupported);
+  // The plain model is the polynomial k1..k3: whatever the SDK leaves in
+  // k4..k6 is not a term of it, and would divide the radial term if read.
   d.model = OB_DISTORTION_BROWN_CONRADY;
+  lens = orbbec::lens_camera_from(femto_color_720p(), d, "colour");
+  CHECK(lens.ok());
+  CHECK(lens->lens.k1 == 0.1f && lens->lens.k2 == -0.2f &&
+        lens->lens.k3 == 0.03f && lens->lens.p1 == 0.001f &&
+        lens->lens.p2 == -0.002f);
+  CHECK(lens->lens.k4 == 0.0f && lens->lens.k5 == 0.0f &&
+        lens->lens.k6 == 0.0f);
   d.k2 = std::numeric_limits<float>::quiet_NaN();
   CHECK(invalid(
       orbbec::lens_camera_from(femto_color_720p(), d, "colour").status()));
+  // The stream is named in the error, the depth one included.
   OBCameraIntrinsic k = femto_color_720p();
   k.fx = 0.0f;
   d.k2 = 0.0f;
-  CHECK(invalid(orbbec::lens_camera_from(k, d, "depth").status()));
+  const vr::Status bad = orbbec::lens_camera_from(k, d, "depth").status();
+  CHECK(invalid(bad));
+  CHECK(bad.message().find("depth") != std::string::npos);
+  CHECK(bad.message().find("colour") == std::string::npos);
   return 0;
 }
 

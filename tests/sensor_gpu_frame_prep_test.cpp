@@ -7,8 +7,10 @@
 //   - a real lens undistorts, not distorts: a pattern drawn in the pinhole
 //     image, then imaged through the lens by an independent iterative
 //     inversion, comes back where it was drawn;
-//   - both passes match a host reference of the same sampling;
-//   - the frames it refuses;
+//   - both passes match a host reference of the same sampling, colour's
+//     coverage byte included;
+//   - the frames it refuses, before any work;
+//   - a frame kept past the next one keeps its buffers' contents;
 //   - its output fuses through the device-input overloads.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
@@ -17,12 +19,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
 #include <vector>
 
+#include "buffer_readback.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
+#include "volumetric_kit/recon/core/stage_metrics.hpp"
 #include "volumetric_kit/recon/sensor/lens.hpp"
 #include "volumetric_kit/recon/sensor/raw_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
@@ -48,6 +53,10 @@ namespace {
 constexpr std::uint32_t kWidth = 320;
 constexpr std::uint32_t kHeight = 240;
 constexpr float kScale = 0.001f;  // metres per unit
+
+// Where the passes' device-local outputs are read back through.
+vr::Device* g_device = nullptr;
+vr::Allocator* g_allocator = nullptr;
 
 sensor::LensCamera pinhole() {
   sensor::LensCamera c;
@@ -150,7 +159,8 @@ void forward(float r, float g, float b, float kr, float kb, bool full,
 }
 
 // The pass's colour sampling, on the host: bilinear luma and chroma at their
-// sitings, the inverse matrix, round to a code.
+// sitings, the inverse matrix, round to a code; coverage 0xFF in the high
+// byte, and a 0 word where the lens maps outside the picture.
 std::uint32_t reference_color(const Planes& p, const sensor::LensCamera& c,
                               float kr, float kb, bool full, float u, float v) {
   const vr::Vec2f s = source_pixel(c, u, v);
@@ -187,7 +197,7 @@ std::uint32_t reference_color(const Planes& p, const sensor::LensCamera& c,
     return static_cast<std::uint32_t>(std::clamp(x, 0.0f, 1.0f) * 255.0f +
                                       0.5f);
   };
-  return code(r) | (code(g) << 8) | (code(b) << 16);
+  return code(r) | (code(g) << 8) | (code(b) << 16) | 0xFF000000u;
 }
 
 int channel_diff(std::uint32_t a, std::uint32_t b) {
@@ -212,11 +222,23 @@ sensor::RawFrame frame_of(const std::vector<std::uint16_t>& depth,
   return f;
 }
 
-const float* depth_of(const sensor::DeviceFrame& f) {
-  return static_cast<const float*>(f.depth->mapped());
+// A prepared frame's outputs, read back; empty if the copy failed.
+template <typename T>
+std::vector<T> read(const vr::Buffer& buffer, std::size_t count) {
+  auto out = vr_test::read_back<T>(*g_device, *g_allocator, buffer, count);
+  if (!out) {
+    std::fprintf(stderr, "read back: %s\n", out.status().message().c_str());
+    return {};
+  }
+  return std::move(out).value();
 }
-const std::uint32_t* color_of(const sensor::DeviceFrame& f) {
-  return static_cast<const std::uint32_t*>(f.color->mapped());
+std::vector<float> depth_of(const sensor::DeviceFrame& f) {
+  return read<float>(*f.depth,
+                     std::size_t{f.depth_camera.width} * f.depth_camera.height);
+}
+std::vector<std::uint32_t> color_of(const sensor::DeviceFrame& f) {
+  return read<std::uint32_t>(
+      *f.color, std::size_t{f.color_camera.width} * f.color_camera.height);
 }
 
 // Pinhole: depth is raw * scale exactly, and a colour survives the forward
@@ -260,13 +282,15 @@ int test_pinhole(sensor::GpuFramePrep& prep) {
     CHECK(out->has_color() && out->timestamp_ns == 1234);
     CHECK(out->depth_camera.fx == 260.0f && out->depth_camera.width == kWidth);
     CHECK(out->depth_camera.min_depth == 0.1f);
-    const float* d = depth_of(out.value());
+    const std::vector<float> d = depth_of(out.value());
+    CHECK(d.size() == raw.size());
     for (std::size_t i = 0; i < raw.size(); ++i) {
       CHECK(d[i] == static_cast<float>(raw[i]) * kScale);
     }
     // Tile interiors: 2 px in, so no bilinear tap or chroma sample reaches
     // the next tile.
-    const std::uint32_t* c = color_of(out.value());
+    const std::vector<std::uint32_t> c = color_of(out.value());
+    CHECK(c.size() == raw.size());
     int worst = 0;
     for (std::uint32_t y = 0; y < kHeight; ++y) {
       for (std::uint32_t x = 0; x < kWidth; ++x) {
@@ -309,8 +333,9 @@ int test_undistorts(sensor::GpuFramePrep& prep) {
   f.color_camera = cam;
   auto out = prep.prepare(f);
   CHECK(out.ok());
-  const float* d = depth_of(out.value());
-  const std::uint32_t* c = color_of(out.value());
+  const std::vector<float> d = depth_of(out.value());
+  const std::vector<std::uint32_t> c = color_of(out.value());
+  CHECK(d.size() == raw.size() && c.size() == raw.size());
   int checked = 0, wrong_depth = 0, wrong_color = 0;
   for (std::uint32_t v = 0; v < kHeight; ++v) {
     for (std::uint32_t u = 0; u < kWidth; ++u) {
@@ -365,9 +390,10 @@ int test_matches_reference(sensor::GpuFramePrep& prep) {
   f.color_camera = cam;
   auto out = prep.prepare(f);
   CHECK(out.ok());
-  const float* d = depth_of(out.value());
-  const std::uint32_t* c = color_of(out.value());
-  int depth_off = 0, color_worst = 0, color_off = 0;
+  const std::vector<float> d = depth_of(out.value());
+  const std::vector<std::uint32_t> c = color_of(out.value());
+  CHECK(d.size() == raw.size() && c.size() == raw.size());
+  int depth_off = 0, color_worst = 0, color_off = 0, coverage_off = 0;
   for (std::uint32_t v = 0; v < kHeight; ++v) {
     for (std::uint32_t u = 0; u < kWidth; ++u) {
       const std::size_t i = std::size_t{v} * kWidth + u;
@@ -381,9 +407,11 @@ int test_matches_reference(sensor::GpuFramePrep& prep) {
                kScale;
       }
       if (d[i] != want) ++depth_off;
-      const int diff = channel_diff(
-          c[i], reference_color(p, cam, 0.2126f, 0.0722f, false,
-                                static_cast<float>(u), static_cast<float>(v)));
+      const std::uint32_t ref =
+          reference_color(p, cam, 0.2126f, 0.0722f, false,
+                          static_cast<float>(u), static_cast<float>(v));
+      if ((c[i] >> 24) != (ref >> 24)) ++coverage_off;
+      const int diff = channel_diff(c[i], ref);
       color_worst = std::max(color_worst, diff);
       if (diff > 0) ++color_off;
     }
@@ -395,6 +423,45 @@ int test_matches_reference(sensor::GpuFramePrep& prep) {
   // the other way on the device; nothing else may differ.
   CHECK(depth_off <= 20);
   CHECK(color_worst <= 1);
+  CHECK(coverage_off == 0);
+  return 0;
+}
+
+// A pincushion lens maps the pinhole image's corners outside the captured
+// picture. There colour is a 0 word, coverage and all, so that fusion skips
+// it rather than fusing black; everywhere else its coverage byte is 0xFF,
+// black included.
+int test_coverage(sensor::GpuFramePrep& prep) {
+  sensor::LensCamera cam = pinhole();
+  cam.lens.k1 = 0.3f;
+  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
+  Planes p = make_planes();  // all zero: black at full range
+  std::fill(p.cb.begin(), p.cb.end(), 128);
+  std::fill(p.cr.begin(), p.cr.end(), 128);
+  sensor::RawFrame f = frame_of(raw, cam);
+  f.color = p.image(0.299f, 0.114f, true);
+  f.color_camera = cam;
+  auto out = prep.prepare(f);
+  CHECK(out.ok());
+  const std::vector<std::uint32_t> c = color_of(out.value());
+  CHECK(c.size() == raw.size());
+  int outside = 0, inside = 0, wrong = 0;
+  for (std::uint32_t v = 0; v < kHeight; ++v) {
+    for (std::uint32_t u = 0; u < kWidth; ++u) {
+      const std::uint32_t want =
+          reference_color(p, cam, 0.299f, 0.114f, true, static_cast<float>(u),
+                          static_cast<float>(v));
+      const std::uint32_t got = c[std::size_t{v} * kWidth + u];
+      (want == 0 ? outside : inside) += 1;
+      if (want == 0 ? got != 0 : got != 0xFF000000u) ++wrong;
+    }
+  }
+  std::printf("  coverage: %d pixels outside the picture, %d inside, %d off\n",
+              outside, inside, wrong);
+  CHECK(outside > 1000 && inside > 50000);
+  CHECK(wrong <= 20);  // within round-off of the picture's edge
+  CHECK(c[0] == 0u);   // a corner
+  CHECK(c[std::size_t{kHeight / 2} * kWidth + kWidth / 2] == 0xFF000000u);
   return 0;
 }
 
@@ -415,6 +482,16 @@ int test_refusals(sensor::GpuFramePrep& prep) {
   f = frame_of(raw, pinhole());
   f.metres_per_unit = 0.0f;
   CHECK(prep.prepare(f).status().domain() == invalid);
+  // The depth gate: 0 is "no return", so a range from 0 is refused, as are
+  // RawFrame's unset zeros, an empty range and a NaN.
+  const float ranges[][2] = {{0.0f, 5.0f}, {0.0f, 0.0f}, {2.0f, 2.0f},
+                             {3.0f, 1.0f}, {NAN, 5.0f},  {0.1f, INFINITY}};
+  for (const auto& range : ranges) {
+    f = frame_of(raw, pinhole());
+    f.min_depth = range[0];
+    f.max_depth = range[1];
+    CHECK(prep.prepare(f).status().domain() == invalid);
+  }
 
   f = frame_of(raw, pinhole());
   f.color = p.image(0.299f, 0.114f, true);
@@ -431,6 +508,39 @@ int test_refusals(sensor::GpuFramePrep& prep) {
   CHECK(prep.prepare(f).status().domain() == vr::Status::Code::Unsupported);
   f.color_encoding = {};
   CHECK(prep.prepare(f).ok());
+
+  // A colour half refused costs the depth half nothing either: both are
+  // checked before anything is uploaded, so no pass is dispatched.
+  vr::StageMetrics metrics;
+  f.color.stride[1] = 4;
+  CHECK(prep.prepare(f, &metrics).status().domain() == invalid);
+  CHECK(metrics.rows().size() == 1);
+  CHECK(!metrics.rows()[0].has_gpu);
+  return 0;
+}
+
+// A frame kept past the next prepare keeps its buffers' contents, and that
+// prepare writes to new ones; once no frame holds them, they are reused.
+int test_frames_hold_buffers(sensor::GpuFramePrep& prep) {
+  std::vector<std::uint16_t> near(std::size_t{kWidth} * kHeight, 1000);
+  std::vector<std::uint16_t> far(near.size(), 3000);
+  const vr::Buffer* held = nullptr;
+  {
+    auto first = prep.prepare(frame_of(near, pinhole()));
+    CHECK(first.ok());
+    auto second = prep.prepare(frame_of(far, pinhole()));
+    CHECK(second.ok());
+    CHECK(first->depth != second->depth);
+    const std::vector<float> a = depth_of(first.value());
+    const std::vector<float> b = depth_of(second.value());
+    CHECK(a.size() == near.size() && b.size() == near.size());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      CHECK(a[i] == 1000.0f * kScale && b[i] == 3000.0f * kScale);
+    }
+    held = second->depth.get();
+  }
+  auto third = prep.prepare(frame_of(near, pinhole()));
+  CHECK(third.ok() && third->depth.get() == held);
   return 0;
 }
 
@@ -499,9 +609,10 @@ int test_fuses(vr::Device& device, vr::Allocator& allocator,
   CHECK(vbg.ok() && integrator.ok());
   CHECK(allocate(vbg.value(), *out->depth, out->depth_camera) == 0);
   tsdf::ColorFrame color{};
-  color.buffer = out->color;
+  color.buffer = out->color.get();
   color.cam = out->color_camera;
   color.encoding = out->color_encoding;
+  color.coverage_in_alpha = true;
   CHECK(integrator
             ->integrate(vbg.value(), *out->depth, out->depth_camera, 5.0f,
                         tsdf::IntegrationMode::Classic, &color)
@@ -532,6 +643,8 @@ int main() {
   vr::Result<vr::Allocator> allocator =
       vr::Allocator::create(instance.value().handle(), device.value());
   CHECK(allocator.ok());
+  g_device = &device.value();
+  g_allocator = &allocator.value();
   auto prep = sensor::GpuFramePrep::create(device.value(), allocator.value());
   if (!prep) std::fprintf(stderr, "%s\n", prep.status().message().c_str());
   CHECK(prep.ok());
@@ -539,7 +652,9 @@ int main() {
   if (test_pinhole(prep.value()) != 0) return 1;
   if (test_undistorts(prep.value()) != 0) return 1;
   if (test_matches_reference(prep.value()) != 0) return 1;
+  if (test_coverage(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;
+  if (test_frames_hold_buffers(prep.value()) != 0) return 1;
   if (test_fuses(device.value(), allocator.value(), prep.value()) != 0) {
     return 1;
   }
@@ -555,6 +670,15 @@ int main() {
   sensor::GpuFramePrep* alias = &other;
   other = std::move(*alias);  // self-move
   CHECK(other.valid());
+  // Move-assigned over a live pass, one that has buffers and a frame out.
+  auto live = sensor::GpuFramePrep::create(device.value(), allocator.value());
+  CHECK(live.ok());
+  auto kept = live->prepare(frame_of(raw, pinhole()));
+  CHECK(kept.ok());
+  live.value() = std::move(other);
+  CHECK(live->valid() && !other.valid());  // NOLINT: moved from
+  CHECK(live->prepare(frame_of(raw, pinhole())).ok());
+  CHECK(depth_of(kept.value()).size() == raw.size());  // outlives its pass
 
   std::puts("sensor_gpu_frame_prep: OK");
   return 0;

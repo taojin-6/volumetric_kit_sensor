@@ -31,7 +31,6 @@ enum class VideoColorMatrix {
   Fcc,        ///< FCC 73.682, the 1953 NTSC matrix.
 };
 
-/// @brief A stream's YCbCr matrix and range.
 /// @brief A matrix's red and blue luma weights; green's is the rest.
 struct YcbcrWeights {
   float kr = 0.0f;  ///< Red's weight in luma.
@@ -56,6 +55,7 @@ constexpr YcbcrWeights ycbcr_weights(VideoColorMatrix matrix) noexcept {
   return {0.2126f, 0.0722f};
 }
 
+/// @brief A stream's YCbCr matrix and range.
 struct VideoColorDescription {
   VideoColorMatrix matrix = VideoColorMatrix::Bt709;
   bool full_range = false;  ///< Y in 0..255 rather than 16..235.

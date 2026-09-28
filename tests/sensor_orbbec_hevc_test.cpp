@@ -20,6 +20,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -232,8 +233,33 @@ int check_pair(
 }
 
 // For the GPU pass: the decoded planes as an I420 frame, Y then Cb and Cr at
-// half size, rows packed, each patch's value as the clip was made.
+// half size, rows packed, each patch's value as the clip was made, carrying
+// the matrix and range they are coded in -- the Femto Mega's BT.601 full range
+// for the unlabelled stream, and what a labelled one says -- and a canonical
+// encoding, since neither declares a transfer or primaries it cannot name.
 int test_hands_on_i420() {
+  for (const bool labelled : {false, true}) {
+    const Run r = run(pairs(access_units(labelled ? kLabelled : kUnlabelled),
+                            {0, 1, 2, 3, 4, 5, 6, 7}),
+                      8, true);
+    CHECK(r.out.size() == 8);
+    for (const auto& set : r.out) {
+      const auto color = set->getColorFrame();
+      CHECK(color != nullptr);
+      const std::optional<orbbec::PlanesColor> described =
+          orbbec::planes_color(*color);
+      CHECK(described.has_value());
+      CHECK(described->matrix == (labelled ? sensor::VideoColorMatrix::Bt709
+                                           : sensor::VideoColorMatrix::Bt601));
+      CHECK(described->full_range == !labelled);
+      CHECK(described->has_encoding && is_canonical(described->encoding));
+    }
+  }
+  // A frame the decoder did not make carries none.
+  CHECK(!orbbec::planes_color(*ob::FrameFactory::createVideoFrame(
+                                  OB_FRAME_COLOR, OB_FORMAT_I420, 16, 16))
+             .has_value());
+
   const Run r =
       run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8, true);
   CHECK(r.out.size() == 8);

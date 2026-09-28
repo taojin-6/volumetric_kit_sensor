@@ -807,15 +807,28 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     frame.color.width = c.width;
     frame.color.height = c.height;
 #if VR_ORBBEC_WITH_HEVC
-    const YcbcrWeights weights = ycbcr_weights(kFemtoMegaHevcColor.matrix);
+    // As the decoder resolved them: the stream's own matrix and range when it
+    // names them, the Femto Mega's unlabelled BT.601 full range otherwise --
+    // as the host path converts -- and the transfer and primaries it declares.
+    const std::optional<PlanesColor> described = planes_color(*color);
+    if (!described) {
+      return refuse(Status::io_error(
+          who_ + ": decoded colour carries no colour description"));
+    }
+    if (!described->has_encoding) {
+      return refuse(Status::unsupported(
+          who_ +
+          ": the colour stream declares a transfer or primaries "
+          "ColorEncoding cannot name"));
+    }
+    const YcbcrWeights weights = ycbcr_weights(described->matrix);
     frame.color.kr = weights.kr;
     frame.color.kb = weights.kb;
-    frame.color.full_range = kFemtoMegaHevcColor.full_range;
+    frame.color.full_range = described->full_range;
+    frame.color_encoding = described->encoding;
 #endif
     frame.color_camera = c;
     frame.color_cam_to_world = raw_color_pose_;
-    // The camera's colour is ordinary 8-bit sRGB once converted: the
-    // canonical form, declared by leaving the default.
     frame.timestamp_ns = depth->getTimeStampUs() * 1000;
   } catch (const std::exception& e) {  // ob::Error is one
     return skip(std::string("the SDK failed on it: ") + e.what());

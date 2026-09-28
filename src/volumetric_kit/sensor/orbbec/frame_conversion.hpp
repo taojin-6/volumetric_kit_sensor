@@ -34,9 +34,11 @@ Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
 
 /// A stream's camera as it captures, for the GPU pass: its intrinsics (checked
 /// as @ref color_camera_from checks them) and its lens. The SDK's Brown-Conrady
-/// models are OpenCV's rational one with the missing terms zero; its modified,
-/// inverse and Kannala-Brandt models are refused as `Unsupported`, since the
-/// pass samples through that one model. @p what names the stream.
+/// models are OpenCV's rational one with the missing terms zero -- k4..k6 for
+/// the plain model, whatever it reports there, since only the K6 one has
+/// them; its modified, inverse and Kannala-Brandt models are refused as
+/// `Unsupported`, since the pass samples through that one model. @p what names
+/// the stream, in the errors too.
 Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
                                     const OBCameraDistortion& distortion,
                                     const std::string& what);

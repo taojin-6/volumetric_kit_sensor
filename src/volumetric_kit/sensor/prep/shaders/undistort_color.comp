@@ -4,7 +4,10 @@
 // of the pinhole image: find where the lens puts it in the captured picture,
 // sample luma and chroma there bilinearly, each at its own siting, and convert
 // by the picture's matrix and range. One pass, so no intermediate R'G'B'
-// image is written at the captured size. Out of the picture is black.
+// image is written at the captured size. The high byte is the pixel's
+// coverage: 0xFF where the lens maps inside the captured picture, 0 where it
+// maps outside, which is black and which fusion then skips
+// (ColorFrame::coverage_in_alpha) rather than fusing as colour.
 
 #extension GL_GOOGLE_include_directive : require
 #include "lens.glsl"
@@ -14,7 +17,7 @@ layout(local_size_x = 256) in;
 // The three planes packed tightly, each row `width` bytes, four bytes to a
 // word: luma at byte 0, Cb at cb_offset, Cr at cr_offset.
 layout(set = 0, binding = 0, scalar) readonly buffer Planes { uint planes[]; };
-// R | G << 8 | B << 16, the tsdf tier's colour layout.
+// R | G << 8 | B << 16 | coverage << 24, the tsdf tier's colour layout.
 layout(set = 0, binding = 1, scalar) writeonly buffer Color { uint color[]; };
 
 layout(push_constant, scalar) uniform Params {
@@ -83,5 +86,5 @@ void main() {
   float r = luma + 2.0 * (1.0 - pc.kr) * pr;
   float b = luma + 2.0 * (1.0 - pc.kb) * pb;
   float g = (luma - pc.kr * r - pc.kb * b) / kg;
-  color[gid] = code(r) | (code(g) << 8) | (code(b) << 16);
+  color[gid] = code(r) | (code(g) << 8) | (code(b) << 16) | 0xFF000000u;
 }
