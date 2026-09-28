@@ -82,13 +82,14 @@ if(VR_INSTALL)
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  # orbbec/ and video/ are installed by their own targets, when built.
+  # orbbec/, utils/ and video/ are installed by their own targets.
   install(
     DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/sensor"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon"
     FILES_MATCHING
     PATTERN "*.hpp"
     PATTERN "orbbec" EXCLUDE
+    PATTERN "utils" EXCLUDE
     PATTERN "video" EXCLUDE)
   install(
     DIRECTORY "${_vr_sensor_generated_inc}/"
@@ -96,6 +97,10 @@ if(VR_INSTALL)
     FILES_MATCHING
     PATTERN "*.hpp")
 endif()
+
+# The GPU pre-processing (Vulkan and shaders, so a target of its own); see
+# utils/CMakeLists.txt.
+add_subdirectory(utils)
 
 # The FFmpeg-backed video decoder; see video/CMakeLists.txt. Ahead of the Orbbec
 # driver, which decodes its H.265 colour with it when it is built.

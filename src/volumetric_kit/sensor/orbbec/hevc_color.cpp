@@ -4,6 +4,7 @@
 #include "hevc_color.hpp"
 
 #include <cstring>
+#include <memory>
 #include <system_error>
 #include <utility>
 
@@ -25,7 +26,39 @@ constexpr std::uint32_t kQueueSeconds = 2;
 // restart, say.
 constexpr std::int64_t kMaxPictureDelay = 32;
 
+// A Yuv420 picture as an I420 frame: Y, then Cb and Cr at half size (rounded
+// up), each plane's rows packed. The frame owns the copy.
+std::shared_ptr<ob::VideoFrame> i420_frame(const DecodedPicture& picture) {
+  const std::uint32_t w = picture.width;
+  const std::uint32_t h = picture.height;
+  const std::uint32_t widths[3] = {w, (w + 1) / 2, (w + 1) / 2};
+  const std::uint32_t heights[3] = {h, (h + 1) / 2, (h + 1) / 2};
+  const std::size_t bytes =
+      std::size_t{w} * h + 2 * std::size_t{widths[1]} * heights[1];
+  std::unique_ptr<std::uint8_t[]> buffer(new std::uint8_t[bytes]);
+  std::uint8_t* out = buffer.get();
+  for (int p = 0; p < 3; ++p) {
+    for (std::uint32_t y = 0; y < heights[p]; ++y) {
+      std::memcpy(out, picture.plane[p] + y * picture.stride[p], widths[p]);
+      out += widths[p];
+    }
+  }
+  auto frame = ob::FrameFactory::createVideoFrameFromBuffer(
+      OB_FRAME_COLOR, OB_FORMAT_I420, w, h, buffer.get(),
+      [](std::uint8_t* b) { delete[] b; }, static_cast<std::uint32_t>(bytes),
+      w);
+  buffer.release();  // the frame's now, freed by the callback
+  return frame;
+}
+
 }  // namespace
+
+std::optional<PlanesColor> planes_color(const ob::Frame& frame) {
+  if (frame.getMetadataSize() != sizeof(PlanesColor)) return std::nullopt;
+  PlanesColor color;
+  std::memcpy(&color, frame.getMetadata(), sizeof(color));
+  return color;
+}
 
 bool is_key_frame(const std::uint8_t* data, std::size_t size) noexcept {
   for (std::size_t i = 0; i + 3 < size; ++i) {
@@ -43,7 +76,8 @@ Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
   d->options_ = options;
   d->sink_ = std::move(sink);
   HevcDecoder::Options decoding;
-  decoding.layout = VideoPixelLayout::Rgb24;
+  decoding.layout =
+      options.yuv ? VideoPixelLayout::Yuv420 : VideoPixelLayout::Rgb24;
   // One thread, so no picture is held back. That leaves software decoding
   // little headroom at 4K25 (the 2026-09-28 decision).
   // TODO(sensor): frame threads in software alone, or the conversion on the
@@ -216,17 +250,33 @@ void HevcColorDecoder::hand_on(const DecodedPicture& picture) {
   const auto color = pair->getColorFrame();
   // A frame allocated and copied per picture: 0.5 ms at 4K against the
   // decode's 24 (the 2026-09-28 decision).
-  const std::size_t row = 3u * picture.width;
-  auto rgb = ob::FrameFactory::createVideoFrame(
-      OB_FRAME_COLOR, OB_FORMAT_RGB, picture.width, picture.height,
-      static_cast<std::uint32_t>(row));
-  std::uint8_t* out = rgb->getData();
-  for (std::uint32_t y = 0; y < picture.height; ++y) {
-    std::memcpy(out + y * row, picture.plane[0] + y * picture.stride[0], row);
+  std::shared_ptr<ob::VideoFrame> rgb;
+  if (options_.yuv) {
+    rgb = i420_frame(picture);
+    // The matrix, range and encoding travel with the planes, which the pass
+    // converts by them rather than by a guess.
+    PlanesColor described;
+    described.matrix = picture.matrix;
+    described.full_range = picture.full_range;
+    described.has_encoding = picture.encoding.has_value();
+    if (picture.encoding) described.encoding = *picture.encoding;
+    rgb->updateMetadata(reinterpret_cast<const std::uint8_t*>(&described),
+                        static_cast<std::uint32_t>(sizeof(described)));
+  } else {
+    const std::size_t row = 3u * picture.width;
+    rgb = ob::FrameFactory::createVideoFrame(OB_FRAME_COLOR, OB_FORMAT_RGB,
+                                             picture.width, picture.height,
+                                             static_cast<std::uint32_t>(row));
+    std::uint8_t* out = rgb->getData();
+    for (std::uint32_t y = 0; y < picture.height; ++y) {
+      std::memcpy(out + y * row, picture.plane[0] + y * picture.stride[0], row);
+    }
   }
   ob::FrameHelper::setFrameDeviceTimestampUs(rgb, color->getTimeStampUs());
   rgb->setSystemTimestampUs(color->getSystemTimeStampUs());
-  if (options_.rgb_profile != nullptr) {
+  // Not on an I420 frame: the profile would restamp its format as RGB, and
+  // the raw path takes its cameras from the profiles at open instead.
+  if (options_.rgb_profile != nullptr && !options_.yuv) {
     rgb->setStreamProfile(options_.rgb_profile);
   }
   auto rebuilt = ob::FrameFactory::createFrameSet();

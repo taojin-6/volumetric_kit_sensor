@@ -1,0 +1,42 @@
+#version 450
+
+// Depth undistortion. One thread per pixel of the pinhole image: sample the
+// raw image at the nearest pixel to where the lens puts it, and scale to
+// metres. Nearest, not bilinear: between a foreground and a background return
+// there is no surface, and blending them would invent one. Z depth is along
+// the optical axis, which undistortion does not move, so the value is kept.
+
+#extension GL_GOOGLE_include_directive : require
+#include "lens.glsl"
+
+layout(local_size_x = 256) in;
+
+// Raw 16-bit samples, two to a word, little-endian: sample i is the low half
+// of word i/2 when i is even.
+layout(set = 0, binding = 0, scalar) readonly buffer Raw { uint raw[]; };
+layout(set = 0, binding = 1, scalar) writeonly buffer Depth { float depth[]; };
+
+layout(push_constant, scalar) uniform Params {
+  LensCamera cam;
+  float metres_per_unit;
+} pc;
+
+uint raw_at(uint i) { return (raw[i >> 1] >> ((i & 1u) * 16u)) & 0xFFFFu; }
+
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint w = pc.cam.width;
+  uint h = pc.cam.height;
+  if (gid >= w * h) {
+    return;
+  }
+  vec2 s = source_pixel(pc.cam, vec2(float(gid % w), float(gid / w)));
+  // round-half-up of the source coordinate; outside the captured image, and
+  // for a NaN, no return.
+  vec2 r = floor(s + 0.5);
+  if (!(r.x >= 0.0 && r.y >= 0.0 && r.x < float(w) && r.y < float(h))) {
+    depth[gid] = 0.0;
+    return;
+  }
+  depth[gid] = float(raw_at(uint(r.y) * w + uint(r.x))) * pc.metres_per_unit;
+}

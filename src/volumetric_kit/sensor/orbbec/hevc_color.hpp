@@ -8,7 +8,8 @@
 // mailbox as compressed colour, since the mailbox drops pairs and an H.265
 // frame dropped before decoding corrupts the frames after it. So every pair
 // is decoded, in order, before the mailbox, and handed on with its colour as
-// an RGB frame; everything after the mailbox is as for MJPEG.
+// an RGB frame, or as I420 planes for the GPU pass; everything after the
+// mailbox is as for MJPEG.
 
 #include <atomic>
 #include <condition_variable>
@@ -25,6 +26,7 @@
 
 #include <libobsensor/ObSensor.hpp>
 
+#include "volumetric_kit/recon/core/color_space.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 
@@ -72,6 +74,22 @@ class ColorStreamGate {
 constexpr VideoColorDescription kFemtoMegaHevcColor{VideoColorMatrix::Bt601,
                                                     true};
 
+// What an I420 frame's planes are coded in (HevcColorDecoder::Options::yuv),
+// carried in the frame's metadata since an SDK frame has no field for it: the
+// matrix and range the decoder resolved, the stream's own when it names them,
+// and the transfer and primaries it declares, none when ColorEncoding cannot
+// name them.
+struct PlanesColor {
+  VideoColorMatrix matrix = VideoColorMatrix::Bt709;
+  bool full_range = false;
+  bool has_encoding = false;
+  ColorEncoding encoding{};
+};
+
+// The description an I420 frame from the decoder carries; empty for a frame
+// that carries none.
+std::optional<PlanesColor> planes_color(const ob::Frame& frame);
+
 class HevcColorDecoder {
  public:
   using Sink = std::function<void(std::shared_ptr<ob::FrameSet>)>;
@@ -80,6 +98,7 @@ class HevcColorDecoder {
     std::uint32_t fps = 30;  // the stream's rate, which sizes the queue
     // Stamped on each RGB frame, so the SDK's filters see the colour
     // camera's calibration; null leaves the frame without one (the tests).
+    // Never on an I420 frame, whose format it would restamp as RGB.
     std::shared_ptr<ob::StreamProfile> rgb_profile;
     bool configure_ffmpeg_logging = true;
     std::string who;
@@ -87,6 +106,10 @@ class HevcColorDecoder {
     // unset. A test numbers its own frames, since an SDK frame's index
     // cannot be set.
     std::function<std::uint64_t(const ob::Frame&)> frame_index;
+    // Hand colour on as the decoded Y'CbCr planes, an I420 frame (Y, then Cb
+    // and Cr at half size, rows packed) carrying its PlanesColor, for the GPU
+    // pass; RGB otherwise.
+    bool yuv = false;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on
