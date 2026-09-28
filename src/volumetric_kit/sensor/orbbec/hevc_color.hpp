@@ -76,6 +76,10 @@ class HevcColorDecoder {
     std::shared_ptr<ob::StreamProfile> rgb_profile;
     bool configure_ffmpeg_logging = true;
     std::string who;
+    // A colour frame's number, by which a loss shows: the SDK's index when
+    // unset. A test numbers its own frames, since an SDK frame's index
+    // cannot be set.
+    std::function<std::uint64_t(const ob::Frame&)> frame_index;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on

@@ -113,7 +113,9 @@ void HevcColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
   }
   const std::uint8_t* data = color->getData();
   const std::size_t size = color->getDataSize();
-  if (!gate_.admit(color->getIndex(), is_key_frame(data, size))) {
+  const std::uint64_t index =
+      options_.frame_index ? options_.frame_index(*color) : color->getIndex();
+  if (!gate_.admit(index, is_key_frame(data, size))) {
     lose();
     return;
   }

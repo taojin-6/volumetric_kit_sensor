@@ -73,7 +73,10 @@ std::vector<std::vector<std::uint8_t>> access_units() {
 
 // Access unit `i` as the SDK would hand it over: depth and H.265 colour, both
 // dated at frame `i`.
-std::shared_ptr<ob::FrameSet> pair(const std::vector<std::uint8_t>& unit,
+// Clip frame `f`'s pair, dated in `slot`, its colour numbered f + 1 -- as the
+// camera numbers its frames -- in the system timestamp, where the decoder's
+// frame_index reads it.
+std::shared_ptr<ob::FrameSet> pair(const std::vector<std::uint8_t>& unit, int f,
                                    int slot, bool with_color = true,
                                    bool with_depth = true) {
   const std::uint64_t t =
@@ -89,6 +92,7 @@ std::shared_ptr<ob::FrameSet> pair(const std::vector<std::uint8_t>& unit,
                                       static_cast<std::uint32_t>(unit.size()));
     color->updateData(unit.data(), static_cast<std::uint32_t>(unit.size()));
     ob::FrameHelper::setFrameDeviceTimestampUs(color, t);
+    color->setSystemTimestampUs(static_cast<std::uint64_t>(f) + 1);
     set->pushFrame(color);
   }
   return set;
@@ -119,6 +123,9 @@ Run run(const std::vector<int>& frames, std::size_t expect,
   orbbec::HevcColorDecoder::Options options;
   options.fps = 30;
   options.who = "test";
+  options.frame_index = [](const ob::Frame& frame) {
+    return frame.getSystemTimeStampUs();
+  };
   auto decoder = orbbec::HevcColorDecoder::start(
       options, [collected](std::shared_ptr<ob::FrameSet> set) {
         std::lock_guard<std::mutex> lock(collected->mutex);
@@ -131,13 +138,14 @@ Run run(const std::vector<int>& frames, std::size_t expect,
   for (std::size_t k = 0; k < frames.size(); ++k) {
     const int i = frames[k];
     if (i == -1) {
-      decoder.value()->push(pair(units[0], 0, false));
+      decoder.value()->push(pair(units[0], 0, 0, false));
     } else if (i <= -2) {  // frame -i - 2, colour without its depth
       const int f = -i - 2;
       decoder.value()->push(
-          pair(units[static_cast<std::size_t>(f)], f, true, false));
+          pair(units[static_cast<std::size_t>(f)], f, f, true, false));
     } else {
-      decoder.value()->push(pair(units[static_cast<std::size_t>(i)], slots[k]));
+      decoder.value()->push(
+          pair(units[static_cast<std::size_t>(i)], i, slots[k]));
     }
   }
   const auto deadline =
@@ -224,9 +232,9 @@ int test_every_pair_in_order() {
 }
 
 // Frame 1 lost on the way: frames 2 and 3 are predicted from it, so they go
-// too, and decoding picks up at the key frame, 4. These frames are
-// unnumbered, so it is the decoder that notices here, and a decode error
-// waits for a key frame as a gap does.
+// too, and decoding picks up at the key frame, 4. The gap in the frame
+// numbers is what shows it: FFmpeg 6.1 conceals the missing reference and
+// decodes frames 2 and 3 wrongly without an error, where FFmpeg 9 refuses.
 int test_gap_waits_for_key_frame() {
   const Run r = run({0, 2, 3, 4, 5, 6, 7}, 5);
   CHECK(r.out.size() == 5);
