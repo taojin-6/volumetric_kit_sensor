@@ -13,6 +13,7 @@
 
 #include "undistort_color_comp.spv.hpp"
 #include "undistort_depth_comp.spv.hpp"
+#include "volumetric_kit/recon/core/command_batch.hpp"
 #include "volumetric_kit/recon/core/compute_util.hpp"
 
 namespace volumetric_kit::recon::sensor {
@@ -76,12 +77,16 @@ Status check_camera(const char* what, const LensCamera& c) {
   return {};
 }
 
-// An input of at least `bytes`, host-written, kept when it is big enough.
-Status ensure_input(Allocator& allocator, Buffer& buffer, VkDeviceSize bytes) {
+// An input of at least `bytes`, kept when it is big enough. Device-local, and
+// filled through the pass's batch, so the kernels never read the raw frame
+// across the bus.
+Status ensure_input(const Device& device, Allocator& allocator, Buffer& buffer,
+                    VkDeviceSize bytes, const char* name) {
   if (buffer.valid() && buffer.size() >= bytes) return {};
   buffer = Buffer();
-  VR_ASSIGN(buffer,
-            storage_buffer(allocator, bytes, HostAccess::SequentialWrite));
+  VR_ASSIGN(buffer, device_storage_buffer(allocator, bytes));
+  device.set_object_name(VK_OBJECT_TYPE_BUFFER,
+                         debug_object_handle(buffer.handle()), name);
   return {};
 }
 
@@ -247,24 +252,39 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     VR_ASSIGN(color, check_color(frame, max_pixels, max_storage_buffer_range_));
   }
 
-  VR_TRY(ensure_input(*allocator_, depth_in_, depth.in_bytes));
+  VR_TRY(ensure_input(*device_, *allocator_, depth_in_, depth.in_bytes,
+                      "sensor.raw_depth"));
   VR_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame"));
   if (frame.has_color()) {
-    VR_TRY(ensure_input(*allocator_, color_in_, color.in_bytes));
+    VR_TRY(ensure_input(*device_, *allocator_, color_in_, color.in_bytes,
+                        "sensor.raw_color"));
     VR_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame"));
   }
 
-  // Both uploads, then both passes.
-  std::memcpy(depth_in_.mapped(), frame.depth,
-              std::size_t{depth.pixels} * sizeof(std::uint16_t));
+  // One batch: both uploads, then both passes, one submit a frame. The
+  // uploads are timed with the passes, so the row's device half counts
+  // moving the frame too.
+  CommandBatch batch(*device_, *allocator_);
+  VR_TRY(batch.upload(depth_in_, 0, frame.depth,
+                      VkDeviceSize{depth.pixels} * sizeof(std::uint16_t),
+                      &stage));
   if (frame.has_color()) {
-    // Rows packed tightly, whatever the decoder's strides.
+    // The three planes packed tightly into one staging buffer, whatever the
+    // decoder's strides, and copied up as one. A tight plane is one memcpy:
+    // row by row, it cost the 5090 0.2 ms a 4K frame.
     const YuvImage& image = frame.color;
-    auto* dst = static_cast<std::uint8_t*>(color_in_.mapped());
     const std::uint32_t widths[3] = {image.width, color.cw, color.cw};
     const std::uint32_t heights[3] = {image.height, color.ch, color.ch};
     const VkDeviceSize offsets[3] = {0, color.cb_offset, color.cr_offset};
+    VR_ASSIGN(void* staging,
+              batch.reserve_upload(color_in_, 0, color.in_bytes, &stage));
+    auto* dst = static_cast<std::uint8_t*>(staging);
     for (int p = 0; p < 3; ++p) {
+      if (image.stride[p] == widths[p]) {
+        std::memcpy(dst + offsets[p], image.plane[p],
+                    std::size_t{widths[p]} * heights[p]);
+        continue;
+      }
       for (std::uint32_t row = 0; row < heights[p]; ++row) {
         std::memcpy(dst + offsets[p] + std::size_t{row} * widths[p],
                     image.plane[p] + std::size_t{row} * image.stride[p],
@@ -273,18 +293,15 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     }
   }
 
-  // TODO(sensor): both passes in one submit, saving a fence wait a frame,
-  // once core has a several-kernel dispatch (ExtractTimings' device half
-  // wants the same).
   depth_kernel_.set.write_storage_buffer(0, depth_in_.handle(), 0,
                                          depth.in_bytes);
   depth_kernel_.set.write_storage_buffer(1, depth_out_->handle(), 0,
                                          depth.out_bytes);
   const DepthParams depth_params{lens_params(frame.depth_camera),
                                  frame.metres_per_unit};
-  VR_TRY(dispatch(*device_, depth_kernel_, &depth_params, sizeof(depth_params),
-                  group_count(depth.pixels, kLocalSize), max_workgroup_count_x_,
-                  &stage));
+  VR_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
+                        group_count(depth.pixels, kLocalSize),
+                        max_workgroup_count_x_, &stage));
   if (frame.has_color()) {
     color_kernel_.set.write_storage_buffer(0, color_in_.handle(), 0,
                                            color.in_bytes);
@@ -297,10 +314,11 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                                    image.kr,
                                    image.kb,
                                    image.full_range ? 1u : 0u};
-    VR_TRY(dispatch(*device_, color_kernel_, &color_params,
-                    sizeof(color_params), group_count(color.pixels, kLocalSize),
-                    max_workgroup_count_x_, &stage));
+    VR_TRY(batch.dispatch(color_kernel_, &color_params, sizeof(color_params),
+                          group_count(color.pixels, kLocalSize),
+                          max_workgroup_count_x_, &stage));
   }
+  VR_TRY(batch.submit());
 
   const LensCamera& d = frame.depth_camera;
   DeviceFrame out;
@@ -329,6 +347,8 @@ Status GpuFramePrep::ensure_output(std::shared_ptr<Buffer>& buffer,
                                    VkDeviceSize bytes, const char* name) {
   // Reused only when this pass holds the last reference: a DeviceFrame kept
   // past this call keeps its contents, and this frame goes to a new buffer.
+  // TODO(sensor): the outputs on a ring (the residency decision's step 5), so
+  // a frame kept past the next costs no allocation.
   if (buffer != nullptr && buffer.use_count() == 1 && buffer->size() >= bytes) {
     return {};
   }
