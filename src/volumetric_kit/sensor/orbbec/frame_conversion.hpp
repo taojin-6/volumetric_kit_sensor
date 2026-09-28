@@ -16,6 +16,7 @@
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
+#include "volumetric_kit/recon/sensor/orbbec/orbbec_rig.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
 
@@ -52,5 +53,9 @@ OrbbecSyncMode sync_mode_from(OBMultiDeviceSyncMode mode) noexcept;
 /// rate, the depth range, the pose. The first check @ref OrbbecCapture::open
 /// makes, before it touches the SDK.
 Status validate(const OrbbecCapture::Options& options);
+
+/// The same for a rig, plus what only a rig has: at least two cameras, each
+/// named once, and a non-zero sync tolerance.
+Status validate(const OrbbecRig::Options& options);
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

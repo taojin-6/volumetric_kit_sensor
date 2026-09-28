@@ -82,32 +82,74 @@ OrbbecSyncMode sync_mode_from(OBMultiDeviceSyncMode mode) noexcept {
   }
 }
 
-Status validate(const OrbbecCapture::Options& options) {
-  if (options.depth_width == 0 || options.depth_height == 0 ||
-      options.color_width == 0 || options.color_height == 0) {
+namespace {
+
+Status validate_streams(const OrbbecStreamOptions& streams,
+                        const std::string& who) {
+  if (streams.depth_width == 0 || streams.depth_height == 0 ||
+      streams.color_width == 0 || streams.color_height == 0) {
     return Status::invalid_argument(
-        "OrbbecCapture: depth and colour sizes must be non-zero");
+        who + ": depth and colour sizes must be non-zero");
   }
-  if (options.fps == 0) {
-    return Status::invalid_argument("OrbbecCapture: fps must be non-zero");
+  if (streams.fps == 0) {
+    return Status::invalid_argument(who + ": fps must be non-zero");
   }
   // NaN fails every comparison, so test for the good range rather than the
   // bad one; a NaN gate would otherwise reject every sample in silence.
-  if (!std::isfinite(options.min_depth) || !std::isfinite(options.max_depth) ||
-      !(options.min_depth >= 0.0f) ||
-      !(options.min_depth < options.max_depth)) {
+  if (!std::isfinite(streams.min_depth) || !std::isfinite(streams.max_depth) ||
+      !(streams.min_depth >= 0.0f) ||
+      !(streams.min_depth < streams.max_depth)) {
     return Status::invalid_argument(
-        "OrbbecCapture: depth range [" + std::to_string(options.min_depth) +
-        ", " + std::to_string(options.max_depth) +
+        who + ": depth range [" + std::to_string(streams.min_depth) + ", " +
+        std::to_string(streams.max_depth) +
         "] m must be finite, non-negative and non-empty");
   }
+  return {};
+}
+
+Status validate_pose(const Mat4f& cam_to_world, const std::string& who) {
   for (int c = 0; c < 4; ++c) {
     for (int r = 0; r < 4; ++r) {
-      if (!std::isfinite(options.cam_to_world[c][r])) {
-        return Status::invalid_argument(
-            "OrbbecCapture: cam_to_world must be finite");
+      if (!std::isfinite(cam_to_world[c][r])) {
+        return Status::invalid_argument(who + ": cam_to_world must be finite");
       }
     }
+  }
+  return {};
+}
+
+}  // namespace
+
+Status validate(const OrbbecCapture::Options& options) {
+  VR_TRY(validate_streams(options, "OrbbecCapture"));
+  return validate_pose(options.cam_to_world, "OrbbecCapture");
+}
+
+Status validate(const OrbbecRig::Options& options) {
+  VR_TRY(validate_streams(options, "OrbbecRig"));
+  if (options.cameras.size() < 2) {
+    return Status::invalid_argument(
+        "OrbbecRig: a rig needs at least two cameras; OrbbecCapture opens "
+        "one");
+  }
+  for (std::size_t i = 0; i < options.cameras.size(); ++i) {
+    const RigCameraPose& camera = options.cameras[i];
+    if (camera.serial.empty()) {
+      return Status::invalid_argument("OrbbecRig: camera " + std::to_string(i) +
+                                      " has no serial");
+    }
+    for (std::size_t j = 0; j < i; ++j) {
+      if (options.cameras[j].serial == camera.serial) {
+        return Status::invalid_argument("OrbbecRig: camera " + camera.serial +
+                                        " is named twice");
+      }
+    }
+    VR_TRY(validate_pose(camera.cam_to_world,
+                         "OrbbecRig: camera " + camera.serial));
+  }
+  if (options.sync_tolerance_us == 0) {
+    return Status::invalid_argument(
+        "OrbbecRig: sync_tolerance_us must be non-zero");
   }
   return {};
 }
