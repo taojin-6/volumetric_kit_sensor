@@ -434,15 +434,49 @@ int test_refusals(sensor::GpuFramePrep& prep) {
   return 0;
 }
 
+// Allocate `depth`'s band, retrying rounds that only lost bucket-lock races,
+// as examples/common/fuse_frame.hpp does: adjacent pixels dilate into one
+// block, and a round can hand back such failures over a map far from full.
+int allocate(vol::VoxelBlockGrid& grid, const vr::Buffer& depth,
+             const vr::DepthCameraParams& camera) {
+  for (int round = 0; round < 5; ++round) {
+    vol::AllocFailures why;
+    auto failed = grid.map().allocate_from_depth(depth, camera, &why);
+    CHECK(failed.ok() && !why.capacity_limited());
+    if (failed.value() == 0) return 0;
+  }
+  std::fprintf(stderr, "FAIL: allocation kept losing lock races\n");
+  return 1;
+}
+
 // The pass's output straight into the device-input fusion overloads.
 int test_fuses(vr::Device& device, vr::Allocator& allocator,
                sensor::GpuFramePrep& prep) {
-  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 800);
+  // A small depth camera, 80x60, beside the full colour one: the two sizes
+  // differ, as a sensor's do. Small because the hash map's bucket locks are
+  // host-visible until PR #81, and on NVIDIA 320x240 pixels contending for
+  // them ran past the 7 s watchdog in CI (Xid 109). A tilted surface,
+  // 0.7-1.2 m, spreads the band over many blocks.
+  sensor::LensCamera depth_cam = lensed();
+  depth_cam.fx /= 4.0f;
+  depth_cam.fy /= 4.0f;
+  depth_cam.cx = (depth_cam.cx + 0.5f) / 4.0f - 0.5f;
+  depth_cam.cy = (depth_cam.cy + 0.5f) / 4.0f - 0.5f;
+  depth_cam.width = kWidth / 4;
+  depth_cam.height = kHeight / 4;
+  std::vector<std::uint16_t> raw(std::size_t{depth_cam.width} *
+                                 depth_cam.height);
+  for (std::uint32_t v = 0; v < depth_cam.height; ++v) {
+    for (std::uint32_t u = 0; u < depth_cam.width; ++u) {
+      raw[std::size_t{v} * depth_cam.width + u] =
+          static_cast<std::uint16_t>(700 + 5 * u + 3 * v);
+    }
+  }
   Planes p = make_planes();
   std::fill(p.y.begin(), p.y.end(), 180);
   std::fill(p.cb.begin(), p.cb.end(), 100);
   std::fill(p.cr.begin(), p.cr.end(), 150);
-  sensor::RawFrame f = frame_of(raw, lensed());
+  sensor::RawFrame f = frame_of(raw, depth_cam);
   f.color = p.image(0.299f, 0.114f, true);
   f.color_camera = pinhole();
   auto out = prep.prepare(f);
@@ -463,8 +497,7 @@ int test_fuses(vr::Device& device, vr::Allocator& allocator,
   auto vbg = vol::VoxelBlockGrid::create(device, allocator, grid, attrs, 3);
   auto integrator = tsdf::TsdfIntegrator::create(device, allocator);
   CHECK(vbg.ok() && integrator.ok());
-  auto failed = vbg->map().allocate_from_depth(*out->depth, out->depth_camera);
-  CHECK(failed.ok() && failed.value() == 0);
+  CHECK(allocate(vbg.value(), *out->depth, out->depth_camera) == 0);
   tsdf::ColorFrame color{};
   color.buffer = out->color;
   color.cam = out->color_camera;
@@ -474,7 +507,7 @@ int test_fuses(vr::Device& device, vr::Allocator& allocator,
                         tsdf::IntegrationMode::Classic, &color)
             .ok());
   auto active = vbg->map().compact_active_blocks();
-  CHECK(active.ok() && active->size() > 100);
+  CHECK(active.ok() && active->size() > 20);
   return 0;
 }
 
