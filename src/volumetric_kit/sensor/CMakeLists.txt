@@ -82,13 +82,14 @@ if(VR_INSTALL)
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  # orbbec/ is installed by recon_sensor_orbbec, only when it is built.
+  # orbbec/ and video/ are installed by their own targets, when built.
   install(
     DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/sensor"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon"
     FILES_MATCHING
     PATTERN "*.hpp"
-    PATTERN "orbbec" EXCLUDE)
+    PATTERN "orbbec" EXCLUDE
+    PATTERN "video" EXCLUDE)
   install(
     DIRECTORY "${_vr_sensor_generated_inc}/"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
@@ -99,4 +100,9 @@ endif()
 # The Orbbec driver; see orbbec/CMakeLists.txt.
 if(VR_WITH_ORBBEC)
   add_subdirectory(orbbec)
+endif()
+
+# The FFmpeg-backed video decoder; see video/CMakeLists.txt.
+if(VR_WITH_FFMPEG)
+  add_subdirectory(video)
 endif()
