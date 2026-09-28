@@ -46,8 +46,11 @@ using PacketPtr = std::unique_ptr<AVPacket, PacketFree>;
 using BufferRef = std::unique_ptr<AVBufferRef, BufferUnref>;
 using SwsContextPtr = std::unique_ptr<SwsContext, SwsFree>;
 
+/// @return FFmpeg's message for @p err (a negative AVERROR).
+std::string ffmpeg_message(int err);
+
 /// @return An IoError naming @p who, @p what it was doing and FFmpeg's
-///         message for @p err (a negative AVERROR).
+///         message for @p err.
 Status ffmpeg_error(const char* who, const std::string& what, int err);
 
 /// @return An IoError for an allocation FFmpeg refused.

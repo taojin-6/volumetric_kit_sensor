@@ -34,3 +34,17 @@ if(NOT VR_FFMPEG_FOUND)
 endif()
 
 message(STATUS "FFmpeg: libavcodec ${VR_FFMPEG_libavcodec_VERSION}")
+
+# What the package config asks a consumer's pkg-config for: this FFmpeg's major
+# versions, no older than its minors. A static recon_sensor_video is code
+# compiled against these headers, which a consumer's libraries of another major
+# (or an older minor) lay out differently: that corrupts memory at run time
+# rather than failing to link.
+set(VR_FFMPEG_CONSUMER_MODULES "")
+foreach(_vr_module libavcodec libavutil libswscale)
+  set(_vr_version "${VR_FFMPEG_${_vr_module}_VERSION}")
+  string(REGEX MATCH "^[0-9]+" _vr_major "${_vr_version}")
+  math(EXPR _vr_next "${_vr_major} + 1")
+  list(APPEND VR_FFMPEG_CONSUMER_MODULES "${_vr_module}>=${_vr_version}"
+       "${_vr_module}<${_vr_next}")
+endforeach()

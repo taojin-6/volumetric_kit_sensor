@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// The HEVC decoder on a committed clip (tools/make_hevc_fixtures.sh): the
+// The HEVC decoder on committed clips (tools/make_hevc_fixtures.sh): the
 // software decoder against the pattern the clip was made from, each hardware
-// back end against software (a conformant decoder is bit-exact), Auto's
-// choice, the refusals, and moves.
+// back end against software (a conformant decoder is bit-exact), a display
+// window off the coded picture's corner, Auto's move to software with
+// pictures still held for display, Auto's choice, the refusals, and moves.
 //
 // VR_TEST_HEVC_BACKEND=<name> requires that back end: it must decode here and
 // Auto must choose it. CI sets it where a leg promises hardware (cuda on the
@@ -45,6 +46,11 @@ namespace {
 constexpr int kWidth = 256;
 constexpr int kHeight = 144;
 constexpr int kFrames = 8;
+constexpr const char* kPatches = VR_HEVC_DATA "/patches_256x144.h265";
+constexpr const char* kCropped = VR_HEVC_DATA "/cropped_240x128.h265";
+constexpr const char* kFallback = VR_HEVC_DATA "/fallback_256x144.h265";
+constexpr int kCropLeft = 16;  // the cropped clip's window
+constexpr int kCropTop = 16;
 
 std::int64_t pts_of(int frame) { return 1000 + 33 * frame; }
 
@@ -80,9 +86,11 @@ Picture copy(const sensor::DecodedPicture& p) {
   return out;
 }
 
-// The clip's access units, split at each access unit delimiter (NAL type 35).
-std::vector<std::vector<std::uint8_t>> access_units() {
-  std::ifstream in(VR_HEVC_FIXTURE, std::ios::binary);
+using AccessUnits = std::vector<std::vector<std::uint8_t>>;
+
+// A clip's access units, split at each access unit delimiter (NAL type 35).
+AccessUnits access_units(const char* path) {
+  std::ifstream in(path, std::ios::binary);
   const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
                                         std::istreambuf_iterator<char>());
   std::vector<std::size_t> starts;
@@ -92,7 +100,7 @@ std::vector<std::vector<std::uint8_t>> access_units() {
       starts.push_back(i > 0 && bytes[i - 1] == 0 ? i - 1 : i);
     }
   }
-  std::vector<std::vector<std::uint8_t>> units;
+  AccessUnits units;
   for (std::size_t k = 0; k < starts.size(); ++k) {
     const std::size_t end =
         k + 1 < starts.size() ? starts[k + 1] : bytes.size();
@@ -102,8 +110,9 @@ std::vector<std::vector<std::uint8_t>> access_units() {
   return units;
 }
 
-// Every picture of the clip, taking each as soon as it is ready.
-vr::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder) {
+// Every picture of a clip, taking each as soon as it is ready.
+vr::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder,
+                                             const AccessUnits& units) {
   std::vector<Picture> pictures;
   const auto drain = [&]() -> vr::Status {
     for (;;) {
@@ -112,7 +121,6 @@ vr::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder) {
       pictures.push_back(copy(*picture));
     }
   };
-  const auto units = access_units();
   for (std::size_t i = 0; i < units.size(); ++i) {
     VR_TRY(decoder.send(units[i].data(), units[i].size(),
                         pts_of(static_cast<int>(i))));
@@ -121,6 +129,10 @@ vr::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder) {
   VR_TRY(decoder.send(nullptr, 0, 0));
   VR_TRY(drain());
   return pictures;
+}
+
+vr::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder) {
+  return decode_clip(decoder, access_units(kPatches));
 }
 
 vr::Result<std::vector<Picture>> decode_with(VideoDecodeBackend backend,
@@ -135,6 +147,15 @@ vr::Result<std::vector<Picture>> decode_with(VideoDecodeBackend backend,
   return decode_clip(decoder);
 }
 
+// Software, then every hardware back end found.
+std::vector<VideoDecodeBackend> every_backend() {
+  std::vector<VideoDecodeBackend> backends = {VideoDecodeBackend::Software};
+  for (const VideoDecodeBackend b : HevcDecoder::hardware_backends()) {
+    backends.push_back(b);
+  }
+  return backends;
+}
+
 int check_clip_shape(const std::vector<Picture>& pictures) {
   CHECK(pictures.size() == static_cast<std::size_t>(kFrames));
   for (int f = 0; f < kFrames; ++f) {
@@ -143,6 +164,9 @@ int check_clip_shape(const std::vector<Picture>& pictures) {
     CHECK(meta.pts == pts_of(f));
     CHECK(meta.matrix == sensor::VideoColorMatrix::Bt709);
     CHECK(!meta.full_range);
+    CHECK(meta.encoding.has_value() &&
+          meta.encoding->transfer == vr::ColorEncoding::Transfer::Bt709 &&
+          meta.encoding->primaries == vr::ColorEncoding::Primaries::Bt709);
   }
   return 0;
 }
@@ -247,6 +271,122 @@ int test_hardware_matches_software() {
       }
     }
     CHECK(worst <= 1);
+  }
+  return 0;
+}
+
+// The cropped clip is the uncropped one's pixels, 16 right and 16 down, on
+// every back end that can crop there. VideoToolbox cannot (FFmpeg sizes its
+// output at the display size, filled from the coded corner), so named it
+// refuses the stream and Auto moves it to software.
+int check_cropped(const std::vector<Picture>& cropped,
+                  const std::vector<Picture>& full) {
+  CHECK(cropped.size() == full.size());
+  const int width = kWidth - kCropLeft;
+  const int height = kHeight - kCropTop;
+  for (std::size_t f = 0; f < cropped.size(); ++f) {
+    const Picture& c = cropped[f];
+    const Picture& u = full[f];
+    CHECK(c.meta.width == static_cast<std::uint32_t>(width));
+    CHECK(c.meta.height == static_cast<std::uint32_t>(height));
+    CHECK(c.meta.pts == u.meta.pts);
+    for (int i = 0; i < 3; ++i) {
+      const int shift = i == 0 ? 0 : 1;
+      const int w = width >> shift;
+      for (int y = 0; y < height >> shift; ++y) {
+        for (int x = 0; x < w; ++x) {
+          const int want = u.planes[i][static_cast<std::size_t>(
+              ((y + (kCropTop >> shift)) * (kWidth >> shift)) + x +
+              (kCropLeft >> shift))];
+          CHECK(c.planes[i][static_cast<std::size_t>(y * w + x)] == want);
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+int test_cropped() {
+  auto full =
+      decode_with(VideoDecodeBackend::Software, VideoPixelLayout::Yuv420);
+  CHECK(full.ok());
+  const AccessUnits units = access_units(kCropped);
+  std::vector<VideoDecodeBackend> backends = every_backend();
+  backends.push_back(VideoDecodeBackend::Auto);
+  for (const VideoDecodeBackend backend : backends) {
+    HevcDecoder::Options options;
+    options.backend = backend;
+    options.layout = VideoPixelLayout::Yuv420;
+    auto decoder = HevcDecoder::create(options);
+    CHECK(decoder.ok());
+    auto pictures = decode_clip(decoder.value(), units);
+    if (backend == VideoDecodeBackend::VideoToolbox) {
+      CHECK(pictures.status().domain() == vr::Status::Code::Unsupported);
+      continue;
+    }
+    if (!pictures) {
+      std::fprintf(stderr, "%s: %s\n", sensor::to_string(backend),
+                   pictures.status().message().c_str());
+    }
+    CHECK(pictures.ok());
+    if (check_cropped(pictures.value(), full.value()) != 0) {
+      std::fprintf(stderr, "cropped on %s\n",
+                   sensor::to_string(decoder->backend()));
+      return 1;
+    }
+    if (backend == VideoDecodeBackend::Auto) {
+      std::printf("  auto, cropped: %s\n",
+                  sensor::to_string(decoder->backend()));
+    }
+  }
+  return 0;
+}
+
+// The fallback clip: 8 frames with B-frames, then 2 of 4:0:0 grey that no
+// hardware back end decodes. Every picture comes out, in display order and
+// each pts sent once, including those the hardware still held when Auto
+// moved to software; a named hardware back end refuses at the grey.
+int test_fallback() {
+  const AccessUnits units = access_units(kFallback);
+  CHECK(units.size() == static_cast<std::size_t>(kFrames + 2));
+  std::vector<VideoDecodeBackend> backends = every_backend();
+  backends.push_back(VideoDecodeBackend::Auto);
+  for (const VideoDecodeBackend backend : backends) {
+    HevcDecoder::Options options;
+    options.backend = backend;
+    options.layout = VideoPixelLayout::Yuv420;
+    auto decoder = HevcDecoder::create(options);
+    CHECK(decoder.ok());
+    auto pictures = decode_clip(decoder.value(), units);
+    if (backend != VideoDecodeBackend::Auto &&
+        backend != VideoDecodeBackend::Software) {
+      CHECK(pictures.status().domain() == vr::Status::Code::Unsupported);
+      continue;
+    }
+    if (!pictures) {
+      std::fprintf(stderr, "%s: %s\n", sensor::to_string(backend),
+                   pictures.status().message().c_str());
+    }
+    CHECK(pictures.ok());
+    CHECK(decoder->backend() == VideoDecodeBackend::Software);
+    const auto& got = pictures.value();
+    CHECK(got.size() == units.size());
+    std::vector<std::int64_t> sent;
+    std::vector<std::int64_t> out;
+    for (std::size_t i = 0; i < got.size(); ++i) {
+      sent.push_back(pts_of(static_cast<int>(i)));
+      out.push_back(got[i].meta.pts);
+      const std::size_t y = 36 * kWidth + 16;  // patch (0, 0)'s centre
+      const std::size_t c = 18 * (kWidth / 2) + 8;
+      if (i < static_cast<std::size_t>(kFrames)) {
+        const int want = patch_y(patch(0, 0, static_cast<int>(i)));
+        CHECK(std::abs(got[i].planes[0][y] - want) <= 2);
+      } else {
+        CHECK(got[i].planes[1][c] == 128 && got[i].planes[2][c] == 128);
+      }
+    }
+    std::sort(out.begin(), out.end());
+    CHECK(out == sent);
   }
   return 0;
 }
@@ -356,15 +496,17 @@ int test_names() {
 }  // namespace
 
 int main() {
-  if (access_units().size() != static_cast<std::size_t>(kFrames)) {
+  if (access_units(kPatches).size() != static_cast<std::size_t>(kFrames)) {
     std::fprintf(stderr, "FAIL: cannot split %s into %d access units\n",
-                 VR_HEVC_FIXTURE, kFrames);
+                 kPatches, kFrames);
     return 1;
   }
   if (test_names() != 0) return 1;
   if (test_software_yuv() != 0) return 1;
   if (test_software_rgb() != 0) return 1;
   if (test_hardware_matches_software() != 0) return 1;
+  if (test_cropped() != 0) return 1;
+  if (test_fallback() != 0) return 1;
   if (test_auto_choice() != 0) return 1;
   if (test_refusals() != 0) return 1;
   if (test_moves() != 0) return 1;

@@ -7,10 +7,15 @@
 
 namespace volumetric_kit::recon::sensor::video {
 
-Status ffmpeg_error(const char* who, const std::string& what, int err) {
+std::string ffmpeg_message(int err) {
   char text[AV_ERROR_MAX_STRING_SIZE] = {};
   av_strerror(err, text, sizeof(text));
-  return Status::io_error(std::string(who) + ": " + what + ": " + text);
+  return text;
+}
+
+Status ffmpeg_error(const char* who, const std::string& what, int err) {
+  return Status::io_error(std::string(who) + ": " + what + ": " +
+                          ffmpeg_message(err));
 }
 
 Status ffmpeg_alloc_error(const char* who, const std::string& what) {
