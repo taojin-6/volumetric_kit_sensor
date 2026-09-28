@@ -156,6 +156,64 @@ int test_sync_mode() {
   return 0;
 }
 
+// The SDK's lens models to the pass's one: Brown-Conrady's coefficients in
+// OpenCV's order, the others refused.
+int test_lens_camera() {
+  OBCameraDistortion d{};
+  d.k1 = 0.1f;
+  d.k2 = -0.2f;
+  d.k3 = 0.03f;
+  d.k4 = 0.4f;
+  d.k5 = -0.05f;
+  d.k6 = 0.06f;
+  d.p1 = 0.001f;
+  d.p2 = -0.002f;
+  d.model = OB_DISTORTION_BROWN_CONRADY_K6;
+  auto lens = orbbec::lens_camera_from(femto_color_720p(), d, "colour");
+  CHECK(lens.ok());
+  CHECK(lens->fx == 746.494f && lens->cy == 345.615f);
+  CHECK(lens->width == 1280 && lens->height == 720);
+  CHECK(lens->lens.k1 == 0.1f && lens->lens.k2 == -0.2f &&
+        lens->lens.k3 == 0.03f && lens->lens.k4 == 0.4f &&
+        lens->lens.k5 == -0.05f && lens->lens.k6 == 0.06f &&
+        lens->lens.p1 == 0.001f && lens->lens.p2 == -0.002f);
+  d.model = OB_DISTORTION_NONE;  // coefficients ignored
+  lens = orbbec::lens_camera_from(femto_color_720p(), d, "colour");
+  CHECK(lens.ok() && lens->lens.k1 == 0.0f && lens->lens.p2 == 0.0f);
+  d.model = OB_DISTORTION_KANNALA_BRANDT4;
+  CHECK(orbbec::lens_camera_from(femto_color_720p(), d, "colour")
+            .status()
+            .domain() == vr::Status::Code::Unsupported);
+  d.model = OB_DISTORTION_BROWN_CONRADY;
+  d.k2 = std::numeric_limits<float>::quiet_NaN();
+  CHECK(invalid(
+      orbbec::lens_camera_from(femto_color_720p(), d, "colour").status()));
+  OBCameraIntrinsic k = femto_color_720p();
+  k.fx = 0.0f;
+  d.k2 = 0.0f;
+  CHECK(invalid(orbbec::lens_camera_from(k, d, "depth").status()));
+  return 0;
+}
+
+// The SDK's extrinsic, rotation row-major and translation in millimetres, as
+// a transform in metres: a quarter turn about z and a 32 mm baseline.
+int test_transform_from() {
+  OBExtrinsic e{};
+  const float rot[9] = {0, -1, 0, 1, 0, 0, 0, 0, 1};
+  for (int i = 0; i < 9; ++i) e.rot[i] = rot[i];
+  e.trans[0] = 32.0f;
+  e.trans[1] = -1.5f;
+  e.trans[2] = 4.0f;
+  const vr::Mat4f m = orbbec::transform_from(e);
+  const vr::Vec4f p = m * vr::Vec4f(1.0f, 2.0f, 3.0f, 1.0f);
+  // R (1, 2, 3) = (-2, 1, 3), plus t.
+  CHECK(std::fabs(p.x - (-2.0f + 0.032f)) < 1e-6f);
+  CHECK(std::fabs(p.y - (1.0f - 0.0015f)) < 1e-6f);
+  CHECK(std::fabs(p.z - (3.0f + 0.004f)) < 1e-6f);
+  CHECK(p.w == 1.0f);
+  return 0;
+}
+
 int test_validate() {
   using Options = sensor::OrbbecCapture::Options;
   CHECK(orbbec::validate(Options{}).ok());
@@ -185,6 +243,13 @@ int test_validate() {
   o = Options{};
   o.cam_to_world[3][1] = std::numeric_limits<float>::quiet_NaN();
   CHECK(invalid(orbbec::validate(o)));
+
+  // Raw frames need H.265 colour, whose planes the GPU pass converts.
+  o = Options{};
+  o.raw = true;
+  CHECK(invalid(orbbec::validate(o)));
+  o.color_codec = sensor::OrbbecColorCodec::Hevc;
+  CHECK(orbbec::validate(o).ok());
 
   // open() makes the same checks first, before it touches the SDK -- which is
   // what makes this runnable with no camera and no network.
@@ -219,6 +284,11 @@ int test_validate_rig() {
 
   // The tolerance must be under half a frame period (16 666 us at 30 fps),
   // or one secondary frame can match two neighbouring triggers.
+  // Raw frames are single-camera for now.
+  o = r;
+  o.raw = true;
+  o.color_codec = sensor::OrbbecColorCodec::Hevc;
+  CHECK(orbbec::validate(o).domain() == vr::Status::Code::Unsupported);
   o = r;
   o.sync_tolerance_us = 0;
   CHECK(invalid(orbbec::validate(o)));
@@ -236,6 +306,8 @@ int test_validate_rig() {
 
 int main() {
   if (test_color_camera() != 0) return 1;
+  if (test_lens_camera() != 0) return 1;
+  if (test_transform_from() != 0) return 1;
   if (test_same_pinhole() != 0) return 1;
   if (test_depth_to_metres() != 0) return 1;
   if (test_pack_rgb() != 0) return 1;

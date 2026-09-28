@@ -8,7 +8,8 @@
 // mailbox as compressed colour, since the mailbox drops pairs and an H.265
 // frame dropped before decoding corrupts the frames after it. So every pair
 // is decoded, in order, before the mailbox, and handed on with its colour as
-// an RGB frame; everything after the mailbox is as for MJPEG.
+// an RGB frame, or as I420 planes for the GPU pass; everything after the
+// mailbox is as for MJPEG.
 
 #include <atomic>
 #include <condition_variable>
@@ -80,6 +81,7 @@ class HevcColorDecoder {
     std::uint32_t fps = 30;  // the stream's rate, which sizes the queue
     // Stamped on each RGB frame, so the SDK's filters see the colour
     // camera's calibration; null leaves the frame without one (the tests).
+    // Never on an I420 frame, whose format it would restamp as RGB.
     std::shared_ptr<ob::StreamProfile> rgb_profile;
     bool configure_ffmpeg_logging = true;
     std::string who;
@@ -87,6 +89,9 @@ class HevcColorDecoder {
     // unset. A test numbers its own frames, since an SDK frame's index
     // cannot be set.
     std::function<std::uint64_t(const ob::Frame&)> frame_index;
+    // Hand colour on as the decoded Y'CbCr planes, an I420 frame (Y, then Cb
+    // and Cr at half size, rows packed), for the GPU pass; RGB otherwise.
+    bool yuv = false;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on

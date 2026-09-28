@@ -38,6 +38,53 @@ Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
   return cam;
 }
 
+Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
+                                    const OBCameraDistortion& distortion,
+                                    const std::string& what) {
+  VR_ASSIGN(const ColorCameraParams pinhole,
+            color_camera_from(intrinsic, Mat4f(1.0f)));
+  switch (distortion.model) {
+    case OB_DISTORTION_NONE:
+    case OB_DISTORTION_BROWN_CONRADY:
+    case OB_DISTORTION_BROWN_CONRADY_K6:
+      break;
+    default:
+      return Status::unsupported(
+          "Orbbec " + what + " stream reports lens model " +
+          std::to_string(static_cast<int>(distortion.model)) +
+          ", which the GPU pass cannot undistort (it takes Brown-Conrady)");
+  }
+  LensCamera cam;
+  cam.fx = pinhole.fx;
+  cam.fy = pinhole.fy;
+  cam.cx = pinhole.cx;
+  cam.cy = pinhole.cy;
+  cam.width = pinhole.width;
+  cam.height = pinhole.height;
+  if (distortion.model != OB_DISTORTION_NONE) {
+    cam.lens = LensDistortion{distortion.k1, distortion.k2, distortion.p1,
+                              distortion.p2, distortion.k3, distortion.k4,
+                              distortion.k5, distortion.k6};
+  }
+  for (const float k : {cam.lens.k1, cam.lens.k2, cam.lens.p1, cam.lens.p2,
+                        cam.lens.k3, cam.lens.k4, cam.lens.k5, cam.lens.k6}) {
+    if (!std::isfinite(k)) {
+      return Status::invalid_argument("Orbbec " + what +
+                                      " stream reports a non-finite lens");
+    }
+  }
+  return cam;
+}
+
+Mat4f transform_from(const OBExtrinsic& extrinsic) noexcept {
+  Mat4f m(1.0f);  // column-major: m[column][row]
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) m[c][r] = extrinsic.rot[3 * r + c];
+    m[3][r] = extrinsic.trans[r] / 1000.0f;
+  }
+  return m;
+}
+
 bool same_pinhole(const OBCameraIntrinsic& intrinsic,
                   const ColorCameraParams& cam, float tol) noexcept {
   const auto near = [tol](float a, float b) { return std::fabs(a - b) <= tol; };
@@ -104,6 +151,12 @@ Status validate_streams(const OrbbecStreamOptions& streams,
         who + ": depth range [" + std::to_string(streams.min_depth) + ", " +
         std::to_string(streams.max_depth) +
         "] m must be finite, non-negative and non-empty");
+  }
+  if (streams.raw && streams.color_codec != OrbbecColorCodec::Hevc) {
+    return Status::invalid_argument(
+        who +
+        ": raw frames need H.265 colour, whose planes the GPU pass "
+        "converts");
   }
   return {};
 }
@@ -205,6 +258,11 @@ Status validate(const OrbbecCapture::Options& options) {
 
 Status validate(const OrbbecRig::Options& options) {
   VR_TRY(validate_streams(options, "OrbbecRig"));
+  if (options.raw) {
+    // TODO(sensor): raw sets from the rig, one GPU pass per camera.
+    return Status::unsupported(
+        "OrbbecRig: raw frames are single-camera for now (OrbbecCapture)");
+  }
   if (options.sync.devices.size() < 2) {
     return Status::invalid_argument(
         "OrbbecRig: a rig needs at least two cameras; OrbbecCapture opens "

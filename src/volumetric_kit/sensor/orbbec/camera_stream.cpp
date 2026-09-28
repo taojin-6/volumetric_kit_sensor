@@ -362,12 +362,40 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
       }
     }
 
-    s->undistort_color_ =
-        std::make_shared<ob::UnDistortionFilter>(OB_STREAM_COLOR);
-    s->align_to_color_ = std::make_shared<ob::Align>(OB_STREAM_COLOR);
-    // Registered depth at the colour image's full size -- the frame's one
-    // resolution. Set rather than left to the SDK's default.
-    s->align_to_color_->setMatchTargetResolution(true);
+    if (streams.raw) {
+      // Each camera as it captures, from the factory calibration: its lens,
+      // and the depth camera posed through its extrinsic to the colour one,
+      // which cam_to_world poses. Nothing on the host undistorts or
+      // registers.
+      const auto depth_video = s->depth_profile_->as<ob::VideoStreamProfile>();
+      const auto color_video = s->color_profile_->as<ob::VideoStreamProfile>();
+      VR_ASSIGN(s->raw_depth_camera_,
+                lens_camera_from(depth_video->getIntrinsic(),
+                                 depth_video->getDistortion(), "depth"));
+      VR_ASSIGN(s->raw_color_camera_,
+                lens_camera_from(color_video->getIntrinsic(),
+                                 color_video->getDistortion(), "colour"));
+      if (s->raw_depth_camera_.width != streams.depth_width ||
+          s->raw_depth_camera_.height != streams.depth_height) {
+        return Status::io_error(s->who_ +
+                                " reports depth intrinsics for another size "
+                                "than the mode it opened");
+      }
+      s->raw_color_pose_ = cam_to_world;
+      s->raw_depth_pose_ =
+          cam_to_world *
+          transform_from(s->depth_profile_->getExtrinsicTo(s->color_profile_));
+      s->min_depth_ = streams.min_depth;
+      s->max_depth_ = streams.max_depth;
+      s->raw_ = true;
+    } else {
+      s->undistort_color_ =
+          std::make_shared<ob::UnDistortionFilter>(OB_STREAM_COLOR);
+      s->align_to_color_ = std::make_shared<ob::Align>(OB_STREAM_COLOR);
+      // Registered depth at the colour image's full size -- the frame's one
+      // resolution. Set rather than left to the SDK's default.
+      s->align_to_color_->setMatchTargetResolution(true);
+    }
 
     s->device_callback_id_ = s->context_->registerDeviceChangedCallback(
         [mailbox = s->mailbox_, serial = s->info_.serial](
@@ -430,6 +458,7 @@ Status CameraStream::start() {
     HevcColorDecoder::Options decoding;
     decoding.fps = fps_;
     decoding.rgb_profile = color_profile_;
+    decoding.yuv = raw_;
     // Once: the first start sets FFmpeg's level, and a later one leaves it
     // to whoever changed it since.
     decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
@@ -507,6 +536,7 @@ void CameraStream::stop() noexcept {
   }
   depth_metres_.clear();
   color_packed_.clear();
+  held_.reset();
 }
 
 void CameraStream::set_queue_depth(std::size_t depth) {
@@ -696,6 +726,104 @@ Result<std::optional<CapturedFrame>> CameraStream::process(
   failed_in_a_row_ = 0;
   ++delivered_;
   return ICameraCapture::some_frame(frame);
+}
+
+Result<std::optional<RawFrame>> CameraStream::process_raw(
+    const std::shared_ptr<ob::FrameSet>& pair) {
+  // As process(): a pair that contradicts the stream is refused, one the SDK
+  // failed on is skipped, and only a run of skips is an error.
+  const auto refuse = [this](Status why) {
+    ++failed_;
+    return why;
+  };
+  const auto skip =
+      [this](const std::string& why) -> Result<std::optional<RawFrame>> {
+    ++failed_;
+    if (++failed_in_a_row_ < kMaxFailedPairsInARow) {
+      return std::optional<RawFrame>();
+    }
+    return Status::io_error(who_ + ": " + std::to_string(failed_in_a_row_) +
+                            " pairs in a row could not be processed; the "
+                            "last: " +
+                            why);
+  };
+  held_.reset();
+  RawFrame frame;
+  try {
+    const auto depth = pair->getDepthFrame();
+    const auto color = pair->getColorFrame();
+    if (depth == nullptr || color == nullptr) {
+      return skip("a pair is missing its depth or colour frame");
+    }
+    const LensCamera& d = raw_depth_camera_;
+    const LensCamera& c = raw_color_camera_;
+    const auto dv = depth->as<ob::VideoFrame>();
+    const auto cv = color->as<ob::VideoFrame>();
+    if (dv->getWidth() != d.width || dv->getHeight() != d.height ||
+        cv->getWidth() != c.width || cv->getHeight() != c.height) {
+      return refuse(Status::io_error(
+          who_ + ": a raw pair is depth " + std::to_string(dv->getWidth()) +
+          "x" + std::to_string(dv->getHeight()) + ", colour " +
+          std::to_string(cv->getWidth()) + "x" +
+          std::to_string(cv->getHeight()) + "; expected " +
+          std::to_string(d.width) + "x" + std::to_string(d.height) + " and " +
+          std::to_string(c.width) + "x" + std::to_string(c.height)));
+    }
+    const std::size_t depth_pixels = std::size_t{d.width} * d.height;
+    const std::uint32_t cw = (c.width + 1) / 2;
+    const std::uint32_t ch = (c.height + 1) / 2;
+    const std::size_t luma = std::size_t{c.width} * c.height;
+    const std::size_t chroma = std::size_t{cw} * ch;
+    if (depth->getFormat() != OB_FORMAT_Y16 ||
+        depth->getDataSize() < depth_pixels * sizeof(std::uint16_t)) {
+      return refuse(Status::io_error(who_ + ": depth is not a full Y16 image"));
+    }
+    if (color->getFormat() != OB_FORMAT_I420 ||
+        color->getDataSize() < luma + 2 * chroma) {
+      return refuse(Status::io_error(
+          who_ + ": decoded colour is not a full I420 image (format " +
+          std::to_string(static_cast<int>(color->getFormat())) + ", " +
+          std::to_string(color->getDataSize()) + " bytes)"));
+    }
+    const float value_scale = depth->getValueScale();
+    if (!std::isfinite(value_scale) || !(value_scale > 0.0f)) {
+      return refuse(Status::io_error(who_ +
+                                     ": depth frame reports value scale " +
+                                     std::to_string(value_scale)));
+    }
+    frame.depth = reinterpret_cast<const std::uint16_t*>(depth->getData());
+    frame.metres_per_unit = value_scale / 1000.0f;  // mm per unit
+    frame.depth_camera = d;
+    frame.depth_cam_to_world = raw_depth_pose_;
+    frame.min_depth = min_depth_;
+    frame.max_depth = max_depth_;
+    const std::uint8_t* planes = color->getData();
+    frame.color.plane[0] = planes;
+    frame.color.plane[1] = planes + luma;
+    frame.color.plane[2] = planes + luma + chroma;
+    frame.color.stride[0] = c.width;
+    frame.color.stride[1] = cw;
+    frame.color.stride[2] = cw;
+    frame.color.width = c.width;
+    frame.color.height = c.height;
+#if VR_ORBBEC_WITH_HEVC
+    const YcbcrWeights weights = ycbcr_weights(kFemtoMegaHevcColor.matrix);
+    frame.color.kr = weights.kr;
+    frame.color.kb = weights.kb;
+    frame.color.full_range = kFemtoMegaHevcColor.full_range;
+#endif
+    frame.color_camera = c;
+    frame.color_cam_to_world = raw_color_pose_;
+    // The camera's colour is ordinary 8-bit sRGB once converted: the
+    // canonical form, declared by leaving the default.
+    frame.timestamp_ns = depth->getTimeStampUs() * 1000;
+  } catch (const std::exception& e) {  // ob::Error is one
+    return skip(std::string("the SDK failed on it: ") + e.what());
+  }
+  held_ = pair;
+  failed_in_a_row_ = 0;
+  ++delivered_;
+  return std::optional<RawFrame>(frame);
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

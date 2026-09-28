@@ -143,12 +143,13 @@ Pairs pairs(const Units& units, const std::vector<int>& frames,
   return out;
 }
 
-// Push `in`, wait for `expect` pairs out, and stop.
+// Push `in`, wait for `expect` pairs out, and stop; `yuv` has the decoder
+// hand on I420 frames, for the GPU pass.
 struct Run {
   std::vector<std::shared_ptr<ob::FrameSet>> out;
   std::uint64_t lost = 0;
 };
-Run run(const Pairs& in, std::size_t expect) {
+Run run(const Pairs& in, std::size_t expect, bool yuv = false) {
   auto collected = std::make_shared<Collected>();
   orbbec::HevcColorDecoder::Options options;
   options.fps = 30;
@@ -156,6 +157,7 @@ Run run(const Pairs& in, std::size_t expect) {
   options.frame_index = [](const ob::Frame& frame) {
     return frame.getSystemTimeStampUs();
   };
+  options.yuv = yuv;
   auto decoder = orbbec::HevcColorDecoder::start(
       options, [collected](std::shared_ptr<ob::FrameSet> set) {
         std::lock_guard<std::mutex> lock(collected->mutex);
@@ -223,6 +225,43 @@ int check_pair(
                        frame, col, row, k, got, want[k]);
           CHECK(false);
         }
+      }
+    }
+  }
+  return 0;
+}
+
+// For the GPU pass: the decoded planes as an I420 frame, Y then Cb and Cr at
+// half size, rows packed, each patch's value as the clip was made.
+int test_hands_on_i420() {
+  const Run r =
+      run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8, true);
+  CHECK(r.out.size() == 8);
+  CHECK(r.lost == 0);
+  for (int f = 0; f < 8; ++f) {
+    const auto& set = *r.out[static_cast<std::size_t>(f)];
+    CHECK(set.getDepthFrame() != nullptr);
+    const auto color = set.getColorFrame();
+    CHECK(color != nullptr && color->getFormat() == OB_FORMAT_I420);
+    const auto video = color->as<ob::VideoFrame>();
+    CHECK(video->getWidth() == static_cast<std::uint32_t>(kWidth));
+    CHECK(video->getHeight() == static_cast<std::uint32_t>(kHeight));
+    const int cw = kWidth / 2;
+    const int ch = kHeight / 2;
+    CHECK(color->getDataSize() ==
+          static_cast<std::uint32_t>(kWidth * kHeight + 2 * cw * ch));
+    const std::uint8_t* y = color->getData();
+    const std::uint8_t* cb = y + kWidth * kHeight;
+    const std::uint8_t* cr = cb + cw * ch;
+    for (int row = 0; row < 2; ++row) {
+      for (int col = 0; col < 8; ++col) {
+        const int p = patch(col, row, f);
+        const int x = 32 * col + 16;
+        const int yy = 72 * row + 36;
+        CHECK(std::abs(y[yy * kWidth + x] - (40 + 24 * p)) <= 2);
+        const int c = (yy / 2) * cw + x / 2;
+        CHECK(std::abs(cb[c] - (64 + 16 * ((3 * p) % 8))) <= 2);
+        CHECK(std::abs(cr[c] - (64 + 16 * ((5 * p) % 8))) <= 2);
       }
     }
   }
@@ -531,6 +570,7 @@ int main() {
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
   if (test_key_frames() != 0) return 1;
   if (test_every_pair_in_order() != 0) return 1;
+  if (test_hands_on_i420() != 0) return 1;
   if (test_gap_waits_for_key_frame() != 0) return 1;
   if (test_pause_costs_nothing() != 0) return 1;
   if (test_gate() != 0) return 1;
