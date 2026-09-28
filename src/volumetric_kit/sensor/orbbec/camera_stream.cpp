@@ -212,12 +212,11 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
     s->info_.connection_type = or_empty(device_info->getConnectionType());
     s->info_.ip_address = or_empty(device_info->getIpAddress());
     s->who_ = who + ": camera " + s->info_.serial;
-    const std::uint16_t sync_modes =
-        s->device_->getSupportedMultiDeviceSyncModeBitmap();
-    s->info_.sync_mode =
-        sync_modes != 0
-            ? sync_mode_from(s->device_->getMultiDeviceSyncConfig().syncMode)
-            : OrbbecSyncMode::Standalone;
+    if (s->device_->getSupportedMultiDeviceSyncModeBitmap() != 0) {
+      s->sync_settings_ =
+          sync_settings_from(s->device_->getMultiDeviceSyncConfig());
+    }
+    s->info_.sync_mode = s->sync_settings_.mode;
     if (s->info_.sync_mode == OrbbecSyncMode::SoftwareTriggering) {
       return Status::unsupported(
           s->who_ +
@@ -411,6 +410,21 @@ Status CameraStream::take_all(std::vector<std::shared_ptr<ob::FrameSet>>* out) {
 }
 
 void CameraStream::discard() noexcept { ++discarded_; }
+
+Status CameraStream::apply_sync(const OrbbecSyncSettings& settings) {
+  if (running_) {
+    return Status::invalid_argument(who_ +
+                                    ": sync settings are written before start");
+  }
+  try {
+    device_->setMultiDeviceSyncConfig(sdk_sync_config(settings));
+    sync_settings_ = sync_settings_from(device_->getMultiDeviceSyncConfig());
+  } catch (const std::exception& e) {  // ob::Error is one
+    return sdk_error(who_, "writing its sync settings", e);
+  }
+  info_.sync_mode = sync_settings_.mode;
+  return {};
+}
 
 void CameraStream::withdraw() noexcept {
   --delivered_;

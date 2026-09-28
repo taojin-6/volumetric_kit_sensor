@@ -26,6 +26,7 @@
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/camera_capture.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
+#include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
 
@@ -90,6 +91,12 @@ class CameraStream {
     return color_camera_;
   }
   bool running() const noexcept { return running_; }
+  // The camera's stored sync settings, as the SDK reads them back.
+  const OrbbecSyncSettings& sync_settings() const noexcept {
+    return sync_settings_;
+  }
+  // Write sync settings to the camera, where they persist. Not while running.
+  Status apply_sync(const OrbbecSyncSettings& settings);
   bool disconnected() const noexcept {
     return mailbox_->disconnected.load(std::memory_order_acquire);
   }
@@ -146,6 +153,7 @@ class CameraStream {
   OBCallbackId device_callback_id_ = 0;
 
   OrbbecDeviceInfo info_;
+  OrbbecSyncSettings sync_settings_;
   ColorCameraParams color_camera_{};
   DepthCameraParams depth_camera_{};
 

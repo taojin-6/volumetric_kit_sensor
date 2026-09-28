@@ -3,6 +3,7 @@
 
 #include "frame_conversion.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -120,6 +121,83 @@ Status validate_pose(const Mat4f& cam_to_world, const std::string& who) {
 
 }  // namespace
 
+OBMultiDeviceSyncMode sdk_sync_mode(OrbbecSyncMode mode) noexcept {
+  switch (mode) {
+    case OrbbecSyncMode::FreeRun:
+      return OB_MULTI_DEVICE_SYNC_MODE_FREE_RUN;
+    case OrbbecSyncMode::Primary:
+      return OB_MULTI_DEVICE_SYNC_MODE_PRIMARY;
+    case OrbbecSyncMode::Secondary:
+      return OB_MULTI_DEVICE_SYNC_MODE_SECONDARY;
+    case OrbbecSyncMode::SecondarySynced:
+      return OB_MULTI_DEVICE_SYNC_MODE_SECONDARY_SYNCED;
+    case OrbbecSyncMode::SoftwareTriggering:
+      return OB_MULTI_DEVICE_SYNC_MODE_SOFTWARE_TRIGGERING;
+    case OrbbecSyncMode::HardwareTriggering:
+      return OB_MULTI_DEVICE_SYNC_MODE_HARDWARE_TRIGGERING;
+    case OrbbecSyncMode::Standalone:
+    case OrbbecSyncMode::Other:
+      break;
+  }
+  return OB_MULTI_DEVICE_SYNC_MODE_STANDALONE;
+}
+
+OrbbecSyncSettings sync_settings_from(const OBMultiDeviceSyncConfig& sdk) {
+  OrbbecSyncSettings s;
+  s.mode = sync_mode_from(sdk.syncMode);
+  s.depth_delay_us = sdk.depthDelayUs;
+  s.color_delay_us = sdk.colorDelayUs;
+  s.trigger_to_image_delay_us = sdk.trigger2ImageDelayUs;
+  s.trigger_out_enable = sdk.triggerOutEnable;
+  s.trigger_out_delay_us = sdk.triggerOutDelayUs;
+  s.frames_per_trigger = sdk.framesPerTrigger;
+  return s;
+}
+
+OBMultiDeviceSyncConfig sdk_sync_config(const OrbbecSyncSettings& s) {
+  OBMultiDeviceSyncConfig sdk{};
+  sdk.syncMode = sdk_sync_mode(s.mode);
+  sdk.depthDelayUs = s.depth_delay_us;
+  sdk.colorDelayUs = s.color_delay_us;
+  sdk.trigger2ImageDelayUs = s.trigger_to_image_delay_us;
+  sdk.triggerOutEnable = s.trigger_out_enable;
+  sdk.triggerOutDelayUs = s.trigger_out_delay_us;
+  sdk.framesPerTrigger = s.frames_per_trigger;
+  return sdk;
+}
+
+std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
+                                          const OrbbecSyncSettings& actual) {
+  const auto role = [](OrbbecSyncMode m) -> std::string {
+    return m == OrbbecSyncMode::SecondarySynced
+               ? to_string(OrbbecSyncMode::Secondary)
+               : to_string(m);
+  };
+  std::vector<std::string> out;
+  const auto differ = [&out](const char* field, const std::string& have,
+                             const std::string& want) {
+    if (have != want) {
+      out.push_back(std::string(field) + " is " + have + ", configured " +
+                    want);
+    }
+  };
+  differ("syncMode", role(actual.mode), role(wanted.mode));
+  differ("depthDelayUs", std::to_string(actual.depth_delay_us),
+         std::to_string(wanted.depth_delay_us));
+  differ("colorDelayUs", std::to_string(actual.color_delay_us),
+         std::to_string(wanted.color_delay_us));
+  differ("triggerOutEnable", actual.trigger_out_enable ? "true" : "false",
+         wanted.trigger_out_enable ? "true" : "false");
+  differ("triggerOutDelayUs", std::to_string(actual.trigger_out_delay_us),
+         std::to_string(wanted.trigger_out_delay_us));
+  if (wanted.mode == OrbbecSyncMode::SoftwareTriggering ||
+      wanted.mode == OrbbecSyncMode::HardwareTriggering) {
+    differ("framesPerTrigger", std::to_string(actual.frames_per_trigger),
+           std::to_string(wanted.frames_per_trigger));
+  }
+  return out;
+}
+
 Status validate(const OrbbecCapture::Options& options) {
   VR_TRY(validate_streams(options, "OrbbecCapture"));
   return validate_pose(options.cam_to_world, "OrbbecCapture");
@@ -127,14 +205,40 @@ Status validate(const OrbbecCapture::Options& options) {
 
 Status validate(const OrbbecRig::Options& options) {
   VR_TRY(validate_streams(options, "OrbbecRig"));
-  if (options.cameras.size() < 2) {
+  if (options.sync.devices.size() < 2) {
     return Status::invalid_argument(
         "OrbbecRig: a rig needs at least two cameras; OrbbecCapture opens "
         "one");
   }
-  const Status poses = validate_rig_poses(options.cameras);
-  if (!poses.ok()) {
-    return Status::invalid_argument("OrbbecRig: " + poses.message());
+  for (std::size_t i = 0; i < options.sync.devices.size(); ++i) {
+    const std::string& serial = options.sync.devices[i].serial;
+    if (serial.empty()) {
+      return Status::invalid_argument("OrbbecRig: camera " + std::to_string(i) +
+                                      " has no serial");
+    }
+    for (std::size_t j = 0; j < i; ++j) {
+      if (options.sync.devices[j].serial == serial) {
+        return Status::invalid_argument("OrbbecRig: camera " + serial +
+                                        " is listed twice");
+      }
+    }
+  }
+  if (!options.calibration.empty()) {
+    const Status calibration = validate_rig_calibration(options.calibration);
+    if (!calibration.ok()) {
+      return Status::invalid_argument("OrbbecRig: " + calibration.message());
+    }
+    for (const OrbbecSyncDevice& device : options.sync.devices) {
+      const bool posed =
+          std::any_of(options.calibration.begin(), options.calibration.end(),
+                      [&](const auto& c) { return c.serial == device.serial; });
+      if (!posed) {
+        return Status::invalid_argument(
+            "OrbbecRig: the calibration has no "
+            "camera " +
+            device.serial);
+      }
+    }
   }
   // At half a frame period or more, a secondary's frame can sit within the
   // tolerance of two neighbouring triggers' primary frames.

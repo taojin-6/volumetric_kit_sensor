@@ -198,18 +198,23 @@ int test_validate() {
 
 int test_validate_rig() {
   sensor::OrbbecRig::Options r;
-  r.cameras = {{"A", vr::Mat4f(1.0f)}, {"B", vr::Mat4f(1.0f)}};
-  CHECK(orbbec::validate(r).ok());
+  r.sync.devices = {{"A", {}}, {"B", {}}};
+  CHECK(orbbec::validate(r).ok());  // no calibration: every camera at origin
 
   auto o = r;
-  o.cameras.pop_back();
+  o.sync.devices.pop_back();
   CHECK(invalid(orbbec::validate(o)));
   o = r;
-  o.cameras[1].serial = "A";
+  o.sync.devices[1].serial = "A";
   CHECK(invalid(orbbec::validate(o)));
-  // The pose file's own checks, rigidity included.
+  // A calibration must pose every camera, and pass its own checks.
   o = r;
-  o.cameras[1].cam_to_world = vr::Mat4f(2.0f);
+  o.calibration = {{"A", vr::Mat4f(1.0f), {}, {}, {}}};
+  CHECK(invalid(orbbec::validate(o)));
+  o.calibration.push_back({"B", vr::Mat4f(1.0f), {}, {}, {}});
+  o.calibration.push_back({"C", vr::Mat4f(1.0f), {}, {}, {}});  // extra: fine
+  CHECK(orbbec::validate(o).ok());
+  o.calibration[1].cam_to_world = vr::Mat4f(2.0f);
   CHECK(invalid(orbbec::validate(o)));
 
   // The tolerance must be under half a frame period (16 666 us at 30 fps),
