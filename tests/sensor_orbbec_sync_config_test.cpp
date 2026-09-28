@@ -145,6 +145,28 @@ int test_differences() {
   return 0;
 }
 
+int test_committed_rig() {
+  // config/femto_mega_sync.json, the lab rig as committed: it reads, has one
+  // primary, and staggers every secondary's depth delay so no two ToF
+  // exposures overlap.
+  const auto r = sensor::read_orbbec_sync_config(VR_RIG_SYNC_CONFIG);
+  if (!r.ok()) std::fprintf(stderr, "%s\n", r.status().message().c_str());
+  CHECK(r.ok());
+  int primaries = 0;
+  std::vector<int> delays;
+  for (const sensor::OrbbecSyncDevice& d : r.value().devices) {
+    if (d.sync.mode == sensor::OrbbecSyncMode::Primary) {
+      ++primaries;
+    } else {
+      CHECK(sensor::waits_for_primary(d.sync.mode));
+      for (const int other : delays) CHECK(other != d.sync.depth_delay_us);
+      delays.push_back(d.sync.depth_delay_us);
+    }
+  }
+  CHECK(primaries == 1 && !delays.empty());
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -152,6 +174,7 @@ int main() {
   if (test_refusals() != 0) return 1;
   if (test_sdk_round_trip() != 0) return 1;
   if (test_differences() != 0) return 1;
+  if (test_committed_rig() != 0) return 1;
   std::printf("orbbec sync config tests passed\n");
   return 0;
 }
