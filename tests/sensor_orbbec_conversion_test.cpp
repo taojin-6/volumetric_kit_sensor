@@ -295,13 +295,15 @@ int test_validate_rig() {
   o.calibration[1].cam_to_world = vr::Mat4f(2.0f);
   CHECK(invalid(orbbec::validate(o)));
 
-  // The tolerance must be under half a frame period (16 666 us at 30 fps),
-  // or one secondary frame can match two neighbouring triggers.
-  // Raw frames are single-camera for now.
+  // A rig may be raw, with the decoded colour a raw stream needs.
   o = r;
   o.raw = true;
   o.color_codec = sensor::OrbbecColorCodec::Hevc;
-  CHECK(orbbec::validate(o).domain() == vr::Status::Code::Unsupported);
+  CHECK(orbbec::validate(o).ok());
+  o.color_codec = sensor::OrbbecColorCodec::Mjpeg;
+  CHECK(!orbbec::validate(o).ok());
+  // The tolerance must be under half a frame period (16 666 us at 30 fps),
+  // or one secondary frame can match two neighbouring triggers.
   o = r;
   o.sync_tolerance_us = 0;
   CHECK(invalid(orbbec::validate(o)));

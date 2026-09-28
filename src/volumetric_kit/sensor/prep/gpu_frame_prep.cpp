@@ -9,6 +9,8 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 #include "undistort_color_comp.spv.hpp"
@@ -359,6 +361,47 @@ Status GpuFramePrep::ensure_output(std::shared_ptr<Buffer>& buffer,
                            debug_object_handle(created.handle()), name);
   buffer = std::make_shared<Buffer>(std::move(created));
   return {};
+}
+
+Result<std::vector<std::optional<DeviceFrame>>> prepare_set(
+    std::vector<GpuFramePrep>& preps,
+    const std::vector<std::optional<RawFrame>>& frames) {
+  if (preps.size() < frames.size()) {
+    return Status::invalid_argument(
+        "prepare_set: " + std::to_string(frames.size()) + " frames for " +
+        std::to_string(preps.size()) + " passes");
+  }
+  std::vector<std::optional<DeviceFrame>> out(frames.size());
+  std::vector<Status> status(frames.size());
+  const auto run = [&](std::size_t i) {
+    Result<DeviceFrame> prepared = preps[i].prepare(*frames[i]);
+    if (prepared.ok()) {
+      out[i] = std::move(prepared).value();
+    } else {
+      status[i] = prepared.status();
+    }
+  };
+  // Every frame but the last on a thread of its own, the last on this one.
+  // A thread that cannot be started runs its frame here instead.
+  std::vector<std::thread> threads;
+  std::optional<std::size_t> last;
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    if (!frames[i]) continue;
+    if (last) {
+      try {
+        threads.emplace_back(run, *last);
+      } catch (const std::system_error&) {
+        run(*last);
+      }
+    }
+    last = i;
+  }
+  if (last) run(*last);
+  for (std::thread& t : threads) t.join();
+  for (const Status& s : status) {
+    if (!s.ok()) return s;
+  }
+  return out;
 }
 
 }  // namespace volumetric_kit::recon::sensor

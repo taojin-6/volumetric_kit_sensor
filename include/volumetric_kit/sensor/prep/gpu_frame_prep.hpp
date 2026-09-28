@@ -17,6 +17,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/buffer.hpp"
@@ -145,5 +147,21 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   std::shared_ptr<Buffer> depth_out_;
   std::shared_ptr<Buffer> color_out_;
 };
+
+/// @brief Prepare several cameras' frames at once, each on its own thread
+///        with its own pass: they do not depend on one another, so their
+///        uploads, submits and waits overlap. The @ref Device must be shared
+///        by the passes, and may be.
+/// @param preps   One pass per camera; `preps[i]` prepares `frames[i]`, and
+///                each is used by one thread only for the call.
+/// @param frames  One entry per camera, an empty one skipped -- a rig's set
+///                (`OrbbecRig::poll_raw_set`).
+/// @return One @ref DeviceFrame per present frame, empty where the frame
+///         was; @ref Status::Code::InvalidArgument for fewer passes than
+///         frames; otherwise the lowest camera's failure, once every thread
+///         has finished.
+VR_SENSOR_UTILS_API Result<std::vector<std::optional<DeviceFrame>>> prepare_set(
+    std::vector<GpuFramePrep>& preps,
+    const std::vector<std::optional<RawFrame>>& frames);
 
 }  // namespace volumetric_kit::recon::sensor
