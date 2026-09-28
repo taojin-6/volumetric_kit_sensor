@@ -301,7 +301,7 @@ int test_validate_rig() {
   o.color_codec = sensor::OrbbecColorCodec::Hevc;
   CHECK(orbbec::validate(o).ok());
   o.color_codec = sensor::OrbbecColorCodec::Mjpeg;
-  CHECK(!orbbec::validate(o).ok());
+  CHECK(invalid(orbbec::validate(o)));
   // The tolerance must be under half a frame period (16 666 us at 30 fps),
   // or one secondary frame can match two neighbouring triggers.
   o = r;

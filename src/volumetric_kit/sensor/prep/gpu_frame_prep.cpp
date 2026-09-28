@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -79,33 +80,25 @@ Status check_camera(const char* what, const LensCamera& c) {
   return {};
 }
 
-// An input of at least `bytes`, kept when it is big enough. Device-local, and
-// filled through the pass's batch, so the kernels never read the raw frame
-// across the bus.
-Status ensure_input(const Device& device, Allocator& allocator, Buffer& buffer,
-                    VkDeviceSize bytes, const char* name) {
+// A buffer of at least `bytes`, kept when it is big enough: a device-local
+// input, filled through the pass's batch so the kernels never read the raw
+// frame across the bus, or the host-visible staging the frame is written
+// into. The staging is kept too: a batch stages through a buffer of its own
+// per call, and four passes doing that at once with 4K frames had VMA
+// allocate and free a block for every set.
+Status ensure_buffer(const Device& device, Allocator& allocator, Buffer& buffer,
+                     VkDeviceSize bytes, bool staging, const char* name) {
   if (buffer.valid() && buffer.size() >= bytes) return {};
   buffer = Buffer();
-  VR_ASSIGN(buffer, device_storage_buffer(allocator, bytes));
+  if (staging) {
+    VR_ASSIGN(buffer,
+              storage_buffer(allocator, bytes, HostAccess::SequentialWrite,
+                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+  } else {
+    VR_ASSIGN(buffer, device_storage_buffer(allocator, bytes));
+  }
   device.set_object_name(VK_OBJECT_TYPE_BUFFER,
                          debug_object_handle(buffer.handle()), name);
-  return {};
-}
-
-// The frame's staging, host-visible and kept when it is big enough. A batch
-// stages through a buffer of its own per call, and four passes doing that at
-// once with 4K frames had VMA allocate and free a block for every set.
-Status ensure_staging(Allocator& allocator, Buffer& buffer,
-                      VkDeviceSize bytes) {
-  if (buffer.valid() && buffer.size() >= bytes) return {};
-  buffer = Buffer();
-  BufferDesc desc;
-  desc.size = bytes;
-  desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  desc.memory = MemoryUsage::HostVisible;
-  desc.mapped = true;
-  desc.host_access = HostAccess::SequentialWrite;
-  VR_ASSIGN(buffer, allocator.create_buffer(desc));
   return {};
 }
 
@@ -271,17 +264,18 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     VR_ASSIGN(color, check_color(frame, max_pixels, max_storage_buffer_range_));
   }
 
-  VR_TRY(ensure_input(*device_, *allocator_, depth_in_, depth.in_bytes,
-                      "sensor.raw_depth"));
+  VR_TRY(ensure_buffer(*device_, *allocator_, depth_in_, depth.in_bytes, false,
+                       "sensor.raw_depth"));
   VR_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame"));
   if (frame.has_color()) {
-    VR_TRY(ensure_input(*device_, *allocator_, color_in_, color.in_bytes,
-                        "sensor.raw_color"));
+    VR_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.in_bytes,
+                         false, "sensor.raw_color"));
     VR_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame"));
   }
 
-  VR_TRY(
-      ensure_staging(*allocator_, staging_, depth.in_bytes + color.in_bytes));
+  VR_TRY(ensure_buffer(*device_, *allocator_, staging_,
+                       depth.in_bytes + color.in_bytes, true,
+                       "sensor.raw_staging"));
 
   // The frame staged as the inputs lay it out: depth, then the three planes
   // packed tightly whatever the decoder's strides. A tight plane is one
@@ -345,7 +339,13 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                           group_count(color.pixels, kLocalSize),
                           max_workgroup_count_x_, &stage));
   }
-  VR_TRY(batch.submit());
+  const Status submitted = batch.submit();
+  if (!submitted.ok()) {
+    // A failed wait may leave the copy running, so the staging is let go
+    // rather than rewritten or freed, as the batch lets go of its own.
+    static_cast<void>(new Buffer(std::move(staging_)));
+    return submitted;
+  }
 
   const LensCamera& d = frame.depth_camera;
   DeviceFrame out;
@@ -398,31 +398,46 @@ Result<std::vector<std::optional<DeviceFrame>>> prepare_set(
   }
   std::vector<std::optional<DeviceFrame>> out(frames.size());
   std::vector<Status> status(frames.size());
-  const auto run = [&](std::size_t i) {
-    Result<DeviceFrame> prepared = preps[i].prepare(*frames[i]);
-    if (prepared.ok()) {
-      out[i] = std::move(prepared).value();
-    } else {
-      status[i] = prepared.status();
+  // Never throws: an exception leaving a thread would end the process.
+  const auto run = [&](std::size_t i) noexcept {
+    try {
+      Result<DeviceFrame> prepared = preps[i].prepare(*frames[i]);
+      if (prepared.ok()) {
+        out[i] = std::move(prepared).value();
+      } else {
+        status[i] = prepared.status();
+      }
+    } catch (const std::bad_alloc&) {
+      status[i] = Status::out_of_memory("prepare_set: out of host memory");
     }
   };
-  // Every frame but the last on a thread of its own, the last on this one.
-  // A thread that cannot be started runs its frame here instead.
-  std::vector<std::thread> threads;
-  std::optional<std::size_t> last;
-  for (std::size_t i = 0; i < frames.size(); ++i) {
-    if (!frames[i]) continue;
-    if (last) {
-      try {
-        threads.emplace_back(run, *last);
-      } catch (const std::system_error&) {
-        run(*last);
-      }
+  // Joined on every way out, a throw included, so no thread outlives what it
+  // writes to.
+  struct Workers {
+    std::vector<std::thread> threads;
+    ~Workers() {
+      for (std::thread& t : threads) t.join();
     }
-    last = i;
+  };
+  {
+    Workers workers;
+    workers.threads.reserve(frames.size());
+    // Every frame but the last on a thread of its own, the last on this one.
+    // A thread that cannot be started runs its frame here instead.
+    std::optional<std::size_t> last;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+      if (!frames[i]) continue;
+      if (last) {
+        try {
+          workers.threads.emplace_back(run, *last);
+        } catch (const std::system_error&) {
+          run(*last);
+        }
+      }
+      last = i;
+    }
+    if (last) run(*last);
   }
-  if (last) run(*last);
-  for (std::thread& t : threads) t.join();
   for (const Status& s : status) {
     if (!s.ok()) return s;
   }
