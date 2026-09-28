@@ -248,8 +248,9 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
     }
     try {
       // RGB: the wire carries MJPG either way, decoded on the SDK's thread.
-      // TODO(sensor): stream H.265, which the SDK passes through undecoded, so
-      // 4K on three cameras needs a decoder of ours (the 2026-09-26 decision).
+      // TODO(sensor): stream H.265, which the SDK passes through undecoded,
+      // through sensor/video's HevcDecoder, one decode thread per camera
+      // (the 2026-09-26 and 2026-09-27 decoder decisions).
       s->color_profile_ = color_modes->getVideoStreamProfile(
           static_cast<int>(streams.color_width),
           static_cast<int>(streams.color_height), OB_FORMAT_RGB,
