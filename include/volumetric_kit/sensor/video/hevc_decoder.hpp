@@ -57,10 +57,11 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   ///         @ref VideoDecodeBackend::Auto tries them: VideoToolbox on Apple;
   ///         Cuda, then Vulkan, then Vaapi on Linux, so an NVIDIA GPU is
   ///         chosen over an integrated one; Cuda, then D3d11va, on Windows.
-  ///         Each is listed only if it decoded a built-in clip, tried once
-  ///         per process with FFmpeg's log silenced (a back end that is not
-  ///         there says so at ERROR). Auto stops at the first that decodes,
-  ///         so it tries only as many as it needs.
+  ///         Each is listed only if it opens and decodes HEVC: VideoToolbox
+  ///         as VTIsHardwareDecodeSupported answers, the others by decoding a
+  ///         built-in clip. Found once per process with FFmpeg's log silenced
+  ///         (a back end that is not there says so at ERROR). Auto stops at
+  ///         the first that decodes, so it tries only as many as it needs.
   static std::vector<VideoDecodeBackend> hardware_backends();
 
   /// @return The decoder; @ref Status::Code::Unsupported for a named back end

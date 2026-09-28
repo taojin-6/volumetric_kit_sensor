@@ -47,6 +47,10 @@ target_link_libraries(
   recon_sensor_video
   PUBLIC recon_core
   PRIVATE PkgConfig::VR_FFMPEG)
+# VideoToolbox answers whether its hardware decodes HEVC (hw_backend.cpp).
+if(APPLE)
+  target_link_libraries(recon_sensor_video PRIVATE "-framework VideoToolbox")
+endif()
 
 target_include_directories(
   recon_sensor_video

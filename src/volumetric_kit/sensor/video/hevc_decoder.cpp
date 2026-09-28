@@ -155,7 +155,8 @@ struct HevcDecoder::Impl {
                                             VideoPixelLayout layout,
                                             int threads);
 
-  // Whether @p backend decodes the probe clip here, tried once per process.
+  // Whether @p backend decodes HEVC here, found once per process: asked of
+  // the platform where it can be, else by decoding the probe clip.
   static bool decodes(VideoDecodeBackend backend);
 
   Status copy_to_host(const AVFrame& picture);
@@ -250,27 +251,34 @@ bool HevcDecoder::Impl::decodes(VideoDecodeBackend backend) {
   // libcuda.so.1"); here that is the answer, not a fault.
   const int level = av_log_get_level();
   av_log_set_level(AV_LOG_QUIET);
-  bool pictured = false;
+  bool answer = false;
   auto opened =
       open(backend, /*may_fall_back=*/false, VideoPixelLayout::Yuv420, 1);
   if (opened) {
-    HevcDecoder decoder(std::move(opened).value());
-    bool decoded = decoder.send(kProbeClip, sizeof(kProbeClip), 0).ok() &&
-                   decoder.send(nullptr, 0, 0).ok();
-    while (decoded) {
-      auto picture = decoder.receive();
-      if (!picture)
-        decoded = false;
-      else if (!picture.value())
-        break;
-      else
-        pictured = true;
+    // Opening answers for this FFmpeg. Where the platform can be asked, it
+    // answers for the hardware; elsewhere only decoding the clip can.
+    if (const auto asked = video::hardware_decodes(backend, AV_CODEC_ID_HEVC)) {
+      answer = *asked;
+    } else {
+      HevcDecoder decoder(std::move(opened).value());
+      bool decoded = decoder.send(kProbeClip, sizeof(kProbeClip), 0).ok() &&
+                     decoder.send(nullptr, 0, 0).ok();
+      bool pictured = false;
+      while (decoded) {
+        auto picture = decoder.receive();
+        if (!picture)
+          decoded = false;
+        else if (!picture.value())
+          break;
+        else
+          pictured = true;
+      }
+      answer = pictured && decoded;
     }
-    pictured = pictured && decoded;
   }
   av_log_set_level(level);
-  known.emplace(backend, pictured);
-  return pictured;
+  known.emplace(backend, answer);
+  return answer;
 }
 
 // FFmpeg crops a hardware picture at the right and bottom only, so the copy
