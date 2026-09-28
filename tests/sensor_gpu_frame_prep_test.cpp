@@ -453,10 +453,10 @@ int allocate(vol::VoxelBlockGrid& grid, const vr::Buffer& depth,
 int test_fuses(vr::Device& device, vr::Allocator& allocator,
                sensor::GpuFramePrep& prep) {
   // A small depth camera, 80x60, beside the full colour one: the two sizes
-  // differ, as a sensor's do. Small because the hash map's bucket locks are
-  // host-visible until PR #81, and on NVIDIA 320x240 pixels contending for
-  // them ran past the 7 s watchdog in CI (Xid 109). A tilted surface,
-  // 0.7-1.2 m, spreads the band over many blocks.
+  // differ, as a sensor's do. A tilted surface, 0.7-1.2 m, spreads the band
+  // over many blocks. (A 320x240 flat wall here once ran past NVIDIA's 7 s
+  // watchdog in CI, Xid 109, contending for the hash map's bucket locks while
+  // they were host-visible; PR #81 moved them into device memory.)
   sensor::LensCamera depth_cam = lensed();
   depth_cam.fx /= 4.0f;
   depth_cam.fy /= 4.0f;
