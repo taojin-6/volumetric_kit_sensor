@@ -17,10 +17,13 @@ namespace {
 constexpr std::uint32_t kQueueSeconds = 2;
 
 // Access units after its own by which a picture has come out, if it ever
-// will: H.265 holds at most 16 pictures back for display, and one decoding
-// thread holds none. A pair sent longer ago with no picture is one the
-// decoder skipped -- a CRA's leading pictures after a restart, say.
-constexpr std::int64_t kMaxPictureDelay = 16;
+// will. H.265 holds at most 16 pictures back for display, and one decoding
+// thread holds none; but an FFmpeg before 7.1 hands out one picture per
+// access unit, so the pictures a new sequence holds back can also wait
+// behind the last one's, as many again. A pair sent longer ago with no
+// picture is one the decoder skipped -- a CRA's leading pictures after a
+// restart, say.
+constexpr std::int64_t kMaxPictureDelay = 32;
 
 }  // namespace
 

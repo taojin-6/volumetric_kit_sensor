@@ -410,34 +410,74 @@ std::vector<int> display_order(const Units& units) {
   return shows;
 }
 
+// `clip` appended to `units`, and to `shows` the frame each of its access
+// units shows (`clip_shows`, from display_order), counted on from the frames
+// already there.
+void append(Units* units, std::vector<int>* shows, const Units& clip,
+            const std::vector<int>& clip_shows) {
+  const int base = static_cast<int>(shows->size());
+  for (std::size_t i = 0; i < clip.size(); ++i) {
+    units->push_back(clip[i]);
+    shows->push_back(base + clip_shows[i]);
+  }
+}
+
+// An FFmpeg before 7.1 hands out one picture per access unit, so a stream
+// that changes sequence -- a clip's first key frame after another clip --
+// ends with the pictures the first held back still coming out, one an
+// access unit: two for these clips, at most this many.
+constexpr std::size_t kHeldAtEnd = 3;
+
+// Every pair in `want` (the slots they are dated in, in display order) came
+// out, in order, but for the last kHeldAtEnd; each shows the frame
+// `frame_of` names, as `labelled_below` or later slots are decoded (BT.709
+// limited, or unlabelled).
+int check_run(const Run& r, const std::vector<int>& want, int labelled_below,
+              int (*frame_of)(int)) {
+  CHECK(r.out.size() <= want.size());
+  CHECK(r.out.size() + kHeldAtEnd >= want.size());
+  for (std::size_t i = 0; i < r.out.size(); ++i) {
+    const int slot = want[i];
+    CHECK(slot_of(*r.out[i]) == slot);
+    const int status = slot < labelled_below
+                           ? check_pair(*r.out[i], frame_of(slot), slot,
+                                        sensor::VideoColorMatrix::Bt709, false)
+                           : check_pair(*r.out[i], frame_of(slot), slot);
+    if (status != 0) return 1;
+  }
+  return 0;
+}
+
 // B-frames: the frames are sent out of display order and their pictures come
 // out in it, so no pair is lost for having been sent before one shown
 // earlier. Each access unit is dated at the frame it shows, as a camera
-// dates the frame it captured; the pairs come out in that order. A key frame
-// after them, the unlabelled clip's first, is what lets the last of them
-// out, as the next frames of a live stream would.
+// dates the frame it captured; the pairs come out in that order. The
+// unlabelled clip after them is what lets the last of them out, as the next
+// frames of a live stream would.
 int test_b_frames() {
-  Units units = access_units(kBFrames);
-  CHECK(units.size() >= 8);
-  units.resize(8);  // the patch frames; the grey ones after are 4:0:0
-  std::vector<int> shows = display_order(units);
-  CHECK(shows.size() == 8);
-  CHECK(!std::is_sorted(shows.begin(), shows.end()));  // out of order
+  Units b_frames = access_units(kBFrames);
+  CHECK(b_frames.size() >= 8);
+  b_frames.resize(8);  // the patch frames; the grey ones after are 4:0:0
+  const std::vector<int> b_shows = display_order(b_frames);
+  CHECK(b_shows.size() == 8);
+  CHECK(!std::is_sorted(b_shows.begin(), b_shows.end()));  // out of order
+  const Units unlabelled = access_units(kUnlabelled);
+  const std::vector<int> u_shows = display_order(unlabelled);
+  CHECK(u_shows.size() == 8);
 
-  units.push_back(access_units(kUnlabelled)[0]);
-  shows.push_back(8);
-  const Run r = run(pairs(units, {0, 1, 2, 3, 4, 5, 6, 7, 8}, shows), 9);
-  CHECK(r.out.size() == 9);
-  CHECK(r.lost == 0);
-  for (int i = 0; i < 8; ++i) {
-    CHECK(slot_of(*r.out[static_cast<std::size_t>(i)]) == i);
-    if (check_pair(*r.out[static_cast<std::size_t>(i)], i, i,
-                   sensor::VideoColorMatrix::Bt709, false) != 0) {
-      return 1;
-    }
+  Units units;
+  std::vector<int> shows;
+  append(&units, &shows, b_frames, b_shows);
+  append(&units, &shows, unlabelled, u_shows);
+  std::vector<int> frames;
+  std::vector<int> want;
+  for (int i = 0; i < 16; ++i) {
+    frames.push_back(i);
+    want.push_back(i);
   }
-  if (check_pair(*r.out[8], 0, 8) != 0) return 1;
-  return 0;
+  const Run r = run(pairs(units, frames, shows), want.size() - kHeldAtEnd);
+  CHECK(r.lost == 0);
+  return check_run(r, want, 8, [](int slot) { return slot % 8; });
 }
 
 // Open GOPs, access unit 3 lost: frame 1, which nothing refers to. The
@@ -447,41 +487,40 @@ int test_b_frames() {
 // and FFmpeg 6.1 would decode them from a concealed one. Frames 2 and 3,
 // held for display at the restart, go too. From there every frame comes out
 // -- the next CRA's leading pictures as well, nothing before it missing --
-// and then the unlabelled clip, which lets the last of them out and runs on
-// long enough for the skipped pictures' pairs to be counted: 16 frames
-// without a picture. Lost: frames 2 and 3, and the leading two.
+// and then the unlabelled clip, four times over: it lets the last of them
+// out and runs on long enough for the skipped pictures' pairs to be counted,
+// 32 access units without a picture. Lost: frames 2 and 3, and the leading
+// two.
 int test_open_gop_restart() {
-  Units units = access_units(kOpenGop);
-  CHECK(units.size() == 16);
-  std::vector<int> shows = display_order(units);
-  CHECK(shows.size() == 16);
-  CHECK(shows[3] == 1 && shows[4] == 6 && shows[5] == 5 && shows[6] == 4);
-  for (const auto& unit : access_units(kUnlabelled)) {
-    shows.push_back(static_cast<int>(units.size()));
-    units.push_back(unit);
+  const Units open_gop = access_units(kOpenGop);
+  CHECK(open_gop.size() == 16);
+  const std::vector<int> o_shows = display_order(open_gop);
+  CHECK(o_shows.size() == 16);
+  CHECK(o_shows[3] == 1 && o_shows[4] == 6 && o_shows[5] == 5 &&
+        o_shows[6] == 4);
+  const Units unlabelled = access_units(kUnlabelled);
+  const std::vector<int> u_shows = display_order(unlabelled);
+  CHECK(u_shows.size() == 8);
+
+  Units units;
+  std::vector<int> shows;
+  append(&units, &shows, open_gop, o_shows);
+  for (int copy = 0; copy < 4; ++copy) {
+    append(&units, &shows, unlabelled, u_shows);
   }
   std::vector<int> frames;
   std::vector<int> slots;
-  for (int i = 0; i < 24; ++i) {
+  for (int i = 0; i < static_cast<int>(units.size()); ++i) {
     if (i == 3) continue;
     frames.push_back(i);
     slots.push_back(shows[static_cast<std::size_t>(i)]);
   }
-  const Run r = run(pairs(units, frames, slots), 19);
-  CHECK(r.out.size() == 19);
-  CHECK(r.lost == 4);
   std::vector<int> want = {0};
-  for (int f = 6; f < 24; ++f) want.push_back(f);
-  for (std::size_t i = 0; i < want.size(); ++i) {
-    CHECK(slot_of(*r.out[i]) == want[i]);
-    const int f = want[i];
-    const int status = f < 16
-                           ? check_pair(*r.out[i], f, f,
-                                        sensor::VideoColorMatrix::Bt709, false)
-                           : check_pair(*r.out[i], f - 16, f);
-    if (status != 0) return 1;
-  }
-  return 0;
+  for (int f = 6; f < static_cast<int>(units.size()); ++f) want.push_back(f);
+  const Run r = run(pairs(units, frames, slots), want.size() - kHeldAtEnd);
+  CHECK(r.lost == 4);
+  return check_run(r, want, 16,
+                   [](int slot) { return slot < 16 ? slot : (slot - 16) % 8; });
 }
 
 }  // namespace
