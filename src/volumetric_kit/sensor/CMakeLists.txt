@@ -24,7 +24,7 @@ add_library(recon_sensor)
 add_library(volumetric_kit::recon_sensor ALIAS recon_sensor)
 
 target_sources(recon_sensor PRIVATE camera_conventions.cpp
-                                    color_conventions.cpp)
+                                    color_conventions.cpp rig_calibration.cpp)
 
 # Per-tier export header (VR_SENSOR_API / VR_SENSOR_STATIC_DEFINE), isolated so
 # the macros never collide with another tier's on one include path.
@@ -54,6 +54,15 @@ target_compile_features(recon_sensor PUBLIC cxx_std_17)
 # ColorCameraParams / Result), so a consumer compiles against recon_core and
 # nothing else.
 target_link_libraries(recon_sensor PUBLIC recon_core)
+
+# nlohmann/json parses the rig calibration file (rig_calibration.cpp): a PRIVATE
+# SYSTEM include, as VMA is to recon_core, so it reaches no public header, no
+# link line and no consumer.
+if(NOT VR_JSON_INCLUDE_DIR)
+  message(FATAL_ERROR "recon_sensor: VR_JSON_INCLUDE_DIR is unset -- "
+                      "third_party/ must be configured before src/.")
+endif()
+target_include_directories(recon_sensor SYSTEM PRIVATE "${VR_JSON_INCLUDE_DIR}")
 
 target_include_directories(
   recon_sensor

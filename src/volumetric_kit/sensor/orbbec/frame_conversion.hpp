@@ -9,6 +9,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include <libobsensor/h/ObTypes.h>
 
@@ -16,6 +18,8 @@
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
+#include "volumetric_kit/recon/sensor/orbbec/orbbec_rig.hpp"
+#include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
 
@@ -45,12 +49,31 @@ void depth_to_metres(const std::uint16_t* src, std::size_t count,
 /// and `mesh` tiers read and the one the Replica reader produces.
 void pack_rgb(const std::uint8_t* rgb, std::size_t count, std::uint32_t* dst);
 
-/// The SDK's sync-mode bit to the driver's name for it.
+/// The SDK's sync-mode bit to the driver's name for it, and back.
 OrbbecSyncMode sync_mode_from(OBMultiDeviceSyncMode mode) noexcept;
+OBMultiDeviceSyncMode sdk_sync_mode(OrbbecSyncMode mode) noexcept;
+
+/// A camera's sync settings to the driver's struct, and back.
+OrbbecSyncSettings sync_settings_from(const OBMultiDeviceSyncConfig& sdk);
+OBMultiDeviceSyncConfig sdk_sync_config(const OrbbecSyncSettings& settings);
+
+/// Where a camera's @p actual sync settings differ from the @p wanted ones, one
+/// "depthDelayUs is 320, configured 160" entry each; empty when they agree.
+/// Only what a Femto Mega reads back as written is compared: it stores one
+/// secondary mode and reads it back as SecondarySynced, and reads
+/// trigger2ImageDelayUs back as the depth delay and framesPerTrigger as 0
+/// outside the triggering modes.
+std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
+                                          const OrbbecSyncSettings& actual);
 
 /// Everything about @p options that can be refused without a camera: sizes and
 /// rate, the depth range, the pose. The first check @ref OrbbecCapture::open
 /// makes, before it touches the SDK.
 Status validate(const OrbbecCapture::Options& options);
+
+/// The same for a rig, plus what only a rig has: at least two cameras, a
+/// calibration (if any) that @ref validate_rig_calibration accepts and that
+/// poses every one of them, and a sync tolerance under half a frame period.
+Status validate(const OrbbecRig::Options& options);
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

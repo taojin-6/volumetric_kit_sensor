@@ -16,8 +16,10 @@ set(_vr_sensor_orbbec_generated_inc
 add_library(recon_sensor_orbbec)
 add_library(volumetric_kit::recon_sensor_orbbec ALIAS recon_sensor_orbbec)
 
-target_sources(recon_sensor_orbbec PRIVATE orbbec_capture.cpp
-                                           frame_conversion.cpp)
+target_sources(
+  recon_sensor_orbbec
+  PRIVATE orbbec_capture.cpp orbbec_rig.cpp orbbec_sync_config.cpp
+          camera_stream.cpp frame_conversion.cpp trigger_grouping.cpp)
 
 generate_export_header(
   recon_sensor_orbbec
@@ -55,6 +57,10 @@ target_include_directories(
   PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
          "$<BUILD_INTERFACE:${_vr_sensor_orbbec_generated_inc}>"
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+
+# nlohmann/json parses the sync configuration, privately (see recon_sensor).
+target_include_directories(recon_sensor_orbbec SYSTEM
+                           PRIVATE "${VR_JSON_INCLUDE_DIR}")
 
 vr_target_warnings(recon_sensor_orbbec)
 
