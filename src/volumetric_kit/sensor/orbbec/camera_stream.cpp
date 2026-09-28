@@ -12,6 +12,10 @@
 #include "frame_conversion.hpp"
 #include "volumetric_kit/recon/sensor/camera_conventions.hpp"
 
+#if VR_ORBBEC_WITH_HEVC
+#include "hevc_color.hpp"
+#endif
+
 namespace volumetric_kit::recon::sensor::orbbec {
 
 namespace {
@@ -172,13 +176,18 @@ Result<std::vector<std::shared_ptr<ob::Device>>> discover(
 void Mailbox::on_frameset(std::shared_ptr<ob::FrameSet> frameset) {
   // Runs on the SDK's thread; it must never throw back into the SDK.
   if (frameset == nullptr) return;
+  received.fetch_add(1, std::memory_order_relaxed);
+  post(std::move(frameset));
+}
+
+void Mailbox::post(std::shared_ptr<ob::FrameSet> frameset) {
+  if (frameset == nullptr) return;
   std::lock_guard<std::mutex> lock(mutex);
   pending.push_back(std::move(frameset));
   while (pending.size() > depth) {
     pending.pop_front();
     dropped.fetch_add(1, std::memory_order_relaxed);
   }
-  received.fetch_add(1, std::memory_order_relaxed);
 }
 
 void Mailbox::on_devices_changed(const std::string& serial,
@@ -200,8 +209,10 @@ void Mailbox::on_devices_changed(const std::string& serial,
 Result<std::unique_ptr<CameraStream>> CameraStream::create(
     std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
     const OrbbecStreamOptions& streams, const Mat4f& cam_to_world,
-    const std::string& who) {
+    bool configure_logging, const std::string& who) {
   std::unique_ptr<CameraStream> s(new CameraStream());
+  s->fps_ = streams.fps;
+  s->configure_logging_ = configure_logging;
   s->context_ = std::move(context);
   s->device_ = std::move(device);
   try {
@@ -246,11 +257,31 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
                                  std::to_string(streams.fps) +
                                  " Y16; it offers " + list_modes(*depth_modes));
     }
+    if (streams.color_codec == OrbbecColorCodec::Hevc) {
+#if VR_ORBBEC_WITH_HEVC
+      try {
+        s->wire_color_profile_ = color_modes->getVideoStreamProfile(
+            static_cast<int>(streams.color_width),
+            static_cast<int>(streams.color_height), OB_FORMAT_H265,
+            static_cast<int>(streams.fps));
+      } catch (const ob::Error&) {
+        return Status::unsupported(s->who_ + " has no colour mode " +
+                                   std::to_string(streams.color_width) + "x" +
+                                   std::to_string(streams.color_height) + "@" +
+                                   std::to_string(streams.fps) +
+                                   " H265; it offers " +
+                                   list_modes(*color_modes));
+      }
+#else
+      return Status::unsupported(
+          s->who_ +
+          ": H.265 colour needs the HEVC decoder, which this build left out "
+          "(configure with -DVR_WITH_FFMPEG=ON)");
+#endif
+    }
     try {
-      // RGB: the wire carries MJPG either way, decoded on the SDK's thread.
-      // TODO(sensor): stream H.265, which the SDK passes through undecoded,
-      // through sensor/video's HevcDecoder, one decode thread per camera
-      // (the 2026-09-26 and 2026-09-27 decoder decisions).
+      // RGB: MJPG on the wire, decoded on the SDK's thread -- or, for H.265,
+      // the mode whose calibration the decoded frames carry.
       s->color_profile_ = color_modes->getVideoStreamProfile(
           static_cast<int>(streams.color_width),
           static_cast<int>(streams.color_height), OB_FORMAT_RGB,
@@ -321,6 +352,9 @@ OrbbecCaptureStats CameraStream::stats() const noexcept {
   s.delivered = delivered_;
   s.dropped = mailbox_->dropped.load(std::memory_order_relaxed) + discarded_;
   s.failed = failed_;
+#if VR_ORBBEC_WITH_HEVC
+  if (hevc_ != nullptr) s.lost = hevc_->lost();
+#endif
   return s;
 }
 
@@ -341,24 +375,61 @@ Status CameraStream::start() {
   discarded_ = 0;
   failed_in_a_row_ = 0;
   first_pair_checked_ = false;
+  // The colour decoder: every H.265 pair goes through it, in order, and on
+  // to the mailbox decoded.
+  hevc_.reset();
+#if VR_ORBBEC_WITH_HEVC
+  if (wire_color_profile_ != nullptr) {
+    HevcColorDecoder::Options decoding;
+    decoding.fps = fps_;
+    decoding.rgb_profile = color_profile_;
+    decoding.configure_ffmpeg_logging = configure_logging_;
+    decoding.who = who_;
+    VR_ASSIGN(
+        auto decoder,
+        HevcColorDecoder::start(
+            decoding, [mailbox = mailbox_](std::shared_ptr<ob::FrameSet> fs) {
+              mailbox->post(std::move(fs));
+            }));
+    hevc_ = std::move(decoder);
+  }
+#endif
   try {
     auto config = std::make_shared<ob::Config>();
     config->enableStream(depth_profile_);
-    config->enableStream(color_profile_);
-    // Only pairs: a frame set missing either half is never handed over.
+    config->enableStream(wire_color_profile_ != nullptr ? wire_color_profile_
+                                                        : color_profile_);
+    // Only pairs: a frame set missing either half is never handed over --
+    // except for H.265, where every colour frame must reach the decoder,
+    // paired or not. Requiring pairs there, a secondary's colour frame went
+    // whenever its depth did (under 2% of triggers), and each gap cost the
+    // stream up to a second, to its next key frame: 8-30% of its pairs.
     config->setFrameAggregateOutputMode(
-        OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE);
+        wire_color_profile_ != nullptr
+            ? OB_FRAME_AGGREGATE_OUTPUT_COLOR_FRAME_REQUIRE
+            : OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE);
     // Pair depth with the colour frame nearest it in time.
     pipeline_->enableFrameSync();
-    pipeline_->start(config,
-                     [mailbox = mailbox_](std::shared_ptr<ob::FrameSet> fs) {
-                       try {
-                         mailbox->on_frameset(std::move(fs));
-                       } catch (...) {
-                         // Never throw into the SDK's thread.
-                       }
-                     });
+    pipeline_->start(config, [mailbox = mailbox_,
+                              hevc = hevc_](std::shared_ptr<ob::FrameSet> fs) {
+      try {
+#if VR_ORBBEC_WITH_HEVC
+        if (hevc != nullptr) {
+          if (fs == nullptr) return;
+          mailbox->received.fetch_add(1, std::memory_order_relaxed);
+          hevc->push(std::move(fs));
+          return;
+        }
+#endif
+        mailbox->on_frameset(std::move(fs));
+      } catch (...) {
+        // Never throw into the SDK's thread.
+      }
+    });
   } catch (const std::exception& e) {  // ob::Error is one
+#if VR_ORBBEC_WITH_HEVC
+    if (hevc_ != nullptr) hevc_->stop();
+#endif
     return sdk_error(who_, "starting", e);
   }
   running_ = true;
@@ -375,6 +446,11 @@ void CameraStream::stop() noexcept {
     }
     running_ = false;
   }
+  // After the pipeline, so nothing more is pushed; before the mailbox is
+  // cleared, so nothing more is posted.
+#if VR_ORBBEC_WITH_HEVC
+  if (hevc_ != nullptr) hevc_->stop();
+#endif
   {
     std::lock_guard<std::mutex> lock(mailbox_->mutex);
     mailbox_->pending.clear();

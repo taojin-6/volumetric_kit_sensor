@@ -52,6 +52,17 @@ target_link_libraries(
   PUBLIC recon_sensor
   PRIVATE ob::OrbbecSDK)
 
+# H.265 colour (OrbbecColorCodec::Hevc), when the video decoder is built: its
+# own source and a PRIVATE link, since no decoder type reaches the public
+# header. Without it the driver refuses Hevc at open.
+if(TARGET recon_sensor_video)
+  target_sources(recon_sensor_orbbec PRIVATE hevc_color.cpp)
+  target_link_libraries(recon_sensor_orbbec PRIVATE recon_sensor_video)
+  target_compile_definitions(recon_sensor_orbbec PRIVATE VR_ORBBEC_WITH_HEVC=1)
+else()
+  target_compile_definitions(recon_sensor_orbbec PRIVATE VR_ORBBEC_WITH_HEVC=0)
+endif()
+
 target_include_directories(
   recon_sensor_orbbec
   PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"

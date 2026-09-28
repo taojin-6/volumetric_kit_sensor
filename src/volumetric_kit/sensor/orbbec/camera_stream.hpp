@@ -30,6 +30,8 @@
 
 namespace volumetric_kit::recon::sensor::orbbec {
 
+class HevcColorDecoder;
+
 // The SDK reports every failure as a thrown ob::Error; this repo returns
 // Status across its API. `who` names the caller ("OrbbecCapture", ...).
 Status sdk_error(const std::string& who, const std::string& what,
@@ -67,7 +69,11 @@ struct Mailbox {
   std::atomic<std::uint64_t> received{0};
   std::atomic<std::uint64_t> dropped{0};
 
+  // A pair from the SDK: counted as received, and posted.
   void on_frameset(std::shared_ptr<ob::FrameSet> frameset);
+  // A pair into `pending`, uncounted: one the SDK delivered already, as H.265,
+  // and the colour decoder has decoded.
+  void post(std::shared_ptr<ob::FrameSet> frameset);
   void on_devices_changed(const std::string& serial,
                           const ob::DeviceList& removed);
 };
@@ -77,10 +83,11 @@ class CameraStream {
   // Read the camera's identity and role, check its orientation, find the
   // modes, derive the frame's cameras, and build the filters. Does not start.
   // Refuses a software-triggered camera. Messages name `who` and the serial.
+  // `configure_logging` sets FFmpeg's log level too, for H.265 colour.
   static Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
       const OrbbecStreamOptions& streams, const Mat4f& cam_to_world,
-      const std::string& who);
+      bool configure_logging, const std::string& who);
 
   CameraStream(const CameraStream&) = delete;
   CameraStream& operator=(const CameraStream&) = delete;
@@ -146,7 +153,17 @@ class CameraStream {
   std::shared_ptr<ob::Device> device_;
   std::shared_ptr<ob::Pipeline> pipeline_;
   std::shared_ptr<ob::StreamProfile> depth_profile_;
+  // The RGB mode: the colour camera's calibration, and the profile of the
+  // frames process() is handed. It is also what the wire carries, unless
+  // `wire_color_profile_` is set: the H.265 mode of the same size, whose
+  // calibration is the same (measured, byte for byte, at 720p, 1080p, 4K).
   std::shared_ptr<ob::StreamProfile> color_profile_;
+  std::shared_ptr<ob::StreamProfile> wire_color_profile_;
+  std::uint32_t fps_ = 0;
+  bool configure_logging_ = true;
+  // Decodes the H.265 colour, between the SDK and the mailbox; null for
+  // MJPEG. Replaced at each start, so its counters start fresh with the rest.
+  std::shared_ptr<HevcColorDecoder> hevc_;
   std::shared_ptr<ob::UnDistortionFilter> undistort_color_;
   std::shared_ptr<ob::Align> align_to_color_;
   bool device_callback_registered_ = false;
