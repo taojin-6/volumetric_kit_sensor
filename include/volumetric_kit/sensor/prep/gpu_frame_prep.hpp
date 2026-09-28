@@ -142,6 +142,9 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   // TODO(sensor): zero-copy inputs from a hardware decoder's frames.
   Buffer depth_in_;
   Buffer color_in_;
+  // The frame on the host side, host-visible and kept like the inputs, so
+  // passes on several threads never allocate staging at once.
+  Buffer staging_;
   // The outputs the fusion tiers read, device-local, shared with the
   // DeviceFrames handed out; reused only once no frame holds them.
   std::shared_ptr<Buffer> depth_out_;

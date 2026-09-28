@@ -92,6 +92,23 @@ Status ensure_input(const Device& device, Allocator& allocator, Buffer& buffer,
   return {};
 }
 
+// The frame's staging, host-visible and kept when it is big enough. A batch
+// stages through a buffer of its own per call, and four passes doing that at
+// once with 4K frames had VMA allocate and free a block for every set.
+Status ensure_staging(Allocator& allocator, Buffer& buffer,
+                      VkDeviceSize bytes) {
+  if (buffer.valid() && buffer.size() >= bytes) return {};
+  buffer = Buffer();
+  BufferDesc desc;
+  desc.size = bytes;
+  desc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  desc.memory = MemoryUsage::HostVisible;
+  desc.mapped = true;
+  desc.host_access = HostAccess::SequentialWrite;
+  VR_ASSIGN(buffer, allocator.create_buffer(desc));
+  return {};
+}
+
 VkDeviceSize round_up4(VkDeviceSize bytes) noexcept {
   return (bytes + 3) & ~VkDeviceSize{3};
 }
@@ -263,24 +280,22 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     VR_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame"));
   }
 
-  // One batch: both uploads, then both passes, one submit a frame. The
-  // uploads are timed with the passes, so the row's device half counts
-  // moving the frame too.
-  CommandBatch batch(*device_, *allocator_);
-  VR_TRY(batch.upload(depth_in_, 0, frame.depth,
-                      VkDeviceSize{depth.pixels} * sizeof(std::uint16_t),
-                      &stage));
+  VR_TRY(
+      ensure_staging(*allocator_, staging_, depth.in_bytes + color.in_bytes));
+
+  // The frame staged as the inputs lay it out: depth, then the three planes
+  // packed tightly whatever the decoder's strides. A tight plane is one
+  // memcpy: row by row, it cost the 5090 0.2 ms a 4K frame.
+  auto* staged = static_cast<std::uint8_t*>(staging_.mapped());
+  const VkDeviceSize depth_bytes =
+      VkDeviceSize{depth.pixels} * sizeof(std::uint16_t);
+  std::memcpy(staged, frame.depth, static_cast<std::size_t>(depth_bytes));
   if (frame.has_color()) {
-    // The three planes packed tightly into one staging buffer, whatever the
-    // decoder's strides, and copied up as one. A tight plane is one memcpy:
-    // row by row, it cost the 5090 0.2 ms a 4K frame.
     const YuvImage& image = frame.color;
     const std::uint32_t widths[3] = {image.width, color.cw, color.cw};
     const std::uint32_t heights[3] = {image.height, color.ch, color.ch};
     const VkDeviceSize offsets[3] = {0, color.cb_offset, color.cr_offset};
-    VR_ASSIGN(void* staging,
-              batch.reserve_upload(color_in_, 0, color.in_bytes, &stage));
-    auto* dst = static_cast<std::uint8_t*>(staging);
+    std::uint8_t* dst = staged + depth.in_bytes;
     for (int p = 0; p < 3; ++p) {
       if (image.stride[p] == widths[p]) {
         std::memcpy(dst + offsets[p], image.plane[p],
@@ -293,6 +308,16 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                     widths[p]);
       }
     }
+  }
+
+  // One batch: both copies up, then both passes, one submit a frame. The
+  // copies are timed with the passes, so the row's device half counts moving
+  // the frame too.
+  CommandBatch batch(*device_, *allocator_);
+  VR_TRY(batch.copy(staging_, 0, depth_in_, 0, depth_bytes, &stage));
+  if (frame.has_color()) {
+    VR_TRY(batch.copy(staging_, depth.in_bytes, color_in_, 0, color.in_bytes,
+                      &stage));
   }
 
   depth_kernel_.set.write_storage_buffer(0, depth_in_.handle(), 0,
