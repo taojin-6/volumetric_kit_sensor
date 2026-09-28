@@ -373,9 +373,9 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
 Status GpuFramePrep::ensure_output(std::shared_ptr<Buffer>& buffer,
                                    VkDeviceSize bytes, const char* name) {
   // Reused only when this pass holds the last reference: a DeviceFrame kept
-  // past this call keeps its contents, and this frame goes to a new buffer.
-  // TODO(sensor): the outputs on a ring (the residency decision's step 5), so
-  // a frame kept past the next costs no allocation.
+  // past this call keeps its contents, and this frame goes to a new buffer,
+  // which measured no slower than reusing one (the residency decision's step
+  // 5b), so there is no ring.
   if (buffer != nullptr && buffer.use_count() == 1 && buffer->size() >= bytes) {
     return {};
   }
