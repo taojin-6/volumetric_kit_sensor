@@ -97,12 +97,13 @@ if(VR_INSTALL)
     PATTERN "*.hpp")
 endif()
 
+# The FFmpeg-backed video decoder; see video/CMakeLists.txt. Ahead of the Orbbec
+# driver, which decodes its H.265 colour with it when it is built.
+if(VR_WITH_FFMPEG)
+  add_subdirectory(video)
+endif()
+
 # The Orbbec driver; see orbbec/CMakeLists.txt.
 if(VR_WITH_ORBBEC)
   add_subdirectory(orbbec)
-endif()
-
-# The FFmpeg-backed video decoder; see video/CMakeLists.txt.
-if(VR_WITH_FFMPEG)
-  add_subdirectory(video)
 endif()
