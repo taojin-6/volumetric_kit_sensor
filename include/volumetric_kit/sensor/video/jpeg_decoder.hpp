@@ -23,9 +23,11 @@ namespace volumetric_kit::recon::sensor {
 
 /// @brief What a @ref JpegDecoder decodes on.
 enum class JpegDecodeBackend {
-  Software,        ///< FFmpeg's decoder, to host planes.
-  NvjpegHardware,  ///< nvJPEG on the GPU's hardware JPEG engine.
-  NvjpegGpu,       ///< nvJPEG on the GPU's cores, Huffman decoding included.
+  Software,  ///< FFmpeg's decoder, to host planes.
+  /// nvJPEG on the GPU's hardware JPEG engine, and on its cores for a JPEG
+  /// the engine refuses (past 16384 pixels a side).
+  NvjpegHardware,
+  NvjpegGpu,  ///< nvJPEG on the GPU's cores, Huffman decoding included.
 };
 
 /// @return @p backend's name: `software`, `nvjpeg-hardware`, `nvjpeg-gpu`.
@@ -36,10 +38,11 @@ VR_SENSOR_VIDEO_API const char* to_string(JpegDecodeBackend backend) noexcept;
 /// Given a device on an NVIDIA GPU, in a build with VR_WITH_CUDA (Linux),
 /// nvJPEG decodes a baseline 8-bit 4:2:0 JPEG straight into a Vulkan buffer
 /// CUDA has imported, and the picture stays on the GPU: its hardware JPEG
-/// engine where the GPU has one, else its cores. libcuda and libnvjpeg are
-/// loaded at run time, so without them the decoder runs in software.
-/// Anything else decodes in software to host planes: another subsampling,
-/// which is converted to 4:2:0, a device on another GPU, or no device at all.
+/// engine where the GPU has one, and its cores for the rest. libcuda and
+/// libnvjpeg are loaded at run time, so without them the decoder runs in
+/// software. Anything else decodes in software to host planes: another
+/// subsampling, which is converted to 4:2:0, a device on another GPU, or no
+/// device at all.
 /// Either way the picture is I420 (`Yuv420`), BT.601 full range as JFIF
 /// defines it.
 ///
@@ -74,9 +77,10 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
   /// @return The picture, I420. On the device (@ref DecodedPicture::device),
   ///         held by the picture and written by CUDA, so a reader takes it
   ///         over from `VK_QUEUE_FAMILY_EXTERNAL`; or host planes, valid until
-  ///         the next call. @ref Status::Code::InvalidArgument for no bytes
-  ///         or a moved-from decoder; @ref Status::Code::IoError for bytes
-  ///         that do not decode.
+  ///         the next call. @ref Status::Code::InvalidArgument for no bytes,
+  ///         more than 2 GiB of them, a JPEG in a pixel format swscale
+  ///         cannot read, or a moved-from decoder;
+  ///         @ref Status::Code::IoError for bytes that do not decode.
   Result<DecodedPicture> decode(const std::uint8_t* data, std::size_t size);
 
   /// @return What this decoder decodes a 4:2:0 JPEG on: Software once the

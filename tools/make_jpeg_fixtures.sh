@@ -12,6 +12,8 @@
 #       planes round up
 #   tests/data/jpeg/patches_422_256x144.jpg  4:2:2, which GpuFramePrep cannot
 #       read, so a decoder converts it to 4:2:0 on the host
+#   tests/data/jpeg/patches_16400x72.jpg     4:2:0 past the 16384 pixels a side
+#       the hardware JPEG engine takes, so nvJPEG decodes it on the GPU's cores
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,3 +37,4 @@ jpeg() {  # size, pixel format, chroma expression, file
 jpeg 256x144 yuv420p "$p_chroma_420" patches_256x144.jpg
 jpeg 255x143 yuv420p "$p_chroma_420" patches_255x143.jpg
 jpeg 256x144 yuv422p "$p_chroma_422" patches_422_256x144.jpg
+jpeg 16400x72 yuv420p "$p_chroma_420" patches_16400x72.jpg

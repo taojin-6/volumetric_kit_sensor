@@ -3,8 +3,8 @@
 
 // The JPEG decoder on committed JPEGs (tools/make_jpeg_fixtures.sh): software
 // against the pattern they were made from, 4:2:2 converted to 4:2:0, nvJPEG's
-// device pictures against software and the buffers they hold, the refusals,
-// and moves.
+// device pictures against software and the buffers they hold, one past the
+// hardware engine's size on the GPU's cores, the refusals, and moves.
 //
 // VR_TEST_HEVC_BACKEND=cuda, the NVIDIA legs' promise, also requires nvJPEG in
 // a VR_WITH_CUDA build, so a runner that silently decodes on the host fails.
@@ -45,6 +45,16 @@ namespace {
 constexpr const char* k420 = VR_JPEG_DATA "/patches_256x144.jpg";
 constexpr const char* kOdd = VR_JPEG_DATA "/patches_255x143.jpg";
 constexpr const char* k422 = VR_JPEG_DATA "/patches_422_256x144.jpg";
+constexpr const char* kWide = VR_JPEG_DATA "/patches_16400x72.jpg";
+
+// The 4:2:0 JPEGs and their sizes.
+struct Fixture {
+  const char* path;
+  std::uint32_t width;
+  std::uint32_t height;
+};
+constexpr Fixture k420s[] = {
+    {k420, 256, 144}, {kOdd, 255, 143}, {kWide, 16400, 72}};
 
 // The pattern: patch p = (column + 3 * row) mod 8 over 32x72 luma patches;
 // Y = 40 + 24p, U = 64 + 16 (3p mod 8), V = 64 + 16 (5p mod 8).
@@ -104,13 +114,20 @@ Planes from_device(const sensor::DecodedPicture& p, vr::Device& device,
   return out;
 }
 
-// Each patch's centre holds the pattern's value, within the JPEG's loss.
+// Each patch's centre in the first 256 columns holds the pattern's value,
+// within the JPEG's loss.
 int check_pattern(const Planes& p) {
   const auto near = [](int got, int want) {
     return got >= want - 3 && got <= want + 3;
   };
   const std::uint32_t cw = (p.width + 1) / 2;
-  for (int row = 0; row < 2; ++row) {
+  const std::size_t chroma = std::size_t{cw} * ((p.height + 1) / 2);
+  // Every plane whole, so a read that failed fails here rather than index an
+  // empty one, and wide enough for the last patch's centre.
+  CHECK(p.width > 32 * 7 + 16);
+  CHECK(p.plane[0].size() == std::size_t{p.width} * p.height);
+  CHECK(p.plane[1].size() == chroma && p.plane[2].size() == chroma);
+  for (std::uint32_t row = 0; row < 2 && 72 * row + 36 < p.height; ++row) {
     for (int column = 0; column < 8; ++column) {
       const int k = (column + 3 * row) % 8;
       const std::uint32_t x = 32u * column + 16;
@@ -147,12 +164,8 @@ int test_software() {
   auto decoder = JpegDecoder::create({});
   CHECK(decoder.ok());
   CHECK(decoder->backend() == JpegDecodeBackend::Software);
-  const struct {
-    const char* path;
-    std::uint32_t width;
-    std::uint32_t height;
-  } files[] = {{k420, 256, 144}, {kOdd, 255, 143}, {k422, 256, 144}};
-  for (const auto& f : files) {
+  const Fixture files[] = {k420s[0], k420s[1], k420s[2], {k422, 256, 144}};
+  for (const Fixture& f : files) {
     auto p = decode(decoder.value(), read_file(f.path));
     CHECK(p.ok());
     CHECK(check_meta(p.value(), f.width, f.height) == 0);
@@ -163,8 +176,9 @@ int test_software() {
 }
 
 // Given a device on an NVIDIA GPU, a 4:2:0 JPEG decodes into a buffer the
-// picture holds, as software decodes it; 4:2:2 still comes to the host. A
-// buffer is reused only once no picture holds it.
+// picture holds, as software decodes it: the wide one on the GPU's cores, as
+// the hardware engine refuses it. 4:2:2 still comes to the host. A buffer is
+// reused only once no picture holds it.
 int test_device() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
   if (!instance) return 0;
@@ -191,14 +205,14 @@ int test_device() {
   auto software = JpegDecoder::create({});
   CHECK(software.ok());
 
-  for (const char* path : {k420, kOdd}) {
-    const std::vector<std::uint8_t> bytes = read_file(path);
+  for (const Fixture& f : k420s) {
+    const std::vector<std::uint8_t> bytes = read_file(f.path);
     auto p = decode(decoder.value(), bytes);
     CHECK(p.ok());
     CHECK((p->device != nullptr) == on_device);
     if (!on_device) continue;
     CHECK(p->plane[0] == nullptr);
-    CHECK(check_meta(p.value(), p->width, p->height) == 0);
+    CHECK(check_meta(p.value(), f.width, f.height) == 0);
     const Planes got =
         from_device(p.value(), device.value(), allocator.value());
     CHECK(check_pattern(got) == 0);
@@ -254,10 +268,19 @@ int test_refusals() {
         vr::Status::Code::InvalidArgument);
   CHECK(decoder->decode(good.data(), 0).status().domain() ==
         vr::Status::Code::InvalidArgument);
+  // A corrupt frame is the camera's, not the GPU's, so neither costs the
+  // device path: nvJPEG refuses the garbage, and decodes the cut one or not.
+  const JpegDecodeBackend before = decoder->backend();
   const std::vector<std::uint8_t> garbage(64, 0x5a);
   CHECK(decode(decoder.value(), garbage).status().domain() ==
         vr::Status::Code::IoError);
-  CHECK(decode(decoder.value(), good).ok());  // and on to the next
+  const std::vector<std::uint8_t> cut(good.begin(),
+                                      good.begin() + good.size() / 2);
+  (void)decode(decoder.value(), cut);
+  CHECK(decoder->backend() == before);
+  auto next = decode(decoder.value(), good);  // and on to the next
+  CHECK(next.ok());
+  CHECK((next->device != nullptr) == (before != JpegDecodeBackend::Software));
   return 0;
 }
 

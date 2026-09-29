@@ -16,16 +16,6 @@
 #include "volumetric_kit/recon/core/external_memory.hpp"
 
 namespace volumetric_kit::recon::sensor::video {
-namespace {
-
-#define VR_CUDA_STRING(name) VR_CUDA_STRING_(name)
-#define VR_CUDA_STRING_(name) #name
-
-std::uint64_t round_up(std::uint64_t v, std::uint64_t to) noexcept {
-  return (v + to - 1) / to * to;
-}
-
-}  // namespace
 
 const CudaDriver* cuda_driver() {
   static const std::optional<CudaDriver> loaded =
@@ -115,7 +105,10 @@ void CudaPictures::release(Slot& s) {
 
 Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   // Reused only once no picture holds it. A free one left over is too small,
-  // so it is let go rather than kept past a change of picture size.
+  // so it is let go rather than kept past a change of picture size. Vulkan
+  // does not release a reused buffer back to CUDA: CUDA overwrites the
+  // picture, a family may take a buffer without a transfer when its contents
+  // need not survive, and its last reader finished before letting it go.
   for (Slot& s : slots_) {
     if (s.buffer.use_count() == 1 && s.bytes >= bytes) return &s;
   }

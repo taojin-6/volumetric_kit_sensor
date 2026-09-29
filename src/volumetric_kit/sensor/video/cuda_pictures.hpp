@@ -23,7 +23,17 @@ class Buffer;
 class Device;
 }  // namespace volumetric_kit::recon
 
+// A macro's expansion as a string: a cuda.h name's versioned symbol, or
+// nvjpeg.h's major version.
+#define VR_CUDA_STRING(name) VR_CUDA_STRING_(name)
+#define VR_CUDA_STRING_(name) #name
+
 namespace volumetric_kit::recon::sensor::video {
+
+// @p v rounded up to a multiple of @p to.
+constexpr std::uint64_t round_up(std::uint64_t v, std::uint64_t to) noexcept {
+  return (v + to - 1) / to * to;
+}
 
 // The driver entry points used here. Each name goes through cuda.h's macros,
 // so it is the versioned symbol its prototype declares (cuMemFree is

@@ -20,9 +20,6 @@ class Buffer;
 
 namespace volumetric_kit::recon::sensor {
 
-class HevcDecoder;
-class JpegDecoder;
-
 /// @brief How a decoded picture's pixels are laid out.
 enum class VideoPixelLayout {
   /// One plane of R, G, B bytes, converted by @ref DecodedPicture::matrix.
