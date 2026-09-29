@@ -244,6 +244,7 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
     bool configure_logging, const std::string& who) {
   std::unique_ptr<CameraStream> s(new CameraStream());
   s->fps_ = streams.fps;
+  s->color_codec_ = streams.color_codec;
   s->configure_ffmpeg_logging_ = configure_logging;
   s->vulkan_device_ = streams.raw ? streams.device : nullptr;
   s->context_ = std::move(context);
@@ -309,7 +310,6 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
       }
     }
     if (streams.color_codec == OrbbecColorCodec::Hevc) {
-      s->hevc_wire_ = true;
       // TODO(sensor): the camera's H.265 encoder settings -- its key-frame
       // interval above all, since a lost frame costs the frames up to the
       // next key frame (30 at the default) -- are left as the camera has
@@ -330,8 +330,8 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
     }
 #endif
     try {
-      // RGB: MJPG on the wire, decoded on the SDK's thread -- or, for H.265,
-      // the mode whose calibration the decoded frames carry.
+      // RGB: MJPG on the wire, decoded on the SDK's thread -- or, for H.265
+      // and raw MJPEG, the mode whose calibration the decoded frames carry.
       s->color_profile_ = color_modes->getVideoStreamProfile(
           static_cast<int>(streams.color_width),
           static_cast<int>(streams.color_height), OB_FORMAT_RGB,
@@ -368,7 +368,8 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
     // must have its calibration: undistortion and registration read it off
     // the frame, and the raw path off the RGB profile. H.265's matched byte
     // for byte on the Femto Mega at 720p, 1080p and 4K; a camera where they
-    // do not is refused, not trusted.
+    // do not is refused, not trusted. Host MJPEG streams the RGB mode itself,
+    // so it is the way round a camera refused here.
     if (s->wire_color_profile_ != nullptr) {
       const auto wire = s->wire_color_profile_->as<ob::VideoStreamProfile>();
       const auto rgb = s->color_profile_->as<ob::VideoStreamProfile>();
@@ -378,10 +379,13 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
                       rgb->getExtrinsicTo(s->depth_profile_))) {
         const bool hevc = streams.color_codec == OrbbecColorCodec::Hevc;
         return Status::unsupported(
-            s->who_ + "'s " + (hevc ? "H.265" : "MJPEG") +
-            " colour mode reports a calibration other than its RGB mode's, "
-            "which the decoded frames are undistorted and registered with" +
-            (hevc ? "; stream MJPEG" : ""));
+            s->who_ + "'s " + (hevc ? "H.265" : "MJPG") +
+            " colour mode reports a calibration other than its RGB mode's, " +
+            (streams.raw
+                 ? "which a raw frame's colour camera is read from; stream "
+                   "MJPEG without raw frames"
+                 : "which the decoded frames are undistorted and registered "
+                   "with; stream MJPEG"));
       }
     }
 
@@ -482,7 +486,7 @@ Status CameraStream::start() {
   const auto post = [mailbox = mailbox_](std::shared_ptr<ob::FrameSet> fs) {
     mailbox->post(std::move(fs));
   };
-  if (hevc_wire_) {
+  if (color_codec_ == OrbbecColorCodec::Hevc) {
     HevcColorDecoder::Options decoding;
     decoding.fps = fps_;
     decoding.rgb_profile = color_profile_;
@@ -495,9 +499,12 @@ Status CameraStream::start() {
     decoding.who = who_;
     VR_ASSIGN(auto decoder, HevcColorDecoder::start(decoding, post));
     hevc_ = std::move(decoder);
-  } else if (wire_color_profile_ != nullptr) {
+  } else if (raw_) {
     JpegColorDecoder::Options decoding;
-    decoding.fps = fps_;
+    {
+      std::lock_guard<std::mutex> lock(box.mutex);
+      decoding.depth = box.depth;
+    }
     decoding.device = vulkan_device_;
     decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
     configure_ffmpeg_logging_ = false;
@@ -517,8 +524,9 @@ Status CameraStream::start() {
     // whenever its depth did (under 2% of triggers), and each gap cost the
     // stream up to a second, to its next key frame: 8-30% of its pairs.
     config->setFrameAggregateOutputMode(
-        hevc_wire_ ? OB_FRAME_AGGREGATE_OUTPUT_COLOR_FRAME_REQUIRE
-                   : OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE);
+        color_codec_ == OrbbecColorCodec::Hevc
+            ? OB_FRAME_AGGREGATE_OUTPUT_COLOR_FRAME_REQUIRE
+            : OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE);
     // Pair depth with the colour frame nearest it in time.
     pipeline_->enableFrameSync();
     pipeline_->start(config, [mailbox = mailbox_, hevc = hevc_,
@@ -537,8 +545,6 @@ Status CameraStream::start() {
           jpeg->push(std::move(fs));
           return;
         }
-#else
-        static_cast<void>(jpeg);
 #endif
         mailbox->on_frameset(std::move(fs));
       } catch (...) {
@@ -776,7 +782,7 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
   // open refuses raw frames without the decoder whose planes they carry.
   (void)pair;
   ++failed_;
-  return Status::unsupported(who_ + ": raw frames need H.265");
+  return Status::unsupported(who_ + ": raw frames need the video decoders");
 #else
   // As process(): a pair that contradicts the stream is refused, one the SDK
   // failed on is skipped, and only a run of skips is an error.

@@ -7,14 +7,20 @@
 // the pattern: in software as an I420 frame carrying BT.601 full range, and
 // given a device the hardware decodes onto, as the picture on it, released
 // with its frame. A pair missing a frame, an empty colour frame and a JPEG
-// that does not decode each cost only themselves.
+// that does not decode each cost only themselves, and a decoder slower than
+// the camera skips pairs rather than falling behind.
+//
+// VR_TEST_HEVC_BACKEND=cuda also requires nvJPEG's picture on the device in a
+// VR_WITH_CUDA build, and =videotoolbox VideoToolbox's.
 
-#include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -77,9 +83,9 @@ std::shared_ptr<ob::FrameSet> pair(const std::vector<std::uint8_t>& jpeg,
     set->pushFrame(depth);
   }
   if (with_color) {
-    auto color = ob::FrameFactory::createFrame(
-        OB_FRAME_COLOR, OB_FORMAT_MJPG,
-        static_cast<std::uint32_t>(std::max<std::size_t>(jpeg.size(), 1)));
+    auto color =
+        ob::FrameFactory::createFrame(OB_FRAME_COLOR, OB_FORMAT_MJPG,
+                                      static_cast<std::uint32_t>(jpeg.size()));
     if (!jpeg.empty()) {
       color->updateData(jpeg.data(), static_cast<std::uint32_t>(jpeg.size()));
     }
@@ -94,7 +100,8 @@ struct Run {
   std::uint64_t lost = 0;
 };
 
-// Push `in`, wait for `expect` pairs out, and stop.
+// Push `in`, wait for `expect` pairs out, and stop. The queue holds all of
+// `in`, so none is skipped.
 Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
         std::size_t expect, const vr::Device* device = nullptr) {
   struct Collected {
@@ -103,7 +110,7 @@ Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
   };
   auto collected = std::make_shared<Collected>();
   orbbec::JpegColorDecoder::Options options;
-  options.fps = 30;
+  options.depth = in.size();
   options.device = device;
   options.who = "test";
   auto decoder = orbbec::JpegColorDecoder::start(
@@ -214,6 +221,7 @@ int test_software() {
 int test_losses() {
   const std::vector<std::uint8_t> jpeg = read_file(kJpeg);
   const std::vector<std::uint8_t> garbage(64, 0x5a);
+  CHECK(pair({}, 3)->getColorFrame()->getDataSize() == 0);
   const Run r = run(
       {pair(jpeg, 0), pair(jpeg, 1, true, false), pair(jpeg, 2, false, true),
        pair({}, 3), pair(garbage, 4), pair(jpeg, 5)},
@@ -221,6 +229,70 @@ int test_losses() {
   CHECK(r.out.size() == 2 && r.lost == 4);
   CHECK(r.out[1]->getColorFrame()->getTimeStampUs() ==
         kStartUs + 5 * kPeriodUs);
+  return 0;
+}
+
+// A decoder slower than the camera skips pairs rather than falling behind:
+// held in the sink with the queue one deep, each pair that arrives replaces
+// the one waiting, counted lost, and the newest is decoded next.
+int test_skips_when_behind() {
+  const std::vector<std::uint8_t> jpeg = read_file(kJpeg);
+  struct Gate {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool held = false, open = false;
+    std::vector<std::shared_ptr<ob::FrameSet>> sets;
+  };
+  auto gate = std::make_shared<Gate>();
+  const auto open = [gate] {
+    {
+      std::lock_guard<std::mutex> lock(gate->mutex);
+      gate->open = true;
+    }
+    gate->changed.notify_all();
+  };
+  orbbec::JpegColorDecoder::Options options;
+  options.depth = 1;
+  options.who = "test";
+  auto decoder = orbbec::JpegColorDecoder::start(
+      options, [gate](std::shared_ptr<ob::FrameSet> set) {
+        std::unique_lock<std::mutex> lock(gate->mutex);
+        gate->sets.push_back(std::move(set));
+        gate->held = true;
+        gate->changed.notify_all();
+        gate->changed.wait(lock, [&] { return gate->open; });
+      });
+  CHECK(decoder.ok());
+  // Declared after the decoder, so a failed check opens the gate before the
+  // decoder's destructor joins the thread it holds.
+  struct Opener {
+    std::function<void()> open;
+    ~Opener() { open(); }
+  } opener{open};
+  decoder.value()->push(pair(jpeg, 0));
+  {
+    std::unique_lock<std::mutex> lock(gate->mutex);
+    CHECK(gate->changed.wait_for(lock, std::chrono::seconds(10),
+                                 [&] { return gate->held; }));
+  }
+  for (int f = 1; f < 5; ++f) decoder.value()->push(pair(jpeg, f));
+  CHECK(decoder.value()->lost() == 3);  // 1, 2 and 3, each replaced
+  open();
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(gate->mutex);
+      if (gate->sets.size() >= 2) break;
+    }
+    CHECK(std::chrono::steady_clock::now() < deadline);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  decoder.value()->stop();
+  CHECK(decoder.value()->lost() == 3);
+  CHECK(gate->sets.size() == 2);
+  CHECK(gate->sets[1]->getColorFrame()->getTimeStampUs() ==
+        kStartUs + 4 * kPeriodUs);
   return 0;
 }
 
@@ -243,9 +315,11 @@ int test_device() {
   CHECK(r.out.size() == 3 && r.lost == 0);
   const bool on_device =
       orbbec::device_picture(*r.out.front()->getColorFrame()).has_value();
+  // The legs whose hardware leaves its pictures on the device.
   const char* required = std::getenv("VR_TEST_HEVC_BACKEND");
-  if (required != nullptr && std::string(required) == "videotoolbox") {
-    CHECK(on_device);  // a VideoToolbox leg decodes onto the device
+  const std::string backend = required != nullptr ? required : "";
+  if (backend == "videotoolbox" || (VR_TEST_WITH_CUDA && backend == "cuda")) {
+    CHECK(on_device);
   }
   std::shared_ptr<const void> held;
   for (const auto& set : r.out) {
@@ -286,6 +360,7 @@ int main() {
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
   if (test_software() != 0) return 1;
   if (test_losses() != 0) return 1;
+  if (test_skips_when_behind() != 0) return 1;
   if (test_device() != 0) return 1;
   std::puts("sensor_orbbec_jpeg: OK");
   return 0;

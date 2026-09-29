@@ -9,10 +9,12 @@
 // takes the JPEG, in software to I420 planes otherwise. On its own thread, so
 // a rig's cameras decode at once rather than one after another on the
 // polling thread. A JPEG depends on no other frame, so, unlike H.265's, a
-// pair lost here costs only itself.
+// pair lost here costs only itself, and a decoder slower than the camera
+// skips pairs rather than falling behind.
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -34,7 +36,9 @@ class JpegColorDecoder {
   using Sink = std::function<void(std::shared_ptr<ob::FrameSet>)>;
 
   struct Options {
-    std::uint32_t fps = 30;  // the stream's rate, which sizes the queue
+    // Pairs waiting to be decoded, at most, newest kept: the mailbox's
+    // depth, so the queue holds no older a pair than the mailbox would.
+    std::size_t depth = 1;
     // The device the GPU pass runs on, which the JPEGs are decoded onto
     // where the hardware takes them; null decodes in software. Borrowed: it
     // must outlive the decoder and every frame it hands on.
@@ -63,7 +67,7 @@ class JpegColorDecoder {
 
   // Pairs that will not be handed on: one missing either frame or with an
   // empty colour frame, a JPEG that does not decode, and the queue's oldest
-  // when the decoder falls two seconds behind.
+  // when a pair arrives with it full.
   std::uint64_t lost() const noexcept {
     return lost_.load(std::memory_order_relaxed);
   }

@@ -9,13 +9,6 @@
 #include "picture_frames.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
-namespace {
-
-// Pairs waiting for the decode thread, at most: two seconds at the stream's
-// rate, as for H.265. Past it the oldest go, a JPEG needing no other.
-constexpr std::uint32_t kQueueSeconds = 2;
-
-}  // namespace
 
 Result<std::unique_ptr<JpegColorDecoder>> JpegColorDecoder::start(
     const Options& options, Sink sink) {
@@ -48,9 +41,8 @@ void JpegColorDecoder::push(std::shared_ptr<ob::FrameSet> pair) noexcept {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) return;
-    const std::size_t limit =
-        static_cast<std::size_t>(options_.fps) * kQueueSeconds;
-    while (queue_.size() >= limit) {
+    // The oldest go, a JPEG needing no other.
+    while (!queue_.empty() && queue_.size() >= options_.depth) {
       queue_.pop_front();
       ++lost;
     }
@@ -109,13 +101,7 @@ void JpegColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
     lose();
     return;
   }
-  std::shared_ptr<ob::Frame> decoded = raw_color_frame(picture.value());
-  ob::FrameHelper::setFrameDeviceTimestampUs(decoded, color->getTimeStampUs());
-  decoded->setSystemTimestampUs(color->getSystemTimeStampUs());
-  auto rebuilt = ob::FrameFactory::createFrameSet();
-  rebuilt->pushFrame(depth);
-  rebuilt->pushFrame(decoded);
-  sink_(std::move(rebuilt));
+  sink_(rebuilt_pair(depth, *color, raw_color_frame(picture.value())));
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

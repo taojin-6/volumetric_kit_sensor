@@ -236,17 +236,12 @@ void HevcColorDecoder::hand_on(const DecodedPicture& picture) {
     }
     rgb = frame;
   }
-  ob::FrameHelper::setFrameDeviceTimestampUs(rgb, color->getTimeStampUs());
-  rgb->setSystemTimestampUs(color->getSystemTimeStampUs());
   // Not on an I420 frame: the profile would restamp its format as RGB, and
   // the raw path takes its cameras from the profiles at open instead.
   if (options_.rgb_profile != nullptr && !options_.yuv) {
     rgb->setStreamProfile(options_.rgb_profile);
   }
-  auto rebuilt = ob::FrameFactory::createFrameSet();
-  rebuilt->pushFrame(pair->getDepthFrame());
-  rebuilt->pushFrame(rgb);
-  sink_(std::move(rebuilt));
+  sink_(rebuilt_pair(pair->getDepthFrame(), *color, std::move(rgb)));
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

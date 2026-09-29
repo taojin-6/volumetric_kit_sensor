@@ -55,4 +55,10 @@ std::optional<DecodedPicture> device_picture(const ob::Frame& frame);
 // set.
 void place_device_color(const DecodedPicture& picture, YuvImage* image);
 
+// A pair rebuilt around its decoded colour: `depth`, and `decoded` dated as
+// `source`, the colour frame it was decoded from.
+std::shared_ptr<ob::FrameSet> rebuilt_pair(std::shared_ptr<ob::Frame> depth,
+                                           const ob::Frame& source,
+                                           std::shared_ptr<ob::Frame> decoded);
+
 }  // namespace volumetric_kit::recon::sensor::orbbec

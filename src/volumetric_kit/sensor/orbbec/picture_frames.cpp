@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 
 namespace volumetric_kit::recon::sensor::orbbec {
 namespace {
@@ -139,6 +140,17 @@ void place_device_color(const DecodedPicture& picture, YuvImage* image) {
     image->image[0] = picture.image[0];
     image->image[1] = picture.image[1];
   }
+}
+
+std::shared_ptr<ob::FrameSet> rebuilt_pair(std::shared_ptr<ob::Frame> depth,
+                                           const ob::Frame& source,
+                                           std::shared_ptr<ob::Frame> decoded) {
+  ob::FrameHelper::setFrameDeviceTimestampUs(decoded, source.getTimeStampUs());
+  decoded->setSystemTimestampUs(source.getSystemTimeStampUs());
+  auto pair = ob::FrameFactory::createFrameSet();
+  pair->pushFrame(std::move(depth));
+  pair->pushFrame(std::move(decoded));
+  return pair;
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec
