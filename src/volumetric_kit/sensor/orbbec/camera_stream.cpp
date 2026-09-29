@@ -797,6 +797,8 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     frame.depth_cam_to_world = raw_depth_pose_;
     frame.min_depth = min_depth_;
     frame.max_depth = max_depth_;
+    // TODO(sensor): the decoder's picture on the device (YuvImage::device)
+    // rather than these host planes, once the decoders hand theirs over.
     const std::uint8_t* planes = color->getData();
     frame.color.plane[0] = planes;
     frame.color.plane[1] = planes + luma;
