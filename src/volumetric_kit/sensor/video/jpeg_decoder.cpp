@@ -19,6 +19,9 @@
 #include "cuda_pictures.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
 #endif
+#if defined(__APPLE__)
+#include "vt_jpeg.hpp"
+#endif
 
 namespace volumetric_kit::recon::sensor {
 namespace {
@@ -329,6 +332,8 @@ const char* to_string(JpegDecodeBackend backend) noexcept {
       return "nvjpeg-hardware";
     case JpegDecodeBackend::NvjpegGpu:
       return "nvjpeg-gpu";
+    case JpegDecodeBackend::VideoToolbox:
+      return "videotoolbox";
     case JpegDecodeBackend::Software:
       break;
   }
@@ -344,6 +349,11 @@ struct JpegDecoder::Impl {
 #if VR_SENSOR_VIDEO_WITH_CUDA
   // Null without a device nvJPEG can use, and once the device path fails.
   std::unique_ptr<NvjpegDecoder> gpu;
+#endif
+#if defined(__APPLE__)
+  // Null without a device VideoToolbox's pictures can reach, and once the
+  // device path fails.
+  std::unique_ptr<video::VtJpeg> vt;
 #endif
 
   Status open_software();
@@ -395,6 +405,11 @@ Result<JpegDecoder> JpegDecoder::create(const Options& options) {
     impl->gpu = NvjpegDecoder::open(*options.device);
   }
 #endif
+#if defined(__APPLE__)
+  if (options.device != nullptr) {
+    impl->vt = video::VtJpeg::open(*options.device, kWho);
+  }
+#endif
   return JpegDecoder(std::move(impl));
 }
 
@@ -422,14 +437,24 @@ Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
     if (!on_device) impl_->gpu.reset();
   }
 #endif
-  // TODO(sensor): decode on VideoToolbox on Apple, into the same plane images
-  // as its H.265 (the 2026-09-28 decoded-frame decision's next step).
+#if defined(__APPLE__)
+  if (impl_->vt != nullptr) {
+    auto on_device = impl_->vt->decode(data, size);
+    if (on_device && on_device.value()) return std::move(*on_device.value());
+    if (!on_device) impl_->vt.reset();  // as for nvJPEG
+  }
+#endif
   return impl_->decode_software(data, size);
 }
 
 JpegDecodeBackend JpegDecoder::backend() const noexcept {
 #if VR_SENSOR_VIDEO_WITH_CUDA
   if (impl_ != nullptr && impl_->gpu != nullptr) return impl_->gpu->backend;
+#endif
+#if defined(__APPLE__)
+  if (impl_ != nullptr && impl_->vt != nullptr) {
+    return JpegDecodeBackend::VideoToolbox;
+  }
 #endif
   return JpegDecodeBackend::Software;
 }
