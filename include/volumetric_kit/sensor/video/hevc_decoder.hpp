@@ -63,10 +63,13 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// Set FFmpeg's log level to ERROR. Process-wide: FFmpeg has one logger.
     bool configure_ffmpeg_logging = true;
     /// A device to hand pictures out on when the back end decodes on its GPU:
-    /// Cuda, in a build with VR_WITH_CUDA, on a device that exports memory.
-    /// Such a picture stays on the GPU, NV12 in a buffer it holds (@ref
-    /// DecodedPicture::device); any other comes to the host as @ref layout
-    /// says, and so does every picture after the device path fails once.
+    /// Cuda, in a build with VR_WITH_CUDA, on a device that exports memory,
+    /// or VideoToolbox, on a device that imports Metal textures. Such a
+    /// picture stays on the GPU as NV12: in a buffer it holds (@ref
+    /// DecodedPicture::device) from Cuda, as images it holds (@ref
+    /// DecodedPicture::image) from VideoToolbox. Any other comes to the host
+    /// as @ref layout says, and so does every picture after the device path
+    /// fails once.
     /// Borrowed: it must outlive the decoder and every picture on it.
     const Device* device = nullptr;
   };

@@ -20,7 +20,8 @@ layout(local_size_x = 256) in;
 // 2 in NV12's interleaved one, where Cr sits a byte after Cb.
 // TODO(sensor): read Apple's plane images, VideoToolbox's IOSurface imported
 // through VK_EXT_metal_objects, directly rather than copied into a buffer
-// first, if measuring shows the 0.24-0.30 ms copy is worth a second path.
+// first, if measuring shows the copy (0.28-0.31 ms of GPU at 4K on an M5
+// Max) is worth a second path.
 layout(set = 0, binding = 0, scalar) readonly buffer Planes { uint planes[]; };
 // R | G << 8 | B << 16 | coverage << 24, the tsdf tier's colour layout.
 layout(set = 0, binding = 1, scalar) writeonly buffer Color { uint color[]; };

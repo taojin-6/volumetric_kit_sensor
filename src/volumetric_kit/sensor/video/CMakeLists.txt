@@ -33,6 +33,7 @@ generate_export_header(
 set_target_properties(
   recon_sensor_video
   PROPERTIES CXX_VISIBILITY_PRESET hidden
+             OBJCXX_VISIBILITY_PRESET hidden
              VISIBILITY_INLINES_HIDDEN ON
              POSITION_INDEPENDENT_CODE ON)
 
@@ -60,9 +61,17 @@ if(VR_WITH_CUDA)
   target_compile_definitions(recon_sensor_video
                              PRIVATE VR_SENSOR_VIDEO_WITH_CUDA=1)
 endif()
-# VideoToolbox answers whether its hardware decodes HEVC (hw_backend.cpp).
+# VideoToolbox answers whether its hardware decodes HEVC (hw_backend.cpp), and
+# its pictures reach Vulkan as Metal textures over their IOSurface
+# (vt_pictures.mm): Objective-C++, with ARC.
 if(APPLE)
-  target_link_libraries(recon_sensor_video PRIVATE "-framework VideoToolbox")
+  target_sources(recon_sensor_video PRIVATE vt_pictures.mm)
+  set_source_files_properties(vt_pictures.mm PROPERTIES COMPILE_OPTIONS
+                                                        -fobjc-arc)
+  target_link_libraries(
+    recon_sensor_video
+    PRIVATE "-framework VideoToolbox" "-framework CoreVideo"
+            "-framework IOSurface" "-framework Metal" "-framework Foundation")
 endif()
 
 target_include_directories(
