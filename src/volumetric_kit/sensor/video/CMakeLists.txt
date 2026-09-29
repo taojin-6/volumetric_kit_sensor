@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 
-# --- recon_sensor_video: the video decoder ----------------------------------
-# An HEVC decoder over FFmpeg and its hardware back ends, built only with
+# --- recon_sensor_video: the video decoders ---------------------------------
+# HEVC and JPEG decoders over FFmpeg and the hardware, built only with
 # VR_WITH_FFMPEG (see cmake/vr_ffmpeg.cmake). Camera-neutral, so it links
 # recon_core alone and a capture driver links it. FFmpeg is PRIVATE and no
 # FFmpeg type reaches the public headers; ffmpeg.hpp is the one include.
@@ -16,8 +16,9 @@ add_library(recon_sensor_video)
 add_library(volumetric_kit::recon_sensor_video ALIAS recon_sensor_video)
 
 target_sources(
-  recon_sensor_video PRIVATE ffmpeg.cpp hevc_decoder.cpp hw_backend.cpp
-                             picture_converter.cpp video_backend.cpp)
+  recon_sensor_video
+  PRIVATE ffmpeg.cpp hevc_decoder.cpp hw_backend.cpp jpeg_decoder.cpp
+          picture_converter.cpp video_backend.cpp)
 
 generate_export_header(
   recon_sensor_video
@@ -47,9 +48,10 @@ target_link_libraries(
   recon_sensor_video
   PUBLIC recon_core
   PRIVATE PkgConfig::VR_FFMPEG)
-# NVDEC's pictures copied into Vulkan buffers CUDA has imported, without a trip
-# through the host (cuda_pictures.cpp). cuda.h only: libcuda is loaded at run
-# time, so a program built with CUDA starts where no NVIDIA driver is.
+# NVDEC's pictures copied, and nvJPEG's decoded, into Vulkan buffers CUDA has
+# imported, without a trip through the host (cuda_pictures.cpp). Headers only:
+# libcuda and libnvjpeg are loaded at run time, so a program built with CUDA
+# starts where no NVIDIA driver is.
 if(VR_WITH_CUDA)
   target_sources(recon_sensor_video PRIVATE cuda_pictures.cpp)
   target_include_directories(recon_sensor_video SYSTEM
