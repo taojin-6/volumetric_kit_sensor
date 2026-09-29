@@ -26,8 +26,8 @@ enum class VideoPixelLayout {
   Rgb24,
   /// Three 8-bit planes as decoded: Y, then U and V at half size.
   Yuv420,
-  /// Two 8-bit planes: Y, then U and V interleaved at half size, U first. A
-  /// picture handed out on the device comes this way, as the hardware
+  /// Two 8-bit planes: Y, then U and V interleaved at half size, U first. An
+  /// HEVC picture handed out on the device comes this way, as the hardware
   /// decodes it.
   Nv12,
 };
@@ -79,20 +79,22 @@ struct DecodedPicture {
   std::uint32_t width = 0;
   /// Height in pixels, after the stream's crop: its display height.
   std::uint32_t height = 0;
-  /// The layout the decoder was asked for; Nv12 for a device picture.
+  /// The layout the decoder was asked for; a device picture's as the
+  /// decoder hands it out.
   VideoPixelLayout layout = VideoPixelLayout::Rgb24;
   const std::uint8_t* plane[3] = {};  ///< Rgb24 uses plane[0] only.
   std::size_t stride[3] = {};         ///< Bytes per row of each plane.
-  /// On the device instead, for a decoder given a device it decodes on: an
-  /// NV12 picture in this storage buffer, Y at `offset[0]` and the chroma at
-  /// `offset[1]`, rows `stride` bytes apart; @ref plane is empty. The picture
-  /// holds the buffer, and the decoder reuses it only once nothing does; drop
-  /// it before the device it is on is destroyed. CUDA wrote it, so a reader
-  /// takes it over from `VK_QUEUE_FAMILY_EXTERNAL` first
-  /// (`CommandBatch::acquire`), and a `YuvImage` of it carries
+  /// On the device instead, for a decoder given a device it decodes on, in
+  /// this storage buffer: NV12 from @ref HevcDecoder, Y at `offset[0]` and
+  /// the chroma at `offset[1]`, or Yuv420 from @ref JpegDecoder, Y, U and V
+  /// at `offset[0]` to `offset[2]`; rows `stride` bytes apart, and @ref plane
+  /// empty. The picture holds the buffer, and the decoder reuses it only once
+  /// nothing does; drop it before the device it is on is destroyed. CUDA
+  /// wrote it, so a reader takes it over from `VK_QUEUE_FAMILY_EXTERNAL`
+  /// first (`CommandBatch::acquire`), and a `YuvImage` of it carries
   /// `kQueueFamilyExternal`.
   std::shared_ptr<const Buffer> device;
-  std::uint64_t offset[2] = {};  ///< Each plane's byte offset in @ref device.
+  std::uint64_t offset[3] = {};  ///< Each plane's byte offset in @ref device.
   std::int64_t pts = 0;          ///< The one sent with its access unit.
   /// The matrix and range the stream declares: what Rgb24 was converted by,
   /// and what a Yuv420 consumer converts by. A stream that declares no matrix

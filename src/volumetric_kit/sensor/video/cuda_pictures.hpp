@@ -3,10 +3,11 @@
 
 #pragma once
 
-// NVDEC's pictures, handed over on the device (VR_WITH_CUDA, Linux): each is
-// copied, device to device, into a Vulkan buffer CUDA has imported, so the
-// kernels read it where it is and it never crosses the bus. libcuda is loaded
-// at run time, as FFmpeg loads it, so a build with CUDA starts without it.
+// NVIDIA's decoders' pictures, handed over on the device (VR_WITH_CUDA,
+// Linux): NVDEC's copied device to device, nvJPEG's decoded in place, into
+// Vulkan buffers CUDA has imported, so the kernels read them where they are
+// and they never cross the bus. libcuda is loaded at run time, as FFmpeg
+// loads it, so a build with CUDA starts without it.
 
 #include <cuda.h>
 
@@ -22,21 +23,90 @@ class Buffer;
 class Device;
 }  // namespace volumetric_kit::recon
 
+// A macro's expansion as a string: a cuda.h name's versioned symbol, or
+// nvjpeg.h's major version.
+#define VR_CUDA_STRING(name) VR_CUDA_STRING_(name)
+#define VR_CUDA_STRING_(name) #name
+
 namespace volumetric_kit::recon::sensor::video {
+
+// @p v rounded up to a multiple of @p to.
+constexpr std::uint64_t round_up(std::uint64_t v, std::uint64_t to) noexcept {
+  return (v + to - 1) / to * to;
+}
+
+// The driver entry points used here. Each name goes through cuda.h's macros,
+// so it is the versioned symbol its prototype declares (cuMemFree is
+// cuMemFree_v2).
+#define VR_CUDA_FUNCTIONS(X)         \
+  X(cuInit)                          \
+  X(cuGetErrorName)                  \
+  X(cuDeviceGetCount)                \
+  X(cuDeviceGet)                     \
+  X(cuDeviceGetUuid)                 \
+  X(cuDevicePrimaryCtxRetain)        \
+  X(cuDevicePrimaryCtxRelease)       \
+  X(cuCtxPushCurrent)                \
+  X(cuCtxPopCurrent)                 \
+  X(cuStreamCreate)                  \
+  X(cuStreamDestroy)                 \
+  X(cuStreamSynchronize)             \
+  X(cuEventCreate)                   \
+  X(cuEventDestroy)                  \
+  X(cuEventRecord)                   \
+  X(cuEventSynchronize)              \
+  X(cuImportExternalMemory)          \
+  X(cuExternalMemoryGetMappedBuffer) \
+  X(cuDestroyExternalMemory)         \
+  X(cuMemFree)                       \
+  X(cuMemcpy2DAsync)
+
+struct CudaDriver {
+#define VR_CUDA_DECLARE(name) decltype(&::name) name = nullptr;
+  VR_CUDA_FUNCTIONS(VR_CUDA_DECLARE)
+#undef VR_CUDA_DECLARE
+};
+
+// libcuda, loaded once and kept; null where it does not load or lacks an
+// entry point.
+const CudaDriver* cuda_driver();
+
+// An IoError naming @p who, @p what it was doing and CUDA's name for @p result.
+Status cuda_error(const char* who, CUresult result, const char* what);
+
+// A CUDA context made current for a scope, and the one before put back.
+// libcuda must have loaded.
+class CudaContextScope {
+ public:
+  explicit CudaContextScope(CUcontext context)
+      : pushed_(cuda_driver()->cuCtxPushCurrent(context) == CUDA_SUCCESS) {}
+  ~CudaContextScope() {
+    CUcontext popped = nullptr;
+    if (pushed_) cuda_driver()->cuCtxPopCurrent(&popped);
+  }
+  CudaContextScope(const CudaContextScope&) = delete;
+  CudaContextScope& operator=(const CudaContextScope&) = delete;
+  bool ok() const noexcept { return pushed_; }
+
+ private:
+  bool pushed_;
+};
 
 // The CUDA device that is @p device's GPU: Vulkan's deviceUUID matched
 // against each CUDA device's. NotFound when no CUDA device is; Unsupported
-// where libcuda does not load.
-Result<int> cuda_ordinal_of(const Device& device);
+// where libcuda does not load. @p who names the decoder in errors.
+Result<int> cuda_ordinal_of(const Device& device, const char* who);
 
 // A ring of exported Vulkan buffers on one device, each imported into CUDA
 // once, in the decoder's CUDA context. A picture takes one that no earlier
 // picture still holds, or a new one; a free one too small for it is let go.
 class CudaPictures {
  public:
+  // @p who names the decoder in errors.
   static Result<std::unique_ptr<CudaPictures>> create(const Device& device,
                                                       CUcontext context,
-                                                      CUstream stream);
+                                                      CUstream stream,
+                                                      const char* who);
   ~CudaPictures();
   CudaPictures(const CudaPictures&) = delete;
   CudaPictures& operator=(const CudaPictures&) = delete;
@@ -48,6 +118,14 @@ class CudaPictures {
               std::size_t chroma_pitch, std::uint32_t width,
               std::uint32_t height, DecodedPicture& out);
 
+  // A buffer of at least @p bytes that no picture holds, and where CUDA sees
+  // it, for a decoder that writes the picture itself.
+  struct Target {
+    std::shared_ptr<const Buffer> buffer;
+    CUdeviceptr pointer = 0;
+  };
+  Result<Target> take(std::uint64_t bytes);
+
  private:
   struct Slot {
     std::shared_ptr<Buffer> buffer;
@@ -55,14 +133,16 @@ class CudaPictures {
     CUdeviceptr pointer = 0;
     std::uint64_t bytes = 0;
   };
-  CudaPictures(const Device& device, CUcontext context, CUstream stream)
-      : device_(&device), context_(context), stream_(stream) {}
+  CudaPictures(const Device& device, CUcontext context, CUstream stream,
+               const char* who)
+      : device_(&device), context_(context), stream_(stream), who_(who) {}
   Result<Slot*> slot(std::uint64_t bytes);
   static void release(Slot& s);
 
   const Device* device_;
   CUcontext context_;
   CUstream stream_;
+  const char* who_;
   std::vector<Slot> slots_;
 };
 

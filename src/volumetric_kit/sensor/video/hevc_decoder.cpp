@@ -275,7 +275,7 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
 #if VR_SENSOR_VIDEO_WITH_CUDA
     if (backend == VideoDecodeBackend::Cuda && device != nullptr &&
         device->exports_memory()) {
-      if (const auto ordinal = video::cuda_ordinal_of(*device)) {
+      if (const auto ordinal = video::cuda_ordinal_of(*device, kWho)) {
         name = std::to_string(ordinal.value());
       }
     }
@@ -290,8 +290,9 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
       const auto* hw =
           reinterpret_cast<const AVHWDeviceContext*>(impl->device->data);
       const auto* cuda = static_cast<const AVCUDADeviceContext*>(hw->hwctx);
-      VR_ASSIGN(impl->pictures, video::CudaPictures::create(
-                                    *device, cuda->cuda_ctx, cuda->stream));
+      VR_ASSIGN(impl->pictures,
+                video::CudaPictures::create(*device, cuda->cuda_ctx,
+                                            cuda->stream, kWho));
     }
 #endif
     context->hw_device_ctx = av_buffer_ref(impl->device.get());
