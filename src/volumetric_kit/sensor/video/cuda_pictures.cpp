@@ -3,9 +3,11 @@
 
 #include "cuda_pictures.hpp"
 
+#include <dlfcn.h>
 #include <unistd.h>
 
 #include <cstring>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -18,9 +20,58 @@ namespace {
 
 constexpr const char* kWho = "HevcDecoder";
 
+// The driver entry points used here. Each name goes through cuda.h's macros,
+// so it is the versioned symbol its prototype declares (cuMemFree is
+// cuMemFree_v2).
+#define VR_CUDA_FUNCTIONS(X)         \
+  X(cuInit)                          \
+  X(cuGetErrorName)                  \
+  X(cuDeviceGetCount)                \
+  X(cuDeviceGet)                     \
+  X(cuDeviceGetUuid)                 \
+  X(cuCtxPushCurrent)                \
+  X(cuCtxPopCurrent)                 \
+  X(cuImportExternalMemory)          \
+  X(cuExternalMemoryGetMappedBuffer) \
+  X(cuDestroyExternalMemory)         \
+  X(cuMemFree)                       \
+  X(cuMemcpy2DAsync)                 \
+  X(cuStreamSynchronize)
+#define VR_CUDA_STRING(name) VR_CUDA_STRING_(name)
+#define VR_CUDA_STRING_(name) #name
+
+struct Driver {
+#define VR_CUDA_DECLARE(name) decltype(&::name) name = nullptr;
+  VR_CUDA_FUNCTIONS(VR_CUDA_DECLARE)
+#undef VR_CUDA_DECLARE
+};
+
+// libcuda, loaded once and kept; null where it does not load or lacks an
+// entry point.
+const Driver* driver() {
+  static const std::optional<Driver> loaded = []() -> std::optional<Driver> {
+    void* lib = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (lib == nullptr) return std::nullopt;
+    Driver d;
+    bool ok = true;
+#define VR_CUDA_LOAD(name)                                                  \
+  d.name =                                                                  \
+      reinterpret_cast<decltype(d.name)>(dlsym(lib, VR_CUDA_STRING(name))); \
+  ok = ok && d.name != nullptr;
+    VR_CUDA_FUNCTIONS(VR_CUDA_LOAD)
+#undef VR_CUDA_LOAD
+    if (!ok) {
+      dlclose(lib);
+      return std::nullopt;
+    }
+    return d;
+  }();
+  return loaded ? &*loaded : nullptr;
+}
+
 Status cuda_error(CUresult result, const char* what) {
   const char* name = nullptr;
-  cuGetErrorName(result, &name);
+  driver()->cuGetErrorName(result, &name);
   return Status::io_error(std::string(kWho) + ": " + what + ": " +
                           (name != nullptr ? name : "CUDA error"));
 }
@@ -29,10 +80,10 @@ Status cuda_error(CUresult result, const char* what) {
 class ContextScope {
  public:
   explicit ContextScope(CUcontext context)
-      : pushed_(cuCtxPushCurrent(context) == CUDA_SUCCESS) {}
+      : pushed_(driver()->cuCtxPushCurrent(context) == CUDA_SUCCESS) {}
   ~ContextScope() {
     CUcontext popped = nullptr;
-    if (pushed_) cuCtxPopCurrent(&popped);
+    if (pushed_) driver()->cuCtxPopCurrent(&popped);
   }
   bool ok() const noexcept { return pushed_; }
 
@@ -54,16 +105,20 @@ Result<int> cuda_ordinal_of(const Device& device) {
   props.pNext = &id;
   vkGetPhysicalDeviceProperties2(device.physical_device(), &props);
 
-  CUresult r = cuInit(0);
+  const Driver* cu = driver();
+  if (cu == nullptr) {
+    return Status::unsupported(std::string(kWho) + ": libcuda does not load");
+  }
+  CUresult r = cu->cuInit(0);
   if (r != CUDA_SUCCESS) return cuda_error(r, "starting CUDA");
   int count = 0;
-  r = cuDeviceGetCount(&count);
+  r = cu->cuDeviceGetCount(&count);
   if (r != CUDA_SUCCESS) return cuda_error(r, "counting CUDA devices");
   for (int i = 0; i < count; ++i) {
-    CUdevice cu = 0;
+    CUdevice ordinal = 0;
     CUuuid uuid{};
-    if (cuDeviceGet(&cu, i) != CUDA_SUCCESS ||
-        cuDeviceGetUuid(&uuid, cu) != CUDA_SUCCESS) {
+    if (cu->cuDeviceGet(&ordinal, i) != CUDA_SUCCESS ||
+        cu->cuDeviceGetUuid(&uuid, ordinal) != CUDA_SUCCESS) {
       continue;
     }
     if (std::memcmp(uuid.bytes, id.deviceUUID, VK_UUID_SIZE) == 0) return i;
@@ -80,22 +135,37 @@ Result<std::unique_ptr<CudaPictures>> CudaPictures::create(const Device& device,
                                ": the device does not export memory "
                                "(VK_KHR_external_memory_fd)");
   }
+  if (driver() == nullptr) {
+    return Status::unsupported(std::string(kWho) + ": libcuda does not load");
+  }
   return std::unique_ptr<CudaPictures>(
       new CudaPictures(device, context, stream));
 }
 
 CudaPictures::~CudaPictures() {
   const ContextScope scope(context_);
-  for (Slot& s : slots_) {
-    cuMemFree(s.pointer);
-    cuDestroyExternalMemory(s.memory);
-  }
+  for (Slot& s : slots_) release(s);
+}
+
+// CUDA's view goes; the buffer stays with any picture still holding it.
+void CudaPictures::release(Slot& s) {
+  driver()->cuMemFree(s.pointer);
+  driver()->cuDestroyExternalMemory(s.memory);
 }
 
 Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
-  // Reused only once no picture holds it, and grown where it is too small.
+  // Reused only once no picture holds it. A free one left over is too small,
+  // so it is let go rather than kept past a change of picture size.
   for (Slot& s : slots_) {
     if (s.buffer.use_count() == 1 && s.bytes >= bytes) return &s;
+  }
+  for (auto it = slots_.begin(); it != slots_.end();) {
+    if (it->buffer.use_count() == 1) {
+      release(*it);
+      it = slots_.erase(it);
+    } else {
+      ++it;
+    }
   }
   VR_ASSIGN(ExportedBuffer exported, create_exported_buffer(*device_, bytes));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
@@ -108,7 +178,7 @@ Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   handle.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
   Slot s;
   s.bytes = bytes;
-  CUresult r = cuImportExternalMemory(&s.memory, &handle);
+  CUresult r = driver()->cuImportExternalMemory(&s.memory, &handle);
   if (r != CUDA_SUCCESS) {
     close(exported.fd);  // an import that fails leaves the descriptor ours
     return cuda_error(r, "importing a Vulkan buffer");
@@ -116,9 +186,9 @@ Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   CUDA_EXTERNAL_MEMORY_BUFFER_DESC mapped{};
   mapped.offset = 0;
   mapped.size = bytes;
-  r = cuExternalMemoryGetMappedBuffer(&s.pointer, s.memory, &mapped);
+  r = driver()->cuExternalMemoryGetMappedBuffer(&s.pointer, s.memory, &mapped);
   if (r != CUDA_SUCCESS) {
-    cuDestroyExternalMemory(s.memory);
+    driver()->cuDestroyExternalMemory(s.memory);
     return cuda_error(r, "mapping a Vulkan buffer");
   }
   s.buffer = std::make_shared<Buffer>(std::move(exported.buffer));
@@ -153,7 +223,8 @@ Status CudaPictures::copy(CUdeviceptr luma, std::size_t luma_pitch,
   plane.dstPitch = width;
   plane.WidthInBytes = width;
   plane.Height = height;
-  CUresult r = cuMemcpy2DAsync(&plane, stream_);
+  const Driver* cu = driver();
+  CUresult r = cu->cuMemcpy2DAsync(&plane, stream_);
   if (r == CUDA_SUCCESS) {
     plane.srcDevice = chroma;
     plane.srcPitch = chroma_pitch;
@@ -161,9 +232,9 @@ Status CudaPictures::copy(CUdeviceptr luma, std::size_t luma_pitch,
     plane.dstPitch = chroma_row;
     plane.WidthInBytes = chroma_row;
     plane.Height = chroma_rows;
-    r = cuMemcpy2DAsync(&plane, stream_);
+    r = cu->cuMemcpy2DAsync(&plane, stream_);
   }
-  if (r == CUDA_SUCCESS) r = cuStreamSynchronize(stream_);
+  if (r == CUDA_SUCCESS) r = cu->cuStreamSynchronize(stream_);
   if (r != CUDA_SUCCESS) return cuda_error(r, "copying a picture");
 
   out.width = width;

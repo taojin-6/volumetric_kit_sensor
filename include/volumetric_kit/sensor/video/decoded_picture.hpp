@@ -86,9 +86,10 @@ struct DecodedPicture {
   /// On the device instead, for a decoder given a device it decodes on: an
   /// NV12 picture in this storage buffer, Y at `offset[0]` and the chroma at
   /// `offset[1]`, rows `stride` bytes apart; @ref plane is empty. The picture
-  /// holds the buffer, and the decoder reuses it only once nothing does.
-  /// CUDA wrote it, so a reader takes it over from `VK_QUEUE_FAMILY_EXTERNAL`
-  /// first (`CommandBatch::acquire`), and a `YuvImage` of it carries
+  /// holds the buffer, and the decoder reuses it only once nothing does; drop
+  /// it before the device it is on is destroyed. CUDA wrote it, so a reader
+  /// takes it over from `VK_QUEUE_FAMILY_EXTERNAL` first
+  /// (`CommandBatch::acquire`), and a `YuvImage` of it carries
   /// `kQueueFamilyExternal`.
   std::shared_ptr<const Buffer> device;
   std::uint64_t offset[2] = {};  ///< Each plane's byte offset in @ref device.

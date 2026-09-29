@@ -451,8 +451,14 @@ int test_device_pictures() {
   const auto hardware = HevcDecoder::hardware_backends();
   const bool cuda = std::find(hardware.begin(), hardware.end(),
                               VideoDecodeBackend::Cuda) != hardware.end();
-  const bool on_device =
-      VR_TEST_WITH_CUDA && cuda && device.value().exports_memory();
+  // The decoder also needs the Vulkan device to be a GPU CUDA sees, which an
+  // NVIDIA one is.
+  VkPhysicalDeviceProperties props{};
+  vkGetPhysicalDeviceProperties(gpu.value(), &props);
+  constexpr std::uint32_t kNvidia = 0x10DE;
+  const bool on_device = VR_TEST_WITH_CUDA && cuda &&
+                         device.value().exports_memory() &&
+                         props.vendorID == kNvidia;
   const char* required = std::getenv("VR_TEST_HEVC_BACKEND");
   if (VR_TEST_WITH_CUDA && required != nullptr &&
       std::string(required) == "cuda") {

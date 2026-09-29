@@ -66,7 +66,8 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// Cuda, in a build with VR_WITH_CUDA, on a device that exports memory.
     /// Such a picture stays on the GPU, NV12 in a buffer it holds (@ref
     /// DecodedPicture::device); any other comes to the host as @ref layout
-    /// says. Borrowed: it must outlive the decoder.
+    /// says, and so does every picture after the device path fails once.
+    /// Borrowed: it must outlive the decoder and every picture on it.
     const Device* device = nullptr;
   };
 

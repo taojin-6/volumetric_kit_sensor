@@ -481,20 +481,23 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
     return video::ffmpeg_error(kWho, "decoding", err);
   }
 
+  const std::int64_t pts = decoded->pts != AV_NOPTS_VALUE
+                               ? decoded->pts
+                               : decoded->best_effort_timestamp;
   // Asked of the picture, not the back end: pictures decoded on the GPU are
   // still waiting after Auto moves the stream to software.
   const AVFrame* host = decoded;
   if (decoded->hw_frames_ctx != nullptr) {
 #if VR_SENSOR_VIDEO_WITH_CUDA
     if (impl_->pictures != nullptr) {
-      VR_ASSIGN(std::optional<DecodedPicture> on_device,
-                impl_->device_picture(*decoded));
-      if (on_device) {
-        on_device->pts = decoded->pts != AV_NOPTS_VALUE
-                             ? decoded->pts
-                             : decoded->best_effort_timestamp;
+      auto on_device = impl_->device_picture(*decoded);
+      if (on_device && on_device.value()) {
+        on_device.value()->pts = pts;
         return on_device;
       }
+      // A device path that fails, out of memory or refused by CUDA, is let
+      // go: this picture and every later one come to the host.
+      if (!on_device) impl_->pictures.reset();
     }
 #endif
     // TODO(sensor): hand a VideoToolbox picture to the GPU module without
@@ -505,8 +508,7 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
   VR_ASSIGN(
       DecodedPicture picture,
       impl_->converter.convert(*host, impl_->layout, impl_->unlabelled_color));
-  picture.pts = decoded->pts != AV_NOPTS_VALUE ? decoded->pts
-                                               : decoded->best_effort_timestamp;
+  picture.pts = pts;
   return std::optional<DecodedPicture>(picture);
 }
 

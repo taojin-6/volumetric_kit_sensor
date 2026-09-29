@@ -48,10 +48,13 @@ target_link_libraries(
   PUBLIC recon_core
   PRIVATE PkgConfig::VR_FFMPEG)
 # NVDEC's pictures copied into Vulkan buffers CUDA has imported, without a trip
-# through the host (cuda_pictures.cpp).
+# through the host (cuda_pictures.cpp). cuda.h only: libcuda is loaded at run
+# time, so a program built with CUDA starts where no NVIDIA driver is.
 if(VR_WITH_CUDA)
   target_sources(recon_sensor_video PRIVATE cuda_pictures.cpp)
-  target_link_libraries(recon_sensor_video PRIVATE CUDA::cuda_driver)
+  target_include_directories(recon_sensor_video SYSTEM
+                             PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+  target_link_libraries(recon_sensor_video PRIVATE ${CMAKE_DL_LIBS})
   target_compile_definitions(recon_sensor_video
                              PRIVATE VR_SENSOR_VIDEO_WITH_CUDA=1)
 endif()
