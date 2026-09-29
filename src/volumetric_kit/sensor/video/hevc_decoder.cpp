@@ -21,6 +21,10 @@ extern "C" {
 #include <libavutil/hwcontext_cuda.h>
 }
 #endif
+#if defined(__APPLE__)
+#include "volumetric_kit/recon/core/device.hpp"
+#include "vt_pictures.hpp"
+#endif
 
 namespace volumetric_kit::recon::sensor {
 namespace {
@@ -195,6 +199,35 @@ struct HevcDecoder::Impl {
   }
 #endif
 
+#if defined(__APPLE__)
+  // Where VideoToolbox's pictures go when a device was given that imports
+  // Metal textures; null otherwise, and every picture comes to the host.
+  std::unique_ptr<video::VtPictures> vt_pictures;
+
+  // @p frame's planes as images on the device; empty for a picture the
+  // device path does not take, which goes to the host instead. VideoToolbox
+  // has cropped the right and bottom, and a stream cropped at the left or
+  // top does not reach it.
+  Result<std::optional<DecodedPicture>> vt_picture(const AVFrame& frame) {
+    if (frame.format != AV_PIX_FMT_VIDEOTOOLBOX || frame.crop_left != 0 ||
+        frame.crop_top != 0) {
+      return std::optional<DecodedPicture>();
+    }
+    DecodedPicture picture;
+    VR_ASSIGN(const bool taken,
+              vt_pictures->import(
+                  reinterpret_cast<CVPixelBufferRef>(frame.data[3]),
+                  static_cast<std::uint32_t>(
+                      frame.width - static_cast<int>(frame.crop_right)),
+                  static_cast<std::uint32_t>(
+                      frame.height - static_cast<int>(frame.crop_bottom)),
+                  picture));
+    if (!taken) return std::optional<DecodedPicture>();
+    video::describe_color(frame, unlabelled_color, picture);
+    return std::optional<DecodedPicture>(std::move(picture));
+  }
+#endif
+
   static Result<std::unique_ptr<Impl>> open(VideoDecodeBackend backend,
                                             bool may_fall_back,
                                             VideoPixelLayout layout,
@@ -279,7 +312,14 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
         name = std::to_string(ordinal.value());
       }
     }
-#else
+#endif
+#if defined(__APPLE__)
+    if (backend == VideoDecodeBackend::VideoToolbox && device != nullptr &&
+        device->imports_metal_textures()) {
+      VR_ASSIGN(impl->vt_pictures, video::VtPictures::create(*device, kWho));
+    }
+#endif
+#if !VR_SENSOR_VIDEO_WITH_CUDA && !defined(__APPLE__)
     static_cast<void>(device);
 #endif
     VR_ASSIGN(impl->device,
@@ -501,8 +541,17 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
       if (!on_device) impl_->pictures.reset();
     }
 #endif
-    // TODO(sensor): hand a VideoToolbox picture to the GPU module without
-    // this copy through host memory (the 2026-09-28 decoded-frame decision).
+#if defined(__APPLE__)
+    if (impl_->vt_pictures != nullptr) {
+      auto on_device = impl_->vt_picture(*decoded);
+      if (on_device && on_device.value()) {
+        on_device.value()->pts = pts;
+        return on_device;
+      }
+      // As for CUDA: a failed import lets the device path go.
+      if (!on_device) impl_->vt_pictures.reset();
+    }
+#endif
     VR_TRY(impl_->copy_to_host(*decoded));
     host = impl_->transferred.get();
   }

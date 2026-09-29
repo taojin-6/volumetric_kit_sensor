@@ -16,6 +16,7 @@
 
 namespace volumetric_kit::recon {
 class Buffer;
+class Image;
 }  // namespace volumetric_kit::recon
 
 namespace volumetric_kit::recon::sensor {
@@ -95,7 +96,16 @@ struct DecodedPicture {
   /// `kQueueFamilyExternal`.
   std::shared_ptr<const Buffer> device;
   std::uint64_t offset[3] = {};  ///< Each plane's byte offset in @ref device.
-  std::int64_t pts = 0;          ///< The one sent with its access unit.
+  /// Or on the device as images, from @ref HevcDecoder on VideoToolbox: NV12,
+  /// `image[0]` the luma (`R8_UNORM`) and `image[1]` the chroma
+  /// (`R8G8_UNORM`, U first), each at least the picture's size, chroma halved
+  /// and rounded up, the picture at their corner; @ref plane and @ref device
+  /// empty. The images hold the decoder's picture, which VideoToolbox does not
+  /// reuse while they are held; drop them before the device they are on is
+  /// destroyed. VideoToolbox has finished writing them, and a `YuvImage` of
+  /// them takes them as its `image`.
+  std::shared_ptr<const Image> image[2];
+  std::int64_t pts = 0;  ///< The one sent with its access unit.
   /// The matrix and range the stream declares: what Rgb24 was converted by,
   /// and what a Yuv420 consumer converts by. A stream that declares no matrix
   /// takes the decoder's `Options::unlabelled_color` when it has one. Without

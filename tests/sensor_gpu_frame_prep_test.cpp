@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "buffer_readback.hpp"
+#include "test_image.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/compute_util.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
@@ -462,11 +463,12 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
 }
 
 // One picture, many ways: host I420, host NV12 with tight and padded rows,
-// and device planes in either layout at odd offsets with padded rows, far
+// device planes in either layout at odd offsets with padded rows, far
 // enough into their buffer that the binding starts past byte 0, taken over
-// from outside Vulkan or not, and with Cb and Cr rows of different lengths.
-// They are only different addresses for the same samples, so all come out
-// identical. Device planes the pass cannot read are refused, before any work.
+// from outside Vulkan or not, and with Cb and Cr rows of different lengths,
+// and NV12's planes as images larger than the picture. They are only
+// different addresses for the same samples, so all come out identical.
+// Planes the pass cannot read are refused, before any work.
 int test_layouts(sensor::GpuFramePrep& prep) {
   const auto invalid = vr::Status::Code::InvalidArgument;
   const std::uint32_t w = kWidth + 1, h = kHeight + 1;
@@ -613,6 +615,64 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   CHECK(word.device != nullptr);
   CHECK(same(word));
 
+  // Images, each wider and taller than its plane, the rest of it junk: the
+  // pass copies the picture from their corner.
+  const auto image_of = [](VkFormat format, std::uint32_t texel,
+                           std::uint32_t iw, std::uint32_t ih,
+                           const std::uint8_t* rows, std::uint32_t row_bytes,
+                           std::uint32_t count, VkImageUsageFlags usage) {
+    std::vector<std::uint8_t> texels(std::size_t{iw} * ih * texel, 0xEE);
+    for (std::uint32_t r = 0; r < count; ++r) {
+      std::memcpy(&texels[std::size_t{r} * iw * texel],
+                  rows + std::size_t{r} * row_bytes, row_bytes);
+    }
+    auto made = test_image::make(*g_device, *g_allocator, format, iw, ih,
+                                 texels, usage);
+    return made.ok()
+               ? std::make_shared<const vr::Image>(std::move(made).value())
+               : nullptr;
+  };
+  const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  const auto luma =
+      image_of(VK_FORMAT_R8_UNORM, 1, w + 3, h + 2, p.y.data(), w, h, src);
+  const auto chroma = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw + 1, p.ch + 1,
+                               cbcr_tight.data(), 2 * p.cw, p.ch, src);
+  CHECK(luma != nullptr && chroma != nullptr);
+  sensor::YuvImage images = i420;
+  images.plane[0] = images.plane[1] = images.plane[2] = nullptr;
+  images.stride[0] = images.stride[1] = images.stride[2] = 0;
+  images.layout = sensor::YuvLayout::Nv12;
+  images.image[0] = luma;
+  images.image[1] = chroma;
+  CHECK(same(images));
+
+  // Refused as images: beside host or device planes; I420; one missing;
+  // the two swapped; one smaller than its plane; one the pass cannot copy.
+  sensor::YuvImage bad_images = images;
+  bad_images.plane[0] = p.y.data();
+  CHECK(refused(bad_images, "one of the three"));
+  bad_images = images;
+  bad_images.device = planes;
+  CHECK(refused(bad_images, "one of the three"));
+  bad_images = images;
+  bad_images.layout = sensor::YuvLayout::I420;
+  CHECK(refused(bad_images, "NV12's two"));
+  bad_images = images;
+  bad_images.image[1] = nullptr;
+  CHECK(refused(bad_images, "NV12's two"));
+  bad_images = images;
+  bad_images.image[0] = chroma;
+  bad_images.image[1] = luma;
+  CHECK(refused(bad_images, "at least the picture's size"));
+  bad_images = images;
+  bad_images.image[0] =
+      image_of(VK_FORMAT_R8_UNORM, 1, w - 1, h, p.y.data(), w - 1, h, src);
+  CHECK(refused(bad_images, "at least the picture's size"));
+  bad_images = images;
+  bad_images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch,
+                                 cbcr_tight.data(), 2 * p.cw, p.ch, 0);
+  CHECK(refused(bad_images, "TRANSFER_SRC"));
+
   // Refused: host and device planes at once, even a stale third one; an NV12
   // host picture with a third plane; a plane past the buffer; planes that
   // overlap, as I420's do with its offsets left at zero; a row shorter than
@@ -661,8 +721,8 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   CHECK(prep.prepare(f, &metrics).status().domain() == invalid);
   CHECK(metrics.rows().size() == 1 && !metrics.rows()[0].has_gpu);
   std::printf(
-      "  layouts: host I420 and NV12, device I420 and NV12 agree, from byte "
-      "%llu of their buffer\n",
+      "  layouts: host I420 and NV12, device I420 and NV12, and NV12 images "
+      "agree, from byte %llu of their buffer\n",
       static_cast<unsigned long long>(nv12_y));
   return 0;
 }

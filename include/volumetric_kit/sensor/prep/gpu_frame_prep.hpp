@@ -81,7 +81,9 @@ struct DeviceFrame {
 /// planes go up with depth in one copy; device planes, such as a hardware
 /// decoder's picture, are read where they are, so the colour never crosses
 /// the bus, after the pass takes them over from the queue family that wrote
-/// them (`YuvImage::queue_family`).
+/// them (`YuvImage::queue_family`); and NV12's planes as images, as
+/// VideoToolbox's picture arrives, are copied into the pass's input on the
+/// device in the same batch.
 ///
 /// Every check on the frame is made before anything is uploaded, so a refused
 /// frame leaves the pass and the frames it handed out as they were.
@@ -114,10 +116,12 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         without depth, a depth range that is not finite with
   ///         `0 < min_depth < max_depth` (0 being the pass's "no return"), a
   ///         camera or picture that is empty, not finite or disagrees with
-  ///         its image, colour planes on both the host and the device, an
-  ///         NV12 picture with a third plane, a plane row shorter than its
+  ///         its image, colour planes in more than one place, an NV12
+  ///         picture with a third plane, a plane row shorter than its
   ///         picture, device planes that overlap, lie outside their buffer or
-  ///         are in one that is empty or without storage usage, a
+  ///         are in one that is empty or without storage usage, plane images
+  ///         that are not NV12's R8 and R8G8 planes at least the picture's
+  ///         size with `TRANSFER_SRC` usage, a
   ///         `queue_family` the device lacks, or an image past a single
   ///         dispatch (16.7 M pixels);
   ///         @ref Status::Code::Unsupported for a colour encoding

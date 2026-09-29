@@ -27,7 +27,9 @@
 
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/command_batch.hpp"
+#include "volumetric_kit/recon/core/compute_util.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
+#include "volumetric_kit/recon/core/image.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 #include "yuv_reference.hpp"
@@ -408,9 +410,11 @@ int check_cropped(const std::vector<Picture>& cropped,
 
 // Given a device on the GPU NVDEC decodes on, a picture stays on the device:
 // NV12 in a buffer it holds, the same samples as software (hardware is
-// bit-exact), cropped at the left and top as the host path crops it. Without
-// CUDA in the build, or on any other back end, pictures still come to the
-// host.
+// bit-exact), cropped at the left and top as the host path crops it. On
+// VideoToolbox, given a device that imports Metal textures, it stays as two
+// plane images, the same samples again; the clip cropped at the left and top
+// goes to software, which VideoToolbox cannot crop. Without either, pictures
+// still come to the host.
 Picture from_device(const sensor::DecodedPicture& p, vr::Device& device,
                     vr::Allocator& allocator) {
   Picture out;
@@ -437,6 +441,33 @@ Picture from_device(const sensor::DecodedPicture& p, vr::Device& device,
   return out;
 }
 
+// NV12 plane images, copied into a buffer and read back.
+Picture from_images(const sensor::DecodedPicture& p, vr::Device& device,
+                    vr::Allocator& allocator) {
+  Picture out;
+  out.meta = p;
+  const std::uint32_t cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
+  const VkDeviceSize chroma_at = (VkDeviceSize{p.width} * p.height + 3) & ~3u;
+  const VkDeviceSize bytes = chroma_at + VkDeviceSize{cw} * ch * 2;
+  auto buffer = vr::device_storage_buffer(allocator, bytes);
+  if (!buffer) return out;
+  std::vector<std::uint8_t> b(static_cast<std::size_t>(bytes));
+  vr::CommandBatch batch(device, allocator);
+  if (!batch.copy(*p.image[0], p.width, p.height, buffer.value(), 0).ok() ||
+      !batch.copy(*p.image[1], cw, ch, buffer.value(), chroma_at).ok() ||
+      !batch.readback(buffer.value(), 0, bytes, b.data()).ok() ||
+      !batch.submit().ok()) {
+    return out;
+  }
+  out.planes[0].assign(b.begin(), b.begin() + std::ptrdiff_t{p.width} *
+                                                  std::ptrdiff_t{p.height});
+  for (std::size_t i = 0; i < std::size_t{cw} * ch; ++i) {
+    out.planes[1].push_back(b[static_cast<std::size_t>(chroma_at) + 2 * i]);
+    out.planes[2].push_back(b[static_cast<std::size_t>(chroma_at) + 2 * i + 1]);
+  }
+  return out;
+}
+
 int test_device_pictures() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
   if (!instance) return 0;
@@ -459,10 +490,17 @@ int test_device_pictures() {
   const bool on_device = VR_TEST_WITH_CUDA && cuda &&
                          device.value().exports_memory() &&
                          props.vendorID == kNvidia;
+  const bool vt =
+      std::find(hardware.begin(), hardware.end(),
+                VideoDecodeBackend::VideoToolbox) != hardware.end() &&
+      device.value().imports_metal_textures();
   const char* required = std::getenv("VR_TEST_HEVC_BACKEND");
   if (VR_TEST_WITH_CUDA && required != nullptr &&
       std::string(required) == "cuda") {
     CHECK(on_device);  // a CUDA leg must hand pictures out on the device
+  }
+  if (required != nullptr && std::string(required) == "videotoolbox") {
+    CHECK(vt);  // and so must a VideoToolbox one
   }
 
   const char* clips[] = {kPatches, kCropped};
@@ -490,7 +528,14 @@ int test_device_pictures() {
         CHECK(picture.ok());
         if (!picture.value()) break;
         const sensor::DecodedPicture& p = *picture.value();
+        const bool as_images = vt && clip == kPatches;
         CHECK((p.device != nullptr) == on_device);
+        CHECK((p.image[0] != nullptr && p.image[1] != nullptr) == as_images);
+        if (as_images) {
+          CHECK(p.layout == VideoPixelLayout::Nv12 && p.plane[0] == nullptr);
+          pictures.push_back(from_images(p, device.value(), allocator.value()));
+          continue;
+        }
         if (p.device == nullptr) {
           pictures.push_back(copy(p));
           continue;
@@ -512,6 +557,7 @@ int test_device_pictures() {
   }
   std::printf("  device pictures: %s\n",
               on_device ? "on the device, as software decodes them"
+              : vt      ? "as images on the device, as software decodes them"
                         : "not offered here; they come to the host");
   return 0;
 }
