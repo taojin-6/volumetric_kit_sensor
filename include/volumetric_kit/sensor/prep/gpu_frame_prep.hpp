@@ -67,6 +67,29 @@ struct DeviceFrame {
   bool has_color() const noexcept { return color != nullptr; }
 };
 
+/// @brief Options for @ref GpuFramePrep::create.
+struct GpuFramePrepConfig {
+  /// @brief Queue families that will access the frames' output buffers,
+  ///        @ref DeviceFrame::depth and @ref DeviceFrame::color.
+  ///
+  /// Left empty (the default) they are `VK_SHARING_MODE_EXCLUSIVE` to the
+  /// pass's own family, which is right for a recon-only consumer and what the
+  /// pass always made. A consumer on another queue family -- a renderer
+  /// copying the colour into its atlas -- must name both, as
+  /// `mesh::MarchingCubesConfig::queue_families` explains for the mesh:
+  /// reading an EXCLUSIVE buffer from a family that does not own it is
+  /// undefined, and on Apple, where Metal has no ownership to violate, it is
+  /// undefined in the way that appears to work. Duplicates collapse, so both
+  /// indices may be passed unconditionally.
+  ///
+  /// @see BufferDesc::queue_families, which this is copied into. Held by value,
+  ///      since the pass re-reads it whenever it makes an output.
+  std::uint32_t queue_families[BufferDesc::kMaxQueueFamilies] = {};
+  /// Entries in @ref queue_families; more than `kMaxQueueFamilies` is refused
+  /// by @ref GpuFramePrep::create.
+  std::uint32_t queue_family_count = 0;
+};
+
 /// @brief Undistorts a @ref RawFrame's depth and colour, and converts its
 ///        colour to R'G'B', in two compute passes.
 ///
@@ -93,9 +116,19 @@ struct DeviceFrame {
 ///          thread-safe.
 class VR_SENSOR_UTILS_API GpuFramePrep {
  public:
-  /// @return The pass; or a non-OK @ref Status if a pipeline, descriptor
-  ///         object or buffer fails to build.
-  static Result<GpuFramePrep> create(Device& device, Allocator& allocator);
+  /// @brief Build the two passes on @p device.
+  /// @param device     The device the frames are prepared on (must outlive
+  ///                   this object).
+  /// @param allocator  The allocator its buffers come from (must outlive
+  ///                   this object and every frame it hands out).
+  /// @param config     Which queue families read the outputs (see
+  ///                   @ref GpuFramePrepConfig).
+  /// @return The pass; @ref Status::Code::InvalidArgument for a
+  ///         `queue_family_count` past `BufferDesc::kMaxQueueFamilies`; or a
+  ///         non-OK @ref Status if a pipeline, descriptor object or buffer
+  ///         fails to build.
+  static Result<GpuFramePrep> create(Device& device, Allocator& allocator,
+                                     const GpuFramePrepConfig& config = {});
 
   ~GpuFramePrep() = default;
   GpuFramePrep(GpuFramePrep&&) noexcept = default;
@@ -144,6 +177,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   // Borrowed (must outlive this).
   Device* device_ = nullptr;
   Allocator* allocator_ = nullptr;
+  // Re-read by ensure_output whenever an output is made.
+  GpuFramePrepConfig config_;
 
   std::uint32_t max_workgroup_count_x_ = 0;
   VkDeviceSize max_storage_buffer_range_ = 0;

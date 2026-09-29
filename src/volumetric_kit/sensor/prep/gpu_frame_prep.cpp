@@ -360,11 +360,21 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
 
 }  // namespace
 
-Result<GpuFramePrep> GpuFramePrep::create(Device& device,
-                                          Allocator& allocator) {
+Result<GpuFramePrep> GpuFramePrep::create(Device& device, Allocator& allocator,
+                                          const GpuFramePrepConfig& config) {
+  // Here rather than at the first output, where it would surface as a buffer
+  // failure on the first frame. The array is fixed-size, so a count past it
+  // would read past its end; Allocator bounds the *distinct* families.
+  if (config.queue_family_count > BufferDesc::kMaxQueueFamilies) {
+    return Status::invalid_argument(
+        "GpuFramePrep::create: queue_family_count must be 0.." +
+        std::to_string(BufferDesc::kMaxQueueFamilies) + " (got " +
+        std::to_string(config.queue_family_count) + ")");
+  }
   GpuFramePrep prep;
   prep.device_ = &device;
   prep.allocator_ = &allocator;
+  prep.config_ = config;
 
   // Two storage bindings each, input then output, and the kernel's params as
   // push constants.
@@ -567,8 +577,13 @@ Status GpuFramePrep::ensure_output(std::shared_ptr<Buffer>& buffer,
     return {};
   }
   // Device-local: only the kernels touch it, and on a discrete GPU the
-  // fusion kernels' reads would otherwise cross the bus.
-  VR_ASSIGN(Buffer created, device_storage_buffer(*allocator_, bytes));
+  // fusion kernels' reads would otherwise cross the bus. Shared with the
+  // families the config names, for a consumer on another queue.
+  VR_ASSIGN(Buffer created, device_storage_buffer(*allocator_, bytes, 0,
+                                                  config_.queue_family_count > 0
+                                                      ? config_.queue_families
+                                                      : nullptr,
+                                                  config_.queue_family_count));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
                            debug_object_handle(created.handle()), name);
   buffer = std::make_shared<Buffer>(std::move(created));
