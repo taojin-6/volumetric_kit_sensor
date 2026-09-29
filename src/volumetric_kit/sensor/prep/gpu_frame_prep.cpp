@@ -4,6 +4,7 @@
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -363,14 +364,9 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
 Result<GpuFramePrep> GpuFramePrep::create(Device& device, Allocator& allocator,
                                           const GpuFramePrepConfig& config) {
   // Here rather than at the first output, where it would surface as a buffer
-  // failure on the first frame. The array is fixed-size, so a count past it
-  // would read past its end; Allocator bounds the *distinct* families.
-  if (config.queue_family_count > BufferDesc::kMaxQueueFamilies) {
-    return Status::invalid_argument(
-        "GpuFramePrep::create: queue_family_count must be 0.." +
-        std::to_string(BufferDesc::kMaxQueueFamilies) + " (got " +
-        std::to_string(config.queue_family_count) + ")");
-  }
+  // failure on the first frame.
+  VR_TRY(check_queue_family_count(config.color_queue_family_count,
+                                  "GpuFramePrep::create"));
   GpuFramePrep prep;
   prep.device_ = &device;
   prep.allocator_ = &allocator;
@@ -440,13 +436,15 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
 
   VR_TRY(ensure_buffer(*device_, *allocator_, depth_in_, depth.in_bytes, false,
                        "sensor.raw_depth"));
-  VR_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame"));
+  VR_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame",
+                       /*color=*/false));
   if (frame.has_color()) {
     if (into_input) {
       VR_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.bind_bytes,
                            false, "sensor.raw_color"));
     }
-    VR_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame"));
+    VR_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame",
+                         /*color=*/true));
   }
 
   VR_TRY(ensure_buffer(*device_, *allocator_, staging_,
@@ -568,22 +566,26 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
 }
 
 Status GpuFramePrep::ensure_output(std::shared_ptr<Buffer>& buffer,
-                                   VkDeviceSize bytes, const char* name) {
+                                   VkDeviceSize bytes, const char* name,
+                                   bool color) {
   // Reused only when this pass holds the last reference: a DeviceFrame kept
   // past this call keeps its contents, and this frame goes to a new buffer,
   // which measured no slower than reusing one (the residency decision's step
   // 5b), so there is no ring.
   if (buffer != nullptr && buffer.use_count() == 1 && buffer->size() >= bytes) {
+    // use_count() is a relaxed load. The fence orders this thread's next
+    // write after whatever the thread that dropped the last other reference
+    // did first, such as a renderer's fence wait on its copy from it.
+    std::atomic_thread_fence(std::memory_order_acquire);
     return {};
   }
   // Device-local: only the kernels touch it, and on a discrete GPU the
-  // fusion kernels' reads would otherwise cross the bus. Shared with the
-  // families the config names, for a consumer on another queue.
-  VR_ASSIGN(Buffer created, device_storage_buffer(*allocator_, bytes, 0,
-                                                  config_.queue_family_count > 0
-                                                      ? config_.queue_families
-                                                      : nullptr,
-                                                  config_.queue_family_count));
+  // fusion kernels' reads would otherwise cross the bus. The colour is shared
+  // with the families the config names, for a consumer on another queue.
+  VR_ASSIGN(Buffer created, device_storage_buffer(
+                                *allocator_, bytes, 0,
+                                color ? config_.color_queue_families : nullptr,
+                                color ? config_.color_queue_family_count : 0));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
                            debug_object_handle(created.handle()), name);
   buffer = std::make_shared<Buffer>(std::move(created));

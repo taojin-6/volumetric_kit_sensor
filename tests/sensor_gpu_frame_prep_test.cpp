@@ -11,7 +11,7 @@
 //     coverage byte included;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
-//   - its outputs are shared with the queue families its config names;
+//   - its colour output is shared with the queue families its config names;
 //   - its output fuses through the device-input overloads.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
@@ -915,8 +915,8 @@ int test_frames_hold_buffers(sensor::GpuFramePrep& prep) {
   return 0;
 }
 
-// One pass under `config`: a frame with colour prepares, and both outputs carry
-// `want` as their sharing mode.
+// One pass under `config`: a frame with colour prepares, its colour output
+// carries `want` as its sharing mode, and its depth stays EXCLUSIVE.
 int prepared_sharing(vr::Device& device, vr::Allocator& allocator,
                      const sensor::GpuFramePrepConfig& config,
                      const sensor::RawFrame& frame, VkSharingMode want) {
@@ -926,18 +926,18 @@ int prepared_sharing(vr::Device& device, vr::Allocator& allocator,
   auto out = prep->prepare(frame);
   if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
   CHECK(out.ok() && out->has_color());
-  CHECK(out->depth->sharing_mode() == want);
+  CHECK(out->depth->sharing_mode() == VK_SHARING_MODE_EXCLUSIVE);
   CHECK(out->color->sharing_mode() == want);
   const std::vector<float> d = depth_of(out.value());
   CHECK(d.size() == std::size_t{kWidth} * kHeight && d[0] == 1000.0f * kScale);
   return 0;
 }
 
-// The outputs are shared with the queue families the config names, for a
-// consumer on another queue: a second family makes both CONCURRENT, the pass's
+// The colour output is shared with the queue families the config names, for a
+// consumer on another queue: a second family makes it CONCURRENT, the pass's
 // own family named twice collapses to EXCLUSIVE, as does no config, and a
-// count past the array is refused. The second family is skipped on a device
-// that has only one.
+// count past the array is refused. Depth is EXCLUSIVE throughout. The second
+// family is skipped on a device that has only one.
 int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
   std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
   Planes planes = make_planes();
@@ -951,9 +951,9 @@ int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
     return 1;
   }
   sensor::GpuFramePrepConfig twice;
-  twice.queue_families[0] = own;
-  twice.queue_families[1] = own;
-  twice.queue_family_count = 2;
+  twice.color_queue_families[0] = own;
+  twice.color_queue_families[1] = own;
+  twice.color_queue_family_count = 2;
   if (prepared_sharing(device, allocator, twice, f,
                        VK_SHARING_MODE_EXCLUSIVE) != 0) {
     return 1;
@@ -963,7 +963,7 @@ int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
                                            &family_count, nullptr);
   if (family_count > 1) {
     sensor::GpuFramePrepConfig two = twice;
-    two.queue_families[1] = own == 0 ? 1 : 0;
+    two.color_queue_families[1] = own == 0 ? 1 : 0;
     if (prepared_sharing(device, allocator, two, f,
                          VK_SHARING_MODE_CONCURRENT) != 0) {
       return 1;
@@ -972,7 +972,7 @@ int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
     std::printf("  one queue family: CONCURRENT outputs not exercised\n");
   }
   sensor::GpuFramePrepConfig too_many;
-  too_many.queue_family_count = vr::BufferDesc::kMaxQueueFamilies + 1;
+  too_many.color_queue_family_count = vr::BufferDesc::kMaxQueueFamilies + 1;
   CHECK(sensor::GpuFramePrep::create(device, allocator, too_many)
             .status()
             .domain() == vr::Status::Code::InvalidArgument);
