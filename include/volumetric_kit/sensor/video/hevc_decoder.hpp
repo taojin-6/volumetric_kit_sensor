@@ -20,6 +20,10 @@
 #include "volumetric_kit/recon/sensor/video/export.hpp"
 #include "volumetric_kit/recon/sensor/video/video_backend.hpp"
 
+namespace volumetric_kit::recon {
+class Device;
+}  // namespace volumetric_kit::recon
+
 namespace volumetric_kit::recon::sensor {
 
 /// @brief Decodes an H.265 elementary stream (Annex B), one access unit at a
@@ -58,6 +62,12 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     std::optional<VideoColorDescription> unlabelled_color;
     /// Set FFmpeg's log level to ERROR. Process-wide: FFmpeg has one logger.
     bool configure_ffmpeg_logging = true;
+    /// A device to hand pictures out on when the back end decodes on its GPU:
+    /// Cuda, in a build with VR_WITH_CUDA, on a device that exports memory.
+    /// Such a picture stays on the GPU, NV12 in a buffer it holds (@ref
+    /// DecodedPicture::device); any other comes to the host as @ref layout
+    /// says. Borrowed: it must outlive the decoder.
+    const Device* device = nullptr;
   };
 
   /// @return The hardware back ends that decode HEVC here, in the order
@@ -74,7 +84,8 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   /// @return The decoder; @ref Status::Code::Unsupported for a named back end
   ///         not in @ref hardware_backends (the message lists those that
   ///         are); @ref Status::Code::InvalidArgument for a negative thread
-  ///         count; or @ref Status::Code::IoError if FFmpeg fails.
+  ///         count or an Nv12 layout, which only a device picture comes as;
+  ///         or @ref Status::Code::IoError if FFmpeg fails.
   static Result<HevcDecoder> create(const Options& options);
 
   HevcDecoder(HevcDecoder&& other) noexcept;

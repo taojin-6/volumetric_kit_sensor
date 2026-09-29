@@ -4,13 +4,19 @@
 #pragma once
 
 /// @file sensor/video/decoded_picture.hpp
-/// @brief A decoded picture in host memory, borrowed from its decoder.
+/// @brief A decoded picture: in host memory, borrowed from its decoder, or on
+///        the device, held by the picture.
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 #include "volumetric_kit/recon/core/color_space.hpp"
+
+namespace volumetric_kit::recon {
+class Buffer;
+}  // namespace volumetric_kit::recon
 
 namespace volumetric_kit::recon::sensor {
 
@@ -20,6 +26,10 @@ enum class VideoPixelLayout {
   Rgb24,
   /// Three 8-bit planes as decoded: Y, then U and V at half size.
   Yuv420,
+  /// Two 8-bit planes: Y, then U and V interleaved at half size, U first. A
+  /// picture handed out on the device comes this way, as the hardware
+  /// decodes it.
+  Nv12,
 };
 
 /// @brief The YCbCr-to-RGB matrix of a coded picture.
@@ -61,18 +71,25 @@ struct VideoColorDescription {
   bool full_range = false;  ///< Y in 0..255 rather than 16..235.
 };
 
-/// @brief One decoded picture. Its planes belong to the decoder and are valid
-///        until the decoder's next call.
+/// @brief One decoded picture. Host planes belong to the decoder and are valid
+///        until the decoder's next call; a device picture is held by the
+///        picture.
 struct DecodedPicture {
   /// Width in pixels, after the stream's crop: its display width.
   std::uint32_t width = 0;
   /// Height in pixels, after the stream's crop: its display height.
   std::uint32_t height = 0;
-  /// The layout the decoder was asked for.
+  /// The layout the decoder was asked for; Nv12 for a device picture.
   VideoPixelLayout layout = VideoPixelLayout::Rgb24;
   const std::uint8_t* plane[3] = {};  ///< Rgb24 uses plane[0] only.
   std::size_t stride[3] = {};         ///< Bytes per row of each plane.
-  std::int64_t pts = 0;               ///< The one sent with its access unit.
+  /// On the device instead, for a decoder given a device it decodes on: an
+  /// NV12 picture in this storage buffer, Y at `offset[0]` and the chroma at
+  /// `offset[1]`, rows `stride` bytes apart; @ref plane is empty. The picture
+  /// holds the buffer, and the decoder reuses it only once nothing does.
+  std::shared_ptr<const Buffer> device;
+  std::uint64_t offset[2] = {};  ///< Each plane's byte offset in @ref device.
+  std::int64_t pts = 0;          ///< The one sent with its access unit.
   /// The matrix and range the stream declares: what Rgb24 was converted by,
   /// and what a Yuv420 consumer converts by. A stream that declares no matrix
   /// takes the decoder's `Options::unlabelled_color` when it has one. Without
