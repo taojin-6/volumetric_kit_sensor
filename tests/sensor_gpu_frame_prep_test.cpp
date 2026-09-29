@@ -11,6 +11,7 @@
 //     coverage byte included;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
+//   - its colour output is shared with the queue families its config names;
 //   - its output fuses through the device-input overloads.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
@@ -914,6 +915,70 @@ int test_frames_hold_buffers(sensor::GpuFramePrep& prep) {
   return 0;
 }
 
+// One pass under `config`: a frame with colour prepares, its colour output
+// carries `want` as its sharing mode, and its depth stays EXCLUSIVE.
+int prepared_sharing(vr::Device& device, vr::Allocator& allocator,
+                     const sensor::GpuFramePrepConfig& config,
+                     const sensor::RawFrame& frame, VkSharingMode want) {
+  auto prep = sensor::GpuFramePrep::create(device, allocator, config);
+  if (!prep) std::fprintf(stderr, "%s\n", prep.status().message().c_str());
+  CHECK(prep.ok());
+  auto out = prep->prepare(frame);
+  if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+  CHECK(out.ok() && out->has_color());
+  CHECK(out->depth->sharing_mode() == VK_SHARING_MODE_EXCLUSIVE);
+  CHECK(out->color->sharing_mode() == want);
+  const std::vector<float> d = depth_of(out.value());
+  CHECK(d.size() == std::size_t{kWidth} * kHeight && d[0] == 1000.0f * kScale);
+  return 0;
+}
+
+// The colour output is shared with the queue families the config names, for a
+// consumer on another queue: a second family makes it CONCURRENT, the pass's
+// own family named twice collapses to EXCLUSIVE, as does no config, and a
+// count past the array is refused. Depth is EXCLUSIVE throughout. The second
+// family is skipped on a device that has only one.
+int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
+  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
+  Planes planes = make_planes();
+  sensor::RawFrame f = frame_of(raw, pinhole());
+  f.color = planes.image(0.299f, 0.114f, true);
+  f.color_camera = pinhole();
+
+  const std::uint32_t own = device.compute_family();
+  if (prepared_sharing(device, allocator, {}, f, VK_SHARING_MODE_EXCLUSIVE) !=
+      0) {
+    return 1;
+  }
+  sensor::GpuFramePrepConfig twice;
+  twice.color_queue_families[0] = own;
+  twice.color_queue_families[1] = own;
+  twice.color_queue_family_count = 2;
+  if (prepared_sharing(device, allocator, twice, f,
+                       VK_SHARING_MODE_EXCLUSIVE) != 0) {
+    return 1;
+  }
+  std::uint32_t family_count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(device.physical_device(),
+                                           &family_count, nullptr);
+  if (family_count > 1) {
+    sensor::GpuFramePrepConfig two = twice;
+    two.color_queue_families[1] = own == 0 ? 1 : 0;
+    if (prepared_sharing(device, allocator, two, f,
+                         VK_SHARING_MODE_CONCURRENT) != 0) {
+      return 1;
+    }
+  } else {
+    std::printf("  one queue family: CONCURRENT outputs not exercised\n");
+  }
+  sensor::GpuFramePrepConfig too_many;
+  too_many.color_queue_family_count = vr::BufferDesc::kMaxQueueFamilies + 1;
+  CHECK(sensor::GpuFramePrep::create(device, allocator, too_many)
+            .status()
+            .domain() == vr::Status::Code::InvalidArgument);
+  return 0;
+}
+
 // Allocate `depth`'s band, retrying rounds that only lost bucket-lock races,
 // as examples/common/fuse_frame.hpp does: adjacent pixels dilate into one
 // block, and a round can hand back such failures over a map far from full.
@@ -1037,6 +1102,7 @@ int main() {
     return 1;
   }
   if (test_prepare_set(device.value(), allocator.value()) != 0) return 1;
+  if (test_queue_families(device.value(), allocator.value()) != 0) return 1;
 
   sensor::GpuFramePrep moved = std::move(prep).value();
   CHECK(moved.valid());
