@@ -646,8 +646,9 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   images.image[1] = chroma;
   CHECK(same(images));
 
-  // Refused as images: beside host or device planes; I420; one missing;
-  // the two swapped; one smaller than its plane; one the pass cannot copy.
+  // Refused as images: beside host or device planes; I420; either one
+  // missing; the two swapped; one smaller than its plane; one the pass
+  // cannot copy, for its usage or its layout.
   sensor::YuvImage bad_images = images;
   bad_images.plane[0] = p.y.data();
   CHECK(refused(bad_images, "one of the three"));
@@ -661,6 +662,9 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   bad_images.image[1] = nullptr;
   CHECK(refused(bad_images, "NV12's two"));
   bad_images = images;
+  bad_images.image[0] = nullptr;
+  CHECK(refused(bad_images, "NV12's two"));
+  bad_images = images;
   bad_images.image[0] = chroma;
   bad_images.image[1] = luma;
   CHECK(refused(bad_images, "at least the picture's size"));
@@ -672,6 +676,11 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   bad_images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch,
                                  cbcr_tight.data(), 2 * p.cw, p.ch, 0);
   CHECK(refused(bad_images, "TRANSFER_SRC"));
+  bad_images = images;
+  bad_images.image[1] = std::make_shared<const vr::Image>(  // borrowed
+      chroma->handle(), chroma->format(), chroma->width(), chroma->height(),
+      chroma->usage(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, nullptr);
+  CHECK(refused(bad_images, "TRANSFER_SRC_OPTIMAL"));
 
   // Refused: host and device planes at once, even a stale third one; an NV12
   // host picture with a third plane; a plane past the buffer; planes that

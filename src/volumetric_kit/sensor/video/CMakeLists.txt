@@ -33,6 +33,7 @@ generate_export_header(
 set_target_properties(
   recon_sensor_video
   PROPERTIES CXX_VISIBILITY_PRESET hidden
+             OBJCXX_VISIBILITY_PRESET hidden
              VISIBILITY_INLINES_HIDDEN ON
              POSITION_INDEPENDENT_CODE ON)
 

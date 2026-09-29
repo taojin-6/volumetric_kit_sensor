@@ -190,7 +190,7 @@ Result<DepthLayout> check_depth(const RawFrame& frame, std::uint64_t max_pixels,
 }
 
 // NV12's two planes as images the pass can copy: R8 luma and R8G8 chroma,
-// each at least the picture's size.
+// each at least the picture's size, as CommandBatch::copy checks them too.
 Status check_images(const YuvImage& image) {
   if (image.layout != YuvLayout::Nv12 || image.image[0] == nullptr ||
       image.image[1] == nullptr) {
@@ -211,6 +211,15 @@ Status check_images(const YuvImage& image) {
   if ((y.usage() & c.usage() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
     return Status::invalid_argument(
         "GpuFramePrep: the colour images need TRANSFER_SRC usage");
+  }
+  const auto copyable = [](const Image& i) {
+    return i.layout() == VK_IMAGE_LAYOUT_GENERAL ||
+           i.layout() == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  };
+  if (!copyable(y) || !copyable(c)) {
+    return Status::invalid_argument(
+        "GpuFramePrep: the colour images must be in GENERAL or "
+        "TRANSFER_SRC_OPTIMAL");
   }
   return {};
 }
@@ -403,7 +412,8 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
   // Host planes go up with depth, plane images are copied in beside them,
   // and device planes are read where they are.
   const YuvImage& image = frame.color;
-  const bool from_images = frame.has_color() && image.image[0] != nullptr;
+  const bool from_images =
+      image.image[0] != nullptr || image.image[1] != nullptr;
   const bool host_color =
       frame.has_color() && image.device == nullptr && !from_images;
   const bool into_input = host_color || from_images;

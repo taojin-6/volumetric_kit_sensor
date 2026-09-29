@@ -314,9 +314,11 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
     }
 #endif
 #if defined(__APPLE__)
+    // A device path that cannot be set up leaves the pictures to the host.
     if (backend == VideoDecodeBackend::VideoToolbox && device != nullptr &&
         device->imports_metal_textures()) {
-      VR_ASSIGN(impl->vt_pictures, video::VtPictures::create(*device, kWho));
+      auto pictures = video::VtPictures::create(*device, kWho);
+      if (pictures) impl->vt_pictures = std::move(pictures).value();
     }
 #endif
 #if !VR_SENSOR_VIDEO_WITH_CUDA && !defined(__APPLE__)

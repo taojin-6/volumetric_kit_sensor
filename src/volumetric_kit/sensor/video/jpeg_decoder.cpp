@@ -422,6 +422,8 @@ Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
     if (!on_device) impl_->gpu.reset();
   }
 #endif
+  // TODO(sensor): decode on VideoToolbox on Apple, into the same plane images
+  // as its H.265 (the 2026-09-28 decoded-frame decision's next step).
   return impl_->decode_software(data, size);
 }
 

@@ -447,7 +447,8 @@ Picture from_images(const sensor::DecodedPicture& p, vr::Device& device,
   Picture out;
   out.meta = p;
   const std::uint32_t cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
-  const VkDeviceSize chroma_at = (VkDeviceSize{p.width} * p.height + 3) & ~3u;
+  const VkDeviceSize chroma_at =
+      (VkDeviceSize{p.width} * p.height + 3) & ~VkDeviceSize{3};
   const VkDeviceSize bytes = chroma_at + VkDeviceSize{cw} * ch * 2;
   auto buffer = vr::device_storage_buffer(allocator, bytes);
   if (!buffer) return out;
