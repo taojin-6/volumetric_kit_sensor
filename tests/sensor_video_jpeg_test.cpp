@@ -212,8 +212,9 @@ int test_software() {
 // Given a device on an NVIDIA GPU, a 4:2:0 JPEG decodes into a buffer the
 // picture holds, as software decodes it: the wide one on the GPU's cores, as
 // the hardware engine refuses it. On Apple, into images the picture holds,
-// the wide one too. 4:2:2 still comes to the host. A buffer is reused only
-// once no picture holds it.
+// the wide one too where the device's extent takes it, and on the host,
+// keeping VideoToolbox, where it does not. 4:2:2 still comes to the host. A
+// buffer is reused only once no picture holds it.
 int test_device() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
   if (!instance) return 0;
@@ -247,14 +248,20 @@ int test_device() {
   }
   auto software = JpegDecoder::create({});
   CHECK(software.ok());
+  VkPhysicalDeviceProperties props{};
+  vkGetPhysicalDeviceProperties(gpu.value(), &props);
+  const std::uint32_t extent = props.limits.maxImageDimension2D;
 
   for (const Fixture& f : k420s) {
     const std::vector<std::uint8_t> bytes = read_file(f.path);
     auto p = decode(decoder.value(), bytes);
     CHECK(p.ok());
+    // Images stop at the device's extent, which the wide one passes on an M4
+    // (16384) and not on an M5 (32768).
+    const bool image = vt && f.width <= extent && f.height <= extent;
     CHECK((p->device != nullptr) == (on_device && !vt));
-    CHECK((p->image[0] != nullptr && p->image[1] != nullptr) == vt);
-    if (!on_device) continue;
+    CHECK((p->image[0] != nullptr && p->image[1] != nullptr) == image);
+    if (!image && p->device == nullptr) continue;  // on the host
     CHECK(p->plane[0] == nullptr);
     CHECK(check_meta(p.value(), f.width, f.height) == 0);
     const Planes got =
@@ -274,6 +281,7 @@ int test_device() {
     }
   }
 
+  CHECK(!vt || decoder->backend() == JpegDecodeBackend::VideoToolbox);
   auto held = decode(decoder.value(), read_file(k422));
   CHECK(held.ok() && held->device == nullptr && held->plane[0] != nullptr);
   CHECK(held->image[0] == nullptr);

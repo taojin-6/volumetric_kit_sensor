@@ -6,6 +6,8 @@
 #include <string>
 #include <utility>
 
+#include "volumetric_kit/recon/core/device.hpp"
+#include "volumetric_kit/recon/core/vulkan.hpp"
 #include "vt_pictures.hpp"
 
 namespace volumetric_kit::recon::sensor::video {
@@ -79,6 +81,9 @@ std::unique_ptr<VtJpeg> VtJpeg::open(const Device& device, const char* who) {
   std::unique_ptr<VtJpeg> vt(new VtJpeg());
   vt->who_ = who;
   vt->pictures_ = std::move(pictures).value();
+  VkPhysicalDeviceProperties props{};
+  vkGetPhysicalDeviceProperties(device.physical_device(), &props);
+  vt->max_extent_ = props.limits.maxImageDimension2D;
   return vt;
 }
 
@@ -141,7 +146,10 @@ bool VtJpeg::start(std::uint32_t width, std::uint32_t height) {
 Result<std::optional<DecodedPicture>> VtJpeg::decode(const std::uint8_t* data,
                                                      std::size_t size) {
   const std::optional<JpegFrame> frame = read_frame(data, size);
-  if (!frame || !frame->yuv420 || frame->width == 0 || frame->height == 0) {
+  // A plane past the extent cannot be a texture (Metal aborts on one: a
+  // 16400-wide JPEG on an M4, whose extent is 16384), so software takes it.
+  if (!frame || !frame->yuv420 || frame->width == 0 || frame->height == 0 ||
+      frame->width > max_extent_ || frame->height > max_extent_) {
     return std::optional<DecodedPicture>();
   }
   if (session_ == nullptr || frame->width != width_ ||

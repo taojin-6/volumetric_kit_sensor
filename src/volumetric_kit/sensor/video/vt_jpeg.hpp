@@ -35,8 +35,9 @@ class VtJpeg {
   VtJpeg& operator=(const VtJpeg&) = delete;
 
   // The JPEG as NV12 images; empty for one this does not take -- not
-  // baseline 8-bit 4:2:0, or refused by the hardware -- which goes to
-  // software instead. An error means the device path failed.
+  // baseline 8-bit 4:2:0, past the device's image extent, or refused by the
+  // hardware -- which goes to software instead. An error means the device
+  // path failed.
   Result<std::optional<DecodedPicture>> decode(const std::uint8_t* data,
                                                std::size_t size);
 
@@ -48,6 +49,7 @@ class VtJpeg {
 
   const char* who_ = nullptr;
   std::unique_ptr<VtPictures> pictures_;
+  std::uint32_t max_extent_ = 0;  // the device's maxImageDimension2D
   CMVideoFormatDescriptionRef format_ = nullptr;
   VTDecompressionSessionRef session_ = nullptr;
   std::uint32_t width_ = 0;  // the session's size
