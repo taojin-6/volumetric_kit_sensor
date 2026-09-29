@@ -150,8 +150,10 @@ class CameraStream {
   Result<std::optional<CapturedFrame>> process(
       const std::shared_ptr<ob::FrameSet>& pair);
   // A pair as the cameras captured it, for a stream opened raw: raw depth and
-  // the decoded I420 planes, each camera's lens and pose. The frame points
-  // into the pair, which is held until the next call or stop().
+  // the decoded colour, each camera's lens and pose. The colour is the
+  // picture the hardware left on the device, which the frame holds itself,
+  // or I420 host planes. Depth and host planes point into the pair, which is
+  // held until the next call or stop().
   Result<std::optional<RawFrame>> process_raw(
       const std::shared_ptr<ob::FrameSet>& pair);
   bool raw() const noexcept { return raw_; }

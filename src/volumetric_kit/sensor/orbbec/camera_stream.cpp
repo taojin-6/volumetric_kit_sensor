@@ -733,6 +733,12 @@ Result<std::optional<CapturedFrame>> CameraStream::process(
 
 Result<std::optional<RawFrame>> CameraStream::process_raw(
     const std::shared_ptr<ob::FrameSet>& pair) {
+#if !VR_ORBBEC_WITH_HEVC
+  // open refuses raw frames without the decoder whose planes they carry.
+  (void)pair;
+  ++failed_;
+  return Status::unsupported(who_ + ": raw frames need H.265");
+#else
   // As process(): a pair that contradicts the stream is refused, one the SDK
   // failed on is skipped, and only a run of skips is an error.
   const auto refuse = [this](Status why) {
@@ -763,18 +769,13 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     const auto dv = depth->as<ob::VideoFrame>();
     // A picture left on the device has a size of its own; other colour is a
     // video frame of it.
-#if VR_ORBBEC_WITH_HEVC
-    const DecodedPicture* picture = device_picture(*color);
-#endif
+    const std::optional<DecodedPicture> picture = device_picture(*color);
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
-#if VR_ORBBEC_WITH_HEVC
-    if (picture != nullptr) {
+    if (picture) {
       color_width = picture->width;
       color_height = picture->height;
-    } else
-#endif
-    {
+    } else {
       const auto cv = color->as<ob::VideoFrame>();
       color_width = cv->getWidth();
       color_height = cv->getHeight();
@@ -806,7 +807,6 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     frame.depth_cam_to_world = raw_depth_pose_;
     frame.min_depth = min_depth_;
     frame.max_depth = max_depth_;
-#if VR_ORBBEC_WITH_HEVC
     // The matrix, range and encoding the decoder resolved: the stream's own
     // when it names them, the Femto Mega's unlabelled BT.601 full range
     // otherwise -- as the host path converts -- and the transfer and
@@ -828,24 +828,8 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     };
     frame.color.width = c.width;
     frame.color.height = c.height;
-    if (picture != nullptr) {
-      // Left on the device by the hardware: NVDEC's NV12 in a buffer CUDA
-      // wrote, or VideoToolbox's planes as images.
-      YuvImage& image = frame.color;
-      image.layout = picture->layout == VideoPixelLayout::Nv12
-                         ? YuvLayout::Nv12
-                         : YuvLayout::I420;
-      if (picture->device != nullptr) {
-        image.device = picture->device;
-        for (int p = 0; p < 3; ++p) {
-          image.offset[p] = picture->offset[p];
-          image.stride[p] = picture->stride[p];
-        }
-        image.queue_family = kQueueFamilyExternal;
-      } else {
-        image.image[0] = picture->image[0];
-        image.image[1] = picture->image[1];
-      }
+    if (picture) {
+      place_device_color(*picture, &frame.color);
       VR_TRY(describe(picture->matrix, picture->full_range, picture->encoding));
     } else {
       const std::uint32_t cw = (c.width + 1) / 2;
@@ -876,10 +860,6 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
                           ? std::optional<ColorEncoding>(described->encoding)
                           : std::nullopt));
     }
-#else
-    // open refuses raw frames without the decoder whose planes they carry.
-    return refuse(Status::unsupported(who_ + ": raw frames need H.265"));
-#endif
     frame.color_camera = c;
     frame.color_cam_to_world = raw_color_pose_;
     frame.timestamp_ns = depth->getTimeStampUs() * 1000;
@@ -890,6 +870,7 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
   failed_in_a_row_ = 0;
   ++delivered_;
   return std::optional<RawFrame>(frame);
+#endif
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

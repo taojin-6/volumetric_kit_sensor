@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -29,13 +30,10 @@
 #include <libobsensor/ObSensor.hpp>
 
 #include "device_picture_frame.hpp"
+#include "device_picture_readback.hpp"
 #include "hevc_color.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
-#include "volumetric_kit/recon/core/buffer.hpp"
-#include "volumetric_kit/recon/core/command_batch.hpp"
-#include "volumetric_kit/recon/core/compute_util.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/image.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "yuv_reference.hpp"
 
@@ -307,59 +305,12 @@ int test_hands_on_i420() {
   return 0;
 }
 
-// A device picture's Y, U and V planes, read back through a batch: NVDEC's
-// NV12 buffer, taken over from CUDA, or VideoToolbox's two plane images.
-struct Planes {
-  std::vector<std::uint8_t> y, u, v;
-};
-Planes read_back(const sensor::DecodedPicture& p, vr::Device& device,
-                 vr::Allocator& allocator) {
-  Planes out;
-  const std::uint32_t cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
-  const bool images = p.image[0] != nullptr;
-  const VkDeviceSize luma = VkDeviceSize{p.width} * p.height;
-  const VkDeviceSize bytes =
-      images ? luma + VkDeviceSize{cw} * ch * 2 : p.device->size();
-  std::shared_ptr<const vr::Buffer> source = p.device;
-  if (images) {
-    auto made = vr::device_storage_buffer(allocator, bytes);
-    if (!made) return out;
-    source = std::make_shared<const vr::Buffer>(std::move(made).value());
-  }
-  std::vector<std::uint8_t> b(static_cast<std::size_t>(bytes));
-  vr::CommandBatch batch(device, allocator);
-  const bool recorded =
-      images ? batch.copy(*p.image[0], p.width, p.height, *source, 0).ok() &&
-                   batch.copy(*p.image[1], cw, ch, *source, luma).ok()
-             : batch.acquire(*source, VK_QUEUE_FAMILY_EXTERNAL).ok();
-  if (!recorded || !batch.readback(*source, 0, bytes, b.data()).ok() ||
-      !batch.submit().ok()) {
-    return out;
-  }
-  // Rows packed from the images; at the picture's offsets and strides in the
-  // buffer. The chroma is NV12 either way, U first.
-  const std::size_t y_at = images ? 0 : p.offset[0];
-  const std::size_t c_at = images ? luma : p.offset[1];
-  const std::size_t y_row = images ? p.width : p.stride[0];
-  const std::size_t c_row = images ? 2 * std::size_t{cw} : p.stride[1];
-  for (std::uint32_t r = 0; r < p.height; ++r) {
-    const std::uint8_t* row = b.data() + y_at + r * y_row;
-    out.y.insert(out.y.end(), row, row + p.width);
-  }
-  for (std::uint32_t r = 0; r < ch; ++r) {
-    const std::uint8_t* row = b.data() + c_at + r * c_row;
-    for (std::uint32_t x = 0; x < cw; ++x) {
-      out.u.push_back(row[2 * x]);
-      out.v.push_back(row[2 * x + 1]);
-    }
-  }
-  return out;
-}
-
 // Given a device the hardware decodes onto, each picture comes out carried in
 // its frame, each patch's value as the clip was made, described as the Femto
-// Mega codes the unlabelled stream; and it lives as long as its frame. Where
-// no hardware leaves pictures on this device, they come as I420.
+// Mega codes the unlabelled stream, and placed in a raw frame's colour as the
+// driver places it; and it lives as long as its frame, which a copy of the
+// frame does not extend. Where no hardware leaves pictures on this device,
+// they come as I420.
 int test_hands_on_device_pictures() {
   auto instance = vr::Instance::create({});
   if (!instance) return 0;
@@ -375,38 +326,59 @@ int test_hands_on_device_pictures() {
               true, &device.value());
   CHECK(r.out.size() == 8 && r.lost == 0);
   const bool on_device =
-      orbbec::device_picture(*r.out.front()->getColorFrame()) != nullptr;
+      orbbec::device_picture(*r.out.front()->getColorFrame()).has_value();
+  // The legs whose hardware leaves its pictures on the device.
   const char* required = std::getenv("VR_TEST_HEVC_BACKEND");
-  if (required != nullptr && std::string(required) == "videotoolbox") {
-    CHECK(on_device);  // a VideoToolbox leg decodes onto the device
+  const std::string backend = required != nullptr ? required : "";
+  if (backend == "videotoolbox" || (VR_TEST_WITH_CUDA && backend == "cuda")) {
+    CHECK(on_device);
   }
   std::shared_ptr<const void> held;
+  std::shared_ptr<ob::Frame> copied;
   for (int f = 0; f < 8; ++f) {
     const auto color = r.out[static_cast<std::size_t>(f)]->getColorFrame();
     CHECK(color != nullptr);
-    const sensor::DecodedPicture* p = orbbec::device_picture(*color);
-    CHECK((p != nullptr) == on_device);
-    if (p == nullptr) {
+    const std::optional<sensor::DecodedPicture> p =
+        orbbec::device_picture(*color);
+    CHECK(p.has_value() == on_device);
+    if (!p) {
       CHECK(color->getFormat() == OB_FORMAT_I420);
       continue;
     }
+    CHECK(color->as<ob::VideoFrame>()->getWidth() == 0);  // no pixels
     CHECK(p->width == static_cast<std::uint32_t>(kWidth) &&
           p->height == static_cast<std::uint32_t>(kHeight));
     CHECK(p->layout == sensor::VideoPixelLayout::Nv12);
     CHECK((p->device != nullptr) != (p->image[0] != nullptr));
     CHECK(p->matrix == sensor::VideoColorMatrix::Bt601 && p->full_range);
-    const Planes got = read_back(*p, device.value(), allocator.value());
-    CHECK(got.y.size() == static_cast<std::size_t>(kWidth * kHeight));
+    sensor::YuvImage placed;
+    orbbec::place_device_color(*p, &placed);
+    CHECK(placed.layout == sensor::YuvLayout::Nv12);
+    CHECK(placed.plane[0] == nullptr);
+    if (p->device != nullptr) {
+      CHECK(placed.device == p->device && placed.image[0] == nullptr);
+      CHECK(placed.queue_family == sensor::kQueueFamilyExternal);
+      for (int i = 0; i < 2; ++i) {
+        CHECK(placed.offset[i] == p->offset[i] &&
+              placed.stride[i] == p->stride[i]);
+      }
+    } else {
+      CHECK(placed.device == nullptr && placed.image[0] == p->image[0] &&
+            placed.image[1] == p->image[1]);
+    }
+    std::vector<std::uint8_t> got[3];
+    vr_test::read_device_picture(*p, device.value(), allocator.value(), got);
+    CHECK(got[0].size() == static_cast<std::size_t>(kWidth * kHeight));
     const int cw = kWidth / 2;
     for (int row = 0; row < 2; ++row) {
       for (int col = 0; col < 8; ++col) {
         const int k = patch(col, row, f);
         const int x = 32 * col + 16;
         const int yy = 72 * row + 36;
-        CHECK(std::abs(got.y[yy * kWidth + x] - (40 + 24 * k)) <= 2);
+        CHECK(std::abs(got[0][yy * kWidth + x] - (40 + 24 * k)) <= 2);
         const int c = (yy / 2) * cw + x / 2;
-        CHECK(std::abs(got.u[c] - (64 + 16 * ((3 * k) % 8))) <= 2);
-        CHECK(std::abs(got.v[c] - (64 + 16 * ((5 * k) % 8))) <= 2);
+        CHECK(std::abs(got[1][c] - (64 + 16 * ((3 * k) % 8))) <= 2);
+        CHECK(std::abs(got[2][c] - (64 + 16 * ((5 * k) % 8))) <= 2);
       }
     }
     if (f == 7) {
@@ -414,16 +386,25 @@ int test_hands_on_device_pictures() {
         held = p->device;
       else
         held = p->image[0];
+      // Its bytes, copied into a frame of their own.
+      auto* bytes = new std::uint8_t[color->getDataSize()];
+      std::memcpy(bytes, color->getData(), color->getDataSize());
+      copied = ob::FrameFactory::createFrameFromBuffer(
+          OB_FRAME_COLOR, color->getFormat(), bytes,
+          [](std::uint8_t* b) { delete[] b; }, color->getDataSize());
     }
   }
   if (held != nullptr) {
     CHECK(held.use_count() > 1);  // the frame still holds it
+    CHECK(orbbec::device_picture(*copied).has_value());  // as its copy sees
     r.out.clear();
     CHECK(held.use_count() == 1);  // and it went with the frame
+    CHECK(!orbbec::device_picture(*copied).has_value());  // nor its copy
   }
   // A frame that carries no picture reads as none.
-  CHECK(orbbec::device_picture(*ob::FrameFactory::createVideoFrame(
-            OB_FRAME_COLOR, OB_FORMAT_NV12, 16, 16)) == nullptr);
+  CHECK(!orbbec::device_picture(*ob::FrameFactory::createVideoFrame(
+                                    OB_FRAME_COLOR, OB_FORMAT_NV12, 16, 16))
+             .has_value());
   std::printf("  device pictures: %s\n",
               on_device ? "carried in their frames"
                         : "not offered here; I420 frames instead");

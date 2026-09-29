@@ -21,12 +21,10 @@
 #include <utility>
 #include <vector>
 
+#include "device_picture_readback.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/buffer.hpp"
-#include "volumetric_kit/recon/core/command_batch.hpp"
-#include "volumetric_kit/recon/core/compute_util.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/image.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
@@ -96,52 +94,11 @@ Planes from_host(const sensor::DecodedPicture& p) {
   return out;
 }
 
-// CUDA wrote the buffer, so the batch takes it over before reading it.
+// nvJPEG's buffer or VideoToolbox's images, read back.
 Planes from_device(const sensor::DecodedPicture& p, vr::Device& device,
                    vr::Allocator& allocator) {
   Planes out{p.width, p.height, {}};
-  std::vector<std::uint8_t> b(static_cast<std::size_t>(p.device->size()));
-  vr::CommandBatch batch(device, allocator);
-  if (!batch.acquire(*p.device, VK_QUEUE_FAMILY_EXTERNAL).ok() ||
-      !batch.readback(*p.device, 0, b.size(), b.data()).ok() ||
-      !batch.submit().ok()) {
-    return out;
-  }
-  for (int i = 0; i < 3; ++i) {
-    const std::uint32_t w = i == 0 ? p.width : (p.width + 1) / 2;
-    const std::uint32_t h = i == 0 ? p.height : (p.height + 1) / 2;
-    for (std::uint32_t r = 0; r < h; ++r) {
-      const std::uint8_t* row = b.data() + p.offset[i] + r * p.stride[i];
-      out.plane[i].insert(out.plane[i].end(), row, row + w);
-    }
-  }
-  return out;
-}
-
-// NV12 plane images, copied into a buffer, read back and split into I420.
-Planes from_images(const sensor::DecodedPicture& p, vr::Device& device,
-                   vr::Allocator& allocator) {
-  Planes out{p.width, p.height, {}};
-  const std::uint32_t cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
-  const VkDeviceSize chroma_at = (VkDeviceSize{p.width} * p.height + 3) & ~3u;
-  const VkDeviceSize bytes = chroma_at + VkDeviceSize{cw} * ch * 2;
-  auto buffer = vr::device_storage_buffer(allocator, bytes);
-  if (!buffer) return out;
-  std::vector<std::uint8_t> b(static_cast<std::size_t>(bytes));
-  vr::CommandBatch batch(device, allocator);
-  if (!batch.copy(*p.image[0], p.width, p.height, buffer.value(), 0).ok() ||
-      !batch.copy(*p.image[1], cw, ch, buffer.value(), chroma_at).ok() ||
-      !batch.readback(buffer.value(), 0, bytes, b.data()).ok() ||
-      !batch.submit().ok()) {
-    return out;
-  }
-  const auto at = static_cast<std::size_t>(chroma_at);
-  out.plane[0].assign(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(at));
-  out.plane[0].resize(std::size_t{p.width} * p.height);
-  for (std::size_t i = 0; i < std::size_t{cw} * ch; ++i) {
-    out.plane[1].push_back(b[at + 2 * i]);
-    out.plane[2].push_back(b[at + 2 * i + 1]);
-  }
+  vr_test::read_device_picture(p, device, allocator, out.plane);
   return out;
 }
 
@@ -265,8 +222,7 @@ int test_device() {
     CHECK(p->plane[0] == nullptr);
     CHECK(check_meta(p.value(), f.width, f.height) == 0);
     const Planes got =
-        vt ? from_images(p.value(), device.value(), allocator.value())
-           : from_device(p.value(), device.value(), allocator.value());
+        from_device(p.value(), device.value(), allocator.value());
     CHECK(check_pattern(got) == 0);
     auto s = decode(software.value(), bytes);
     CHECK(s.ok());

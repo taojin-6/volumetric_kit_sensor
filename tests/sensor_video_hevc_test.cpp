@@ -25,11 +25,9 @@
 #include <utility>
 #include <vector>
 
+#include "device_picture_readback.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
-#include "volumetric_kit/recon/core/command_batch.hpp"
-#include "volumetric_kit/recon/core/compute_util.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/image.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 #include "yuv_reference.hpp"
@@ -419,53 +417,7 @@ Picture from_device(const sensor::DecodedPicture& p, vr::Device& device,
                     vr::Allocator& allocator) {
   Picture out;
   out.meta = p;
-  // CUDA wrote the buffer, so the batch takes it over before reading it.
-  std::vector<std::uint8_t> b(static_cast<std::size_t>(p.device->size()));
-  vr::CommandBatch batch(device, allocator);
-  if (!batch.acquire(*p.device, VK_QUEUE_FAMILY_EXTERNAL).ok() ||
-      !batch.readback(*p.device, 0, b.size(), b.data()).ok() ||
-      !batch.submit().ok()) {
-    return out;
-  }
-  for (std::uint32_t r = 0; r < p.height; ++r) {
-    const std::uint8_t* row = b.data() + p.offset[0] + r * p.stride[0];
-    out.planes[0].insert(out.planes[0].end(), row, row + p.width);
-  }
-  for (std::uint32_t r = 0; r < p.height / 2; ++r) {
-    const std::uint8_t* row = b.data() + p.offset[1] + r * p.stride[1];
-    for (std::uint32_t x = 0; x < p.width / 2; ++x) {
-      out.planes[1].push_back(row[2 * x]);
-      out.planes[2].push_back(row[2 * x + 1]);
-    }
-  }
-  return out;
-}
-
-// NV12 plane images, copied into a buffer and read back.
-Picture from_images(const sensor::DecodedPicture& p, vr::Device& device,
-                    vr::Allocator& allocator) {
-  Picture out;
-  out.meta = p;
-  const std::uint32_t cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
-  const VkDeviceSize chroma_at =
-      (VkDeviceSize{p.width} * p.height + 3) & ~VkDeviceSize{3};
-  const VkDeviceSize bytes = chroma_at + VkDeviceSize{cw} * ch * 2;
-  auto buffer = vr::device_storage_buffer(allocator, bytes);
-  if (!buffer) return out;
-  std::vector<std::uint8_t> b(static_cast<std::size_t>(bytes));
-  vr::CommandBatch batch(device, allocator);
-  if (!batch.copy(*p.image[0], p.width, p.height, buffer.value(), 0).ok() ||
-      !batch.copy(*p.image[1], cw, ch, buffer.value(), chroma_at).ok() ||
-      !batch.readback(buffer.value(), 0, bytes, b.data()).ok() ||
-      !batch.submit().ok()) {
-    return out;
-  }
-  out.planes[0].assign(b.begin(), b.begin() + std::ptrdiff_t{p.width} *
-                                                  std::ptrdiff_t{p.height});
-  for (std::size_t i = 0; i < std::size_t{cw} * ch; ++i) {
-    out.planes[1].push_back(b[static_cast<std::size_t>(chroma_at) + 2 * i]);
-    out.planes[2].push_back(b[static_cast<std::size_t>(chroma_at) + 2 * i + 1]);
-  }
+  vr_test::read_device_picture(p, device, allocator, out.planes);
   return out;
 }
 
@@ -534,7 +486,7 @@ int test_device_pictures() {
         CHECK((p.image[0] != nullptr && p.image[1] != nullptr) == as_images);
         if (as_images) {
           CHECK(p.layout == VideoPixelLayout::Nv12 && p.plane[0] == nullptr);
-          pictures.push_back(from_images(p, device.value(), allocator.value()));
+          pictures.push_back(from_device(p, device.value(), allocator.value()));
           continue;
         }
         if (p.device == nullptr) {
