@@ -303,7 +303,8 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
                                  to_string(backend) + " HEVC decoder");
     }
     // FFmpeg's own choice of device, unless pictures are to stay on a
-    // Vulkan device's GPU: then the CUDA device that is that GPU.
+    // Vulkan device's GPU: then the CUDA device that is that GPU. A device
+    // path that cannot be set up leaves the pictures to the host.
     std::string name;
 #if VR_SENSOR_VIDEO_WITH_CUDA
     if (backend == VideoDecodeBackend::Cuda && device != nullptr &&
@@ -314,7 +315,6 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
     }
 #endif
 #if defined(__APPLE__)
-    // A device path that cannot be set up leaves the pictures to the host.
     if (backend == VideoDecodeBackend::VideoToolbox && device != nullptr &&
         device->imports_metal_textures()) {
       auto pictures = video::VtPictures::create(*device, kWho);
@@ -332,9 +332,9 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
       const auto* hw =
           reinterpret_cast<const AVHWDeviceContext*>(impl->device->data);
       const auto* cuda = static_cast<const AVCUDADeviceContext*>(hw->hwctx);
-      VR_ASSIGN(impl->pictures,
-                video::CudaPictures::create(*device, cuda->cuda_ctx,
-                                            cuda->stream, kWho));
+      auto pictures = video::CudaPictures::create(*device, cuda->cuda_ctx,
+                                                  cuda->stream, kWho);
+      if (pictures) impl->pictures = std::move(pictures).value();
     }
 #endif
     context->hw_device_ctx = av_buffer_ref(impl->device.get());
