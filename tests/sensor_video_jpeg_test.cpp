@@ -4,10 +4,12 @@
 // The JPEG decoder on committed JPEGs (tools/make_jpeg_fixtures.sh): software
 // against the pattern they were made from, 4:2:2 converted to 4:2:0, nvJPEG's
 // device pictures against software and the buffers they hold, one past the
-// hardware engine's size on the GPU's cores, the refusals, and moves.
+// hardware engine's size on the GPU's cores, VideoToolbox's images against
+// software, the refusals, and moves.
 //
 // VR_TEST_HEVC_BACKEND=cuda, the NVIDIA legs' promise, also requires nvJPEG in
-// a VR_WITH_CUDA build, so a runner that silently decodes on the host fails.
+// a VR_WITH_CUDA build, and =videotoolbox requires VideoToolbox, so a runner
+// that silently decodes on the host fails.
 
 #include <cstdint>
 #include <cstdio>
@@ -22,7 +24,9 @@
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/buffer.hpp"
 #include "volumetric_kit/recon/core/command_batch.hpp"
+#include "volumetric_kit/recon/core/compute_util.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
+#include "volumetric_kit/recon/core/image.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
@@ -114,6 +118,33 @@ Planes from_device(const sensor::DecodedPicture& p, vr::Device& device,
   return out;
 }
 
+// NV12 plane images, copied into a buffer, read back and split into I420.
+Planes from_images(const sensor::DecodedPicture& p, vr::Device& device,
+                   vr::Allocator& allocator) {
+  Planes out{p.width, p.height, {}};
+  const std::uint32_t cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
+  const VkDeviceSize chroma_at = (VkDeviceSize{p.width} * p.height + 3) & ~3u;
+  const VkDeviceSize bytes = chroma_at + VkDeviceSize{cw} * ch * 2;
+  auto buffer = vr::device_storage_buffer(allocator, bytes);
+  if (!buffer) return out;
+  std::vector<std::uint8_t> b(static_cast<std::size_t>(bytes));
+  vr::CommandBatch batch(device, allocator);
+  if (!batch.copy(*p.image[0], p.width, p.height, buffer.value(), 0).ok() ||
+      !batch.copy(*p.image[1], cw, ch, buffer.value(), chroma_at).ok() ||
+      !batch.readback(buffer.value(), 0, bytes, b.data()).ok() ||
+      !batch.submit().ok()) {
+    return out;
+  }
+  const auto at = static_cast<std::size_t>(chroma_at);
+  out.plane[0].assign(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(at));
+  out.plane[0].resize(std::size_t{p.width} * p.height);
+  for (std::size_t i = 0; i < std::size_t{cw} * ch; ++i) {
+    out.plane[1].push_back(b[at + 2 * i]);
+    out.plane[2].push_back(b[at + 2 * i + 1]);
+  }
+  return out;
+}
+
 // Each patch's centre in the first 256 columns holds the pattern's value,
 // within the JPEG's loss.
 int check_pattern(const Planes& p) {
@@ -143,7 +174,8 @@ int check_pattern(const Planes& p) {
 int check_meta(const sensor::DecodedPicture& p, std::uint32_t w,
                std::uint32_t h) {
   CHECK(p.width == w && p.height == h);
-  CHECK(p.layout == VideoPixelLayout::Yuv420);
+  CHECK(p.layout == (p.image[0] != nullptr ? VideoPixelLayout::Nv12
+                                           : VideoPixelLayout::Yuv420));
   CHECK(p.matrix == sensor::VideoColorMatrix::Bt601 && p.full_range);
   return 0;
 }
@@ -155,6 +187,8 @@ int test_names() {
                     "nvjpeg-hardware") == 0);
   CHECK(std::strcmp(sensor::to_string(JpegDecodeBackend::NvjpegGpu),
                     "nvjpeg-gpu") == 0);
+  CHECK(std::strcmp(sensor::to_string(JpegDecodeBackend::VideoToolbox),
+                    "videotoolbox") == 0);
   return 0;
 }
 
@@ -177,8 +211,10 @@ int test_software() {
 
 // Given a device on an NVIDIA GPU, a 4:2:0 JPEG decodes into a buffer the
 // picture holds, as software decodes it: the wide one on the GPU's cores, as
-// the hardware engine refuses it. 4:2:2 still comes to the host. A buffer is
-// reused only once no picture holds it.
+// the hardware engine refuses it. On Apple, into images the picture holds,
+// the wide one too where the device's extent takes it, and on the host,
+// keeping VideoToolbox, where it does not. 4:2:2 still comes to the host. A
+// buffer is reused only once no picture holds it.
 int test_device() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
   if (!instance) return 0;
@@ -196,25 +232,41 @@ int test_device() {
   auto decoder = JpegDecoder::create(options);
   CHECK(decoder.ok());
   const bool on_device = decoder->backend() != JpegDecodeBackend::Software;
+  const bool vt = decoder->backend() == JpegDecodeBackend::VideoToolbox;
+#if defined(__APPLE__)
+  CHECK(!on_device || vt);
+#else
   CHECK(VR_TEST_WITH_CUDA || !on_device);
+#endif
   const char* required = std::getenv("VR_TEST_HEVC_BACKEND");
   if (VR_TEST_WITH_CUDA && required != nullptr &&
       std::string(required) == "cuda") {
     CHECK(on_device);  // a CUDA leg must decode on the GPU
   }
+  if (required != nullptr && std::string(required) == "videotoolbox") {
+    CHECK(vt);  // and so must a VideoToolbox one
+  }
   auto software = JpegDecoder::create({});
   CHECK(software.ok());
+  VkPhysicalDeviceProperties props{};
+  vkGetPhysicalDeviceProperties(gpu.value(), &props);
+  const std::uint32_t extent = props.limits.maxImageDimension2D;
 
   for (const Fixture& f : k420s) {
     const std::vector<std::uint8_t> bytes = read_file(f.path);
     auto p = decode(decoder.value(), bytes);
     CHECK(p.ok());
-    CHECK((p->device != nullptr) == on_device);
-    if (!on_device) continue;
+    // Images stop at the device's extent, which the wide one passes on an M4
+    // (16384) and not on an M5 (32768).
+    const bool image = vt && f.width <= extent && f.height <= extent;
+    CHECK((p->device != nullptr) == (on_device && !vt));
+    CHECK((p->image[0] != nullptr && p->image[1] != nullptr) == image);
+    if (!image && p->device == nullptr) continue;  // on the host
     CHECK(p->plane[0] == nullptr);
     CHECK(check_meta(p.value(), f.width, f.height) == 0);
     const Planes got =
-        from_device(p.value(), device.value(), allocator.value());
+        vt ? from_images(p.value(), device.value(), allocator.value())
+           : from_device(p.value(), device.value(), allocator.value());
     CHECK(check_pattern(got) == 0);
     auto s = decode(software.value(), bytes);
     CHECK(s.ok());
@@ -229,11 +281,13 @@ int test_device() {
     }
   }
 
+  CHECK(!vt || decoder->backend() == JpegDecodeBackend::VideoToolbox);
   auto held = decode(decoder.value(), read_file(k422));
   CHECK(held.ok() && held->device == nullptr && held->plane[0] != nullptr);
+  CHECK(held->image[0] == nullptr);
   CHECK(check_pattern(from_host(held.value())) == 0);
 
-  if (on_device) {
+  if (on_device && !vt) {
     const std::vector<std::uint8_t> bytes = read_file(k420);
     auto first = decode(decoder.value(), bytes);
     auto second = decode(decoder.value(), bytes);
@@ -280,7 +334,8 @@ int test_refusals() {
   CHECK(decoder->backend() == before);
   auto next = decode(decoder.value(), good);  // and on to the next
   CHECK(next.ok());
-  CHECK((next->device != nullptr) == (before != JpegDecodeBackend::Software));
+  CHECK((next->device != nullptr || next->image[0] != nullptr) ==
+        (before != JpegDecodeBackend::Software));
   return 0;
 }
 

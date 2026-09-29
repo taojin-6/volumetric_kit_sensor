@@ -27,10 +27,12 @@ enum class JpegDecodeBackend {
   /// nvJPEG on the GPU's hardware JPEG engine, and on its cores for a JPEG
   /// the engine refuses (past 16384 pixels a side).
   NvjpegHardware,
-  NvjpegGpu,  ///< nvJPEG on the GPU's cores, Huffman decoding included.
+  NvjpegGpu,     ///< nvJPEG on the GPU's cores, Huffman decoding included.
+  VideoToolbox,  ///< VideoToolbox's hardware JPEG decoder, on Apple.
 };
 
-/// @return @p backend's name: `software`, `nvjpeg-hardware`, `nvjpeg-gpu`.
+/// @return @p backend's name: `software`, `nvjpeg-hardware`, `nvjpeg-gpu`,
+///         `videotoolbox`.
 VR_SENSOR_VIDEO_API const char* to_string(JpegDecodeBackend backend) noexcept;
 
 /// @brief Decodes one baseline JPEG at a time, as an MJPEG camera sends them.
@@ -40,11 +42,14 @@ VR_SENSOR_VIDEO_API const char* to_string(JpegDecodeBackend backend) noexcept;
 /// CUDA has imported, and the picture stays on the GPU: its hardware JPEG
 /// engine where the GPU has one, and its cores for the rest. libcuda and
 /// libnvjpeg are loaded at run time, so without them the decoder runs in
-/// software. Anything else decodes in software to host planes: another
+/// software. On Apple, given a device that imports Metal textures,
+/// VideoToolbox's hardware decoder takes the same JPEGs into NV12 on an
+/// IOSurface, whose two planes are handed out as images and never reach the
+/// host. Anything else decodes in software to host planes: another
 /// subsampling, which is converted to 4:2:0, a device on another GPU, or no
 /// device at all.
-/// Either way the picture is I420 (`Yuv420`), BT.601 full range as JFIF
-/// defines it.
+/// The picture is BT.601 full range as JFIF defines it: I420 (`Yuv420`), or
+/// NV12 images from VideoToolbox.
 ///
 /// @warning Not thread-safe: use from one thread.
 class VR_SENSOR_VIDEO_API JpegDecoder {
@@ -74,12 +79,14 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
   /// @brief Decode one JPEG.
   /// @param data  The JPEG's bytes, SOI to EOI; read during the call only.
   /// @param size  Their count.
-  /// @return The picture, I420. On the device (@ref DecodedPicture::device),
+  /// @return The picture. I420 on the device (@ref DecodedPicture::device),
   ///         held by the picture and written by CUDA, so a reader takes it
-  ///         over from `VK_QUEUE_FAMILY_EXTERNAL`; or host planes, valid until
-  ///         the next call. @ref Status::Code::InvalidArgument for no bytes,
-  ///         more than 2 GiB of them, a JPEG in a pixel format swscale
-  ///         cannot read, or a moved-from decoder;
+  ///         over from `VK_QUEUE_FAMILY_EXTERNAL`; NV12 as images
+  ///         (@ref DecodedPicture::image), held by the picture, from
+  ///         VideoToolbox; or I420 host planes, valid until the next call. @ref
+  ///         Status::Code::InvalidArgument for no bytes, more than 2 GiB of
+  ///         them, a JPEG in a pixel format swscale cannot read, or a
+  ///         moved-from decoder;
   ///         @ref Status::Code::IoError for bytes that do not decode.
   Result<DecodedPicture> decode(const std::uint8_t* data, std::size_t size);
 
