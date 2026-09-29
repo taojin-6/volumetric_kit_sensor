@@ -39,8 +39,34 @@ static_assert(sizeof(LensParams) == 56, "LensParams must match lens.glsl");
 struct DepthParams {
   LensParams cam;
   float metres_per_unit;
+  std::uint32_t within_color;  // mask by OverlapParams
 };
-static_assert(sizeof(DepthParams) == 60, "DepthParams layout drift");
+static_assert(sizeof(DepthParams) == 64, "DepthParams layout drift");
+
+// undistort_depth.comp's Overlap block: the colour camera, and the rigid
+// transform from the depth camera's frame into the colour camera's
+// (column-major, as the shader's mat4).
+struct OverlapParams {
+  LensParams color;
+  Mat4f depth_to_color;
+};
+static_assert(sizeof(OverlapParams) == 56 + 64, "OverlapParams layout drift");
+static_assert(offsetof(OverlapParams, depth_to_color) == 56,
+              "OverlapParams layout drift");
+
+// The rigid inverse of `m`: its rotation transposed, its translation turned
+// back through it.
+Mat4f rigid_inverse(const Mat4f& m) {
+  Mat4f inv(1.0f);
+  for (int c = 0; c < 3; ++c) {
+    for (int r = 0; r < 3; ++r) inv[c][r] = m[r][c];
+  }
+  for (int r = 0; r < 3; ++r) {
+    inv[3][r] =
+        -(inv[0][r] * m[3][0] + inv[1][r] * m[3][1] + inv[2][r] * m[3][2]);
+  }
+  return inv;
+}
 
 struct ColorParams {
   LensParams cam;
@@ -380,9 +406,10 @@ Result<GpuFramePrep> GpuFramePrep::create(Device& device, Allocator& allocator,
   VkPushConstantRange color_push = depth_push;
   color_push.size = sizeof(ColorParams);
   KernelSetBuilder kb(device);
+  // Depth: raw in, depth out, and the overlap it masks by.
   VR_TRY(kb.add(prep.depth_kernel_, "undistort_depth",
                 vr_undistort_depth_comp_spv, vr_undistort_depth_comp_spv_size,
-                2, &depth_push));
+                3, &depth_push));
   VR_TRY(kb.add(prep.color_kernel_, "undistort_color",
                 vr_undistort_color_comp_spv, vr_undistort_color_comp_spv_size,
                 2, &color_push));
@@ -395,6 +422,15 @@ Result<GpuFramePrep> GpuFramePrep::create(Device& device, Allocator& allocator,
   prep.min_storage_buffer_offset_alignment_ =
       props.limits.minStorageBufferOffsetAlignment;
   VR_ASSIGN(prep.gpu_timer_, GpuTimer::create(device));
+  // Always bound, so the set is complete whether or not the mask runs; the
+  // kernel reads it only when it does.
+  VR_ASSIGN(prep.overlap_,
+            device_storage_buffer(allocator, sizeof(OverlapParams)));
+  device.set_object_name(VK_OBJECT_TYPE_BUFFER,
+                         debug_object_handle(prep.overlap_.handle()),
+                         "sensor.depth_overlap");
+  prep.depth_kernel_.set.write_storage_buffer(2, prep.overlap_.handle(), 0,
+                                              VK_WHOLE_SIZE);
   return prep;
 }
 
@@ -496,8 +532,17 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                                          depth.in_bytes);
   depth_kernel_.set.write_storage_buffer(1, depth_out_->handle(), 0,
                                          depth.out_bytes);
+  // The overlap mask, for a frame with colour when the config asks: the
+  // colour camera and the depth-to-colour transform, written inline.
+  const bool within_color = config_.depth_within_color && frame.has_color();
+  if (within_color) {
+    const OverlapParams overlap{
+        lens_params(frame.color_camera),
+        rigid_inverse(frame.color_cam_to_world) * frame.depth_cam_to_world};
+    VR_TRY(batch.upload(overlap_, 0, &overlap, sizeof(overlap)));
+  }
   const DepthParams depth_params{lens_params(frame.depth_camera),
-                                 frame.metres_per_unit};
+                                 frame.metres_per_unit, within_color ? 1u : 0u};
   VR_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
                         group_count(depth.pixels, kLocalSize),
                         max_workgroup_count_x_, &stage));
