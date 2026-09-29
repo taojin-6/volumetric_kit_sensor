@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -368,9 +369,6 @@ int test_undistorts(sensor::GpuFramePrep& prep) {
   return 0;
 }
 
-// Both passes against the host reference of the same sampling, on smooth
-// planes and random depth, at w x h. `padded` gives the planes rows longer
-// than their width, full of junk, as a decoder can hand them out.
 // A picture with structure in every plane, so a misread plane shows.
 Planes patterned(std::uint32_t w, std::uint32_t h) {
   Planes p = make_planes(w, h);
@@ -391,6 +389,9 @@ Planes patterned(std::uint32_t w, std::uint32_t h) {
   return p;
 }
 
+// Both passes against the host reference of the same sampling, on smooth
+// planes and random depth, at w x h. `padded` gives the planes rows longer
+// than their width, full of junk, as a decoder can hand them out.
 int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
                            std::uint32_t h, bool padded) {
   sensor::LensCamera cam = lensed();
@@ -460,10 +461,12 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
   return 0;
 }
 
-// One picture, four ways: host I420, host NV12 with padded rows, and device
-// planes in either layout at odd offsets with padded rows. They are only
-// different addresses for the same samples, so all four come out identical.
-// Device planes the pass cannot read are refused.
+// One picture, many ways: host I420, host NV12 with tight and padded rows,
+// and device planes in either layout at odd offsets with padded rows, far
+// enough into their buffer that the binding starts past byte 0, taken over
+// from outside Vulkan or not, and with Cb and Cr rows of different lengths.
+// They are only different addresses for the same samples, so all come out
+// identical. Device planes the pass cannot read are refused, before any work.
 int test_layouts(sensor::GpuFramePrep& prep) {
   const auto invalid = vr::Status::Code::InvalidArgument;
   const std::uint32_t w = kWidth + 1, h = kHeight + 1;
@@ -480,18 +483,35 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   CHECK(base.ok());
   const std::vector<std::uint32_t> want = color_of(base.value());
   CHECK(want.size() == std::size_t{w} * h);
+  const auto same = [&](const sensor::YuvImage& image) {
+    f.color = image;
+    auto prepared = prep.prepare(f);
+    return prepared.ok() && color_of(prepared.value()) == want;
+  };
+  const auto refused = [&](const sensor::YuvImage& image,
+                           const char* why = "") {
+    f.color = image;
+    const vr::Status status = prep.prepare(f).status();
+    return status.domain() == invalid &&
+           status.message().find(why) != std::string::npos;
+  };
 
   // NV12: each chroma pair interleaved, Cb first, every row padded.
   const std::size_t y_stride = w + 10, c_stride = 2 * p.cw + 6;
   std::vector<std::uint8_t> y_rows(y_stride * h, 0xCD);
   std::vector<std::uint8_t> cbcr(c_stride * p.ch, 0xCD);
+  std::vector<std::uint8_t> cbcr_tight(2 * std::size_t{p.cw} * p.ch);
   for (std::uint32_t y = 0; y < h; ++y) {
     std::memcpy(&y_rows[y * y_stride], &p.y[std::size_t{y} * w], w);
   }
   for (std::uint32_t y = 0; y < p.ch; ++y) {
     for (std::uint32_t x = 0; x < p.cw; ++x) {
-      cbcr[y * c_stride + 2 * x] = p.cb[std::size_t{y} * p.cw + x];
-      cbcr[y * c_stride + 2 * x + 1] = p.cr[std::size_t{y} * p.cw + x];
+      for (std::uint32_t c = 0; c < 2; ++c) {
+        const std::uint8_t v =
+            (c == 0 ? p.cb : p.cr)[std::size_t{y} * p.cw + x];
+        cbcr[y * c_stride + 2 * x + c] = v;
+        cbcr_tight[(std::size_t{y} * p.cw + x) * 2 + c] = v;
+      }
     }
   }
   sensor::YuvImage nv12 = i420;
@@ -501,15 +521,21 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   nv12.plane[2] = nullptr;
   nv12.stride[0] = y_stride;
   nv12.stride[1] = c_stride;
-  f.color = nv12;
-  auto host_nv12 = prep.prepare(f);
-  CHECK(host_nv12.ok());
-  CHECK(color_of(host_nv12.value()) == want);
+  CHECK(same(nv12));
+  // Tight rows: each plane is one copy into the staging.
+  sensor::YuvImage nv12_tight = nv12;
+  nv12_tight.plane[0] = p.y.data();
+  nv12_tight.plane[1] = cbcr_tight.data();
+  nv12_tight.stride[0] = w;
+  nv12_tight.stride[1] = 2 * std::size_t{p.cw};
+  CHECK(same(nv12_tight));
 
   // Device planes: one buffer holds the padded NV12 planes and the I420 ones,
-  // each plane at an odd offset.
-  const std::size_t c_i420 = p.cw + 3;
-  std::vector<std::uint8_t> blob;
+  // each plane at an odd offset, all past a lead longer than any binding
+  // alignment, so reading a plane from where it sits in the buffer rather
+  // than in the binding misreads it. Cr's rows are longer than Cb's.
+  const std::size_t c_i420 = p.cw + 3, cr_i420 = p.cw + 8;
+  std::vector<std::uint8_t> blob(4096 + 5, 0xEE);
   const auto place = [&blob](const std::uint8_t* rows, std::size_t stride,
                              std::size_t count, std::size_t row_bytes,
                              std::size_t in_stride) {
@@ -526,13 +552,20 @@ int test_layouts(sensor::GpuFramePrep& prep) {
       place(cbcr.data(), c_stride, p.ch, 2 * p.cw, c_stride);
   const std::uint64_t i420_y = place(p.y.data(), y_stride, h, w, w);
   const std::uint64_t i420_b = place(p.cb.data(), c_i420, p.ch, p.cw, p.cw);
-  const std::uint64_t i420_r = place(p.cr.data(), c_i420, p.ch, p.cw, p.cw);
+  const std::uint64_t i420_r = place(p.cr.data(), cr_i420, p.ch, p.cw, p.cw);
   blob.resize((blob.size() + 3) & ~std::size_t{3}, 0xEE);
-  auto made = vr::device_storage_buffer(*g_allocator, blob.size());
-  CHECK(made.ok());
-  CHECK(vr_test::write_back(*g_device, *g_allocator, made.value(), blob).ok());
-  const auto planes =
-      std::make_shared<const vr::Buffer>(std::move(made).value());
+  const auto on_device = [](const std::vector<std::uint8_t>& bytes)
+      -> std::shared_ptr<const vr::Buffer> {
+    auto made = vr::device_storage_buffer(*g_allocator, bytes.size());
+    if (!made.ok() ||
+        !vr_test::write_back(*g_device, *g_allocator, made.value(), bytes)
+             .ok()) {
+      return nullptr;
+    }
+    return std::make_shared<const vr::Buffer>(std::move(made).value());
+  };
+  const auto planes = on_device(blob);
+  CHECK(planes != nullptr);
 
   sensor::YuvImage dev = i420;
   dev.plane[0] = dev.plane[1] = dev.plane[2] = nullptr;
@@ -542,41 +575,73 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   dev.offset[1] = nv12_c;
   dev.stride[0] = y_stride;
   dev.stride[1] = c_stride;
-  f.color = dev;
-  auto dev_nv12 = prep.prepare(f);
-  CHECK(dev_nv12.ok());
-  CHECK(color_of(dev_nv12.value()) == want);
+  CHECK(same(dev));
+  // Taken over from CUDA, or named as the pass's own family: the same picture.
+  sensor::YuvImage taken = dev;
+  taken.queue_family = sensor::kQueueFamilyExternal;
+  CHECK(same(taken));
+  taken.queue_family = g_device->compute_family();
+  CHECK(same(taken));
 
   sensor::YuvImage dev_i420 = dev;
   dev_i420.layout = sensor::YuvLayout::I420;
   dev_i420.offset[0] = i420_y;
   dev_i420.offset[1] = i420_b;
   dev_i420.offset[2] = i420_r;
-  dev_i420.stride[1] = dev_i420.stride[2] = c_i420;
-  f.color = dev_i420;
-  auto dev_planar = prep.prepare(f);
-  CHECK(dev_planar.ok());
-  CHECK(color_of(dev_planar.value()) == want);
+  dev_i420.stride[1] = c_i420;
+  dev_i420.stride[2] = cr_i420;
+  CHECK(same(dev_i420));
 
-  // Refused: host and device planes at once, a plane past the buffer, Cb and
-  // Cr rows of different lengths, a row shorter than its picture, and a
-  // buffer the kernel cannot bind.
+  // The kernel reads whole words: an NV12 picture whose chroma ends two bytes
+  // into its buffer's last word is refused while that word runs past the
+  // buffer, and read once the buffer holds it, planes where they were.
+  std::vector<std::uint8_t> ragged(y_rows);
+  const std::size_t c_bytes = c_stride * (p.ch - 1) + 2 * std::size_t{p.cw};
+  std::size_t ragged_c = ragged.size();
+  while ((ragged_c + c_bytes) % 4 != 2) ++ragged_c;
+  ragged.resize(ragged_c, 0xEE);
+  ragged.insert(ragged.end(), cbcr.begin(),
+                cbcr.begin() + static_cast<std::ptrdiff_t>(c_bytes));
+  sensor::YuvImage word = dev;
+  word.offset[0] = 0;
+  word.offset[1] = ragged_c;
+  word.device = on_device(ragged);
+  CHECK(word.device != nullptr && word.device->size() % 4 == 2);
+  CHECK(refused(word));
+  ragged.resize(ragged.size() + 2, 0xEE);
+  word.device = on_device(ragged);
+  CHECK(word.device != nullptr);
+  CHECK(same(word));
+
+  // Refused: host and device planes at once, even a stale third one; an NV12
+  // host picture with a third plane; a plane past the buffer; planes that
+  // overlap, as I420's do with its offsets left at zero; a row shorter than
+  // its picture; a buffer that is empty or the kernel cannot bind; and a
+  // queue family the device does not have.
   sensor::YuvImage bad = dev;
   bad.plane[0] = p.y.data();
-  f.color = bad;
-  CHECK(prep.prepare(f).status().domain() == invalid);
+  CHECK(refused(bad));
+  bad = dev_i420;
+  bad.plane[2] = p.cr.data();
+  CHECK(refused(bad));
+  bad = nv12;
+  bad.plane[2] = p.cr.data();
+  CHECK(refused(bad));
   bad = dev;
   bad.offset[1] = planes->size() - c_stride;  // the chroma's last rows past it
-  f.color = bad;
-  CHECK(prep.prepare(f).status().domain() == invalid);
+  CHECK(refused(bad));
   bad = dev_i420;
-  bad.stride[2] = c_i420 + 1;
-  f.color = bad;
-  CHECK(prep.prepare(f).status().domain() == invalid);
+  bad.offset[2] = i420_b;
+  CHECK(refused(bad));
+  bad = dev_i420;
+  bad.offset[0] = bad.offset[1] = bad.offset[2] = 0;
+  CHECK(refused(bad));
   bad = dev;
   bad.stride[0] = w - 1;
-  f.color = bad;
-  CHECK(prep.prepare(f).status().domain() == invalid);
+  CHECK(refused(bad));
+  bad = dev;
+  bad.device = std::make_shared<const vr::Buffer>();
+  CHECK(refused(bad, "is empty"));
   vr::BufferDesc desc;
   desc.size = planes->size();
   desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -585,9 +650,20 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   bad = dev;
   bad.device =
       std::make_shared<const vr::Buffer>(std::move(unbindable).value());
+  CHECK(refused(bad, "not a storage buffer"));
+  std::uint32_t families = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(g_device->physical_device(),
+                                           &families, nullptr);
+  bad = dev;
+  bad.queue_family = families;
   f.color = bad;
-  CHECK(prep.prepare(f).status().domain() == invalid);
-  std::printf("  layouts: host I420 and NV12, device I420 and NV12 agree\n");
+  vr::StageMetrics metrics;
+  CHECK(prep.prepare(f, &metrics).status().domain() == invalid);
+  CHECK(metrics.rows().size() == 1 && !metrics.rows()[0].has_gpu);
+  std::printf(
+      "  layouts: host I420 and NV12, device I420 and NV12 agree, from byte "
+      "%llu of their buffer\n",
+      static_cast<unsigned long long>(nv12_y));
   return 0;
 }
 

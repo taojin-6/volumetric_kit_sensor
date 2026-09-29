@@ -46,13 +46,20 @@ struct ColorParams {
   std::uint32_t cb_offset;
   std::uint32_t cr_offset;
   std::uint32_t y_stride;
-  std::uint32_t c_stride;
+  std::uint32_t cb_stride;
+  std::uint32_t cr_stride;
   std::uint32_t c_step;
   float kr;
   float kb;
   std::uint32_t full_range;
 };
-static_assert(sizeof(ColorParams) == 92, "ColorParams layout drift");
+static_assert(sizeof(ColorParams) == 96, "ColorParams layout drift");
+
+// raw_frame.hpp spells Vulkan's special queue families without Vulkan.
+static_assert(kQueueFamilyIgnored == VK_QUEUE_FAMILY_IGNORED,
+              "kQueueFamilyIgnored must be VK_QUEUE_FAMILY_IGNORED");
+static_assert(kQueueFamilyExternal == VK_QUEUE_FAMILY_EXTERNAL,
+              "kQueueFamilyExternal must be VK_QUEUE_FAMILY_EXTERNAL");
 
 LensParams lens_params(const LensCamera& c) noexcept {
   const LensDistortion& d = c.lens;
@@ -118,17 +125,20 @@ struct DepthLayout {
   VkDeviceSize out_bytes = 0;  // the metres
 };
 
-// A frame's colour half, checked: where the kernel finds each plane in the
-// buffer it binds, and the bytes it moves. Host planes are staged packed
-// tightly, each starting on a word; device planes are read where they are.
+// A frame's colour half, checked: the range of the planes' buffer the kernel
+// binds, where it finds each plane in that range, and the bytes it moves.
+// Host planes are staged packed tightly, each starting on a word, and bound
+// from byte 0; device planes are read where they are, bound from the first.
 struct ColorLayout {
   std::uint32_t pixels = 0;
   std::uint32_t ch = 0;  // chroma rows
-  bool on_device = false;
+  int planes = 0;        // 3 for I420, 2 for NV12
+  // Each plane's first byte, from bind_offset, and its row stride; chroma
+  // samples c_step bytes apart.
   VkDeviceSize y_offset = 0, cb_offset = 0, cr_offset = 0;
-  VkDeviceSize y_stride = 0, c_stride = 0, c_step = 1;
-  VkDeviceSize in_bytes = 0;    // staged: none for device planes
-  VkDeviceSize bind_bytes = 0;  // the range bound, from byte 0
+  VkDeviceSize y_stride = 0, cb_stride = 0, cr_stride = 0, c_step = 1;
+  VkDeviceSize in_bytes = 0;  // staged: none for device planes
+  VkDeviceSize bind_offset = 0, bind_bytes = 0;
   VkDeviceSize out_bytes = 0;
 };
 
@@ -178,7 +188,8 @@ Result<DepthLayout> check_depth(const RawFrame& frame, std::uint64_t max_pixels,
 }
 
 Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
-                                VkDeviceSize max_range) {
+                                VkDeviceSize max_range,
+                                VkDeviceSize offset_alignment) {
   const LensCamera& cam = frame.color_camera;
   const YuvImage& image = frame.color;
   if (!is_canonical(frame.color_encoding)) {
@@ -208,10 +219,15 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
   }
   const bool nv12 = image.layout == YuvLayout::Nv12;
   const bool on_device = image.device != nullptr;
-  if (on_device == (image.plane[0] != nullptr)) {
+  if (on_device && (image.plane[0] != nullptr || image.plane[1] != nullptr ||
+                    image.plane[2] != nullptr)) {
     return Status::invalid_argument(
         "GpuFramePrep: the colour planes must be on the host or on the device, "
         "not both");
+  }
+  if (nv12 && image.plane[2] != nullptr) {
+    return Status::invalid_argument(
+        "GpuFramePrep: an NV12 picture has two planes, so plane[2] is null");
   }
   const int planes = nv12 ? 2 : 3;
   const std::uint64_t cw = (std::uint64_t{image.width} + 1) / 2;
@@ -232,12 +248,12 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
   ColorLayout out;
   out.pixels = static_cast<std::uint32_t>(pixels);
   out.ch = static_cast<std::uint32_t>(ch);
-  out.on_device = on_device;
+  out.planes = planes;
   out.c_step = nv12 ? 2 : 1;
   if (!on_device) {
     const std::uint64_t chroma_bytes = c_row * ch;
     out.y_stride = image.width;
-    out.c_stride = c_row;
+    out.cb_stride = out.cr_stride = c_row;
     out.cb_offset = round_up4(pixels);
     out.cr_offset =
         nv12 ? out.cb_offset + 1 : out.cb_offset + round_up4(chroma_bytes);
@@ -246,42 +262,54 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
     out.bind_bytes = out.in_bytes;
   } else {
     const Buffer& buffer = *image.device;
-    if ((buffer.usage() & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) == 0) {
-      return Status::invalid_argument(
-          "GpuFramePrep: the colour planes' buffer is not a storage buffer");
-    }
-    // One chroma stride, as the kernel reads both chroma planes with one.
-    if (!nv12 && image.stride[1] != image.stride[2]) {
-      return Status::invalid_argument(
-          "GpuFramePrep: the device's Cb and Cr rows must be as long");
-    }
-    std::uint64_t end = 0;
+    const StorageInput bound(buffer);
+    // Empty or without storage usage, before its size is weighed.
+    VR_TRY(bound.check("GpuFramePrep: the colour planes' buffer", 0));
+    std::uint64_t begin[3] = {}, end[3] = {};
     for (int p = 0; p < planes; ++p) {
       if (!plane_fits(image.offset[p], image.stride[p], rows[p], row_bytes[p],
                       buffer.size())) {
         return Status::invalid_argument(
             "GpuFramePrep: a colour plane runs past its buffer");
       }
-      end = std::max(end, image.offset[p] + (rows[p] - 1) * image.stride[p] +
-                              row_bytes[p]);
+      begin[p] = image.offset[p];
+      end[p] = image.offset[p] + (rows[p] - 1) * image.stride[p] + row_bytes[p];
     }
+    // Planes sharing bytes would read one as another, as I420 does with its
+    // offsets left at zero.
+    for (int p = 0; p < planes; ++p) {
+      for (int q = p + 1; q < planes; ++q) {
+        if (begin[p] < end[q] && begin[q] < end[p]) {
+          return Status::invalid_argument(
+              "GpuFramePrep: the colour planes overlap");
+        }
+      }
+    }
+    const std::uint64_t first = *std::min_element(begin, begin + planes);
+    const std::uint64_t last = *std::max_element(end, end + planes);
     // The kernel reads whole words, so the last one must be in the buffer.
-    out.bind_bytes = round_up4(end);
-    if (out.bind_bytes > buffer.size()) {
-      return Status::invalid_argument(
-          "GpuFramePrep: the colour planes' last word runs past their buffer");
-    }
-    out.y_offset = image.offset[0];
-    out.cb_offset = image.offset[1];
-    out.cr_offset = nv12 ? image.offset[1] + 1 : image.offset[2];
+    VR_TRY(bound.check("GpuFramePrep: the colour planes' buffer",
+                       round_up4(last)));
+    // Bound from the first plane, rounded down to the alignment a binding's
+    // offset needs (and to a word, which the kernel reads), so the limits
+    // below weigh the picture rather than where it sits in its buffer: a
+    // decoder's ring slot far into one buffer, say.
+    const VkDeviceSize align = std::max<VkDeviceSize>(offset_alignment, 4);
+    out.bind_offset = first / align * align;
+    out.bind_bytes = round_up4(last) - out.bind_offset;
+    out.y_offset = image.offset[0] - out.bind_offset;
+    out.cb_offset = image.offset[1] - out.bind_offset;
+    out.cr_offset =
+        (nv12 ? image.offset[1] + 1 : image.offset[2]) - out.bind_offset;
     out.y_stride = image.stride[0];
-    out.c_stride = image.stride[1];
+    out.cb_stride = image.stride[1];
+    out.cr_stride = nv12 ? image.stride[1] : image.stride[2];
   }
   out.out_bytes = pixels * sizeof(std::uint32_t);
-  // The kernel addresses the planes in 32-bit bytes.
+  // The kernel addresses the planes in 32-bit bytes from the binding.
   if (out.bind_bytes > std::numeric_limits<std::uint32_t>::max()) {
     return Status::invalid_argument(
-        "GpuFramePrep: the colour picture is past 4 GiB");
+        "GpuFramePrep: the colour planes span more than 4 GiB");
   }
   VR_TRY(check_storage_buffer_range("GpuFramePrep: the colour buffer",
                                     out.out_bytes, max_range));
@@ -318,6 +346,8 @@ Result<GpuFramePrep> GpuFramePrep::create(Device& device,
   vkGetPhysicalDeviceProperties(device.physical_device(), &props);
   prep.max_workgroup_count_x_ = props.limits.maxComputeWorkGroupCount[0];
   prep.max_storage_buffer_range_ = props.limits.maxStorageBufferRange;
+  prep.min_storage_buffer_offset_alignment_ =
+      props.limits.minStorageBufferOffsetAlignment;
   VR_ASSIGN(prep.gpu_timer_, GpuTimer::create(device));
   return prep;
 }
@@ -336,14 +366,28 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
             check_depth(frame, max_pixels, max_storage_buffer_range_));
   ColorLayout color;
   if (frame.has_color()) {
-    VR_ASSIGN(color, check_color(frame, max_pixels, max_storage_buffer_range_));
+    VR_ASSIGN(color, check_color(frame, max_pixels, max_storage_buffer_range_,
+                                 min_storage_buffer_offset_alignment_));
+  }
+  // Host planes go up with depth; device planes are read where they are.
+  const YuvImage& image = frame.color;
+  const bool host_color = frame.has_color() && image.device == nullptr;
+
+  // One batch: device planes taken over from the family that wrote them,
+  // both copies up, then both passes, one submit a frame. Taking the planes
+  // over first refuses a family the device lacks before any work. The copies
+  // are timed with the passes, so the row's device half counts moving the
+  // frame too.
+  CommandBatch batch(*device_, *allocator_);
+  if (frame.has_color() && !host_color) {
+    VR_TRY(batch.acquire(*image.device, image.queue_family));
   }
 
   VR_TRY(ensure_buffer(*device_, *allocator_, depth_in_, depth.in_bytes, false,
                        "sensor.raw_depth"));
   VR_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame"));
   if (frame.has_color()) {
-    if (!color.on_device) {
+    if (host_color) {
       VR_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.in_bytes,
                            false, "sensor.raw_color"));
     }
@@ -362,33 +406,29 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
   const VkDeviceSize depth_bytes =
       VkDeviceSize{depth.pixels} * sizeof(std::uint16_t);
   std::memcpy(staged, frame.depth, static_cast<std::size_t>(depth_bytes));
-  if (frame.has_color() && !color.on_device) {
-    const YuvImage& image = frame.color;
-    const std::size_t widths[3] = {image.width, color.c_stride, color.c_stride};
+  if (host_color) {
+    // Packed, so each plane's stride in the staging is its row.
+    const VkDeviceSize widths[3] = {color.y_stride, color.cb_stride,
+                                    color.cr_stride};
     const std::uint32_t heights[3] = {image.height, color.ch, color.ch};
     const VkDeviceSize offsets[3] = {0, color.cb_offset, color.cr_offset};
     std::uint8_t* dst = staged + depth.in_bytes;
-    const int planes = image.layout == YuvLayout::Nv12 ? 2 : 3;
-    for (int p = 0; p < planes; ++p) {
-      if (image.stride[p] == widths[p]) {
-        std::memcpy(dst + offsets[p], image.plane[p],
-                    std::size_t{widths[p]} * heights[p]);
+    for (int p = 0; p < color.planes; ++p) {
+      const auto row = static_cast<std::size_t>(widths[p]);
+      std::uint8_t* plane = dst + static_cast<std::size_t>(offsets[p]);
+      if (image.stride[p] == row) {
+        std::memcpy(plane, image.plane[p], row * heights[p]);
         continue;
       }
-      for (std::uint32_t row = 0; row < heights[p]; ++row) {
-        std::memcpy(dst + offsets[p] + std::size_t{row} * widths[p],
-                    image.plane[p] + std::size_t{row} * image.stride[p],
-                    widths[p]);
+      for (std::uint32_t r = 0; r < heights[p]; ++r) {
+        std::memcpy(plane + std::size_t{r} * row,
+                    image.plane[p] + std::size_t{r} * image.stride[p], row);
       }
     }
   }
 
-  // One batch: both copies up, then both passes, one submit a frame. The
-  // copies are timed with the passes, so the row's device half counts moving
-  // the frame too.
-  CommandBatch batch(*device_, *allocator_);
   VR_TRY(batch.copy(staging_, 0, depth_in_, 0, depth_bytes, &stage));
-  if (frame.has_color() && !color.on_device) {
+  if (host_color) {
     VR_TRY(batch.copy(staging_, depth.in_bytes, color_in_, 0, color.in_bytes,
                       &stage));
   }
@@ -403,10 +443,9 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                         group_count(depth.pixels, kLocalSize),
                         max_workgroup_count_x_, &stage));
   if (frame.has_color()) {
-    const YuvImage& image = frame.color;
     color_kernel_.set.write_storage_buffer(
-        0, color.on_device ? image.device->handle() : color_in_.handle(), 0,
-        color.bind_bytes);
+        0, host_color ? color_in_.handle() : image.device->handle(),
+        color.bind_offset, color.bind_bytes);
     color_kernel_.set.write_storage_buffer(1, color_out_->handle(), 0,
                                            color.out_bytes);
     const auto u32 = [](VkDeviceSize v) {
@@ -417,7 +456,8 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                                    u32(color.cb_offset),
                                    u32(color.cr_offset),
                                    u32(color.y_stride),
-                                   u32(color.c_stride),
+                                   u32(color.cb_stride),
+                                   u32(color.cr_stride),
                                    u32(color.c_step),
                                    image.kr,
                                    image.kb,
@@ -428,9 +468,14 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
   }
   const Status submitted = batch.submit();
   if (!submitted.ok()) {
-    // A failed wait may leave the copy running, so the staging is let go
-    // rather than rewritten or freed, as the batch lets go of its own.
+    // A failed wait may leave the copy and the kernels running, so the
+    // staging is let go rather than rewritten or freed, as the batch lets go
+    // of its own; and so is the buffer of device planes, which the caller
+    // may drop, and a decoder reuse, as soon as this returns.
     static_cast<void>(new Buffer(std::move(staging_)));
+    if (frame.has_color() && !host_color) {
+      static_cast<void>(new std::shared_ptr<const Buffer>(image.device));
+    }
     return submitted;
   }
 
