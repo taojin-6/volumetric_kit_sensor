@@ -20,11 +20,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "buffer_readback.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
+#include "volumetric_kit/recon/core/compute_util.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
@@ -369,15 +371,8 @@ int test_undistorts(sensor::GpuFramePrep& prep) {
 // Both passes against the host reference of the same sampling, on smooth
 // planes and random depth, at w x h. `padded` gives the planes rows longer
 // than their width, full of junk, as a decoder can hand them out.
-int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
-                           std::uint32_t h, bool padded) {
-  sensor::LensCamera cam = lensed();
-  cam.width = w;
-  cam.height = h;
-  std::vector<std::uint16_t> raw(std::size_t{w} * h);
-  for (std::size_t i = 0; i < raw.size(); ++i) {
-    raw[i] = static_cast<std::uint16_t>(500 + (i * 2654435761u) % 4000u);
-  }
+// A picture with structure in every plane, so a misread plane shows.
+Planes patterned(std::uint32_t w, std::uint32_t h) {
   Planes p = make_planes(w, h);
   for (std::uint32_t y = 0; y < h; ++y) {
     for (std::uint32_t x = 0; x < w; ++x) {
@@ -393,6 +388,19 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
           static_cast<std::uint8_t>(128 + 60 * std::sin(0.09 * y));
     }
   }
+  return p;
+}
+
+int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
+                           std::uint32_t h, bool padded) {
+  sensor::LensCamera cam = lensed();
+  cam.width = w;
+  cam.height = h;
+  std::vector<std::uint16_t> raw(std::size_t{w} * h);
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    raw[i] = static_cast<std::uint16_t>(500 + (i * 2654435761u) % 4000u);
+  }
+  Planes p = patterned(w, h);
   sensor::RawFrame f = frame_of(raw, cam);
   f.color = p.image(0.2126f, 0.0722f, false);
   f.color_camera = cam;
@@ -449,6 +457,137 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
   CHECK(depth_off <= 20);
   CHECK(color_worst <= 1);
   CHECK(coverage_off == 0);
+  return 0;
+}
+
+// One picture, four ways: host I420, host NV12 with padded rows, and device
+// planes in either layout at odd offsets with padded rows. They are only
+// different addresses for the same samples, so all four come out identical.
+// Device planes the pass cannot read are refused.
+int test_layouts(sensor::GpuFramePrep& prep) {
+  const auto invalid = vr::Status::Code::InvalidArgument;
+  const std::uint32_t w = kWidth + 1, h = kHeight + 1;
+  sensor::LensCamera cam = lensed();
+  cam.width = w;
+  cam.height = h;
+  std::vector<std::uint16_t> raw(std::size_t{w} * h, 1500);
+  Planes p = patterned(w, h);
+  sensor::RawFrame f = frame_of(raw, cam);
+  f.color_camera = cam;
+  const sensor::YuvImage i420 = p.image(0.2126f, 0.0722f, false);
+  f.color = i420;
+  auto base = prep.prepare(f);
+  CHECK(base.ok());
+  const std::vector<std::uint32_t> want = color_of(base.value());
+  CHECK(want.size() == std::size_t{w} * h);
+
+  // NV12: each chroma pair interleaved, Cb first, every row padded.
+  const std::size_t y_stride = w + 10, c_stride = 2 * p.cw + 6;
+  std::vector<std::uint8_t> y_rows(y_stride * h, 0xCD);
+  std::vector<std::uint8_t> cbcr(c_stride * p.ch, 0xCD);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    std::memcpy(&y_rows[y * y_stride], &p.y[std::size_t{y} * w], w);
+  }
+  for (std::uint32_t y = 0; y < p.ch; ++y) {
+    for (std::uint32_t x = 0; x < p.cw; ++x) {
+      cbcr[y * c_stride + 2 * x] = p.cb[std::size_t{y} * p.cw + x];
+      cbcr[y * c_stride + 2 * x + 1] = p.cr[std::size_t{y} * p.cw + x];
+    }
+  }
+  sensor::YuvImage nv12 = i420;
+  nv12.layout = sensor::YuvLayout::Nv12;
+  nv12.plane[0] = y_rows.data();
+  nv12.plane[1] = cbcr.data();
+  nv12.plane[2] = nullptr;
+  nv12.stride[0] = y_stride;
+  nv12.stride[1] = c_stride;
+  f.color = nv12;
+  auto host_nv12 = prep.prepare(f);
+  CHECK(host_nv12.ok());
+  CHECK(color_of(host_nv12.value()) == want);
+
+  // Device planes: one buffer holds the padded NV12 planes and the I420 ones,
+  // each plane at an odd offset.
+  const std::size_t c_i420 = p.cw + 3;
+  std::vector<std::uint8_t> blob;
+  const auto place = [&blob](const std::uint8_t* rows, std::size_t stride,
+                             std::size_t count, std::size_t row_bytes,
+                             std::size_t in_stride) {
+    blob.resize(blob.size() + 3, 0xEE);  // odd padding before each plane
+    const std::size_t at = blob.size();
+    blob.resize(at + stride * count, 0xEE);
+    for (std::size_t r = 0; r < count; ++r) {
+      std::memcpy(&blob[at + r * stride], rows + r * in_stride, row_bytes);
+    }
+    return static_cast<std::uint64_t>(at);
+  };
+  const std::uint64_t nv12_y = place(y_rows.data(), y_stride, h, w, y_stride);
+  const std::uint64_t nv12_c =
+      place(cbcr.data(), c_stride, p.ch, 2 * p.cw, c_stride);
+  const std::uint64_t i420_y = place(p.y.data(), y_stride, h, w, w);
+  const std::uint64_t i420_b = place(p.cb.data(), c_i420, p.ch, p.cw, p.cw);
+  const std::uint64_t i420_r = place(p.cr.data(), c_i420, p.ch, p.cw, p.cw);
+  blob.resize((blob.size() + 3) & ~std::size_t{3}, 0xEE);
+  auto made = vr::device_storage_buffer(*g_allocator, blob.size());
+  CHECK(made.ok());
+  CHECK(vr_test::write_back(*g_device, *g_allocator, made.value(), blob).ok());
+  const auto planes =
+      std::make_shared<const vr::Buffer>(std::move(made).value());
+
+  sensor::YuvImage dev = i420;
+  dev.plane[0] = dev.plane[1] = dev.plane[2] = nullptr;
+  dev.device = planes;
+  dev.layout = sensor::YuvLayout::Nv12;
+  dev.offset[0] = nv12_y;
+  dev.offset[1] = nv12_c;
+  dev.stride[0] = y_stride;
+  dev.stride[1] = c_stride;
+  f.color = dev;
+  auto dev_nv12 = prep.prepare(f);
+  CHECK(dev_nv12.ok());
+  CHECK(color_of(dev_nv12.value()) == want);
+
+  sensor::YuvImage dev_i420 = dev;
+  dev_i420.layout = sensor::YuvLayout::I420;
+  dev_i420.offset[0] = i420_y;
+  dev_i420.offset[1] = i420_b;
+  dev_i420.offset[2] = i420_r;
+  dev_i420.stride[1] = dev_i420.stride[2] = c_i420;
+  f.color = dev_i420;
+  auto dev_planar = prep.prepare(f);
+  CHECK(dev_planar.ok());
+  CHECK(color_of(dev_planar.value()) == want);
+
+  // Refused: host and device planes at once, a plane past the buffer, Cb and
+  // Cr rows of different lengths, a row shorter than its picture, and a
+  // buffer the kernel cannot bind.
+  sensor::YuvImage bad = dev;
+  bad.plane[0] = p.y.data();
+  f.color = bad;
+  CHECK(prep.prepare(f).status().domain() == invalid);
+  bad = dev;
+  bad.offset[1] = planes->size() - c_stride;  // the chroma's last rows past it
+  f.color = bad;
+  CHECK(prep.prepare(f).status().domain() == invalid);
+  bad = dev_i420;
+  bad.stride[2] = c_i420 + 1;
+  f.color = bad;
+  CHECK(prep.prepare(f).status().domain() == invalid);
+  bad = dev;
+  bad.stride[0] = w - 1;
+  f.color = bad;
+  CHECK(prep.prepare(f).status().domain() == invalid);
+  vr::BufferDesc desc;
+  desc.size = planes->size();
+  desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  auto unbindable = g_allocator->create_buffer(desc);
+  CHECK(unbindable.ok());
+  bad = dev;
+  bad.device =
+      std::make_shared<const vr::Buffer>(std::move(unbindable).value());
+  f.color = bad;
+  CHECK(prep.prepare(f).status().domain() == invalid);
+  std::printf("  layouts: host I420 and NV12, device I420 and NV12 agree\n");
   return 0;
 }
 
@@ -745,6 +884,7 @@ int main() {
       0) {
     return 1;
   }
+  if (test_layouts(prep.value()) != 0) return 1;
   if (test_coverage(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;
   if (test_frames_hold_buffers(prep.value()) != 0) return 1;

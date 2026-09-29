@@ -77,6 +77,11 @@ struct DeviceFrame {
 /// sampled at the nearest pixel, so an edge never blends a foreground and a
 /// background depth into a point between them.
 ///
+/// Colour comes as I420 or NV12, from the host or already on the device. Host
+/// planes go up with depth in one copy; device planes, such as a hardware
+/// decoder's picture, are read where they are, so the colour never crosses
+/// the bus.
+///
 /// Every check on the frame is made before anything is uploaded, so a refused
 /// frame leaves the pass and the frames it handed out as they were.
 ///
@@ -95,9 +100,10 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   GpuFramePrep(const GpuFramePrep&) = delete;
   GpuFramePrep& operator=(const GpuFramePrep&) = delete;
 
-  /// @brief Upload @p frame, undistort and convert it, and hand the result
-  ///        over as buffers on the device.
-  /// @param frame    The frame; read during the call only.
+  /// @brief Upload @p frame's host data, undistort and convert it, and hand
+  ///        the result over as buffers on the device.
+  /// @param frame    The frame; read during the call only. Device planes must
+  ///                 be on this pass's device.
   /// @param metrics  Optional @ref StageMetrics collecting a `"frame prep"`
   ///                 row: the upload and both passes on the host, and on the
   ///                 device the frame's copy up and the two dispatches.
@@ -107,7 +113,11 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         without depth, a depth range that is not finite with
   ///         `0 < min_depth < max_depth` (0 being the pass's "no return"), a
   ///         camera or picture that is empty, not finite or disagrees with
-  ///         its image, or an image past a single dispatch (16.7 M pixels);
+  ///         its image, colour planes on both the host and the device, a
+  ///         plane row shorter than its picture, device planes outside their
+  ///         buffer, in one without storage usage or with Cb and Cr rows of
+  ///         different lengths, or an image past a single dispatch (16.7 M
+  ///         pixels);
   ///         @ref Status::Code::Unsupported for a colour encoding
   ///         @ref is_canonical refuses; otherwise a buffer or dispatch
   ///         failure.
@@ -138,8 +148,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   GpuTimer gpu_timer_;
 
   // The raw inputs, device-local and filled through the pass's batch, grown
-  // to the largest frame seen and kept.
-  // TODO(sensor): zero-copy inputs from a hardware decoder's frames.
+  // to the largest frame seen and kept; colour already on the device is read
+  // where it is instead.
   Buffer depth_in_;
   Buffer color_in_;
   // The frame on the host side, host-visible and kept like the inputs, so

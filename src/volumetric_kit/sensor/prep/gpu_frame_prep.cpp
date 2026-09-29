@@ -3,6 +3,7 @@
 
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -41,13 +42,17 @@ static_assert(sizeof(DepthParams) == 60, "DepthParams layout drift");
 
 struct ColorParams {
   LensParams cam;
+  std::uint32_t y_offset;
   std::uint32_t cb_offset;
   std::uint32_t cr_offset;
+  std::uint32_t y_stride;
+  std::uint32_t c_stride;
+  std::uint32_t c_step;
   float kr;
   float kb;
   std::uint32_t full_range;
 };
-static_assert(sizeof(ColorParams) == 76, "ColorParams layout drift");
+static_assert(sizeof(ColorParams) == 92, "ColorParams layout drift");
 
 LensParams lens_params(const LensCamera& c) noexcept {
   const LensDistortion& d = c.lens;
@@ -113,15 +118,28 @@ struct DepthLayout {
   VkDeviceSize out_bytes = 0;  // the metres
 };
 
-// A frame's colour half, checked: the three planes packed tightly, each
-// starting on a word.
+// A frame's colour half, checked: where the kernel finds each plane in the
+// buffer it binds, and the bytes it moves. Host planes are staged packed
+// tightly, each starting on a word; device planes are read where they are.
 struct ColorLayout {
   std::uint32_t pixels = 0;
-  std::uint32_t cw = 0, ch = 0;  // the chroma planes' size
-  VkDeviceSize cb_offset = 0, cr_offset = 0;
-  VkDeviceSize in_bytes = 0;
+  std::uint32_t ch = 0;  // chroma rows
+  bool on_device = false;
+  VkDeviceSize y_offset = 0, cb_offset = 0, cr_offset = 0;
+  VkDeviceSize y_stride = 0, c_stride = 0, c_step = 1;
+  VkDeviceSize in_bytes = 0;    // staged: none for device planes
+  VkDeviceSize bind_bytes = 0;  // the range bound, from byte 0
   VkDeviceSize out_bytes = 0;
 };
+
+// Whether `rows` rows of `row_bytes`, `stride` apart from `offset`, fit in
+// `size` bytes, worked out without overflowing 64 bits. `stride` is at least
+// `row_bytes`, which is at least 1.
+bool plane_fits(std::uint64_t offset, std::uint64_t stride, std::uint64_t rows,
+                std::uint64_t row_bytes, std::uint64_t size) noexcept {
+  if (offset > size || row_bytes > size - offset) return false;
+  return rows <= 1 || rows - 1 <= (size - offset - row_bytes) / stride;
+}
 
 Result<DepthLayout> check_depth(const RawFrame& frame, std::uint64_t max_pixels,
                                 VkDeviceSize max_range) {
@@ -177,16 +195,6 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
         "x" + std::to_string(image.height) + ", its camera " +
         std::to_string(cam.width) + "x" + std::to_string(cam.height));
   }
-  ColorLayout out;
-  out.cw = (image.width + 1) / 2;
-  out.ch = (image.height + 1) / 2;
-  if (image.plane[1] == nullptr || image.plane[2] == nullptr ||
-      image.stride[0] < image.width || image.stride[1] < out.cw ||
-      image.stride[2] < out.cw) {
-    return Status::invalid_argument(
-        "GpuFramePrep: the colour picture needs three planes, each row at "
-        "least its width");
-  }
   if (!(finite(image.kr) && finite(image.kb) && image.kr > 0.0f &&
         image.kb > 0.0f && image.kr + image.kb < 1.0f)) {
     return Status::invalid_argument(
@@ -198,20 +206,87 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
     return Status::invalid_argument(
         "GpuFramePrep: the colour image is past a single dispatch");
   }
+  const bool nv12 = image.layout == YuvLayout::Nv12;
+  const bool on_device = image.device != nullptr;
+  if (on_device == (image.plane[0] != nullptr)) {
+    return Status::invalid_argument(
+        "GpuFramePrep: the colour planes must be on the host or on the device, "
+        "not both");
+  }
+  const int planes = nv12 ? 2 : 3;
+  const std::uint64_t cw = (std::uint64_t{image.width} + 1) / 2;
+  const std::uint64_t ch = (std::uint64_t{image.height} + 1) / 2;
+  const std::uint64_t c_row = nv12 ? 2 * cw : cw;
+  const std::uint64_t rows[3] = {image.height, ch, ch};
+  const std::uint64_t row_bytes[3] = {image.width, c_row, c_row};
+  for (int p = 0; p < planes; ++p) {
+    if ((!on_device && image.plane[p] == nullptr) ||
+        image.stride[p] < row_bytes[p]) {
+      return Status::invalid_argument(
+          std::string("GpuFramePrep: the colour picture needs ") +
+          (nv12 ? "two planes" : "three planes") +
+          ", each row at least its width");
+    }
+  }
+
+  ColorLayout out;
   out.pixels = static_cast<std::uint32_t>(pixels);
-  const std::uint64_t chroma_bytes = std::uint64_t{out.cw} * out.ch;
-  out.cb_offset = round_up4(pixels);
-  out.cr_offset = out.cb_offset + round_up4(chroma_bytes);
-  out.in_bytes = out.cr_offset + round_up4(chroma_bytes);
+  out.ch = static_cast<std::uint32_t>(ch);
+  out.on_device = on_device;
+  out.c_step = nv12 ? 2 : 1;
+  if (!on_device) {
+    const std::uint64_t chroma_bytes = c_row * ch;
+    out.y_stride = image.width;
+    out.c_stride = c_row;
+    out.cb_offset = round_up4(pixels);
+    out.cr_offset =
+        nv12 ? out.cb_offset + 1 : out.cb_offset + round_up4(chroma_bytes);
+    out.in_bytes =
+        (nv12 ? out.cb_offset : out.cr_offset) + round_up4(chroma_bytes);
+    out.bind_bytes = out.in_bytes;
+  } else {
+    const Buffer& buffer = *image.device;
+    if ((buffer.usage() & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) == 0) {
+      return Status::invalid_argument(
+          "GpuFramePrep: the colour planes' buffer is not a storage buffer");
+    }
+    // One chroma stride, as the kernel reads both chroma planes with one.
+    if (!nv12 && image.stride[1] != image.stride[2]) {
+      return Status::invalid_argument(
+          "GpuFramePrep: the device's Cb and Cr rows must be as long");
+    }
+    std::uint64_t end = 0;
+    for (int p = 0; p < planes; ++p) {
+      if (!plane_fits(image.offset[p], image.stride[p], rows[p], row_bytes[p],
+                      buffer.size())) {
+        return Status::invalid_argument(
+            "GpuFramePrep: a colour plane runs past its buffer");
+      }
+      end = std::max(end, image.offset[p] + (rows[p] - 1) * image.stride[p] +
+                              row_bytes[p]);
+    }
+    // The kernel reads whole words, so the last one must be in the buffer.
+    out.bind_bytes = round_up4(end);
+    if (out.bind_bytes > buffer.size()) {
+      return Status::invalid_argument(
+          "GpuFramePrep: the colour planes' last word runs past their buffer");
+    }
+    out.y_offset = image.offset[0];
+    out.cb_offset = image.offset[1];
+    out.cr_offset = nv12 ? image.offset[1] + 1 : image.offset[2];
+    out.y_stride = image.stride[0];
+    out.c_stride = image.stride[1];
+  }
   out.out_bytes = pixels * sizeof(std::uint32_t);
-  if (out.in_bytes > std::numeric_limits<std::uint32_t>::max()) {
+  // The kernel addresses the planes in 32-bit bytes.
+  if (out.bind_bytes > std::numeric_limits<std::uint32_t>::max()) {
     return Status::invalid_argument(
         "GpuFramePrep: the colour picture is past 4 GiB");
   }
   VR_TRY(check_storage_buffer_range("GpuFramePrep: the colour buffer",
                                     out.out_bytes, max_range));
   VR_TRY(check_storage_buffer_range("GpuFramePrep: the colour planes",
-                                    out.in_bytes, max_range));
+                                    out.bind_bytes, max_range));
   return out;
 }
 
@@ -268,8 +343,10 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                        "sensor.raw_depth"));
   VR_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame"));
   if (frame.has_color()) {
-    VR_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.in_bytes,
-                         false, "sensor.raw_color"));
+    if (!color.on_device) {
+      VR_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.in_bytes,
+                           false, "sensor.raw_color"));
+    }
     VR_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame"));
   }
 
@@ -277,20 +354,22 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                        depth.in_bytes + color.in_bytes, true,
                        "sensor.raw_staging"));
 
-  // The frame staged as the inputs lay it out: depth, then the three planes
+  // The frame staged as the inputs lay it out: depth, then any host planes
   // packed tightly whatever the decoder's strides. A tight plane is one
-  // memcpy: row by row, it cost the 5090 0.2 ms a 4K frame.
+  // memcpy: row by row, it cost the 5090 0.2 ms a 4K frame. Device planes
+  // are read where they are.
   auto* staged = static_cast<std::uint8_t*>(staging_.mapped());
   const VkDeviceSize depth_bytes =
       VkDeviceSize{depth.pixels} * sizeof(std::uint16_t);
   std::memcpy(staged, frame.depth, static_cast<std::size_t>(depth_bytes));
-  if (frame.has_color()) {
+  if (frame.has_color() && !color.on_device) {
     const YuvImage& image = frame.color;
-    const std::uint32_t widths[3] = {image.width, color.cw, color.cw};
+    const std::size_t widths[3] = {image.width, color.c_stride, color.c_stride};
     const std::uint32_t heights[3] = {image.height, color.ch, color.ch};
     const VkDeviceSize offsets[3] = {0, color.cb_offset, color.cr_offset};
     std::uint8_t* dst = staged + depth.in_bytes;
-    for (int p = 0; p < 3; ++p) {
+    const int planes = image.layout == YuvLayout::Nv12 ? 2 : 3;
+    for (int p = 0; p < planes; ++p) {
       if (image.stride[p] == widths[p]) {
         std::memcpy(dst + offsets[p], image.plane[p],
                     std::size_t{widths[p]} * heights[p]);
@@ -309,7 +388,7 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
   // the frame too.
   CommandBatch batch(*device_, *allocator_);
   VR_TRY(batch.copy(staging_, 0, depth_in_, 0, depth_bytes, &stage));
-  if (frame.has_color()) {
+  if (frame.has_color() && !color.on_device) {
     VR_TRY(batch.copy(staging_, depth.in_bytes, color_in_, 0, color.in_bytes,
                       &stage));
   }
@@ -324,14 +403,22 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                         group_count(depth.pixels, kLocalSize),
                         max_workgroup_count_x_, &stage));
   if (frame.has_color()) {
-    color_kernel_.set.write_storage_buffer(0, color_in_.handle(), 0,
-                                           color.in_bytes);
+    const YuvImage& image = frame.color;
+    color_kernel_.set.write_storage_buffer(
+        0, color.on_device ? image.device->handle() : color_in_.handle(), 0,
+        color.bind_bytes);
     color_kernel_.set.write_storage_buffer(1, color_out_->handle(), 0,
                                            color.out_bytes);
-    const YuvImage& image = frame.color;
+    const auto u32 = [](VkDeviceSize v) {
+      return static_cast<std::uint32_t>(v);
+    };
     const ColorParams color_params{lens_params(frame.color_camera),
-                                   static_cast<std::uint32_t>(color.cb_offset),
-                                   static_cast<std::uint32_t>(color.cr_offset),
+                                   u32(color.y_offset),
+                                   u32(color.cb_offset),
+                                   u32(color.cr_offset),
+                                   u32(color.y_stride),
+                                   u32(color.c_stride),
+                                   u32(color.c_step),
                                    image.kr,
                                    image.kb,
                                    image.full_range ? 1u : 0u};
