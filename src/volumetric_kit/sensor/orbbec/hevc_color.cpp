@@ -8,6 +8,8 @@
 #include <system_error>
 #include <utility>
 
+#include "device_picture_frame.hpp"
+
 namespace volumetric_kit::recon::sensor::orbbec {
 
 namespace {
@@ -80,11 +82,13 @@ Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
       options.yuv ? VideoPixelLayout::Yuv420 : VideoPixelLayout::Rgb24;
   // One thread, so no picture is held back. That leaves software decoding
   // little headroom at 4K25 (the 2026-09-28 decision).
-  // TODO(sensor): frame threads in software alone, or the conversion on the
-  // GPU (hevc_decoder.cpp's TODO), once a host without a hardware HEVC
+  // TODO(sensor): frame threads in software alone, or the host path's
+  // conversion on the GPU as the raw path's is, once a host without a
+  // hardware HEVC
   // decoder needs 4K.
   decoding.threads = 1;
   decoding.unlabelled_color = kFemtoMegaHevcColor;
+  if (options.yuv) decoding.device = options.device;
   decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
   auto decoder = HevcDecoder::create(decoding);
   if (!decoder) {
@@ -250,8 +254,11 @@ void HevcColorDecoder::hand_on(const DecodedPicture& picture) {
   const auto color = pair->getColorFrame();
   // A frame allocated and copied per picture: 0.5 ms at 4K against the
   // decode's 24 (the 2026-09-28 decision).
-  std::shared_ptr<ob::VideoFrame> rgb;
-  if (options_.yuv) {
+  std::shared_ptr<ob::Frame> rgb;
+  if (options_.yuv && (picture.device != nullptr || picture.image[0])) {
+    // Left where the hardware decoded it, its colour description with it.
+    rgb = device_picture_frame(picture);
+  } else if (options_.yuv) {
     rgb = i420_frame(picture);
     // The matrix, range and encoding travel with the planes, which the pass
     // converts by them rather than by a guess.

@@ -14,6 +14,7 @@
 #include "volumetric_kit/recon/sensor/camera_conventions.hpp"
 
 #if VR_ORBBEC_WITH_HEVC
+#include "device_picture_frame.hpp"
 #include "hevc_color.hpp"
 #endif
 
@@ -243,6 +244,7 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
   std::unique_ptr<CameraStream> s(new CameraStream());
   s->fps_ = streams.fps;
   s->configure_ffmpeg_logging_ = configure_logging;
+  s->vulkan_device_ = streams.raw ? streams.device : nullptr;
   s->context_ = std::move(context);
   s->device_ = std::move(device);
   try {
@@ -459,6 +461,7 @@ Status CameraStream::start() {
     decoding.fps = fps_;
     decoding.rgb_profile = color_profile_;
     decoding.yuv = raw_;
+    decoding.device = vulkan_device_;
     // Once: the first start sets FFmpeg's level, and a later one leaves it
     // to whoever changed it since.
     decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
@@ -758,32 +761,38 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     const LensCamera& d = raw_depth_camera_;
     const LensCamera& c = raw_color_camera_;
     const auto dv = depth->as<ob::VideoFrame>();
-    const auto cv = color->as<ob::VideoFrame>();
+    // A picture left on the device has a size of its own; other colour is a
+    // video frame of it.
+#if VR_ORBBEC_WITH_HEVC
+    const DecodedPicture* picture = device_picture(*color);
+#endif
+    std::uint32_t color_width = 0;
+    std::uint32_t color_height = 0;
+#if VR_ORBBEC_WITH_HEVC
+    if (picture != nullptr) {
+      color_width = picture->width;
+      color_height = picture->height;
+    } else
+#endif
+    {
+      const auto cv = color->as<ob::VideoFrame>();
+      color_width = cv->getWidth();
+      color_height = cv->getHeight();
+    }
     if (dv->getWidth() != d.width || dv->getHeight() != d.height ||
-        cv->getWidth() != c.width || cv->getHeight() != c.height) {
+        color_width != c.width || color_height != c.height) {
       return refuse(Status::io_error(
           who_ + ": a raw pair is depth " + std::to_string(dv->getWidth()) +
           "x" + std::to_string(dv->getHeight()) + ", colour " +
-          std::to_string(cv->getWidth()) + "x" +
-          std::to_string(cv->getHeight()) + "; expected " +
-          std::to_string(d.width) + "x" + std::to_string(d.height) + " and " +
-          std::to_string(c.width) + "x" + std::to_string(c.height)));
+          std::to_string(color_width) + "x" + std::to_string(color_height) +
+          "; expected " + std::to_string(d.width) + "x" +
+          std::to_string(d.height) + " and " + std::to_string(c.width) + "x" +
+          std::to_string(c.height)));
     }
     const std::size_t depth_pixels = std::size_t{d.width} * d.height;
-    const std::uint32_t cw = (c.width + 1) / 2;
-    const std::uint32_t ch = (c.height + 1) / 2;
-    const std::size_t luma = std::size_t{c.width} * c.height;
-    const std::size_t chroma = std::size_t{cw} * ch;
     if (depth->getFormat() != OB_FORMAT_Y16 ||
         depth->getDataSize() < depth_pixels * sizeof(std::uint16_t)) {
       return refuse(Status::io_error(who_ + ": depth is not a full Y16 image"));
-    }
-    if (color->getFormat() != OB_FORMAT_I420 ||
-        color->getDataSize() < luma + 2 * chroma) {
-      return refuse(Status::io_error(
-          who_ + ": decoded colour is not a full I420 image (format " +
-          std::to_string(static_cast<int>(color->getFormat())) + ", " +
-          std::to_string(color->getDataSize()) + " bytes)"));
     }
     const float value_scale = depth->getValueScale();
     if (!std::isfinite(value_scale) || !(value_scale > 0.0f)) {
@@ -797,37 +806,79 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     frame.depth_cam_to_world = raw_depth_pose_;
     frame.min_depth = min_depth_;
     frame.max_depth = max_depth_;
-    // TODO(sensor): the decoder's picture on the device (YuvImage::device)
-    // rather than these host planes, once the decoders hand theirs over.
-    const std::uint8_t* planes = color->getData();
-    frame.color.plane[0] = planes;
-    frame.color.plane[1] = planes + luma;
-    frame.color.plane[2] = planes + luma + chroma;
-    frame.color.stride[0] = c.width;
-    frame.color.stride[1] = cw;
-    frame.color.stride[2] = cw;
+#if VR_ORBBEC_WITH_HEVC
+    // The matrix, range and encoding the decoder resolved: the stream's own
+    // when it names them, the Femto Mega's unlabelled BT.601 full range
+    // otherwise -- as the host path converts -- and the transfer and
+    // primaries it declares.
+    const auto describe = [&](VideoColorMatrix matrix, bool full_range,
+                              const std::optional<ColorEncoding>& encoding) {
+      if (!encoding) {
+        return refuse(Status::unsupported(
+            who_ +
+            ": the colour stream declares a transfer or primaries "
+            "ColorEncoding cannot name"));
+      }
+      const YcbcrWeights weights = ycbcr_weights(matrix);
+      frame.color.kr = weights.kr;
+      frame.color.kb = weights.kb;
+      frame.color.full_range = full_range;
+      frame.color_encoding = *encoding;
+      return Status{};
+    };
     frame.color.width = c.width;
     frame.color.height = c.height;
-#if VR_ORBBEC_WITH_HEVC
-    // As the decoder resolved them: the stream's own matrix and range when it
-    // names them, the Femto Mega's unlabelled BT.601 full range otherwise --
-    // as the host path converts -- and the transfer and primaries it declares.
-    const std::optional<PlanesColor> described = planes_color(*color);
-    if (!described) {
-      return refuse(Status::io_error(
-          who_ + ": decoded colour carries no colour description"));
+    if (picture != nullptr) {
+      // Left on the device by the hardware: NVDEC's NV12 in a buffer CUDA
+      // wrote, or VideoToolbox's planes as images.
+      YuvImage& image = frame.color;
+      image.layout = picture->layout == VideoPixelLayout::Nv12
+                         ? YuvLayout::Nv12
+                         : YuvLayout::I420;
+      if (picture->device != nullptr) {
+        image.device = picture->device;
+        for (int p = 0; p < 3; ++p) {
+          image.offset[p] = picture->offset[p];
+          image.stride[p] = picture->stride[p];
+        }
+        image.queue_family = kQueueFamilyExternal;
+      } else {
+        image.image[0] = picture->image[0];
+        image.image[1] = picture->image[1];
+      }
+      VR_TRY(describe(picture->matrix, picture->full_range, picture->encoding));
+    } else {
+      const std::uint32_t cw = (c.width + 1) / 2;
+      const std::uint32_t ch = (c.height + 1) / 2;
+      const std::size_t luma = std::size_t{c.width} * c.height;
+      const std::size_t chroma = std::size_t{cw} * ch;
+      if (color->getFormat() != OB_FORMAT_I420 ||
+          color->getDataSize() < luma + 2 * chroma) {
+        return refuse(Status::io_error(
+            who_ + ": decoded colour is not a full I420 image (format " +
+            std::to_string(static_cast<int>(color->getFormat())) + ", " +
+            std::to_string(color->getDataSize()) + " bytes)"));
+      }
+      const std::optional<PlanesColor> described = planes_color(*color);
+      if (!described) {
+        return refuse(Status::io_error(
+            who_ + ": decoded colour carries no colour description"));
+      }
+      const std::uint8_t* planes = color->getData();
+      frame.color.plane[0] = planes;
+      frame.color.plane[1] = planes + luma;
+      frame.color.plane[2] = planes + luma + chroma;
+      frame.color.stride[0] = c.width;
+      frame.color.stride[1] = cw;
+      frame.color.stride[2] = cw;
+      VR_TRY(describe(described->matrix, described->full_range,
+                      described->has_encoding
+                          ? std::optional<ColorEncoding>(described->encoding)
+                          : std::nullopt));
     }
-    if (!described->has_encoding) {
-      return refuse(Status::unsupported(
-          who_ +
-          ": the colour stream declares a transfer or primaries "
-          "ColorEncoding cannot name"));
-    }
-    const YcbcrWeights weights = ycbcr_weights(described->matrix);
-    frame.color.kr = weights.kr;
-    frame.color.kb = weights.kb;
-    frame.color.full_range = described->full_range;
-    frame.color_encoding = described->encoding;
+#else
+    // open refuses raw frames without the decoder whose planes they carry.
+    return refuse(Status::unsupported(who_ + ": raw frames need H.265"));
 #endif
     frame.color_camera = c;
     frame.color_cam_to_world = raw_color_pose_;

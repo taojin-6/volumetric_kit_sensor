@@ -8,8 +8,9 @@
 // mailbox as compressed colour, since the mailbox drops pairs and an H.265
 // frame dropped before decoding corrupts the frames after it. So every pair
 // is decoded, in order, before the mailbox, and handed on with its colour as
-// an RGB frame, or as I420 planes for the GPU pass; everything after the
-// mailbox is as for MJPEG.
+// an RGB frame, or for the GPU pass as I420 planes or a picture the hardware
+// left on the device (device_picture_frame.hpp); everything after the mailbox
+// is as for MJPEG.
 
 #include <atomic>
 #include <condition_variable>
@@ -110,6 +111,11 @@ class HevcColorDecoder {
     // and Cr at half size, rows packed) carrying its PlanesColor, for the GPU
     // pass; RGB otherwise.
     bool yuv = false;
+    // With yuv, the device the GPU pass runs on: a picture NVDEC or
+    // VideoToolbox leaves there is handed on as a device_picture_frame, and
+    // only the others as I420. Borrowed: it must outlive the decoder and
+    // every frame it hands on.
+    const Device* device = nullptr;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on
