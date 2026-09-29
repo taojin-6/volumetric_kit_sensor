@@ -9,8 +9,8 @@
 // frame dropped before decoding corrupts the frames after it. So every pair
 // is decoded, in order, before the mailbox, and handed on with its colour as
 // an RGB frame, or for the GPU pass as I420 planes or a picture the hardware
-// left on the device (device_picture_frame.hpp); everything after the mailbox
-// is as for MJPEG.
+// left on the device (picture_frames.hpp); everything after the mailbox is
+// as for MJPEG.
 
 #include <atomic>
 #include <condition_variable>
@@ -27,6 +27,7 @@
 
 #include <libobsensor/ObSensor.hpp>
 
+#include "picture_frames.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
@@ -75,22 +76,6 @@ class ColorStreamGate {
 constexpr VideoColorDescription kFemtoMegaHevcColor{VideoColorMatrix::Bt601,
                                                     true};
 
-// What an I420 frame's planes are coded in (HevcColorDecoder::Options::yuv),
-// carried in the frame's metadata since an SDK frame has no field for it: the
-// matrix and range the decoder resolved, the stream's own when it names them,
-// and the transfer and primaries it declares, none when ColorEncoding cannot
-// name them.
-struct PlanesColor {
-  VideoColorMatrix matrix = VideoColorMatrix::Bt709;
-  bool full_range = false;
-  bool has_encoding = false;
-  ColorEncoding encoding{};
-};
-
-// The description an I420 frame from the decoder carries; empty for a frame
-// that carries none.
-std::optional<PlanesColor> planes_color(const ob::Frame& frame);
-
 class HevcColorDecoder {
  public:
   using Sink = std::function<void(std::shared_ptr<ob::FrameSet>)>;
@@ -112,7 +97,7 @@ class HevcColorDecoder {
     // pass; RGB otherwise.
     bool yuv = false;
     // With yuv, the device the GPU pass runs on: a picture NVDEC or
-    // VideoToolbox leaves there is handed on as a device_picture_frame, and
+    // VideoToolbox leaves there is handed on in its raw_color_frame, and
     // only the others as I420. Borrowed: it must outlive the decoder and
     // every frame it hands on.
     const Device* device = nullptr;

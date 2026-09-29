@@ -171,15 +171,6 @@ Status validate_streams(const OrbbecStreamOptions& streams,
         std::to_string(streams.max_depth) +
         "] m must be finite, non-negative and non-empty");
   }
-  // TODO(sensor): MJPEG raw frames too: the SDK's JPEG bytes, decoded on a
-  // thread per camera by nvJPEG's hardware back end or VideoToolbox into a
-  // picture on the device (the 2026-09-28 decoded-frame decision).
-  if (streams.raw && streams.color_codec != OrbbecColorCodec::Hevc) {
-    return Status::invalid_argument(
-        who +
-        ": raw frames need H.265 colour, whose planes the GPU pass "
-        "converts");
-  }
   return {};
 }
 

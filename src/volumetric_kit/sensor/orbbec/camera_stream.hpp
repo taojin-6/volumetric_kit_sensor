@@ -32,6 +32,7 @@
 namespace volumetric_kit::recon::sensor::orbbec {
 
 class HevcColorDecoder;
+class JpegColorDecoder;
 
 // The SDK reports every failure as a thrown ob::Error; this repo returns
 // Status across its API. `who` names the caller ("OrbbecCapture", ...).
@@ -42,8 +43,8 @@ Status sdk_error(const std::string& who, const std::string& what,
 // per sink -- setLoggerSeverity sets every sink, the file one included.
 void configure_sdk_logging();
 
-// Unsupported for H.265 colour in a build without the decoder; OK otherwise.
-// Asked by open before the SDK is touched.
+// Unsupported for H.265 colour or raw frames in a build without the video
+// decoders; OK otherwise. Asked by open before the SDK is touched.
 Status check_color_codec(const OrbbecStreamOptions& streams,
                          const std::string& who);
 
@@ -183,6 +184,12 @@ class CameraStream {
   // Decodes the H.265 colour, between the SDK and the mailbox; null for
   // MJPEG. Replaced at each start, so its counters start fresh with the rest.
   std::shared_ptr<HevcColorDecoder> hevc_;
+  // Decodes a raw MJPEG stream's colour onto the GPU, between the SDK and the
+  // mailbox; null otherwise. Replaced at each start, as hevc_ is.
+  std::shared_ptr<JpegColorDecoder> jpeg_;
+  // Whether the wire carries H.265 (wire_color_profile_ is its mode) rather
+  // than a raw stream's JPEGs.
+  bool hevc_wire_ = false;
   std::shared_ptr<ob::UnDistortionFilter> undistort_color_;
   std::shared_ptr<ob::Align> align_to_color_;
   bool device_callback_registered_ = false;
