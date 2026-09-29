@@ -25,8 +25,8 @@
 #include <utility>
 #include <vector>
 
-#include "buffer_readback.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
+#include "volumetric_kit/recon/core/command_batch.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
@@ -415,10 +415,14 @@ Picture from_device(const sensor::DecodedPicture& p, vr::Device& device,
                     vr::Allocator& allocator) {
   Picture out;
   out.meta = p;
-  auto bytes = vr_test::read_back<std::uint8_t>(
-      device, allocator, *p.device, static_cast<std::size_t>(p.device->size()));
-  if (!bytes) return out;
-  const std::vector<std::uint8_t>& b = bytes.value();
+  // CUDA wrote the buffer, so the batch takes it over before reading it.
+  std::vector<std::uint8_t> b(static_cast<std::size_t>(p.device->size()));
+  vr::CommandBatch batch(device, allocator);
+  if (!batch.acquire(*p.device, VK_QUEUE_FAMILY_EXTERNAL).ok() ||
+      !batch.readback(*p.device, 0, b.size(), b.data()).ok() ||
+      !batch.submit().ok()) {
+    return out;
+  }
   for (std::uint32_t r = 0; r < p.height; ++r) {
     const std::uint8_t* row = b.data() + p.offset[0] + r * p.stride[0];
     out.planes[0].insert(out.planes[0].end(), row, row + p.width);
