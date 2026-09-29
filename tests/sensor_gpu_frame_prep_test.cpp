@@ -12,6 +12,7 @@
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its colour output is shared with the queue families its config names;
+//   - with depth_within_color, depth survives only where colour recorded it;
 //   - its output fuses through the device-input overloads.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
@@ -979,6 +980,89 @@ int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
   return 0;
 }
 
+// GpuFramePrepConfig::depth_within_color keeps depth only where the colour
+// camera recorded it.
+//   - Same intrinsics and pose, a pincushion colour lens: each depth pixel
+//     lands on the colour pixel it shares, so depth must be zeroed exactly
+//     where the colour's coverage byte is 0 -- the corners the lens missed.
+//   - A narrower colour camera 10 cm to the right: the depth kept is the
+//     region a host projection puts inside its image. A mask that ignored the
+//     pose would keep a region 39 px to one side of it.
+//   - Off, and on a frame without colour, every depth pixel is kept.
+int test_depth_within_color(vr::Device& device, vr::Allocator& allocator) {
+  sensor::GpuFramePrepConfig on;
+  on.depth_within_color = true;
+  auto masked = sensor::GpuFramePrep::create(device, allocator, on);
+  auto plain = sensor::GpuFramePrep::create(device, allocator);
+  CHECK(masked.ok() && plain.ok());
+  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
+  Planes planes = make_planes();
+
+  sensor::LensCamera pincushion = pinhole();
+  pincushion.lens.k1 = 0.3f;
+  sensor::RawFrame same = frame_of(raw, pinhole());
+  same.color = planes.image(0.299f, 0.114f, true);
+  same.color_camera = pincushion;
+  auto out = masked->prepare(same);
+  if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+  CHECK(out.ok());
+  const std::vector<float> d = depth_of(out.value());
+  const std::vector<std::uint32_t> c = color_of(out.value());
+  CHECK(d.size() == raw.size() && c.size() == raw.size());
+  std::size_t kept = 0, zeroed = 0, wrong = 0;
+  for (std::size_t i = 0; i < d.size(); ++i) {
+    const bool covered = (c[i] >> 24) != 0u;
+    (covered ? kept : zeroed) += 1;
+    if (covered ? d[i] != 1000.0f * kScale : d[i] != 0.0f) ++wrong;
+  }
+  std::printf("  depth within colour: %zu kept, %zu zeroed, %zu off\n", kept,
+              zeroed, wrong);
+  CHECK(wrong == 0);
+  CHECK(zeroed > 1000 && kept > 50000);
+
+  // Narrower, and 10 cm to the right: the point moves by -0.1 m in x.
+  sensor::LensCamera narrow = pinhole();
+  narrow.fx *= 1.5f;
+  narrow.fy *= 1.5f;
+  sensor::RawFrame aside = frame_of(raw, pinhole());
+  aside.color = planes.image(0.299f, 0.114f, true);
+  aside.color_camera = narrow;
+  aside.color_cam_to_world[3] = vr::Vec4f(0.1f, 0.0f, 0.0f, 1.0f);
+  out = masked->prepare(aside);
+  CHECK(out.ok());
+  const std::vector<float> e = depth_of(out.value());
+  const sensor::LensCamera dc = pinhole();
+  std::size_t inside = 0, off = 0;
+  for (std::uint32_t v = 0; v < kHeight; ++v) {
+    for (std::uint32_t u = 0; u < kWidth; ++u) {
+      const float x = (static_cast<float>(u) - dc.cx) / dc.fx - 0.1f;
+      const float y = (static_cast<float>(v) - dc.cy) / dc.fy;
+      const float pu = narrow.fx * x + narrow.cx + 0.5f;
+      const float pv = narrow.fy * y + narrow.cy + 0.5f;
+      // Within a hair of a rounding edge either answer is the float's.
+      const float edge = std::fmin(std::fabs(pu - std::round(pu)),
+                                   std::fabs(pv - std::round(pv)));
+      if (edge < 1e-3f) continue;
+      const bool in = std::floor(pu) >= 0.0f && std::floor(pu) < kWidth &&
+                      std::floor(pv) >= 0.0f && std::floor(pv) < kHeight;
+      inside += in ? 1 : 0;
+      const float got = e[std::size_t{v} * kWidth + u];
+      if (in ? got != 1000.0f * kScale : got != 0.0f) ++off;
+    }
+  }
+  CHECK(off == 0);
+  CHECK(inside > 1000 && inside < std::size_t{kWidth} * kHeight / 2);
+
+  // Off, and a frame with no colour: nothing zeroed.
+  const sensor::RawFrame depth_only = frame_of(raw, pinhole());
+  for (sensor::GpuFramePrep* check : {&plain.value(), &masked.value()}) {
+    auto all = check->prepare(check == &plain.value() ? aside : depth_only);
+    CHECK(all.ok());
+    for (const float z : depth_of(all.value())) CHECK(z == 1000.0f * kScale);
+  }
+  return 0;
+}
+
 // Allocate `depth`'s band, retrying rounds that only lost bucket-lock races,
 // as examples/common/fuse_frame.hpp does: adjacent pixels dilate into one
 // block, and a round can hand back such failures over a map far from full.
@@ -1103,6 +1187,7 @@ int main() {
   }
   if (test_prepare_set(device.value(), allocator.value()) != 0) return 1;
   if (test_queue_families(device.value(), allocator.value()) != 0) return 1;
+  if (test_depth_within_color(device.value(), allocator.value()) != 0) return 1;
 
   sensor::GpuFramePrep moved = std::move(prep).value();
   CHECK(moved.valid());

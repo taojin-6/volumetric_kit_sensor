@@ -89,6 +89,23 @@ struct GpuFramePrepConfig {
   /// Entries in @ref color_queue_families; more than `kMaxQueueFamilies` is
   /// refused by @ref GpuFramePrep::create.
   std::uint32_t color_queue_family_count = 0;
+
+  /// @brief Keep depth only where the colour camera recorded it.
+  ///
+  /// A depth sensor's field of view and its colour camera's rarely match: a
+  /// Femto Mega's depth covers about 65 degrees vertically and its 16:9
+  /// colour about 51. Depth past the colour's view fuses into surfaces no
+  /// colour camera sees, which carry no colour and cannot be textured. With
+  /// this set, a frame with colour has every depth pixel zeroed -- the pass's
+  /// "no return" -- whose point, moved into the colour camera by the two
+  /// poses, is behind it or lands on a pixel the colour pass marks uncovered
+  /// (@ref DeviceFrame::color's coverage byte, black where the lens saw
+  /// nothing). What survives is the two cameras' overlap. The test is the
+  /// colour camera's view, not its line of sight: a point inside the view
+  /// that a nearer surface hides from the colour camera is kept. A frame
+  /// without colour keeps all its depth. Off (the default) keeps all of it
+  /// always, as the pass always did.
+  bool depth_within_color = false;
 };
 
 /// @brief Undistorts a @ref RawFrame's depth and colour, and converts its
@@ -199,6 +216,10 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   // The frame on the host side, host-visible and kept like the inputs, so
   // passes on several threads never allocate staging at once.
   Buffer staging_;
+  // The colour camera and the depth-to-colour transform the depth pass masks
+  // by (GpuFramePrepConfig::depth_within_color), written inline each frame
+  // that uses them; bound once, at create.
+  Buffer overlap_;
   // The outputs the fusion tiers read, device-local, shared with the
   // DeviceFrames handed out; reused only once no frame holds them.
   std::shared_ptr<Buffer> depth_out_;

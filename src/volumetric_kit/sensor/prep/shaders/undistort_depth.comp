@@ -5,6 +5,14 @@
 // metres. Nearest, not bilinear: between a foreground and a background return
 // there is no surface, and blending them would invent one. Z depth is along
 // the optical axis, which undistortion does not move, so the value is kept.
+//
+// With pc.within_color the pixel is also kept only where the colour camera
+// recorded its point: moved into the colour camera by the two poses, the point
+// must lie in front of it and on a pinhole pixel the colour pass marks covered
+// -- the same rounding and the same lens test, so depth survives exactly where
+// the colour's coverage byte is set. Elsewhere it is 0, no return, so what is
+// fused lies inside the colour camera's view. Its view, not its line of sight:
+// nothing here tests whether a nearer surface hides the point from it.
 
 #extension GL_GOOGLE_include_directive : require
 #include "lens.glsl"
@@ -15,11 +23,39 @@ layout(local_size_x = 256) in;
 // of word i/2 when i is even.
 layout(set = 0, binding = 0, scalar) readonly buffer Raw { uint raw[]; };
 layout(set = 0, binding = 1, scalar) writeonly buffer Depth { float depth[]; };
+// The colour camera and the rigid transform from the depth camera into it,
+// read only under pc.within_color.
+layout(set = 0, binding = 2, scalar) readonly buffer Overlap {
+  LensCamera color;
+  mat4 depth_to_color;
+} overlap;
 
 layout(push_constant, scalar) uniform Params {
   LensCamera cam;
   float metres_per_unit;
+  uint within_color;
 } pc;
+
+// Whether the colour camera recorded the depth camera's point at pinhole pixel
+// `pixel`, depth `z` metres: the colour pass's coverage test at the colour
+// pixel the point rounds to.
+bool color_recorded(vec2 pixel, float z) {
+  vec3 p = vec3((pixel.x - pc.cam.cx) / pc.cam.fx * z,
+                (pixel.y - pc.cam.cy) / pc.cam.fy * z, z);
+  vec3 q = (overlap.depth_to_color * vec4(p, 1.0)).xyz;
+  if (!(q.z > 0.0)) {
+    return false;
+  }
+  LensCamera c = overlap.color;
+  vec2 r = floor(vec2(c.fx * q.x / q.z + c.cx, c.fy * q.y / q.z + c.cy) + 0.5);
+  if (!(r.x >= 0.0 && r.y >= 0.0 && r.x < float(c.width) &&
+        r.y < float(c.height))) {
+    return false;
+  }
+  vec2 s = source_pixel(c, r);
+  return s.x >= -0.5 && s.y >= -0.5 && s.x <= float(c.width) - 0.5 &&
+         s.y <= float(c.height) - 0.5;
+}
 
 uint raw_at(uint i) { return (raw[i >> 1] >> ((i & 1u) * 16u)) & 0xFFFFu; }
 
@@ -38,5 +74,10 @@ void main() {
     depth[gid] = 0.0;
     return;
   }
-  depth[gid] = float(raw_at(uint(r.y) * w + uint(r.x))) * pc.metres_per_unit;
+  float z = float(raw_at(uint(r.y) * w + uint(r.x))) * pc.metres_per_unit;
+  if (pc.within_color != 0u && z > 0.0 &&
+      !color_recorded(vec2(float(gid % w), float(gid / w)), z)) {
+    z = 0.0;
+  }
+  depth[gid] = z;
 }
