@@ -29,9 +29,9 @@
 
 #include <libobsensor/ObSensor.hpp>
 
-#include "device_picture_frame.hpp"
 #include "device_picture_readback.hpp"
 #include "hevc_color.hpp"
+#include "picture_frames.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"

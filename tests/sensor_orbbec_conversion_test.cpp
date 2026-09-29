@@ -257,10 +257,10 @@ int test_validate() {
   o.cam_to_world[3][1] = std::numeric_limits<float>::quiet_NaN();
   CHECK(invalid(orbbec::validate(o)));
 
-  // Raw frames need H.265 colour, whose planes the GPU pass converts.
+  // Raw frames take either codec, each decoded for the GPU pass.
   o = Options{};
   o.raw = true;
-  CHECK(invalid(orbbec::validate(o)));
+  CHECK(orbbec::validate(o).ok());
   o.color_codec = sensor::OrbbecColorCodec::Hevc;
   CHECK(orbbec::validate(o).ok());
 
@@ -295,13 +295,13 @@ int test_validate_rig() {
   o.calibration[1].cam_to_world = vr::Mat4f(2.0f);
   CHECK(invalid(orbbec::validate(o)));
 
-  // A rig may be raw, with the decoded colour a raw stream needs.
+  // A rig may be raw, over either codec.
   o = r;
   o.raw = true;
   o.color_codec = sensor::OrbbecColorCodec::Hevc;
   CHECK(orbbec::validate(o).ok());
   o.color_codec = sensor::OrbbecColorCodec::Mjpeg;
-  CHECK(invalid(orbbec::validate(o)));
+  CHECK(orbbec::validate(o).ok());
   // The tolerance must be under half a frame period (16 666 us at 30 fps),
   // or one secondary frame can match two neighbouring triggers.
   o = r;
