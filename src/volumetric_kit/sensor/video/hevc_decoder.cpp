@@ -14,6 +14,13 @@
 #include "ffmpeg.hpp"
 #include "hw_backend.hpp"
 #include "picture_converter.hpp"
+#if VR_SENSOR_VIDEO_WITH_CUDA
+#include "cuda_pictures.hpp"
+#include "volumetric_kit/recon/core/device.hpp"
+extern "C" {
+#include <libavutil/hwcontext_cuda.h>
+}
+#endif
 
 namespace volumetric_kit::recon::sensor {
 namespace {
@@ -150,11 +157,49 @@ struct HevcDecoder::Impl {
   video::FramePtr decoded;      // as the codec hands it out, maybe on a GPU
   video::FramePtr transferred;  // a hardware frame copied to the host
   video::PictureConverter converter{kWho};
+#if VR_SENSOR_VIDEO_WITH_CUDA
+  // Where NVDEC's pictures go when a device was given on the GPU it decodes
+  // on; null otherwise, and every picture comes to the host.
+  std::unique_ptr<video::CudaPictures> pictures;
+
+  // @p frame on the device, in a buffer Vulkan reads; empty for a picture the
+  // device path does not take -- not 8-bit 4:2:0, or cropped by an odd count
+  // of columns or rows at the left or top -- which goes to the host instead.
+  // FFmpeg has already taken the right and bottom crop off a hardware
+  // picture's size, and left the left and top to whoever reads it.
+  Result<std::optional<DecodedPicture>> device_picture(const AVFrame& frame) {
+    const auto* frames =
+        reinterpret_cast<const AVHWFramesContext*>(frame.hw_frames_ctx->data);
+    if (frame.format != AV_PIX_FMT_CUDA ||
+        frames->sw_format != AV_PIX_FMT_NV12 || (frame.crop_left & 1) != 0 ||
+        (frame.crop_top & 1) != 0) {
+      return std::optional<DecodedPicture>();
+    }
+    const std::size_t left = frame.crop_left;
+    const std::size_t top = frame.crop_top;
+    const auto width = static_cast<std::uint32_t>(
+        frame.width - static_cast<int>(frame.crop_left + frame.crop_right));
+    const auto height = static_cast<std::uint32_t>(
+        frame.height - static_cast<int>(frame.crop_top + frame.crop_bottom));
+    const auto luma_pitch = static_cast<std::size_t>(frame.linesize[0]);
+    const auto chroma_pitch = static_cast<std::size_t>(frame.linesize[1]);
+    const CUdeviceptr luma =
+        reinterpret_cast<CUdeviceptr>(frame.data[0]) + top * luma_pitch + left;
+    const CUdeviceptr chroma = reinterpret_cast<CUdeviceptr>(frame.data[1]) +
+                               top / 2 * chroma_pitch + left;
+    DecodedPicture picture;
+    VR_TRY(pictures->copy(luma, luma_pitch, chroma, chroma_pitch, width, height,
+                          picture));
+    video::describe_color(frame, unlabelled_color, picture);
+    return std::optional<DecodedPicture>(std::move(picture));
+  }
+#endif
 
   static Result<std::unique_ptr<Impl>> open(VideoDecodeBackend backend,
                                             bool may_fall_back,
                                             VideoPixelLayout layout,
-                                            int threads);
+                                            int threads,
+                                            const Device* device = nullptr);
 
   // Whether @p backend decodes HEVC here, found once per process: asked of
   // the platform where it can be, else by decoding the probe clip.
@@ -193,7 +238,7 @@ struct HevcDecoder::Impl {
 
 Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
     VideoDecodeBackend backend, bool may_fall_back, VideoPixelLayout layout,
-    int threads) {
+    int threads, const Device* device) {
   const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
   if (codec == nullptr) {
     return Status::unsupported(std::string(kWho) +
@@ -224,7 +269,31 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
       return Status::unsupported(std::string(kWho) + ": this FFmpeg has no " +
                                  to_string(backend) + " HEVC decoder");
     }
-    VR_ASSIGN(impl->device, video::open_hardware_device(backend));
+    // FFmpeg's own choice of device, unless pictures are to stay on a
+    // Vulkan device's GPU: then the CUDA device that is that GPU.
+    std::string name;
+#if VR_SENSOR_VIDEO_WITH_CUDA
+    if (backend == VideoDecodeBackend::Cuda && device != nullptr &&
+        device->exports_memory()) {
+      if (const auto ordinal = video::cuda_ordinal_of(*device)) {
+        name = std::to_string(ordinal.value());
+      }
+    }
+#else
+    static_cast<void>(device);
+#endif
+    VR_ASSIGN(impl->device,
+              video::open_hardware_device(
+                  backend, name.empty() ? nullptr : name.c_str()));
+#if VR_SENSOR_VIDEO_WITH_CUDA
+    if (!name.empty()) {
+      const auto* hw =
+          reinterpret_cast<const AVHWDeviceContext*>(impl->device->data);
+      const auto* cuda = static_cast<const AVCUDADeviceContext*>(hw->hwctx);
+      VR_ASSIGN(impl->pictures, video::CudaPictures::create(
+                                    *device, cuda->cuda_ctx, cuda->stream));
+    }
+#endif
     context->hw_device_ctx = av_buffer_ref(impl->device.get());
     if (context->hw_device_ctx == nullptr) {
       return video::ffmpeg_alloc_error(kWho, "sharing the device");
@@ -309,6 +378,11 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
     return Status::invalid_argument(std::string(kWho) +
                                     ": threads must be 0 or more");
   }
+  if (options.layout == VideoPixelLayout::Nv12) {
+    return Status::invalid_argument(
+        std::string(kWho) +
+        ": Nv12 is what a device picture comes as; ask for Rgb24 or Yuv420");
+  }
   if (options.configure_ffmpeg_logging) av_log_set_level(AV_LOG_ERROR);
 
   VideoDecodeBackend backend = options.backend;
@@ -318,7 +392,7 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
     for (const VideoDecodeBackend b : video::platform_hardware_order()) {
       if (!Impl::decodes(b)) continue;
       auto opened = Impl::open(b, /*may_fall_back=*/true, options.layout,
-                               options.threads);
+                               options.threads, options.device);
       if (opened) {
         opened.value()->unlabelled_color = options.unlabelled_color;
         return HevcDecoder(std::move(opened).value());
@@ -331,8 +405,9 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
                                " does not decode HEVC here; available: " +
                                backend_list(hardware_backends()));
   }
-  VR_ASSIGN(auto impl, Impl::open(backend, /*may_fall_back=*/false,
-                                  options.layout, options.threads));
+  VR_ASSIGN(auto impl,
+            Impl::open(backend, /*may_fall_back=*/false, options.layout,
+                       options.threads, options.device));
   impl->unlabelled_color = options.unlabelled_color;
   return HevcDecoder(std::move(impl));
 }
@@ -406,20 +481,34 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
     return video::ffmpeg_error(kWho, "decoding", err);
   }
 
+  const std::int64_t pts = decoded->pts != AV_NOPTS_VALUE
+                               ? decoded->pts
+                               : decoded->best_effort_timestamp;
   // Asked of the picture, not the back end: pictures decoded on the GPU are
   // still waiting after Auto moves the stream to software.
   const AVFrame* host = decoded;
   if (decoded->hw_frames_ctx != nullptr) {
-    // TODO(sensor): hand a CUDA or VideoToolbox frame to the GPU module
-    // without this copy through host memory.
+#if VR_SENSOR_VIDEO_WITH_CUDA
+    if (impl_->pictures != nullptr) {
+      auto on_device = impl_->device_picture(*decoded);
+      if (on_device && on_device.value()) {
+        on_device.value()->pts = pts;
+        return on_device;
+      }
+      // A device path that fails, out of memory or refused by CUDA, is let
+      // go: this picture and every later one come to the host.
+      if (!on_device) impl_->pictures.reset();
+    }
+#endif
+    // TODO(sensor): hand a VideoToolbox picture to the GPU module without
+    // this copy through host memory (the 2026-09-28 decoded-frame decision).
     VR_TRY(impl_->copy_to_host(*decoded));
     host = impl_->transferred.get();
   }
   VR_ASSIGN(
       DecodedPicture picture,
       impl_->converter.convert(*host, impl_->layout, impl_->unlabelled_color));
-  picture.pts = decoded->pts != AV_NOPTS_VALUE ? decoded->pts
-                                               : decoded->best_effort_timestamp;
+  picture.pts = pts;
   return std::optional<DecodedPicture>(picture);
 }
 

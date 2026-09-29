@@ -25,6 +25,10 @@
 #include <utility>
 #include <vector>
 
+#include "volumetric_kit/recon/core/allocator.hpp"
+#include "volumetric_kit/recon/core/command_batch.hpp"
+#include "volumetric_kit/recon/core/device.hpp"
+#include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 #include "yuv_reference.hpp"
 
@@ -402,6 +406,116 @@ int check_cropped(const std::vector<Picture>& cropped,
   return 0;
 }
 
+// Given a device on the GPU NVDEC decodes on, a picture stays on the device:
+// NV12 in a buffer it holds, the same samples as software (hardware is
+// bit-exact), cropped at the left and top as the host path crops it. Without
+// CUDA in the build, or on any other back end, pictures still come to the
+// host.
+Picture from_device(const sensor::DecodedPicture& p, vr::Device& device,
+                    vr::Allocator& allocator) {
+  Picture out;
+  out.meta = p;
+  // CUDA wrote the buffer, so the batch takes it over before reading it.
+  std::vector<std::uint8_t> b(static_cast<std::size_t>(p.device->size()));
+  vr::CommandBatch batch(device, allocator);
+  if (!batch.acquire(*p.device, VK_QUEUE_FAMILY_EXTERNAL).ok() ||
+      !batch.readback(*p.device, 0, b.size(), b.data()).ok() ||
+      !batch.submit().ok()) {
+    return out;
+  }
+  for (std::uint32_t r = 0; r < p.height; ++r) {
+    const std::uint8_t* row = b.data() + p.offset[0] + r * p.stride[0];
+    out.planes[0].insert(out.planes[0].end(), row, row + p.width);
+  }
+  for (std::uint32_t r = 0; r < p.height / 2; ++r) {
+    const std::uint8_t* row = b.data() + p.offset[1] + r * p.stride[1];
+    for (std::uint32_t x = 0; x < p.width / 2; ++x) {
+      out.planes[1].push_back(row[2 * x]);
+      out.planes[2].push_back(row[2 * x + 1]);
+    }
+  }
+  return out;
+}
+
+int test_device_pictures() {
+  vr::Result<vr::Instance> instance = vr::Instance::create({});
+  if (!instance) return 0;
+  vr::Result<VkPhysicalDevice> gpu = instance.value().select_physical_device();
+  if (!gpu) return 0;
+  vr::Result<vr::Device> device =
+      vr::Device::create(instance.value(), gpu.value(), {});
+  CHECK(device.ok());
+  vr::Result<vr::Allocator> allocator =
+      vr::Allocator::create(instance.value().handle(), device.value());
+  CHECK(allocator.ok());
+  const auto hardware = HevcDecoder::hardware_backends();
+  const bool cuda = std::find(hardware.begin(), hardware.end(),
+                              VideoDecodeBackend::Cuda) != hardware.end();
+  // The decoder also needs the Vulkan device to be a GPU CUDA sees, which an
+  // NVIDIA one is.
+  VkPhysicalDeviceProperties props{};
+  vkGetPhysicalDeviceProperties(gpu.value(), &props);
+  constexpr std::uint32_t kNvidia = 0x10DE;
+  const bool on_device = VR_TEST_WITH_CUDA && cuda &&
+                         device.value().exports_memory() &&
+                         props.vendorID == kNvidia;
+  const char* required = std::getenv("VR_TEST_HEVC_BACKEND");
+  if (VR_TEST_WITH_CUDA && required != nullptr &&
+      std::string(required) == "cuda") {
+    CHECK(on_device);  // a CUDA leg must hand pictures out on the device
+  }
+
+  const char* clips[] = {kPatches, kCropped};
+  for (const char* clip : clips) {
+    auto soft = decode_with(VideoDecodeBackend::Software,
+                            VideoPixelLayout::Yuv420, std::nullopt, clip);
+    CHECK(soft.ok());
+    HevcDecoder::Options options;
+    options.backend =
+        cuda ? VideoDecodeBackend::Cuda : VideoDecodeBackend::Auto;
+    options.layout = VideoPixelLayout::Yuv420;
+    options.device = &device.value();
+    auto decoder = HevcDecoder::create(options);
+    CHECK(decoder.ok());
+    const AccessUnits units = access_units(clip);
+    std::vector<Picture> pictures;
+    for (std::size_t i = 0; i <= units.size(); ++i) {
+      const bool end = i == units.size();
+      CHECK(decoder.value()
+                .send(end ? nullptr : units[i].data(),
+                      end ? 0 : units[i].size(), pts_of(static_cast<int>(i)))
+                .ok());
+      for (;;) {
+        auto picture = decoder.value().receive();
+        CHECK(picture.ok());
+        if (!picture.value()) break;
+        const sensor::DecodedPicture& p = *picture.value();
+        CHECK((p.device != nullptr) == on_device);
+        if (p.device == nullptr) {
+          pictures.push_back(copy(p));
+          continue;
+        }
+        CHECK(p.layout == VideoPixelLayout::Nv12 && p.plane[0] == nullptr);
+        pictures.push_back(from_device(p, device.value(), allocator.value()));
+      }
+    }
+    CHECK(pictures.size() == soft.value().size());
+    for (std::size_t f = 0; f < pictures.size(); ++f) {
+      const Picture& a = pictures[f];
+      const Picture& b = soft.value()[f];
+      CHECK(a.meta.width == b.meta.width && a.meta.height == b.meta.height);
+      CHECK(a.meta.pts == b.meta.pts);
+      CHECK(a.meta.matrix == b.meta.matrix);
+      CHECK(a.meta.full_range == b.meta.full_range);
+      for (int i = 0; i < 3; ++i) CHECK(a.planes[i] == b.planes[i]);
+    }
+  }
+  std::printf("  device pictures: %s\n",
+              on_device ? "on the device, as software decodes them"
+                        : "not offered here; they come to the host");
+  return 0;
+}
+
 int test_cropped() {
   auto full =
       decode_with(VideoDecodeBackend::Software, VideoPixelLayout::Yuv420);
@@ -538,6 +652,10 @@ int test_refusals() {
   CHECK(HevcDecoder::create(options).status().domain() ==
         vr::Status::Code::InvalidArgument);
   options.threads = 0;
+  options.layout = VideoPixelLayout::Nv12;  // only a device picture is
+  CHECK(HevcDecoder::create(options).status().domain() ==
+        vr::Status::Code::InvalidArgument);
+  options.layout = VideoPixelLayout::Rgb24;
 
   auto decoder = HevcDecoder::create(options);
   CHECK(decoder.ok());
@@ -604,6 +722,7 @@ int main() {
     return 1;
   }
   if (test_names() != 0) return 1;
+  if (test_device_pictures() != 0) return 1;
   if (test_software_yuv() != 0) return 1;
   if (test_software_rgb() != 0) return 1;
   if (test_hardware_matches_software() != 0) return 1;
