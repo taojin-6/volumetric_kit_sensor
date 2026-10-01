@@ -22,13 +22,16 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "bare_device.hpp"
 #include "device_picture_readback.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
+#include "volumetric_kit/recon/core/log.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 #include "yuv_reference.hpp"
 
@@ -515,6 +518,36 @@ int test_device_pictures() {
   return 0;
 }
 
+// A device the decoder can keep no picture on is said once, as a warning
+// naming whose decoder it is; no device says nothing.
+int test_host_warning() {
+  vr::Result<vr::Instance> instance = vr::Instance::create({});
+  if (!instance) return 0;
+  vr::Result<VkPhysicalDevice> gpu = instance.value().select_physical_device();
+  if (!gpu) return 0;
+  vr::Result<vr::Device> device =
+      vr::Device::create(instance.value(), gpu.value(), {});
+  CHECK(device.ok());
+  vr::Result<vr::Device> bare =
+      vr_test::bare_device(instance.value(), device.value());
+  CHECK(bare.ok());
+  std::vector<std::string> warnings;
+  vr::set_log_handler([&warnings](vr::LogLevel level, std::string_view m) {
+    if (level == vr::LogLevel::Warning) warnings.emplace_back(m);
+  });
+  HevcDecoder::Options options;
+  options.layout = VideoPixelLayout::Yuv420;
+  options.label = "camera 7";
+  const bool quiet = HevcDecoder::create(options).ok() && warnings.empty();
+  options.device = &bare.value();
+  const bool made = HevcDecoder::create(options).ok();
+  vr::set_log_handler({});
+  CHECK(quiet && made);
+  CHECK(warnings.size() == 1);
+  CHECK(warnings[0].rfind("camera 7: HevcDecoder: no device path on ", 0) == 0);
+  return 0;
+}
+
 int test_cropped() {
   auto full =
       decode_with(VideoDecodeBackend::Software, VideoPixelLayout::Yuv420);
@@ -722,6 +755,7 @@ int main() {
   }
   if (test_names() != 0) return 1;
   if (test_device_pictures() != 0) return 1;
+  if (test_host_warning() != 0) return 1;
   if (test_software_yuv() != 0) return 1;
   if (test_software_rgb() != 0) return 1;
   if (test_hardware_matches_software() != 0) return 1;

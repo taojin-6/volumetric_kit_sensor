@@ -18,6 +18,7 @@ Result<std::unique_ptr<JpegColorDecoder>> JpegColorDecoder::start(
   JpegDecoder::Options decoding;
   decoding.device = options.device;
   decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
+  decoding.label = options.who;
   auto decoder = JpegDecoder::create(decoding);
   if (!decoder) {
     return Status::io_error(options.who + ": opening the JPEG decoder: " +

@@ -56,6 +56,7 @@ Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
   decoding.unlabelled_color = kFemtoMegaHevcColor;
   if (options.yuv) decoding.device = options.device;
   decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
+  decoding.label = options.who;
   auto decoder = HevcDecoder::create(decoding);
   if (!decoder) {
     const std::string why = options.who + ": opening the HEVC decoder: " +

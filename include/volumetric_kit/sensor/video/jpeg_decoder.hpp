@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
@@ -58,11 +59,15 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
   struct Options {
     /// The device to decode on and hand pictures out on, as @ref
     /// JpegDecoder says; null decodes in software, and so does every JPEG
-    /// after the device path fails once. Borrowed: it must outlive the
-    /// decoder and every picture on it.
+    /// after the device path fails once. A device path that does not open
+    /// or fails is said once, as a warning through core's log handler.
+    /// Borrowed: it must outlive the decoder and every picture on it.
     const Device* device = nullptr;
     /// Set FFmpeg's log level to ERROR. Process-wide: FFmpeg has one logger.
     bool configure_ffmpeg_logging = true;
+    /// Whose decoder this is (a camera, say), put ahead of its warnings so a
+    /// program running several can tell them apart. Empty puts nothing.
+    std::string label;
   };
 
   /// @return The decoder; or @ref Status::Code::IoError if FFmpeg's decoder

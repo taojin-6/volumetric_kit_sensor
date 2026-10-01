@@ -454,6 +454,7 @@ OrbbecCaptureStats CameraStream::stats() const noexcept {
   s.delivered = delivered_;
   s.dropped = mailbox_->dropped.load(std::memory_order_relaxed) + discarded_;
   s.failed = failed_;
+  s.host_pictures = host_pictures_;
 #if VR_ORBBEC_WITH_VIDEO
   if (hevc_ != nullptr) s.lost = hevc_->lost();
   if (jpeg_ != nullptr) s.lost = jpeg_->lost();
@@ -476,6 +477,8 @@ Status CameraStream::start() {
   delivered_ = 0;
   failed_ = 0;
   discarded_ = 0;
+  host_pictures_ = 0;
+  host_picture_delivered_ = false;
   failed_in_a_row_ = 0;
   first_pair_checked_ = false;
   // The colour decoder: every H.265 pair goes through it, in order, and on
@@ -634,6 +637,8 @@ Status CameraStream::apply_sync(const OrbbecSyncSettings& settings) {
 void CameraStream::withdraw() noexcept {
   --delivered_;
   ++discarded_;
+  if (host_picture_delivered_) --host_pictures_;
+  host_picture_delivered_ = false;
 }
 
 std::uint64_t CameraStream::timestamp_us(const ob::FrameSet& pair) noexcept {
@@ -803,6 +808,7 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
   };
   held_.reset();
   RawFrame frame;
+  bool host_color = false;  // colour on the host, not left on the device
   try {
     const auto depth = pair->getDepthFrame();
     const auto color = pair->getColorFrame();
@@ -815,6 +821,7 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     // A picture left on the device has a size of its own; other colour is a
     // video frame of it.
     const std::optional<DecodedPicture> picture = device_picture(*color);
+    host_color = !picture;
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
     if (picture) {
@@ -914,6 +921,8 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
   held_ = pair;
   failed_in_a_row_ = 0;
   ++delivered_;
+  host_picture_delivered_ = vulkan_device_ != nullptr && host_color;
+  if (host_picture_delivered_) ++host_pictures_;
   return std::optional<RawFrame>(frame);
 #endif
 }
