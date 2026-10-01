@@ -454,6 +454,7 @@ OrbbecCaptureStats CameraStream::stats() const noexcept {
   s.delivered = delivered_;
   s.dropped = mailbox_->dropped.load(std::memory_order_relaxed) + discarded_;
   s.failed = failed_;
+  s.host_pictures = host_pictures_;
 #if VR_ORBBEC_WITH_VIDEO
   if (hevc_ != nullptr) s.lost = hevc_->lost();
   if (jpeg_ != nullptr) s.lost = jpeg_->lost();
@@ -476,6 +477,7 @@ Status CameraStream::start() {
   delivered_ = 0;
   failed_ = 0;
   discarded_ = 0;
+  host_pictures_ = 0;
   failed_in_a_row_ = 0;
   first_pair_checked_ = false;
   // The colour decoder: every H.265 pair goes through it, in order, and on
@@ -914,6 +916,10 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
   held_ = pair;
   failed_in_a_row_ = 0;
   ++delivered_;
+  if (vulkan_device_ != nullptr && frame.color.device == nullptr &&
+      frame.color.image[0] == nullptr) {
+    ++host_pictures_;
+  }
   return std::optional<RawFrame>(frame);
 #endif
 }

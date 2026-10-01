@@ -14,6 +14,7 @@
 #include "ffmpeg.hpp"
 #include "hw_backend.hpp"
 #include "picture_converter.hpp"
+#include "volumetric_kit/recon/core/log.hpp"
 #if VR_SENSOR_VIDEO_WITH_CUDA
 #include "cuda_pictures.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
@@ -539,8 +540,16 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
         return on_device;
       }
       // A device path that fails, out of memory or refused by CUDA, is let
-      // go: this picture and every later one come to the host.
-      if (!on_device) impl_->pictures.reset();
+      // go: this picture and every later one come to the host, which is said
+      // once, since on a discrete GPU it costs every picture a trip across
+      // the bus.
+      if (!on_device) {
+        log_message(LogLevel::Warning,
+                    std::string(kWho) + ": the device path failed (" +
+                        on_device.status().message() +
+                        "); this picture and every later one come to the host");
+        impl_->pictures.reset();
+      }
     }
 #endif
 #if defined(__APPLE__)
@@ -551,7 +560,13 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
         return on_device;
       }
       // As for CUDA: a failed import lets the device path go.
-      if (!on_device) impl_->vt_pictures.reset();
+      if (!on_device) {
+        log_message(LogLevel::Warning,
+                    std::string(kWho) + ": the device path failed (" +
+                        on_device.status().message() +
+                        "); this picture and every later one come to the host");
+        impl_->vt_pictures.reset();
+      }
     }
 #endif
     VR_TRY(impl_->copy_to_host(*decoded));

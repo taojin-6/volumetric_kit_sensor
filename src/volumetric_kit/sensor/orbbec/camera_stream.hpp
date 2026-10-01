@@ -204,6 +204,7 @@ class CameraStream {
   std::uint64_t delivered_ = 0;
   std::uint64_t failed_ = 0;
   std::uint64_t discarded_ = 0;
+  std::uint64_t host_pictures_ = 0;  // OrbbecCaptureStats::host_pictures
   std::uint32_t failed_in_a_row_ = 0;
   bool running_ = false;
   // Whether this start's first processed pair has been held to the camera

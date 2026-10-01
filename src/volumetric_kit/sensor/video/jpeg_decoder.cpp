@@ -10,6 +10,7 @@
 
 #include "ffmpeg.hpp"
 #include "picture_converter.hpp"
+#include "volumetric_kit/recon/core/log.hpp"
 #if VR_SENSOR_VIDEO_WITH_CUDA
 #include <dlfcn.h>
 #include <nvjpeg.h>
@@ -433,15 +434,28 @@ Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
     if (on_device && on_device.value()) return std::move(*on_device.value());
     // A device path that fails, out of memory or refused by CUDA, is let go
     // with all it holds on the GPU: this JPEG and every later one decode in
-    // software.
-    if (!on_device) impl_->gpu.reset();
+    // software, which is said once.
+    if (!on_device) {
+      log_message(LogLevel::Warning,
+                  std::string(kWho) + ": the device path failed (" +
+                      on_device.status().message() +
+                      "); this JPEG and every later one decode in software");
+      impl_->gpu.reset();
+    }
   }
 #endif
 #if defined(__APPLE__)
   if (impl_->vt != nullptr) {
     auto on_device = impl_->vt->decode(data, size);
     if (on_device && on_device.value()) return std::move(*on_device.value());
-    if (!on_device) impl_->vt.reset();  // as for nvJPEG
+    // As for nvJPEG.
+    if (!on_device) {
+      log_message(LogLevel::Warning,
+                  std::string(kWho) + ": the device path failed (" +
+                      on_device.status().message() +
+                      "); this JPEG and every later one decode in software");
+      impl_->vt.reset();
+    }
   }
 #endif
   return impl_->decode_software(data, size);
