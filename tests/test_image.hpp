@@ -9,11 +9,13 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/compute_util.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
+#include "volumetric_kit/recon/core/external_memory.hpp"
 #include "volumetric_kit/recon/core/image.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/core/vk_result.hpp"
@@ -47,21 +49,14 @@ inline volumetric_kit::recon::Result<volumetric_kit::recon::Image> make(
   VR_VK_TRY(vkCreateImage(dev, &info, nullptr, &image));
   VkMemoryRequirements needs{};
   vkGetImageMemoryRequirements(dev, image, &needs);
-  VkPhysicalDeviceMemoryProperties memory{};
-  vkGetPhysicalDeviceMemoryProperties(device.physical_device(), &memory);
+  const std::optional<std::uint32_t> type =
+      vr::find_memory_type(device, needs.memoryTypeBits, 0);
   VkMemoryAllocateInfo alloc{};
   alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
   alloc.allocationSize = needs.size;
-  alloc.memoryTypeIndex = memory.memoryTypeCount;
-  for (std::uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
-    if ((needs.memoryTypeBits & (1u << i)) != 0) {
-      alloc.memoryTypeIndex = i;
-      break;
-    }
-  }
+  alloc.memoryTypeIndex = type.value_or(0);
   VkDeviceMemory backing = VK_NULL_HANDLE;
-  if (alloc.memoryTypeIndex == memory.memoryTypeCount ||
-      vkAllocateMemory(dev, &alloc, nullptr, &backing) != VK_SUCCESS ||
+  if (!type || vkAllocateMemory(dev, &alloc, nullptr, &backing) != VK_SUCCESS ||
       vkBindImageMemory(dev, image, backing, 0) != VK_SUCCESS) {
     vkFreeMemory(dev, backing, nullptr);
     vkDestroyImage(dev, image, nullptr);

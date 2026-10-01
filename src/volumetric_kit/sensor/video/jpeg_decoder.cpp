@@ -9,8 +9,8 @@
 #include <utility>
 
 #include "ffmpeg.hpp"
+#include "hw_backend.hpp"
 #include "picture_converter.hpp"
-#include "volumetric_kit/recon/core/log.hpp"
 #if VR_SENSOR_VIDEO_WITH_CUDA
 #include <dlfcn.h>
 #include <nvjpeg.h>
@@ -347,6 +347,7 @@ struct JpegDecoder::Impl {
   video::PacketPtr packet;
   video::FramePtr frame;
   video::PictureConverter converter{kWho};
+  std::string label;  // as in Options
 #if VR_SENSOR_VIDEO_WITH_CUDA
   // Null without a device nvJPEG can use, and once the device path fails.
   std::unique_ptr<NvjpegDecoder> gpu;
@@ -356,6 +357,17 @@ struct JpegDecoder::Impl {
   // device path fails.
   std::unique_ptr<video::VtJpeg> vt;
 #endif
+
+  // Whether a JPEG can decode onto the device.
+  bool device_path() const noexcept {
+#if VR_SENSOR_VIDEO_WITH_CUDA
+    if (gpu != nullptr) return true;
+#endif
+#if defined(__APPLE__)
+    if (vt != nullptr) return true;
+#endif
+    return false;
+  }
 
   Status open_software();
   Result<DecodedPicture> decode_software(const std::uint8_t* data,
@@ -411,6 +423,10 @@ Result<JpegDecoder> JpegDecoder::create(const Options& options) {
     impl->vt = video::VtJpeg::open(*options.device, kWho);
   }
 #endif
+  impl->label = options.label;
+  if (options.device != nullptr && !impl->device_path()) {
+    video::warn_host_pictures(kWho, impl->label, "no device path opened");
+  }
   return JpegDecoder(std::move(impl));
 }
 
@@ -436,10 +452,9 @@ Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
     // with all it holds on the GPU: this JPEG and every later one decode in
     // software, which is said once.
     if (!on_device) {
-      log_message(LogLevel::Warning,
-                  std::string(kWho) + ": the device path failed (" +
-                      on_device.status().message() +
-                      "); this JPEG and every later one decode in software");
+      video::warn_host_pictures(
+          kWho, impl_->label,
+          "the device path failed (" + on_device.status().message() + ")");
       impl_->gpu.reset();
     }
   }
@@ -450,10 +465,9 @@ Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
     if (on_device && on_device.value()) return std::move(*on_device.value());
     // As for nvJPEG.
     if (!on_device) {
-      log_message(LogLevel::Warning,
-                  std::string(kWho) + ": the device path failed (" +
-                      on_device.status().message() +
-                      "); this JPEG and every later one decode in software");
+      video::warn_host_pictures(
+          kWho, impl_->label,
+          "the device path failed (" + on_device.status().message() + ")");
       impl_->vt.reset();
     }
   }

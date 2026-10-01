@@ -18,14 +18,17 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "bare_device.hpp"
 #include "device_picture_readback.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/buffer.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
+#include "volumetric_kit/recon/core/log.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
 namespace vr = volumetric_kit::recon;
@@ -260,6 +263,37 @@ int test_device() {
   return 0;
 }
 
+// A device the decoder can keep no picture on is said once, as a warning
+// naming whose decoder it is; no device says nothing.
+int test_host_warning() {
+  vr::Result<vr::Instance> instance = vr::Instance::create({});
+  if (!instance) return 0;
+  vr::Result<VkPhysicalDevice> gpu = instance.value().select_physical_device();
+  if (!gpu) return 0;
+  vr::Result<vr::Device> device =
+      vr::Device::create(instance.value(), gpu.value(), {});
+  CHECK(device.ok());
+  vr::Result<vr::Device> bare =
+      vr_test::bare_device(instance.value(), device.value());
+  CHECK(bare.ok());
+  std::vector<std::string> warnings;
+  vr::set_log_handler([&warnings](vr::LogLevel level, std::string_view m) {
+    if (level == vr::LogLevel::Warning) warnings.emplace_back(m);
+  });
+  JpegDecoder::Options options;
+  options.label = "camera 7";
+  const bool quiet = JpegDecoder::create(options).ok() && warnings.empty();
+  options.device = &bare.value();
+  auto decoder = JpegDecoder::create(options);
+  vr::set_log_handler({});
+  CHECK(quiet && decoder.ok());
+  CHECK(decoder->backend() == JpegDecodeBackend::Software);
+  CHECK(warnings.size() == 1);
+  CHECK(warnings[0].rfind("camera 7: JpegDecoder: no device path opened", 0) ==
+        0);
+  return 0;
+}
+
 int test_refusals() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
   vr::Result<VkPhysicalDevice> gpu =
@@ -331,6 +365,7 @@ int main() {
   if (test_names() != 0) return 1;
   if (test_software() != 0) return 1;
   if (test_device() != 0) return 1;
+  if (test_host_warning() != 0) return 1;
   if (test_refusals() != 0) return 1;
   if (test_moves() != 0) return 1;
   std::puts("sensor_video_jpeg: OK");

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "volumetric_kit/recon/core/result.hpp"
@@ -69,9 +70,14 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// DecodedPicture::device) from Cuda, as images it holds (@ref
     /// DecodedPicture::image) from VideoToolbox. Any other comes to the host
     /// as @ref layout says, and so does every picture after the device path
-    /// fails once.
+    /// fails once. A device path that does not open, fails, or is left when
+    /// Auto moves to software is said once, as a warning through core's log
+    /// handler.
     /// Borrowed: it must outlive the decoder and every picture on it.
     const Device* device = nullptr;
+    /// Whose decoder this is (a camera, say), put ahead of its warnings so a
+    /// program running several can tell them apart. Empty puts nothing.
+    std::string label;
   };
 
   /// @return The hardware back ends that decode HEVC here, in the order

@@ -14,7 +14,6 @@
 #include "ffmpeg.hpp"
 #include "hw_backend.hpp"
 #include "picture_converter.hpp"
-#include "volumetric_kit/recon/core/log.hpp"
 #if VR_SENSOR_VIDEO_WITH_CUDA
 #include "cuda_pictures.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
@@ -156,6 +155,9 @@ struct HevcDecoder::Impl {
   bool ended = false;
   bool left_top_crop = false;  // an SPS so far crops the left or top
   std::string refusal;         // why the named back end gave up, if it did
+  std::string label;           // as in Options
+  // Why a device path tried at open did not open, if one was.
+  std::string device_path_error;
   video::BufferRef device;
   video::CodecContextPtr codec;
   video::PacketPtr packet;
@@ -229,6 +231,17 @@ struct HevcDecoder::Impl {
   }
 #endif
 
+  // Whether pictures decoded on the GPU can stay there.
+  bool device_path() const noexcept {
+#if VR_SENSOR_VIDEO_WITH_CUDA
+    if (pictures != nullptr) return true;
+#endif
+#if defined(__APPLE__)
+    if (vt_pictures != nullptr) return true;
+#endif
+    return false;
+  }
+
   static Result<std::unique_ptr<Impl>> open(VideoDecodeBackend backend,
                                             bool may_fall_back,
                                             VideoPixelLayout layout,
@@ -261,6 +274,13 @@ struct HevcDecoder::Impl {
     for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; ++f) {
       const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(*f);
       if (desc != nullptr && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL) == 0) {
+        if (impl->backend != VideoDecodeBackend::Software &&
+            impl->device_path()) {
+          video::warn_host_pictures(kWho, impl->label,
+                                    std::string(to_string(impl->backend)) +
+                                        " refused the stream, so software "
+                                        "decodes it");
+        }
         impl->backend = VideoDecodeBackend::Software;
         impl->hw_format = AV_PIX_FMT_NONE;
         return *f;
@@ -312,6 +332,8 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
         device->exports_memory()) {
       if (const auto ordinal = video::cuda_ordinal_of(*device, kWho)) {
         name = std::to_string(ordinal.value());
+      } else {
+        impl->device_path_error = ordinal.status().message();
       }
     }
 #endif
@@ -319,7 +341,11 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
     if (backend == VideoDecodeBackend::VideoToolbox && device != nullptr &&
         device->imports_metal_textures()) {
       auto pictures = video::VtPictures::create(*device, kWho);
-      if (pictures) impl->vt_pictures = std::move(pictures).value();
+      if (pictures) {
+        impl->vt_pictures = std::move(pictures).value();
+      } else {
+        impl->device_path_error = pictures.status().message();
+      }
     }
 #endif
 #if !VR_SENSOR_VIDEO_WITH_CUDA && !defined(__APPLE__)
@@ -335,7 +361,11 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
       const auto* cuda = static_cast<const AVCUDADeviceContext*>(hw->hwctx);
       auto pictures = video::CudaPictures::create(*device, cuda->cuda_ctx,
                                                   cuda->stream, kWho);
-      if (pictures) impl->pictures = std::move(pictures).value();
+      if (pictures) {
+        impl->pictures = std::move(pictures).value();
+      } else {
+        impl->device_path_error = pictures.status().message();
+      }
     }
 #endif
     context->hw_device_ctx = av_buffer_ref(impl->device.get());
@@ -429,6 +459,18 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   }
   if (options.configure_ffmpeg_logging) av_log_set_level(AV_LOG_ERROR);
 
+  const auto made = [&options](std::unique_ptr<Impl> impl) {
+    impl->unlabelled_color = options.unlabelled_color;
+    impl->label = options.label;
+    if (options.device != nullptr && !impl->device_path()) {
+      const std::string& error = impl->device_path_error;
+      video::warn_host_pictures(
+          kWho, impl->label,
+          std::string("no device path on ") + to_string(impl->backend) +
+              (error.empty() ? std::string() : " (" + error + ")"));
+    }
+    return HevcDecoder(std::move(impl));
+  };
   VideoDecodeBackend backend = options.backend;
   if (backend == VideoDecodeBackend::Auto) {
     // In order, stopping at the first that decodes and opens, so the back
@@ -437,10 +479,7 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
       if (!Impl::decodes(b)) continue;
       auto opened = Impl::open(b, /*may_fall_back=*/true, options.layout,
                                options.threads, options.device);
-      if (opened) {
-        opened.value()->unlabelled_color = options.unlabelled_color;
-        return HevcDecoder(std::move(opened).value());
-      }
+      if (opened) return made(std::move(opened).value());
     }
     backend = VideoDecodeBackend::Software;
   } else if (backend != VideoDecodeBackend::Software &&
@@ -452,8 +491,7 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   VR_ASSIGN(auto impl,
             Impl::open(backend, /*may_fall_back=*/false, options.layout,
                        options.threads, options.device));
-  impl->unlabelled_color = options.unlabelled_color;
-  return HevcDecoder(std::move(impl));
+  return made(std::move(impl));
 }
 
 HevcDecoder::HevcDecoder(std::unique_ptr<Impl> impl) noexcept
@@ -541,13 +579,11 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
       }
       // A device path that fails, out of memory or refused by CUDA, is let
       // go: this picture and every later one come to the host, which is said
-      // once, since on a discrete GPU it costs every picture a trip across
-      // the bus.
+      // once.
       if (!on_device) {
-        log_message(LogLevel::Warning,
-                    std::string(kWho) + ": the device path failed (" +
-                        on_device.status().message() +
-                        "); this picture and every later one come to the host");
+        video::warn_host_pictures(
+            kWho, impl_->label,
+            "the device path failed (" + on_device.status().message() + ")");
         impl_->pictures.reset();
       }
     }
@@ -561,10 +597,9 @@ Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
       }
       // As for CUDA: a failed import lets the device path go.
       if (!on_device) {
-        log_message(LogLevel::Warning,
-                    std::string(kWho) + ": the device path failed (" +
-                        on_device.status().message() +
-                        "); this picture and every later one come to the host");
+        video::warn_host_pictures(
+            kWho, impl_->label,
+            "the device path failed (" + on_device.status().message() + ")");
         impl_->vt_pictures.reset();
       }
     }
