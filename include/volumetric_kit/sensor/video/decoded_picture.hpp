@@ -13,6 +13,7 @@
 #include <optional>
 
 #include "volumetric_kit/recon/core/color_space.hpp"
+#include "volumetric_kit/recon/sensor/chroma_location.hpp"
 
 namespace volumetric_kit::recon {
 class Buffer;
@@ -122,6 +123,10 @@ struct DecodedPicture {
   /// picture rather than fusing it through the wrong curve or basis.
   std::optional<ColorEncoding> encoding = ColorEncoding{
       ColorEncoding::Transfer::Bt709, ColorEncoding::Primaries::Bt709};
+  /// Chroma sample positions for Yuv420 and NV12. JPEG is Center; HEVC uses
+  /// its stream declaration, or Left when none is given. Preserved when
+  /// converting to Yuv420; unused for Rgb24.
+  ChromaLocation chroma_location = ChromaLocation::Left;
 };
 
 }  // namespace volumetric_kit::recon::sensor

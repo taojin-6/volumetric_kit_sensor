@@ -11,6 +11,7 @@ extern "C" {
 #include <libavutil/buffer.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }

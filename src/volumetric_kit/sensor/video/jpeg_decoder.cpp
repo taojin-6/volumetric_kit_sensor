@@ -320,6 +320,7 @@ Result<std::optional<DecodedPicture>> NvjpegDecoder::decode(
   }
   picture.matrix = kJfif.matrix;
   picture.full_range = kJfif.full_range;
+  picture.chroma_location = ChromaLocation::Center;
   return std::optional<DecodedPicture>(std::move(picture));
 }
 
@@ -406,6 +407,8 @@ Result<DecodedPicture> JpegDecoder::Impl::decode_software(
   packet->size = 0;
   if (err >= 0) err = avcodec_receive_frame(codec.get(), frame.get());
   if (err < 0) return video::ffmpeg_error(kWho, "decoding a JPEG", err);
+  // JPEG's centred samples also apply when 4:2:2 is resampled to 4:2:0.
+  frame->chroma_location = AVCHROMA_LOC_CENTER;
   return converter.convert(*frame, VideoPixelLayout::Yuv420, kJfif);
 }
 

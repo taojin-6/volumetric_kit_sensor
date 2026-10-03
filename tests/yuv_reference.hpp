@@ -14,7 +14,7 @@
 
 namespace yuv_reference {
 
-inline std::array<int, 3> rgb(int y, int u, int v,
+inline std::array<int, 3> rgb(double y, double u, double v,
                               volumetric_kit::recon::sensor::VideoColorMatrix m,
                               bool full_range) {
   using volumetric_kit::recon::sensor::VideoColorMatrix;

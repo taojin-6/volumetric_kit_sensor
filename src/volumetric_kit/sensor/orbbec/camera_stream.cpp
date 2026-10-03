@@ -907,6 +907,7 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
       frame.color.stride[0] = c.width;
       frame.color.stride[1] = cw;
       frame.color.stride[2] = cw;
+      frame.color.chroma_location = described->chroma_location;
       VR_TRY(describe(described->matrix, described->full_range,
                       described->has_encoding
                           ? std::optional<ColorEncoding>(described->encoding)

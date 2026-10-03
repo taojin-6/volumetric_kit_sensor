@@ -202,6 +202,7 @@ Result<std::optional<DecodedPicture>> VtJpeg::decode(const std::uint8_t* data,
   // JFIF's matrix and range.
   out.matrix = VideoColorMatrix::Bt601;
   out.full_range = true;
+  out.chroma_location = ChromaLocation::Center;
   return std::optional<DecodedPicture>(std::move(out));
 }
 

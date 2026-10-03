@@ -11,6 +11,7 @@
 // a VR_WITH_CUDA build, and =videotoolbox requires VideoToolbox, so a runner
 // that silently decodes on the host fails.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -23,13 +24,16 @@
 #include <vector>
 
 #include "bare_device.hpp"
+#include "buffer_readback.hpp"
 #include "device_picture_readback.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/buffer.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/core/log.hpp"
+#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
+#include "yuv_reference.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace sensor = volumetric_kit::recon::sensor;
@@ -137,6 +141,83 @@ int check_meta(const sensor::DecodedPicture& p, std::uint32_t w,
   CHECK(p.layout == (p.image[0] != nullptr ? VideoPixelLayout::Nv12
                                            : VideoPixelLayout::Yuv420));
   CHECK(p.matrix == sensor::VideoColorMatrix::Bt601 && p.full_range);
+  CHECK(p.chroma_location == sensor::ChromaLocation::Center);
+  return 0;
+}
+
+// At integer luma pixels, centred 4:2:0 chroma gives the nearest sample
+// weight 3/4 and its neighbour 1/4 on each axis. Keep fractional values
+// until RGB conversion. Left alignment is a control for the old shift.
+double chroma_at(const Planes& p, int plane, int x, int y, bool centred) {
+  const int w = static_cast<int>((p.width + 1) / 2);
+  const int h = static_cast<int>((p.height + 1) / 2);
+  const int cx = x / 2;
+  const int cy = y / 2;
+  const int nx = std::clamp(cx + (centred && x % 2 == 0 ? -1 : 1), 0, w - 1);
+  const int ny = std::clamp(cy + (y % 2 == 0 ? -1 : 1), 0, h - 1);
+  const double wx = centred ? 0.25 : (x % 2) * 0.5;
+  const auto& bytes = p.plane[plane];
+  return 0.75 * ((1 - wx) * bytes[cy * w + cx] + wx * bytes[cy * w + nx]) +
+         0.25 * ((1 - wx) * bytes[ny * w + cx] + wx * bytes[ny * w + nx]);
+}
+
+// Decode-to-preparation, including the actual device planes where available.
+// The reference uses the sampling weights and colour-matrix constants, not
+// swscale: old packed-RGB converters round vertical chroma weights wrongly.
+// The committed patch edges distinguish centred from left-aligned chroma.
+int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
+                        vr::Device& device, vr::Allocator& allocator,
+                        sensor::GpuFramePrep& prep) {
+  CHECK(planes.plane[0].size() == std::size_t{p.width} * p.height);
+  CHECK(planes.plane[1].size() ==
+        std::size_t{(p.width + 1) / 2} * ((p.height + 1) / 2));
+  CHECK(planes.plane[2].size() == planes.plane[1].size());
+  sensor::RawFrame raw;
+  raw.depth_camera.width = p.width;
+  raw.depth_camera.height = p.height;
+  raw.depth_camera.fx = raw.depth_camera.fy = 256.0f;
+  raw.color_camera = raw.depth_camera;
+  std::vector<std::uint16_t> depth(std::size_t{p.width} * p.height, 1000);
+  raw.depth = depth.data();
+  raw.min_depth = 0.1f;
+  raw.max_depth = 5.0f;
+  raw.color.width = p.width;
+  raw.color.height = p.height;
+  raw.color.layout = p.layout == VideoPixelLayout::Nv12
+                         ? sensor::YuvLayout::Nv12
+                         : sensor::YuvLayout::I420;
+  raw.color.chroma_location = p.chroma_location;
+  raw.color.device = p.device;
+  // from_device already acquired a CUDA buffer for the reference readback.
+  // Preparation now reads it on the same queue family.
+  raw.color.queue_family = sensor::kQueueFamilyIgnored;
+  for (int i = 0; i < 2; ++i) raw.color.image[i] = p.image[i];
+  for (int i = 0; i < 3; ++i) {
+    raw.color.plane[i] = p.plane[i];
+    raw.color.stride[i] = p.stride[i];
+    raw.color.offset[i] = p.offset[i];
+  }
+  auto frame = prep.prepare(raw);
+  CHECK(frame.ok());
+  auto gpu = vr_test::read_back<std::uint32_t>(device, allocator, *frame->color,
+                                               depth.size());
+  CHECK(gpu.ok());
+  for (bool centred : {false, true}) {
+    int max_error = 0;
+    for (std::size_t i = 0; i < depth.size(); ++i) {
+      const int x = static_cast<int>(i % p.width);
+      const int y = static_cast<int>(i / p.width);
+      const auto rgb = yuv_reference::rgb(
+          planes.plane[0][i], chroma_at(planes, 1, x, y, centred),
+          chroma_at(planes, 2, x, y, centred), p.matrix, p.full_range);
+      for (int k = 0; k < 3; ++k) {
+        const int error = std::abs(
+            static_cast<int>(gpu.value()[i] >> (8 * k) & 255) - rgb[k]);
+        max_error = std::max(max_error, error);
+      }
+    }
+    CHECK(centred ? max_error <= 1 : max_error >= 30);
+  }
   return 0;
 }
 
@@ -208,6 +289,13 @@ int test_device() {
   }
   auto software = JpegDecoder::create({});
   CHECK(software.ok());
+  auto prep = sensor::GpuFramePrep::create(device.value(), allocator.value());
+  CHECK(prep.ok());
+  auto host_picture = decode(software.value(), read_file(k420));
+  CHECK(host_picture.ok());
+  CHECK(check_preprocessing(host_picture.value(),
+                            from_host(host_picture.value()), device.value(),
+                            allocator.value(), prep.value()) == 0);
   VkPhysicalDeviceProperties props{};
   vkGetPhysicalDeviceProperties(gpu.value(), &props);
   const std::uint32_t extent = props.limits.maxImageDimension2D;
@@ -227,6 +315,9 @@ int test_device() {
     const Planes got =
         from_device(p.value(), device.value(), allocator.value());
     CHECK(check_pattern(got) == 0);
+    if (f.path == k420)
+      CHECK(check_preprocessing(p.value(), got, device.value(),
+                                allocator.value(), prep.value()) == 0);
     auto s = decode(software.value(), bytes);
     CHECK(s.ok());
     const Planes want = from_host(s.value());
