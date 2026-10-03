@@ -8,7 +8,7 @@
 #include <limits>
 #include <memory>
 
-#include "io_detail.hpp"
+#include "errors.hpp"
 #include "stb_backend.hpp"
 #include "volumetric_kit/recon/core/check.hpp"
 
