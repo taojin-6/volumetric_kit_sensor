@@ -57,8 +57,8 @@ bool write_fixture(const std::string& path, const std::uint8_t (&data)[N]) {
   return static_cast<bool>(out);
 }
 
-// Each fixture is 2x1: gray16 [0,65535], gray8 [0,255], RGB16, and
-// gray-alpha16.
+// Each fixture is 2x1: gray16 [0,65535], gray8 [0,255], RGB16,
+// gray-alpha16, and gray16 [0,65535] with a tRNS key for gray 0.
 constexpr std::uint8_t kDepth16[] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
     0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
@@ -93,6 +93,19 @@ constexpr std::uint8_t kGrayAlpha16[] = {
     0xb5, 0x04, 0x2b, 0xba, 0xfe, 0x3f, 0x8b, 0x00, 0x00, 0x00, 0x00,
     0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 };
+constexpr std::uint8_t kGrayTrns16[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
+    0x10, 0x00, 0x00, 0x00, 0x00, 0x81, 0xd9, 0xfc, 0x15, 0x00, 0x00, 0x00,
+    0x02, 0x74, 0x52, 0x4e, 0x53, 0x00, 0x00, 0x76, 0x93, 0xcd, 0x38, 0x00,
+    0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x60,
+    0xf8, 0xff, 0x1f, 0x00, 0x03, 0x02, 0x01, 0xff, 0xe6, 0x77, 0x0b, 0xae,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+};
+
+bool names(const vr::Status& status, const std::string& path) {
+  return status.message().find(path) != std::string::npos;
+}
 
 }  // namespace
 
@@ -137,7 +150,8 @@ int main() {
         !vr::io::write_png_rgba8("/dev/full", rgba.data(), rgba.size(), 2, 2));
   }
 
-  CHECK(!vr::io::load_color_packed(color_path, 1, 2));
+  const auto mismatch = vr::io::load_color_packed(color_path, 1, 2);
+  CHECK(!mismatch && names(mismatch.status(), color_path));
   CHECK(!vr::io::load_color_packed(color_path, 0, 2));
   CHECK(!vr::io::load_color_packed(color_path, 2, 0));
   CHECK(!vr::io::load_color_packed(
@@ -148,7 +162,9 @@ int main() {
   CHECK(!vr::io::load_color_packed(invalid_path, 2, 2));
   constexpr std::uint8_t bad[] = {'n', 'o', 't', ' ', 'p', 'n', 'g'};
   CHECK(write_fixture(invalid_path, bad));
-  CHECK(!vr::io::load_color_packed(invalid_path, 2, 2));
+  // Decode failures name the file and carry stb's reason.
+  const auto undecodable = vr::io::load_color_packed(invalid_path, 2, 2);
+  CHECK(!undecodable && names(undecodable.status(), invalid_path + ": "));
   CHECK(!vr::io::load_depth_metres(invalid_path, 2, 1, 1.0f));
 
   CHECK(write_fixture(depth_path, kDepth16));
@@ -176,6 +192,10 @@ int main() {
   CHECK(rgb16 && rgb16.value() == std::vector<std::uint32_t>({0, 0x000080ff}));
   CHECK(write_fixture(depth_path, kGrayAlpha16));
   CHECK(!vr::io::load_depth_metres(depth_path, 2, 1, 1.0f));
+  // stb decodes a tRNS key as an alpha channel, so it is refused rather than
+  // read as interleaved depths.
+  CHECK(write_fixture(depth_path, kGrayTrns16));
+  CHECK(!vr::io::load_depth_metres(depth_path, 2, 1, 6553.5f));
   CHECK(!vr::io::load_depth_metres(color_path, 2, 2, 1.0f));
   // A recognized PNG header followed by truncated image data fails decoding.
   fs::resize_file(depth_path, 40);

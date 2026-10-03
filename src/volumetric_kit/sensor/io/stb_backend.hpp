@@ -10,12 +10,17 @@
 
 namespace volumetric_kit::recon::io::detail::stb {
 
-bool info(const char* path, int* width, int* height, int* channels);
-bool is_16_bit(const char* path);
-std::uint8_t* load8(const char* path, int* width, int* height, int* channels,
-                    int requested_channels);
-std::uint16_t* load16(const char* path, int* width, int* height, int* channels,
-                      int requested_channels);
+// Decoders read an encoded file already in memory, so inspection and decoding
+// see the same bytes.
+bool info(const std::uint8_t* data, int size, int* width, int* height,
+          int* channels);
+bool is_16_bit(const std::uint8_t* data, int size);
+std::uint8_t* load8(const std::uint8_t* data, int size, int* width, int* height,
+                    int* channels, int requested_channels);
+std::uint16_t* load16(const std::uint8_t* data, int size, int* width,
+                      int* height, int* channels, int requested_channels);
+// The calling thread's most recent decode failure.
+const char* failure_reason();
 void free_image(void* pixels) noexcept;
 
 using WriteCallback = void (*)(void* context, void* data, int size);

@@ -34,14 +34,15 @@ VR_IO_API Result<std::vector<std::uint32_t>> load_color_packed(
 
 /// @brief Decode a genuine 16-bit, single-channel grayscale PNG to metres.
 ///
-/// Each raw sample is divided by @p depth_scale; zero stays zero. Eight-bit,
-/// color, and grayscale-plus-alpha images are rejected. No gamma conversion
-/// is applied to depth samples. Rows are top to bottom, pixels left to right.
+/// Each raw sample is multiplied by the float reciprocal of @p depth_scale;
+/// zero stays zero. Eight-bit, color, and grayscale-plus-alpha images
+/// (including a tRNS transparency key) are rejected. No gamma conversion is
+/// applied to depth samples. Rows are top to bottom, pixels left to right.
 /// @param path Depth PNG path, without embedded NUL characters.
 /// @param expected_w Expected positive width; a mismatch is an error.
 /// @param expected_h Expected positive height; a mismatch is an error.
-/// @param depth_scale Finite, positive units-per-metre divisor. Every decoded
-///                    depth must be representable as a finite float.
+/// @param depth_scale Finite, positive units-per-metre divisor that keeps the
+///                    largest sample, 65535, a finite float depth.
 /// @return Depths in metres, or non-OK Status on invalid input, decode failure,
 ///         or allocation failure.
 VR_IO_API Result<std::vector<float>> load_depth_metres(const std::string& path,
@@ -54,8 +55,9 @@ VR_IO_API Result<std::vector<float>> load_depth_metres(const std::string& path,
 /// Bytes are preserved without flipping rows, premultiplication, or color
 /// conversion. No color profile is attached. The caller retains ownership;
 /// no extra caller-side copy of a mapped readback buffer is needed. Encoding
-/// allocates temporary host storage. Invalid input is rejected before opening
-/// the output; an I/O failure can leave a partial file.
+/// allocates temporary host storage. The output is opened only after encoding
+/// succeeds, so invalid input or an encoder allocation failure leaves an
+/// existing file intact; an I/O failure can leave a partial file.
 /// @param path Output path, without embedded NUL characters; replaced on
 /// success.
 /// @param pixels Pointer to top-left-origin RGBA bytes, valid for this call.

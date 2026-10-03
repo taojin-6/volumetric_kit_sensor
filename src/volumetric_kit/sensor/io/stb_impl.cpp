@@ -20,21 +20,28 @@
 
 namespace volumetric_kit::recon::io::detail::stb {
 
-bool info(const char* path, int* width, int* height, int* channels) {
-  return stbi_info(path, width, height, channels) != 0;
+bool info(const std::uint8_t* data, int size, int* width, int* height,
+          int* channels) {
+  return stbi_info_from_memory(data, size, width, height, channels) != 0;
 }
 
-bool is_16_bit(const char* path) { return stbi_is_16_bit(path) != 0; }
-
-std::uint8_t* load8(const char* path, int* width, int* height, int* channels,
-                    int requested_channels) {
-  return stbi_load(path, width, height, channels, requested_channels);
+bool is_16_bit(const std::uint8_t* data, int size) {
+  return stbi_is_16_bit_from_memory(data, size) != 0;
 }
 
-std::uint16_t* load16(const char* path, int* width, int* height, int* channels,
-                      int requested_channels) {
-  return stbi_load_16(path, width, height, channels, requested_channels);
+std::uint8_t* load8(const std::uint8_t* data, int size, int* width, int* height,
+                    int* channels, int requested_channels) {
+  return stbi_load_from_memory(data, size, width, height, channels,
+                               requested_channels);
 }
+
+std::uint16_t* load16(const std::uint8_t* data, int size, int* width,
+                      int* height, int* channels, int requested_channels) {
+  return stbi_load_16_from_memory(data, size, width, height, channels,
+                                  requested_channels);
+}
+
+const char* failure_reason() { return stbi_failure_reason(); }
 
 void free_image(void* pixels) noexcept { stbi_image_free(pixels); }
 

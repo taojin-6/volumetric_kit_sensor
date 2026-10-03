@@ -4,13 +4,13 @@
 #include "volumetric_kit/recon/io/image_io.hpp"
 
 #include <cmath>
-#include <exception>
 #include <fstream>
 #include <limits>
 #include <memory>
-#include <new>
 
+#include "io_detail.hpp"
 #include "stb_backend.hpp"
+#include "volumetric_kit/recon/core/check.hpp"
 
 namespace volumetric_kit::recon::io {
 namespace {
@@ -21,41 +21,54 @@ struct StbiFree {
   void operator()(void* p) const noexcept { stb::free_image(p); }
 };
 
-Status check_path(const std::string& path) {
-  if (path.empty() || path.find('\0') != std::string::npos) {
-    return Status::invalid_argument("image I/O: empty path or embedded NUL");
-  }
-  return {};
-}
-
-Status check_dimensions(std::uint32_t w, std::uint32_t h) {
+Status check_dimensions(const char* api, std::uint32_t w, std::uint32_t h) {
   // stb uses signed int products internally. Output arrays use four bytes per
   // pixel, and these limits also keep their size representable on 32-bit hosts.
   constexpr auto limit =
       static_cast<std::uint64_t>(std::numeric_limits<int>::max());
   if (w == 0 || h == 0 || static_cast<std::uint64_t>(w) * h > limit / 4) {
-    return Status::invalid_argument(
-        "image I/O: invalid or excessive dimensions");
+    return Status::invalid_argument(std::string(api) +
+                                    ": invalid or excessive dimensions");
   }
   return {};
 }
 
-Status inspect(const std::string& path, std::uint32_t expected_w,
-               std::uint32_t expected_h, int& channels) {
-  VR_TRY(check_path(path));
-  VR_TRY(check_dimensions(expected_w, expected_h));
+// Read the encoded file once, then check its header against the expected
+// dimensions before anything is decoded.
+Result<std::vector<std::uint8_t>> read_image(const char* api,
+                                             const std::string& path,
+                                             std::uint32_t expected_w,
+                                             std::uint32_t expected_h,
+                                             int& channels) {
+  VR_TRY(detail::check_path(api, path));
+  VR_TRY(check_dimensions(api, expected_w, expected_h));
+  const std::string where = std::string(api) + ": " + path;
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
+  if (!in) return Status::io_error(where + ": cannot open");
+  const auto size = static_cast<std::streamoff>(in.tellg());
+  if (size <= 0 || size > std::numeric_limits<int>::max()) {
+    return Status::invalid_argument(where + ": empty or oversized file");
+  }
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  in.seekg(0);
+  in.read(reinterpret_cast<char*>(bytes.data()), size);
+  if (!in) return Status::io_error(where + ": read failed");
   int w = 0;
   int h = 0;
-  if (!stb::info(path.c_str(), &w, &h, &channels)) {
-    return Status::io_error("image I/O: cannot inspect " + path);
+  if (!stb::info(bytes.data(), static_cast<int>(size), &w, &h, &channels)) {
+    return Status::io_error(where + ": " + stb::failure_reason());
   }
   if (w != static_cast<int>(expected_w) || h != static_cast<int>(expected_h)) {
-    return Status::invalid_argument("image I/O: unexpected image dimensions");
+    return Status::invalid_argument(where + ": " + std::to_string(w) + "x" +
+                                    std::to_string(h) + " image, expected " +
+                                    std::to_string(expected_w) + "x" +
+                                    std::to_string(expected_h));
   }
-  return {};
+  return bytes;
 }
 
 struct PngOutput {
+  const std::string* path = nullptr;
   std::ofstream stream;
   bool failed = false;
 };
@@ -65,6 +78,9 @@ void write_png_bytes(void* context, void* data, int size) noexcept {
   auto& out = *static_cast<PngOutput*>(context);
   if (out.failed) return;
   try {
+    // stb calls this only after encoding succeeds, so an encoder failure
+    // leaves an existing file untouched.
+    if (!out.stream.is_open()) out.stream.open(*out.path, std::ios::binary);
     out.stream.write(static_cast<const char*>(data), size);
     out.failed = !out.stream;
   } catch (...) {
@@ -78,18 +94,19 @@ Result<std::vector<std::uint32_t>> load_color_packed(
     const std::string& path, std::uint32_t expected_w,
     std::uint32_t expected_h) try {
   int channels = 0;
-  VR_TRY(inspect(path, expected_w, expected_h, channels));
+  VR_ASSIGN(const auto encoded, read_image("load_color_packed", path,
+                                           expected_w, expected_h, channels));
   int w = 0;
   int h = 0;
-  std::unique_ptr<std::uint8_t, StbiFree> pixels(
-      stb::load8(path.c_str(), &w, &h, &channels, 3));
+  std::unique_ptr<std::uint8_t, StbiFree> pixels(stb::load8(
+      encoded.data(), static_cast<int>(encoded.size()), &w, &h, &channels, 3));
   if (!pixels) {
-    return Status::io_error("load_color_packed: cannot decode " + path);
+    return Status::io_error("load_color_packed: " + path + ": " +
+                            stb::failure_reason());
   }
-  // Recheck the decoded dimensions in case the file changed since inspection.
-  if (w != static_cast<int>(expected_w) || h != static_cast<int>(expected_h)) {
-    return Status::invalid_argument("load_color_packed: unexpected dimensions");
-  }
+  VR_CHECK(
+      w == static_cast<int>(expected_w) && h == static_cast<int>(expected_h),
+      "stb decoded other dimensions than its header reported");
   const std::size_t count = static_cast<std::size_t>(w) * h;
   std::vector<std::uint32_t> packed(count);
   for (std::size_t i = 0; i < count; ++i) {
@@ -99,10 +116,8 @@ Result<std::vector<std::uint32_t>> load_color_packed(
     packed[i] = r | (g << 8) | (b << 16);
   }
   return packed;
-} catch (const std::bad_alloc&) {
-  return Status::out_of_memory({});
 } catch (...) {
-  return Status::io_error({});
+  return detail::exception_status("load_color_packed");
 }
 
 Result<std::vector<float>> load_depth_metres(const std::string& path,
@@ -112,48 +127,46 @@ Result<std::vector<float>> load_depth_metres(const std::string& path,
   if (!std::isfinite(depth_scale) || !(depth_scale > 0.0f)) {
     return Status::invalid_argument("load_depth_metres: invalid depth scale");
   }
-  int channels = 0;
-  VR_TRY(inspect(path, expected_w, expected_h, channels));
-  if (channels != 1 || !stb::is_16_bit(path.c_str())) {
+  // The largest 16-bit sample bounds every depth, so one check covers them.
+  const float inv_scale = 1.0f / depth_scale;
+  if (!std::isfinite(65535.0f * inv_scale)) {
     return Status::invalid_argument(
-        "load_depth_metres: expected a 16-bit grayscale PNG");
+        "load_depth_metres: depth scale overflows float depths");
+  }
+  int channels = 0;
+  VR_ASSIGN(const auto encoded, read_image("load_depth_metres", path,
+                                           expected_w, expected_h, channels));
+  const int size = static_cast<int>(encoded.size());
+  if (channels != 1 || !stb::is_16_bit(encoded.data(), size)) {
+    return Status::invalid_argument("load_depth_metres: " + path +
+                                    ": expected a 16-bit grayscale PNG");
   }
   int w = 0;
   int h = 0;
   std::unique_ptr<std::uint16_t, StbiFree> raw(
-      stb::load16(path.c_str(), &w, &h, &channels, 0));
+      stb::load16(encoded.data(), size, &w, &h, &channels, 1));
   if (!raw) {
-    return Status::io_error("load_depth_metres: cannot decode " + path);
+    return Status::io_error("load_depth_metres: " + path + ": " +
+                            stb::failure_reason());
   }
-  if (w != static_cast<int>(expected_w) || h != static_cast<int>(expected_h) ||
-      channels != 1) {
-    return Status::invalid_argument(
-        "load_depth_metres: unexpected image layout");
-  }
+  VR_CHECK(
+      w == static_cast<int>(expected_w) && h == static_cast<int>(expected_h),
+      "stb decoded other dimensions than its header reported");
   const std::size_t count = static_cast<std::size_t>(w) * h;
   std::vector<float> metres(count);
   for (std::size_t i = 0; i < count; ++i) {
-    // Divide in double: an overflowing reciprocal must not turn raw zero into
-    // NaN, and a small but valid divisor can still represent small samples.
-    const double depth = static_cast<double>(raw.get()[i]) / depth_scale;
-    if (depth > std::numeric_limits<float>::max()) {
-      return Status::invalid_argument(
-          "load_depth_metres: depth overflows float");
-    }
-    metres[i] = static_cast<float>(depth);
+    metres[i] = static_cast<float>(raw.get()[i]) * inv_scale;
   }
   return metres;
-} catch (const std::bad_alloc&) {
-  return Status::out_of_memory({});
 } catch (...) {
-  return Status::io_error({});
+  return detail::exception_status("load_depth_metres");
 }
 
 Status write_png_rgba8(const std::string& path, const std::uint8_t* pixels,
                        std::size_t byte_count, std::uint32_t width,
                        std::uint32_t height) try {
-  VR_TRY(check_path(path));
-  VR_TRY(check_dimensions(width, height));
+  VR_TRY(detail::check_path("write_png_rgba8", path));
+  VR_TRY(check_dimensions("write_png_rgba8", width, height));
   const std::size_t stride = static_cast<std::size_t>(width) * 4;
   const std::size_t bytes = stride * height;
   const auto int_max =
@@ -166,23 +179,21 @@ Status write_png_rgba8(const std::string& path, const std::uint8_t* pixels,
         "write_png_rgba8: invalid buffer or extent");
   }
   PngOutput out;
-  out.stream.open(path, std::ios::binary);
-  if (!out.stream) {
-    return Status::io_error("write_png_rgba8: cannot open " + path);
-  }
-  const bool result = stb::write_png(
+  out.path = &path;
+  const bool encoded = stb::write_png(
       write_png_bytes, &out, static_cast<int>(width), static_cast<int>(height),
       4, pixels, static_cast<int>(stride));
+  // stb fails only when its encoding buffers cannot be allocated.
+  if (!encoded) {
+    return Status::out_of_memory("write_png_rgba8: cannot encode " + path);
+  }
   out.stream.close();
-  if (!result || out.failed || !out.stream) {
-    return Status::io_error("write_png_rgba8: encode or write failed for " +
-                            path);
+  if (out.failed || !out.stream) {
+    return Status::io_error("write_png_rgba8: cannot write " + path);
   }
   return {};
-} catch (const std::bad_alloc&) {
-  return Status::out_of_memory({});
 } catch (...) {
-  return Status::io_error({});
+  return detail::exception_status("write_png_rgba8");
 }
 
 }  // namespace volumetric_kit::recon::io
