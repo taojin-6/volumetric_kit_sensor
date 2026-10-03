@@ -30,6 +30,7 @@ struct PlanesColor {
   VideoColorMatrix matrix = VideoColorMatrix::Bt709;
   bool full_range = false;
   bool has_encoding = false;
+  ChromaLocation chroma_location = ChromaLocation::Left;
   ColorEncoding encoding{};
 };
 

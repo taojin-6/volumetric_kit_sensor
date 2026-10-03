@@ -11,6 +11,7 @@
 // a VR_WITH_CUDA build, and =videotoolbox requires VideoToolbox, so a runner
 // that silently decodes on the host fails.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -23,12 +24,15 @@
 #include <vector>
 
 #include "bare_device.hpp"
+#include "buffer_readback.hpp"
 #include "device_picture_readback.hpp"
+#include "ffmpeg.hpp"
 #include "volumetric_kit/recon/core/allocator.hpp"
 #include "volumetric_kit/recon/core/buffer.hpp"
 #include "volumetric_kit/recon/core/device.hpp"
 #include "volumetric_kit/recon/core/instance.hpp"
 #include "volumetric_kit/recon/core/log.hpp"
+#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
 namespace vr = volumetric_kit::recon;
@@ -137,6 +141,92 @@ int check_meta(const sensor::DecodedPicture& p, std::uint32_t w,
   CHECK(p.layout == (p.image[0] != nullptr ? VideoPixelLayout::Nv12
                                            : VideoPixelLayout::Yuv420));
   CHECK(p.matrix == sensor::VideoColorMatrix::Bt601 && p.full_range);
+  CHECK(p.chroma_location == sensor::ChromaLocation::Center);
+  return 0;
+}
+
+// Decode-to-preparation, including the actual device planes where available.
+// FFmpeg explicitly centred is the reference; the committed patch edges make
+// a left-aligned conversion measurably different even with decoder rounding.
+int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
+                        vr::Device& device, vr::Allocator& allocator,
+                        sensor::GpuFramePrep& prep) {
+  CHECK(planes.plane[0].size() == std::size_t{p.width} * p.height);
+  CHECK(planes.plane[1].size() ==
+        std::size_t{(p.width + 1) / 2} * ((p.height + 1) / 2));
+  CHECK(planes.plane[2].size() == planes.plane[1].size());
+  sensor::RawFrame raw;
+  raw.depth_camera.width = p.width;
+  raw.depth_camera.height = p.height;
+  raw.depth_camera.fx = raw.depth_camera.fy = 256.0f;
+  raw.color_camera = raw.depth_camera;
+  std::vector<std::uint16_t> depth(std::size_t{p.width} * p.height, 1000);
+  raw.depth = depth.data();
+  raw.min_depth = 0.1f;
+  raw.max_depth = 5.0f;
+  raw.color.width = p.width;
+  raw.color.height = p.height;
+  raw.color.layout = p.layout == VideoPixelLayout::Nv12
+                         ? sensor::YuvLayout::Nv12
+                         : sensor::YuvLayout::I420;
+  raw.color.chroma_location = p.chroma_location;
+  raw.color.device = p.device;
+  // from_device already acquired a CUDA buffer for the reference readback.
+  // Preparation now reads it on the same queue family.
+  raw.color.queue_family = sensor::kQueueFamilyIgnored;
+  for (int i = 0; i < 2; ++i) raw.color.image[i] = p.image[i];
+  for (int i = 0; i < 3; ++i) {
+    raw.color.plane[i] = p.plane[i];
+    raw.color.stride[i] = p.stride[i];
+    raw.color.offset[i] = p.offset[i];
+  }
+  auto frame = prep.prepare(raw);
+  CHECK(frame.ok());
+  auto gpu = vr_test::read_back<std::uint32_t>(device, allocator, *frame->color,
+                                               depth.size());
+  CHECK(gpu.ok());
+  for (int horizontal_position : {0, 128}) {
+    sensor::video::SwsContextPtr sws(sws_alloc_context());
+    CHECK(sws != nullptr);
+    const struct {
+      const char* name;
+      int value;
+    } options[] = {
+        {"srcw", static_cast<int>(p.width)},
+        {"srch", static_cast<int>(p.height)},
+        {"dstw", static_cast<int>(p.width)},
+        {"dsth", static_cast<int>(p.height)},
+        {"src_format", AV_PIX_FMT_YUV420P},
+        {"dst_format", AV_PIX_FMT_RGB24},
+        {"src_h_chr_pos", horizontal_position},
+        {"src_v_chr_pos", 128},
+        {"sws_flags", SWS_BILINEAR | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT}};
+    for (const auto& option : options)
+      CHECK(av_opt_set_int(sws.get(), option.name, option.value, 0) >= 0);
+    CHECK(sws_init_context(sws.get(), nullptr, nullptr) >= 0);
+    const int* coeff = sws_getCoefficients(SWS_CS_ITU601);
+    CHECK(sws_setColorspaceDetails(sws.get(), coeff, 1, coeff, 1, 0, 1 << 16,
+                                   1 << 16) >= 0);
+    const std::uint8_t* src[] = {planes.plane[0].data(), planes.plane[1].data(),
+                                 planes.plane[2].data(), nullptr};
+    const int strides[] = {static_cast<int>(p.width),
+                           static_cast<int>((p.width + 1) / 2),
+                           static_cast<int>((p.width + 1) / 2), 0};
+    std::vector<std::uint8_t> rgb(depth.size() * 3);
+    std::uint8_t* dst[] = {rgb.data(), nullptr, nullptr, nullptr};
+    const int dst_strides[] = {static_cast<int>(p.width * 3), 0, 0, 0};
+    CHECK(sws_scale(sws.get(), src, strides, 0, p.height, dst, dst_strides) ==
+          static_cast<int>(p.height));
+    int max_error = 0;
+    for (std::size_t i = 0; i < depth.size(); ++i) {
+      for (int k = 0; k < 3; ++k) {
+        const int error = std::abs(
+            static_cast<int>(gpu.value()[i] >> (8 * k) & 255) - rgb[3 * i + k]);
+        max_error = std::max(max_error, error);
+      }
+    }
+    CHECK(horizontal_position == 128 ? max_error <= 2 : max_error >= 30);
+  }
   return 0;
 }
 
@@ -208,6 +298,13 @@ int test_device() {
   }
   auto software = JpegDecoder::create({});
   CHECK(software.ok());
+  auto prep = sensor::GpuFramePrep::create(device.value(), allocator.value());
+  CHECK(prep.ok());
+  auto host_picture = decode(software.value(), read_file(k420));
+  CHECK(host_picture.ok());
+  CHECK(check_preprocessing(host_picture.value(),
+                            from_host(host_picture.value()), device.value(),
+                            allocator.value(), prep.value()) == 0);
   VkPhysicalDeviceProperties props{};
   vkGetPhysicalDeviceProperties(gpu.value(), &props);
   const std::uint32_t extent = props.limits.maxImageDimension2D;
@@ -227,6 +324,9 @@ int test_device() {
     const Planes got =
         from_device(p.value(), device.value(), allocator.value());
     CHECK(check_pattern(got) == 0);
+    if (f.path == k420)
+      CHECK(check_preprocessing(p.value(), got, device.value(),
+                                allocator.value(), prep.value()) == 0);
     auto s = decode(software.value(), bytes);
     CHECK(s.ok());
     const Planes want = from_host(s.value());

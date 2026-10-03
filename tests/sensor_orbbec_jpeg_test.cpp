@@ -211,6 +211,7 @@ int test_software() {
     CHECK(described.has_value());
     CHECK(described->matrix == sensor::VideoColorMatrix::Bt601 &&
           described->full_range && described->has_encoding);
+    CHECK(described->chroma_location == sensor::ChromaLocation::Center);
     CHECK(check_pattern(from_i420(*color)) == 0);
   }
   return 0;
@@ -333,6 +334,10 @@ int test_device() {
     }
     CHECK(p->width == kWidth && p->height == kHeight);
     CHECK(p->matrix == sensor::VideoColorMatrix::Bt601 && p->full_range);
+    CHECK(p->chroma_location == sensor::ChromaLocation::Center);
+    sensor::YuvImage image;
+    orbbec::place_device_color(*p, &image);
+    CHECK(image.chroma_location == sensor::ChromaLocation::Center);
     CHECK(check_pattern(from_device(*p, device.value(), allocator.value())) ==
           0);
     if (p->device) {

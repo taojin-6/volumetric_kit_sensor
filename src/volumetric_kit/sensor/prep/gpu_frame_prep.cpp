@@ -80,8 +80,12 @@ struct ColorParams {
   float kr;
   float kb;
   std::uint32_t full_range;
+  float chroma_x;
+  float chroma_y;
 };
-static_assert(sizeof(ColorParams) == 96, "ColorParams layout drift");
+static_assert(sizeof(ColorParams) == 104, "ColorParams layout drift");
+static_assert(offsetof(ColorParams, chroma_x) == 96,
+              "ColorParams layout drift");
 
 // raw_frame.hpp spells Vulkan's special queue families without Vulkan.
 static_assert(kQueueFamilyIgnored == VK_QUEUE_FAMILY_IGNORED,
@@ -256,6 +260,10 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
                                 VkDeviceSize offset_alignment) {
   const LensCamera& cam = frame.color_camera;
   const YuvImage& image = frame.color;
+  if (static_cast<unsigned>(image.chroma_location) >
+      static_cast<unsigned>(ChromaLocation::Bottom)) {
+    return Status::invalid_argument("GpuFramePrep: unknown chroma location");
+  }
   if (!is_canonical(frame.color_encoding)) {
     // TODO(sensor): the other transfers and primaries, through the curve
     // and matrix sensor::to_canonical uses on the host.
@@ -555,6 +563,7 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     const auto u32 = [](VkDeviceSize v) {
       return static_cast<std::uint32_t>(v);
     };
+    const auto chroma = chroma_offset(image.chroma_location);
     const ColorParams color_params{lens_params(frame.color_camera),
                                    u32(color.y_offset),
                                    u32(color.cb_offset),
@@ -565,7 +574,9 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                                    u32(color.c_step),
                                    image.kr,
                                    image.kb,
-                                   image.full_range ? 1u : 0u};
+                                   image.full_range ? 1u : 0u,
+                                   chroma[0],
+                                   chroma[1]};
     VR_TRY(batch.dispatch(color_kernel_, &color_params, sizeof(color_params),
                           group_count(color.pixels, kLocalSize),
                           max_workgroup_count_x_, &stage));

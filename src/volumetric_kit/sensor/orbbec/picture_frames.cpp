@@ -64,8 +64,7 @@ std::shared_ptr<ob::Frame> carried(const DecodedPicture& picture) {
 }
 
 // Host planes as an I420 frame, rows packed, which owns the copy. The
-// matrix, range and encoding travel with the planes, which the pass converts
-// by them rather than by a guess.
+// matrix, range, encoding and chroma location travel with the planes.
 std::shared_ptr<ob::Frame> i420(const DecodedPicture& picture) {
   const std::uint32_t w = picture.width;
   const std::uint32_t h = picture.height;
@@ -89,6 +88,7 @@ std::shared_ptr<ob::Frame> i420(const DecodedPicture& picture) {
   PlanesColor described;
   described.matrix = picture.matrix;
   described.full_range = picture.full_range;
+  described.chroma_location = picture.chroma_location;
   described.has_encoding = picture.encoding.has_value();
   if (picture.encoding) described.encoding = *picture.encoding;
   frame->updateMetadata(reinterpret_cast<const std::uint8_t*>(&described),
@@ -127,6 +127,7 @@ std::optional<DecodedPicture> device_picture(const ob::Frame& frame) {
 }
 
 void place_device_color(const DecodedPicture& picture, YuvImage* image) {
+  image->chroma_location = picture.chroma_location;
   image->layout = picture.layout == VideoPixelLayout::Nv12 ? YuvLayout::Nv12
                                                            : YuvLayout::I420;
   if (picture.device != nullptr) {

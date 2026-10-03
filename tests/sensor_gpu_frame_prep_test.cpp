@@ -471,7 +471,47 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
 // and NV12's planes as images larger than the picture. They are only
 // different addresses for the same samples, so all come out identical.
 // Planes the pass cannot read are refused, before any work.
-int test_layouts(sensor::GpuFramePrep& prep) {
+// Every siting samples the same continuous chroma ramps. At luma (8, 8),
+// Y, Cb and Cr are all 128, so the prepared pixel must be neutral grey.
+int test_chroma_locations(sensor::GpuFramePrep& prep) {
+  using Location = sensor::ChromaLocation;
+  struct Case {
+    Location location;
+    int dx;
+    int dy;
+  };
+  const Case cases[] = {
+      {Location::Left, 0, 5},        {Location::Center, 5, 5},
+      {Location::TopLeft, 0, 0},     {Location::Top, 5, 0},
+      {Location::BottomLeft, 0, 10}, {Location::Bottom, 5, 10}};
+  auto cam = pinhole();
+  cam.width = cam.height = 16;
+  cam.fx = cam.fy = 16.0f;
+  cam.cx = cam.cy = 8.0f;
+  std::vector<std::uint16_t> raw(16 * 16, 1000);
+  Planes p = make_planes(16, 16);
+  std::fill(p.y.begin(), p.y.end(), 128);
+  auto f = frame_of(raw, cam);
+  f.color_camera = cam;
+  for (const auto& c : cases) {
+    for (std::uint32_t y = 0; y < 8; ++y) {
+      for (std::uint32_t x = 0; x < 8; ++x) {
+        p.cb[y * 8 + x] = static_cast<std::uint8_t>(48 + 20 * x + c.dx);
+        p.cr[y * 8 + x] = static_cast<std::uint8_t>(48 + 20 * y + c.dy);
+      }
+    }
+    f.color = p.image(0.299f, 0.114f, true);
+    f.color.chroma_location = c.location;
+    auto prepared = prep.prepare(f);
+    CHECK(prepared.ok());
+    const auto color = color_of(prepared.value());
+    CHECK(color.size() == raw.size());
+    CHECK(color[8 * 16 + 8] == 0xFF808080u);
+  }
+  return 0;
+}
+
+int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   const auto invalid = vr::Status::Code::InvalidArgument;
   const std::uint32_t w = kWidth + 1, h = kHeight + 1;
   sensor::LensCamera cam = lensed();
@@ -481,7 +521,8 @@ int test_layouts(sensor::GpuFramePrep& prep) {
   Planes p = patterned(w, h);
   sensor::RawFrame f = frame_of(raw, cam);
   f.color_camera = cam;
-  const sensor::YuvImage i420 = p.image(0.2126f, 0.0722f, false);
+  sensor::YuvImage i420 = p.image(0.2126f, 0.0722f, false);
+  i420.chroma_location = location;
   f.color = i420;
   auto base = prep.prepare(f);
   CHECK(base.ok());
@@ -876,6 +917,9 @@ int test_refusals(sensor::GpuFramePrep& prep) {
   f.color = p.image(0.6f, 0.5f, true);  // kr + kb past 1
   CHECK(prep.prepare(f).status().domain() == invalid);
   f.color = p.image(0.299f, 0.114f, true);
+  f.color.chroma_location = static_cast<sensor::ChromaLocation>(255);
+  CHECK(prep.prepare(f).status().domain() == invalid);
+  f.color = p.image(0.299f, 0.114f, true);
   f.color_encoding.transfer = vr::ColorEncoding::Transfer::Bt2020Pq;
   CHECK(prep.prepare(f).status().domain() == vr::Status::Code::Unsupported);
   f.color_encoding = {};
@@ -1178,7 +1222,11 @@ int main() {
       0) {
     return 1;
   }
-  if (test_layouts(prep.value()) != 0) return 1;
+  if (test_chroma_locations(prep.value()) != 0) return 1;
+  for (auto location :
+       {sensor::ChromaLocation::Left, sensor::ChromaLocation::Center}) {
+    if (test_layouts(prep.value(), location) != 0) return 1;
+  }
   if (test_coverage(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;
   if (test_frames_hold_buffers(prep.value()) != 0) return 1;

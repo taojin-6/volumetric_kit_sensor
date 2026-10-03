@@ -114,7 +114,8 @@ struct GpuFramePrepConfig {
 /// Undistorting keeps each camera's intrinsics and drops its lens: every pixel
 /// of the pinhole image is sampled from where @ref distort_normalized puts it
 /// in the captured one. Colour is sampled bilinearly, luma and chroma each at
-/// its own siting, and converted by the picture's matrix and range; depth is
+/// its own siting (@ref YuvImage::chroma_location), and converted by the
+/// picture's matrix and range; depth is
 /// sampled at the nearest pixel, so an edge never blends a foreground and a
 /// background depth into a point between them.
 ///
@@ -167,7 +168,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         without depth, a depth range that is not finite with
   ///         `0 < min_depth < max_depth` (0 being the pass's "no return"), a
   ///         camera or picture that is empty, not finite or disagrees with
-  ///         its image, colour planes in more than one place, an NV12
+  ///         its image, an unknown chroma location, colour planes in more
+  ///         than one place, an NV12
   ///         picture with a third plane, a plane row shorter than its
   ///         picture, device planes that overlap, lie outside their buffer or
   ///         are in one that is empty or without storage usage, plane images
