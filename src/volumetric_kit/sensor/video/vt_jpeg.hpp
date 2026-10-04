@@ -14,12 +14,9 @@
 #include <memory>
 #include <optional>
 
+#include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
-
-namespace volumetric_kit::recon {
-class Device;
-}  // namespace volumetric_kit::recon
 
 namespace volumetric_kit::recon::sensor::video {
 

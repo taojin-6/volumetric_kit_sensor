@@ -62,16 +62,21 @@ inline volumetric_kit::recon::Result<volumetric_kit::recon::Image> make(
     vkDestroyImage(dev, image, nullptr);
     return vr::Status::out_of_memory("test image: no memory for it");
   }
-  vr::Image out(image, format, width, height, info.usage,
-                VK_IMAGE_LAYOUT_GENERAL, [dev, image, backing] {
-                  vkDestroyImage(dev, image, nullptr);
-                  vkFreeMemory(dev, backing, nullptr);
-                });
+  vr::ImageInfo adopted;
+  adopted.image = image;
+  adopted.format = format;
+  adopted.extent = info.extent;
+  adopted.usage = info.usage;
+  adopted.layout = VK_IMAGE_LAYOUT_GENERAL;
+  vr::Image out(adopted, [dev, image, backing] {
+    vkDestroyImage(dev, image, nullptr);
+    vkFreeMemory(dev, backing, nullptr);
+  });
 
-  VR_ASSIGN(vr::Buffer source,
-            vr::storage_buffer(allocator, texels.size(),
-                               vr::HostAccess::SequentialWrite,
-                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+  VR_ASSIGN(
+      vr::Buffer source,
+      allocator.create_buffer({texels.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                               vr::MemoryUsage::Staging}));
   std::memcpy(source.mapped(), texels.data(), texels.size());
   VR_TRY(device.submit_single_time([&](VkCommandBuffer cmd) {
     VkImageMemoryBarrier b{};

@@ -17,6 +17,7 @@ Result<std::unique_ptr<JpegColorDecoder>> JpegColorDecoder::start(
   d->sink_ = std::move(sink);
   JpegDecoder::Options decoding;
   decoding.device = options.device;
+  decoding.allocator = options.allocator;
   decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
   decoding.label = options.who;
   auto decoder = JpegDecoder::create(decoding);

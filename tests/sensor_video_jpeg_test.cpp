@@ -259,10 +259,11 @@ int test_software() {
 int test_device() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
   if (!instance) return 0;
-  vr::Result<VkPhysicalDevice> gpu = instance.value().select_physical_device();
+  vr::Result<vr::PhysicalDeviceInfo> gpu =
+      instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  vr::Result<vr::Device> device =
-      vr::Device::create(instance.value(), gpu.value(), {});
+  vr::Result<vr::Device> device = vr::Device::create(
+      instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
   vr::Result<vr::Allocator> allocator =
       vr::Allocator::create(instance.value().handle(), device.value());
@@ -270,6 +271,7 @@ int test_device() {
 
   JpegDecoder::Options options;
   options.device = &device.value();
+  options.allocator = &allocator.value();
   auto decoder = JpegDecoder::create(options);
   CHECK(decoder.ok());
   const bool on_device = decoder->backend() != JpegDecodeBackend::Software;
@@ -296,8 +298,7 @@ int test_device() {
   CHECK(check_preprocessing(host_picture.value(),
                             from_host(host_picture.value()), device.value(),
                             allocator.value(), prep.value()) == 0);
-  VkPhysicalDeviceProperties props{};
-  vkGetPhysicalDeviceProperties(gpu.value(), &props);
+  const VkPhysicalDeviceProperties& props = gpu.value().properties();
   const std::uint32_t extent = props.limits.maxImageDimension2D;
 
   for (const Fixture& f : k420s) {
@@ -359,10 +360,11 @@ int test_device() {
 int test_host_warning() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
   if (!instance) return 0;
-  vr::Result<VkPhysicalDevice> gpu = instance.value().select_physical_device();
+  vr::Result<vr::PhysicalDeviceInfo> gpu =
+      instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  vr::Result<vr::Device> device =
-      vr::Device::create(instance.value(), gpu.value(), {});
+  vr::Result<vr::Device> device = vr::Device::create(
+      instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
   vr::Result<vr::Device> bare =
       vr_test::bare_device(instance.value(), device.value());
@@ -388,14 +390,20 @@ int test_host_warning() {
 
 int test_refusals() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
-  vr::Result<VkPhysicalDevice> gpu =
-      instance ? instance.value().select_physical_device()
-               : vr::Result<VkPhysicalDevice>(instance.status());
+  vr::Result<vr::PhysicalDeviceInfo> gpu =
+      instance
+          ? instance.value().select_physical_device(vr::device_requirements())
+          : vr::Result<vr::PhysicalDeviceInfo>(instance.status());
   vr::Result<vr::Device> device =
-      gpu ? vr::Device::create(instance.value(), gpu.value(), {})
+      gpu ? vr::Device::create(instance.value(), gpu.value(),
+                               vr::device_requirements())
           : vr::Result<vr::Device>(gpu.status());
+  vr::Result<vr::Allocator> allocator =
+      device ? vr::Allocator::create(instance.value().handle(), device.value())
+             : vr::Result<vr::Allocator>(device.status());
   JpegDecoder::Options options;
   options.device = device ? &device.value() : nullptr;
+  options.allocator = allocator ? &allocator.value() : nullptr;
   auto decoder = JpegDecoder::create(options);
   CHECK(decoder.ok());
 

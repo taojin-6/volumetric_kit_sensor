@@ -103,7 +103,8 @@ struct Run {
 // Push `in`, wait for `expect` pairs out, and stop. The queue holds all of
 // `in`, so none is skipped.
 Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
-        std::size_t expect, const vr::Device* device = nullptr) {
+        std::size_t expect, const vr::Device* device = nullptr,
+        vr::Allocator* allocator = nullptr) {
   struct Collected {
     std::mutex mutex;
     std::vector<std::shared_ptr<ob::FrameSet>> sets;
@@ -112,6 +113,7 @@ Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
   orbbec::JpegColorDecoder::Options options;
   options.depth = in.size();
   options.device = device;
+  options.allocator = allocator;
   options.who = "test";
   auto decoder = orbbec::JpegColorDecoder::start(
       options, [collected](std::shared_ptr<ob::FrameSet> set) {
@@ -303,16 +305,17 @@ int test_skips_when_behind() {
 int test_device() {
   auto instance = vr::Instance::create({});
   if (!instance) return 0;
-  auto gpu = instance.value().select_physical_device();
+  auto gpu = instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  auto device = vr::Device::create(instance.value(), gpu.value(), {});
+  auto device = vr::Device::create(instance.value(), gpu.value(),
+                                   vr::device_requirements());
   CHECK(device.ok());
   auto allocator =
       vr::Allocator::create(instance.value().handle(), device.value());
   CHECK(allocator.ok());
   const std::vector<std::uint8_t> jpeg = read_file(kJpeg);
-  Run r =
-      run({pair(jpeg, 0), pair(jpeg, 1), pair(jpeg, 2)}, 3, &device.value());
+  Run r = run({pair(jpeg, 0), pair(jpeg, 1), pair(jpeg, 2)}, 3, &device.value(),
+              &allocator.value());
   CHECK(r.out.size() == 3 && r.lost == 0);
   const bool on_device =
       orbbec::device_picture(*r.out.front()->getColorFrame()).has_value();

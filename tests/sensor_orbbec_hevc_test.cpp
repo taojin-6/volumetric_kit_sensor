@@ -160,7 +160,8 @@ struct Run {
   std::uint64_t lost = 0;
 };
 Run run(const Pairs& in, std::size_t expect, bool yuv = false,
-        const vr::Device* device = nullptr) {
+        const vr::Device* device = nullptr,
+        vr::Allocator* allocator = nullptr) {
   auto collected = std::make_shared<Collected>();
   orbbec::HevcColorDecoder::Options options;
   options.fps = 30;
@@ -170,6 +171,7 @@ Run run(const Pairs& in, std::size_t expect, bool yuv = false,
   };
   options.yuv = yuv;
   options.device = device;
+  options.allocator = allocator;
   auto decoder = orbbec::HevcColorDecoder::start(
       options, [collected](std::shared_ptr<ob::FrameSet> set) {
         std::lock_guard<std::mutex> lock(collected->mutex);
@@ -314,16 +316,17 @@ int test_hands_on_i420() {
 int test_hands_on_device_pictures() {
   auto instance = vr::Instance::create({});
   if (!instance) return 0;
-  auto gpu = instance.value().select_physical_device();
+  auto gpu = instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  auto device = vr::Device::create(instance.value(), gpu.value(), {});
+  auto device = vr::Device::create(instance.value(), gpu.value(),
+                                   vr::device_requirements());
   CHECK(device.ok());
   auto allocator =
       vr::Allocator::create(instance.value().handle(), device.value());
   CHECK(allocator.ok());
 
   Run r = run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8,
-              true, &device.value());
+              true, &device.value(), &allocator.value());
   CHECK(r.out.size() == 8 && r.lost == 0);
   const bool on_device =
       orbbec::device_picture(*r.out.front()->getColorFrame()).has_value();

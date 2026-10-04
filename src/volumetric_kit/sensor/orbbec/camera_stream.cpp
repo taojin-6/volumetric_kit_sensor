@@ -247,6 +247,7 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
   s->color_codec_ = streams.color_codec;
   s->configure_ffmpeg_logging_ = configure_logging;
   s->vulkan_device_ = streams.raw ? streams.device : nullptr;
+  s->vulkan_allocator_ = streams.raw ? streams.allocator : nullptr;
   s->context_ = std::move(context);
   s->device_ = std::move(device);
   try {
@@ -495,6 +496,7 @@ Status CameraStream::start() {
     decoding.rgb_profile = color_profile_;
     decoding.yuv = raw_;
     decoding.device = vulkan_device_;
+    decoding.allocator = vulkan_allocator_;
     // Once: the first start sets FFmpeg's level, and a later one leaves it
     // to whoever changed it since.
     decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
@@ -509,6 +511,7 @@ Status CameraStream::start() {
       decoding.depth = box.depth;
     }
     decoding.device = vulkan_device_;
+    decoding.allocator = vulkan_allocator_;
     decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
     configure_ffmpeg_logging_ = false;
     decoding.who = who_;

@@ -126,7 +126,7 @@ Status check_camera(const char* what, const LensCamera& c) {
 
 // A buffer of at least `bytes`, kept when it is big enough: a device-local
 // input, filled through the pass's batch so the kernels never read the raw
-// frame across the bus, or the host-visible staging the frame is written
+// frame across the bus, or the system-memory staging the frame is written
 // into. The staging is kept too: a batch stages through a buffer of its own
 // per call, and four passes doing that at once with 4K frames had VMA
 // allocate and free a block for every set.
@@ -135,9 +135,9 @@ Status ensure_buffer(const Device& device, Allocator& allocator, Buffer& buffer,
   if (buffer.valid() && buffer.size() >= bytes) return {};
   buffer = Buffer();
   if (staging) {
-    VR_ASSIGN(buffer,
-              storage_buffer(allocator, bytes, HostAccess::SequentialWrite,
-                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+    VR_ASSIGN(buffer, allocator.create_buffer(
+                          {bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                           MemoryUsage::Staging, HostAccess::SequentialWrite}));
   } else {
     VR_ASSIGN(buffer, device_storage_buffer(allocator, bytes));
   }

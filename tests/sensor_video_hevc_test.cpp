@@ -427,10 +427,11 @@ Picture from_device(const sensor::DecodedPicture& p, vr::Device& device,
 int test_device_pictures() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
   if (!instance) return 0;
-  vr::Result<VkPhysicalDevice> gpu = instance.value().select_physical_device();
+  vr::Result<vr::PhysicalDeviceInfo> gpu =
+      instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  vr::Result<vr::Device> device =
-      vr::Device::create(instance.value(), gpu.value(), {});
+  vr::Result<vr::Device> device = vr::Device::create(
+      instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
   vr::Result<vr::Allocator> allocator =
       vr::Allocator::create(instance.value().handle(), device.value());
@@ -440,8 +441,7 @@ int test_device_pictures() {
                               VideoDecodeBackend::Cuda) != hardware.end();
   // The decoder also needs the Vulkan device to be a GPU CUDA sees, which an
   // NVIDIA one is.
-  VkPhysicalDeviceProperties props{};
-  vkGetPhysicalDeviceProperties(gpu.value(), &props);
+  const VkPhysicalDeviceProperties& props = gpu.value().properties();
   constexpr std::uint32_t kNvidia = 0x10DE;
   const bool on_device = VR_TEST_WITH_CUDA && cuda &&
                          device.value().exports_memory() &&
@@ -469,6 +469,7 @@ int test_device_pictures() {
         cuda ? VideoDecodeBackend::Cuda : VideoDecodeBackend::Auto;
     options.layout = VideoPixelLayout::Yuv420;
     options.device = &device.value();
+    options.allocator = &allocator.value();
     auto decoder = HevcDecoder::create(options);
     CHECK(decoder.ok());
     const AccessUnits units = access_units(clip);
@@ -523,10 +524,11 @@ int test_device_pictures() {
 int test_host_warning() {
   vr::Result<vr::Instance> instance = vr::Instance::create({});
   if (!instance) return 0;
-  vr::Result<VkPhysicalDevice> gpu = instance.value().select_physical_device();
+  vr::Result<vr::PhysicalDeviceInfo> gpu =
+      instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  vr::Result<vr::Device> device =
-      vr::Device::create(instance.value(), gpu.value(), {});
+  vr::Result<vr::Device> device = vr::Device::create(
+      instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
   vr::Result<vr::Device> bare =
       vr_test::bare_device(instance.value(), device.value());

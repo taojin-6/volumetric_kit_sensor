@@ -15,13 +15,9 @@
 #include <memory>
 #include <vector>
 
+#include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
-
-namespace volumetric_kit::recon {
-class Buffer;
-class Device;
-}  // namespace volumetric_kit::recon
 
 // A macro's expansion as a string: a cuda.h name's versioned symbol, or
 // nvjpeg.h's major version.
@@ -102,8 +98,10 @@ Result<int> cuda_ordinal_of(const Device& device, const char* who);
 // picture still holds, or a new one; a free one too small for it is let go.
 class CudaPictures {
  public:
-  // @p who names the decoder in errors.
+  // The buffers are made through @p allocator, which, like @p device, must
+  // outlive this and every picture on it. @p who names the decoder in errors.
   static Result<std::unique_ptr<CudaPictures>> create(const Device& device,
+                                                      Allocator& allocator,
                                                       CUcontext context,
                                                       CUstream stream,
                                                       const char* who);
@@ -133,13 +131,18 @@ class CudaPictures {
     CUdeviceptr pointer = 0;
     std::uint64_t bytes = 0;
   };
-  CudaPictures(const Device& device, CUcontext context, CUstream stream,
-               const char* who)
-      : device_(&device), context_(context), stream_(stream), who_(who) {}
+  CudaPictures(const Device& device, Allocator& allocator, CUcontext context,
+               CUstream stream, const char* who)
+      : device_(&device),
+        allocator_(&allocator),
+        context_(context),
+        stream_(stream),
+        who_(who) {}
   Result<Slot*> slot(std::uint64_t bytes);
   static void release(Slot& s);
 
   const Device* device_;
+  Allocator* allocator_;
   CUcontext context_;
   CUstream stream_;
   const char* who_;
