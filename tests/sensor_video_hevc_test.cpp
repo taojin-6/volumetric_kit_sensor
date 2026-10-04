@@ -532,9 +532,10 @@ int test_host_warning() {
       vr_test::bare_device(instance.value(), device.value());
   CHECK(bare.ok());
   std::vector<std::string> warnings;
-  vr::set_log_handler([&warnings](vr::LogLevel level, std::string_view m) {
-    if (level == vr::LogLevel::Warning) warnings.emplace_back(m);
-  });
+  vr::set_log_handler(
+      [&warnings](vr::LogLevel level, std::string_view, std::string_view m) {
+        if (level == vr::LogLevel::Warning) warnings.emplace_back(m);
+      });
   HevcDecoder::Options options;
   options.layout = VideoPixelLayout::Yuv420;
   options.label = "camera 7";
