@@ -330,13 +330,12 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
     std::string name;
 #if VR_SENSOR_VIDEO_WITH_CUDA
     if (backend == VideoDecodeBackend::Cuda && device != nullptr &&
-        allocator == nullptr) {
-      impl->device_path_error =
-          "no allocator to make its picture buffers through "
-          "(HevcDecoder::Options::allocator)";
-    } else if (backend == VideoDecodeBackend::Cuda && device != nullptr &&
-               device->exports_memory()) {
-      if (const auto ordinal = video::cuda_ordinal_of(*device, kWho)) {
+        device->exports_memory()) {
+      if (allocator == nullptr) {
+        impl->device_path_error =
+            "no allocator to make its picture buffers through "
+            "(HevcDecoder::Options::allocator)";
+      } else if (const auto ordinal = video::cuda_ordinal_of(*device, kWho)) {
         name = std::to_string(ordinal.value());
       } else {
         impl->device_path_error = ordinal.status().message();

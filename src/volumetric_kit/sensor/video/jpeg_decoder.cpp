@@ -431,7 +431,13 @@ Result<JpegDecoder> JpegDecoder::create(const Options& options) {
 #endif
   impl->label = options.label;
   if (options.device != nullptr && !impl->device_path()) {
-    video::warn_host_pictures(kWho, impl->label, "no device path opened");
+    std::string why = "no device path opened";
+#if VR_SENSOR_VIDEO_WITH_CUDA
+    if (options.allocator == nullptr) {
+      why += " (nvJPEG needs JpegDecoder::Options::allocator)";
+    }
+#endif
+    video::warn_host_pictures(kWho, impl->label, why);
   }
   return JpegDecoder(std::move(impl));
 }
