@@ -20,6 +20,7 @@
 #include "undistort_depth_comp.spv.hpp"
 #include "volumetric_kit/recon/core/command_batch.hpp"
 #include "volumetric_kit/recon/core/compute_util.hpp"
+#include "volumetric_kit/recon/core/device.hpp"
 #include "volumetric_kit/recon/core/image.hpp"
 
 namespace volumetric_kit::recon::sensor {
@@ -397,6 +398,7 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
 
 Result<GpuFramePrep> GpuFramePrep::create(Device& device, Allocator& allocator,
                                           const GpuFramePrepConfig& config) {
+  VR_TRY(check_device_requirements(device, "GpuFramePrep::create"));
   // Here rather than at the first output, where it would surface as a buffer
   // failure on the first frame.
   VR_TRY(check_queue_family_count(config.color_queue_family_count,
