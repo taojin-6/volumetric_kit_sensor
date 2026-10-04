@@ -54,7 +54,10 @@ Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
   // decoder needs 4K.
   decoding.threads = 1;
   decoding.unlabelled_color = kFemtoMegaHevcColor;
-  if (options.yuv) decoding.device = options.device;
+  if (options.yuv) {
+    decoding.device = options.device;
+    decoding.allocator = options.allocator;
+  }
   decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
   decoding.label = options.who;
   auto decoder = HevcDecoder::create(decoding);

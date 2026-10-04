@@ -43,6 +43,9 @@ class JpegColorDecoder {
     // where the hardware takes them; null decodes in software. Borrowed: it
     // must outlive the decoder and every frame it hands on.
     const Device* device = nullptr;
+    // With device, the allocator nvJPEG's pictures are made through. Borrowed
+    // as device is.
+    Allocator* allocator = nullptr;
     bool configure_ffmpeg_logging = true;
     std::string who;
   };

@@ -625,7 +625,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   sensor::YuvImage taken = dev;
   taken.queue_family = sensor::kQueueFamilyExternal;
   CHECK(same(taken));
-  taken.queue_family = g_device->compute_family();
+  taken.queue_family = g_device->queue_family();
   CHECK(same(taken));
 
   sensor::YuvImage dev_i420 = dev;
@@ -720,9 +720,10 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
                                  cbcr_tight.data(), 2 * p.cw, p.ch, 0);
   CHECK(refused(bad_images, "TRANSFER_SRC"));
   bad_images = images;
-  bad_images.image[1] = std::make_shared<const vr::Image>(  // borrowed
-      chroma->handle(), chroma->format(), chroma->width(), chroma->height(),
-      chroma->usage(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, nullptr);
+  vr::ImageInfo shader_read = chroma->info();
+  shader_read.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  bad_images.image[1] =
+      std::make_shared<const vr::Image>(shader_read, nullptr);  // borrowed
   CHECK(refused(bad_images, "TRANSFER_SRC_OPTIMAL"));
 
   // Refused: host and device planes at once, even a stale third one; an NV12
@@ -990,7 +991,7 @@ int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
   f.color = planes.image(0.299f, 0.114f, true);
   f.color_camera = pinhole();
 
-  const std::uint32_t own = device.compute_family();
+  const std::uint32_t own = device.queue_family();
   if (prepared_sharing(device, allocator, {}, f, VK_SHARING_MODE_EXCLUSIVE) !=
       0) {
     return 1;
@@ -1194,14 +1195,15 @@ int main() {
                  instance.status().message().c_str());
     return 0;
   }
-  vr::Result<VkPhysicalDevice> gpu = instance.value().select_physical_device();
+  vr::Result<vr::PhysicalDeviceInfo> gpu =
+      instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) {
     std::fprintf(stderr, "no compute-capable device (%s); skipping\n",
                  gpu.status().message().c_str());
     return 0;
   }
-  vr::Result<vr::Device> device =
-      vr::Device::create(instance.value(), gpu.value(), {});
+  vr::Result<vr::Device> device = vr::Device::create(
+      instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
   vr::Result<vr::Allocator> allocator =
       vr::Allocator::create(instance.value().handle(), device.value());

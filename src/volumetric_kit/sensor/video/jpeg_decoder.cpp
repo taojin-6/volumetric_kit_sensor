@@ -104,8 +104,10 @@ bool refused(nvjpegStatus_t s) {
 // nvJPEG in the primary context of the Vulkan device's GPU, and everything it
 // holds there, released together.
 struct NvjpegDecoder {
-  // Null where nvJPEG cannot use @p device.
-  static std::unique_ptr<NvjpegDecoder> open(const Device& device);
+  // Null where nvJPEG cannot use @p device. Its picture buffers are made
+  // through @p allocator.
+  static std::unique_ptr<NvjpegDecoder> open(const Device& device,
+                                             Allocator& allocator);
   NvjpegDecoder() = default;
   ~NvjpegDecoder();
   NvjpegDecoder(const NvjpegDecoder&) = delete;
@@ -140,7 +142,8 @@ struct NvjpegDecoder {
   std::unique_ptr<video::CudaPictures> pictures;
 };
 
-std::unique_ptr<NvjpegDecoder> NvjpegDecoder::open(const Device& device) {
+std::unique_ptr<NvjpegDecoder> NvjpegDecoder::open(const Device& device,
+                                                   Allocator& allocator) {
   const video::CudaDriver* cu = video::cuda_driver();
   const Nvjpeg* n = nvjpeg();
   if (!device.exports_memory() || cu == nullptr || n == nullptr) return nullptr;
@@ -179,8 +182,8 @@ std::unique_ptr<NvjpegDecoder> NvjpegDecoder::open(const Device& device) {
   }
   const bool engine = hardware && d->add_engine(NVJPEG_BACKEND_HARDWARE);
   if (!d->add_engine(NVJPEG_BACKEND_GPU_HYBRID) && !engine) return nullptr;
-  auto pictures =
-      video::CudaPictures::create(device, d->context, d->stream, kWho);
+  auto pictures = video::CudaPictures::create(device, allocator, d->context,
+                                              d->stream, kWho);
   if (!pictures) return nullptr;
   d->pictures = std::move(pictures).value();
   d->backend =
@@ -417,8 +420,8 @@ Result<JpegDecoder> JpegDecoder::create(const Options& options) {
   auto impl = std::make_unique<Impl>();
   VR_TRY(impl->open_software());
 #if VR_SENSOR_VIDEO_WITH_CUDA
-  if (options.device != nullptr) {
-    impl->gpu = NvjpegDecoder::open(*options.device);
+  if (options.device != nullptr && options.allocator != nullptr) {
+    impl->gpu = NvjpegDecoder::open(*options.device, *options.allocator);
   }
 #endif
 #if defined(__APPLE__)
@@ -428,7 +431,13 @@ Result<JpegDecoder> JpegDecoder::create(const Options& options) {
 #endif
   impl->label = options.label;
   if (options.device != nullptr && !impl->device_path()) {
-    video::warn_host_pictures(kWho, impl->label, "no device path opened");
+    std::string why = "no device path opened";
+#if VR_SENSOR_VIDEO_WITH_CUDA
+    if (options.allocator == nullptr) {
+      why += " (nvJPEG needs JpegDecoder::Options::allocator)";
+    }
+#endif
+    video::warn_host_pictures(kWho, impl->label, why);
   }
   return JpegDecoder(std::move(impl));
 }

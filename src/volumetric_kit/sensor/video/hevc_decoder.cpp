@@ -246,7 +246,8 @@ struct HevcDecoder::Impl {
                                             bool may_fall_back,
                                             VideoPixelLayout layout,
                                             int threads,
-                                            const Device* device = nullptr);
+                                            const Device* device = nullptr,
+                                            Allocator* allocator = nullptr);
 
   // Whether @p backend decodes HEVC here, found once per process: asked of
   // the platform where it can be, else by decoding the probe clip.
@@ -292,7 +293,7 @@ struct HevcDecoder::Impl {
 
 Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
     VideoDecodeBackend backend, bool may_fall_back, VideoPixelLayout layout,
-    int threads, const Device* device) {
+    int threads, const Device* device, Allocator* allocator) {
   const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
   if (codec == nullptr) {
     return Status::unsupported(std::string(kWho) +
@@ -330,7 +331,11 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
 #if VR_SENSOR_VIDEO_WITH_CUDA
     if (backend == VideoDecodeBackend::Cuda && device != nullptr &&
         device->exports_memory()) {
-      if (const auto ordinal = video::cuda_ordinal_of(*device, kWho)) {
+      if (allocator == nullptr) {
+        impl->device_path_error =
+            "no allocator to make its picture buffers through "
+            "(HevcDecoder::Options::allocator)";
+      } else if (const auto ordinal = video::cuda_ordinal_of(*device, kWho)) {
         name = std::to_string(ordinal.value());
       } else {
         impl->device_path_error = ordinal.status().message();
@@ -348,6 +353,9 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
       }
     }
 #endif
+#if !VR_SENSOR_VIDEO_WITH_CUDA
+    static_cast<void>(allocator);
+#endif
 #if !VR_SENSOR_VIDEO_WITH_CUDA && !defined(__APPLE__)
     static_cast<void>(device);
 #endif
@@ -359,8 +367,8 @@ Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
       const auto* hw =
           reinterpret_cast<const AVHWDeviceContext*>(impl->device->data);
       const auto* cuda = static_cast<const AVCUDADeviceContext*>(hw->hwctx);
-      auto pictures = video::CudaPictures::create(*device, cuda->cuda_ctx,
-                                                  cuda->stream, kWho);
+      auto pictures = video::CudaPictures::create(
+          *device, *allocator, cuda->cuda_ctx, cuda->stream, kWho);
       if (pictures) {
         impl->pictures = std::move(pictures).value();
       } else {
@@ -477,8 +485,9 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
     // ends behind it are never probed.
     for (const VideoDecodeBackend b : video::platform_hardware_order()) {
       if (!Impl::decodes(b)) continue;
-      auto opened = Impl::open(b, /*may_fall_back=*/true, options.layout,
-                               options.threads, options.device);
+      auto opened =
+          Impl::open(b, /*may_fall_back=*/true, options.layout, options.threads,
+                     options.device, options.allocator);
       if (opened) return made(std::move(opened).value());
     }
     backend = VideoDecodeBackend::Software;
@@ -490,7 +499,7 @@ Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   }
   VR_ASSIGN(auto impl,
             Impl::open(backend, /*may_fall_back=*/false, options.layout,
-                       options.threads, options.device));
+                       options.threads, options.device, options.allocator));
   return made(std::move(impl));
 }
 

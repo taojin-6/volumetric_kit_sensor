@@ -101,6 +101,9 @@ class HevcColorDecoder {
     // only the others as I420. Borrowed: it must outlive the decoder and
     // every frame it hands on.
     const Device* device = nullptr;
+    // With device, the allocator NVDEC's pictures are made through. Borrowed
+    // as device is.
+    Allocator* allocator = nullptr;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on

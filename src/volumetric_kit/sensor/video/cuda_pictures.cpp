@@ -4,7 +4,6 @@
 #include "cuda_pictures.hpp"
 
 #include <dlfcn.h>
-#include <unistd.h>
 
 #include <cstring>
 #include <optional>
@@ -77,6 +76,7 @@ Result<int> cuda_ordinal_of(const Device& device, const char* who) {
 }
 
 Result<std::unique_ptr<CudaPictures>> CudaPictures::create(const Device& device,
+                                                           Allocator& allocator,
                                                            CUcontext context,
                                                            CUstream stream,
                                                            const char* who) {
@@ -89,7 +89,7 @@ Result<std::unique_ptr<CudaPictures>> CudaPictures::create(const Device& device,
     return Status::unsupported(std::string(who) + ": libcuda does not load");
   }
   return std::unique_ptr<CudaPictures>(
-      new CudaPictures(device, context, stream, who));
+      new CudaPictures(device, allocator, context, stream, who));
 }
 
 CudaPictures::~CudaPictures() {
@@ -120,13 +120,14 @@ Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
       ++it;
     }
   }
-  VR_ASSIGN(ExportedBuffer exported, create_exported_buffer(*device_, bytes));
+  VR_ASSIGN(ExportedBuffer exported,
+            create_exported_buffer(*device_, *allocator_, bytes));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
                            debug_object_handle(exported.buffer.handle()),
                            "sensor.decoded_picture");
   CUDA_EXTERNAL_MEMORY_HANDLE_DESC handle{};
   handle.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
-  handle.handle.fd = exported.fd;
+  handle.handle.fd = exported.fd.get();
   handle.size = exported.memory_size;
   handle.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
   Slot s;
@@ -134,9 +135,11 @@ Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   const CudaDriver* cu = cuda_driver();
   CUresult r = cu->cuImportExternalMemory(&s.memory, &handle);
   if (r != CUDA_SUCCESS) {
-    close(exported.fd);  // an import that fails leaves the descriptor ours
+    // An import that fails leaves the descriptor ours: the UniqueFd closes it.
     return cuda_error(who_, r, "importing a Vulkan buffer");
   }
+  // One that succeeds hands it to CUDA, which closes it.
+  static_cast<void>(exported.fd.release());
   CUDA_EXTERNAL_MEMORY_BUFFER_DESC mapped{};
   mapped.offset = 0;
   mapped.size = bytes;

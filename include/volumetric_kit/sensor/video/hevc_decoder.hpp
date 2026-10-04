@@ -16,14 +16,11 @@
 #include <string>
 #include <vector>
 
+#include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 #include "volumetric_kit/recon/sensor/video/export.hpp"
 #include "volumetric_kit/recon/sensor/video/video_backend.hpp"
-
-namespace volumetric_kit::recon {
-class Device;
-}  // namespace volumetric_kit::recon
 
 namespace volumetric_kit::recon::sensor {
 
@@ -75,6 +72,12 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// handler.
     /// Borrowed: it must outlive the decoder and every picture on it.
     const Device* device = nullptr;
+    /// The allocator the Cuda back end makes its picture buffers through:
+    /// exported device-only memory, counted against its heap's budget like
+    /// any other allocation. Needed with @ref device for Cuda; VideoToolbox's
+    /// pictures need none. Borrowed: it must outlive the decoder and every
+    /// picture on it.
+    Allocator* allocator = nullptr;
     /// Whose decoder this is (a camera, say), put ahead of its warnings so a
     /// program running several can tell them apart. Empty puts nothing.
     std::string label;

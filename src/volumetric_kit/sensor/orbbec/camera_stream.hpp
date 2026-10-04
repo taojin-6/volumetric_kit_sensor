@@ -181,8 +181,10 @@ class CameraStream {
   std::shared_ptr<ob::StreamProfile> wire_color_profile_;
   std::uint32_t fps_ = 0;
   bool configure_ffmpeg_logging_ = true;  // cleared by the first start
-  // The device a raw stream's colour is decoded onto (streams.device).
+  // The device a raw stream's colour is decoded onto (streams.device), and the
+  // allocator its pictures are made through (streams.allocator).
   const Device* vulkan_device_ = nullptr;
+  Allocator* vulkan_allocator_ = nullptr;
   // Decodes the H.265 colour, between the SDK and the mailbox; null for
   // MJPEG. Replaced at each start, so its counters start fresh with the rest.
   std::shared_ptr<HevcColorDecoder> hevc_;

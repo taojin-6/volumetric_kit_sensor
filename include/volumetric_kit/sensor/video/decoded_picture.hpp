@@ -13,12 +13,8 @@
 #include <optional>
 
 #include "volumetric_kit/recon/core/color_space.hpp"
+#include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/sensor/chroma_location.hpp"
-
-namespace volumetric_kit::recon {
-class Buffer;
-class Image;
-}  // namespace volumetric_kit::recon
 
 namespace volumetric_kit::recon::sensor {
 
