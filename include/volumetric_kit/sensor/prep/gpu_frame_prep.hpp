@@ -47,7 +47,7 @@ namespace volumetric_kit::recon::sensor {
 /// `CommandBatch` can copy or read them back. One kept past the next
 /// @ref GpuFramePrep::prepare keeps its contents, and that call writes to new
 /// buffers instead; drop a frame once it is fused and the pass reuses them.
-/// The @ref Allocator must outlive the frame, as it must the pass.
+/// The `Allocator` must outlive the frame, as it must the pass.
 struct DeviceFrame {
   /// Row-major depth in metres, `depth_camera.width * height` floats; 0 where
   /// the sensor had no return or the lens maps outside its image.
@@ -70,7 +70,7 @@ struct DeviceFrame {
 /// @brief Options for @ref GpuFramePrep::create.
 struct GpuFramePrepConfig {
   /// @brief Queue families that will access the frames' colour buffers,
-  ///        @ref DeviceFrame::color.
+  ///        `Device`Frame::color.
   ///
   /// Left empty (the default) the buffer is `VK_SHARING_MODE_EXCLUSIVE` to
   /// the pass's own family, which is right for a recon-only consumer and what
@@ -80,7 +80,7 @@ struct GpuFramePrepConfig {
   /// reading an EXCLUSIVE buffer from a family that does not own it is
   /// undefined, and on Apple, where Metal has no ownership to violate, it is
   /// undefined in the way that appears to work. Duplicates collapse, so both
-  /// indices may be passed unconditionally. @ref DeviceFrame::depth stays
+  /// indices may be passed unconditionally. `Device`Frame::depth stays
   /// EXCLUSIVE whatever this says, since only recon's tiers read it.
   ///
   /// @see BufferDesc::queue_families, which this is copied into. Held by value,
@@ -99,7 +99,7 @@ struct GpuFramePrepConfig {
   /// this set, a frame with colour has every depth pixel zeroed -- the pass's
   /// "no return" -- whose point, moved into the colour camera by the two
   /// poses, is behind it or lands on a pixel the colour pass marks uncovered
-  /// (@ref DeviceFrame::color's coverage byte, black where the lens saw
+  /// (`Device`Frame::color's coverage byte, black where the lens saw
   /// nothing). What survives is the two cameras' overlap. The test is the
   /// colour camera's view, not its line of sight: a point inside the view
   /// that a nearer surface hides from the colour camera is kept. A frame
@@ -130,7 +130,7 @@ struct GpuFramePrepConfig {
 /// Every check on the frame is made before anything is uploaded, so a refused
 /// frame leaves the pass and the frames it handed out as they were.
 ///
-/// @warning The @ref Device and @ref Allocator passed to @ref create must
+/// @warning The `Device` and `Allocator` passed to @ref create must
 ///          outlive this object; it stores references to them. Not
 ///          thread-safe.
 class VR_SENSOR_UTILS_API GpuFramePrep {
@@ -142,9 +142,9 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///                   this object and every frame it hands out).
   /// @param config     Which queue families read the colour output (see
   ///                   @ref GpuFramePrepConfig).
-  /// @return The pass; @ref Status::Code::InvalidArgument for a
+  /// @return The pass; `Status::Code::InvalidArgument` for a
   ///         `color_queue_family_count` past `BufferDesc::kMaxQueueFamilies`;
-  ///         or a non-OK @ref Status if a pipeline, descriptor object or
+  ///         or a non-OK `Status` if a pipeline, descriptor object or
   ///         buffer fails to build.
   static core::Result<GpuFramePrep> create(
       core::Device& device, core::Allocator& allocator,
@@ -160,7 +160,7 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///        the result over as buffers on the device.
   /// @param frame    The frame; read during the call only. Device planes must
   ///                 be on this pass's device, their writer finished.
-  /// @param metrics  Optional @ref StageMetrics collecting a `"frame prep"`
+  /// @param metrics  Optional `StageMetrics` collecting a `"frame prep"`
   ///                 row: the upload and both passes on the host, and on the
   ///                 device the frame's copy up and the two dispatches.
   ///                 `nullptr` measures nothing.
@@ -178,7 +178,7 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         size with `TRANSFER_SRC` usage, in a layout a copy reads, a
   ///         `queue_family` the device lacks, or an image past a single
   ///         dispatch (16.7 M pixels);
-  ///         @ref Status::Code::Unsupported for a colour encoding
+  ///         `Status::Code::Unsupported` for a colour encoding
   ///         @ref is_canonical refuses; otherwise a buffer or dispatch
   ///         failure.
   core::Result<DeviceFrame> prepare(const RawFrame& frame,
@@ -231,14 +231,14 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
 
 /// @brief Prepare several cameras' frames at once, each on its own thread
 ///        with its own pass: they do not depend on one another, so their
-///        uploads, submits and waits overlap. The @ref Device must be shared
+///        uploads, submits and waits overlap. The `Device` must be shared
 ///        by the passes, and may be.
 /// @param preps   One pass per camera; `preps[i]` prepares `frames[i]`, and
 ///                each is used by one thread only for the call.
 /// @param frames  One entry per camera, an empty one skipped -- a rig's set
 ///                (`OrbbecRig::poll_raw_set`).
-/// @return One @ref DeviceFrame per present frame, empty where the frame
-///         was; @ref Status::Code::InvalidArgument for fewer passes than
+/// @return One `Device`Frame per present frame, empty where the frame
+///         was; `Status::Code::InvalidArgument` for fewer passes than
 ///         frames; otherwise the lowest camera's failure, once every thread
 ///         has finished.
 VR_SENSOR_UTILS_API core::Result<std::vector<std::optional<DeviceFrame>>>

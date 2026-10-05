@@ -73,7 +73,7 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
     std::string label;
   };
 
-  /// @return The decoder; or @ref Status::Code::IoError if FFmpeg's decoder
+  /// @return The decoder; or `Status::Code::IoError` if FFmpeg's decoder
   ///         does not open. A device nvJPEG cannot use is not an error: the
   ///         decoder runs in software instead, as @ref backend says.
   static core::Result<JpegDecoder> create(const Options& options);
@@ -95,7 +95,7 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
   ///         Status::Code::InvalidArgument for no bytes, more than 2 GiB of
   ///         them, a JPEG in a pixel format swscale cannot read, or a
   ///         moved-from decoder;
-  ///         @ref Status::Code::IoError for bytes that do not decode.
+  ///         `Status::Code::IoError` for bytes that do not decode.
   core::Result<DecodedPicture> decode(const std::uint8_t* data,
                                       std::size_t size);
 

@@ -67,9 +67,9 @@ namespace volumetric_kit::recon::sensor {
 ///              sentinel exact. May alias @p src exactly (in-place); may not
 ///              partially overlap.
 /// @return OK, or:
-///         - @ref Status::Code::InvalidArgument if @p src or @p dst is null
+///         - `Status::Code::InvalidArgument` if @p src or @p dst is null
 ///           with a non-zero @p count;
-///         - @ref Status::Code::Unsupported for
+///         - `Status::Code::Unsupported` for
 ///           @ref ColorEncoding::Transfer::Bt2020Pq, whose absolute-luminance
 ///           HDR curve needs tone mapping into an 8-bit SDR form -- something
 ///           this repo does not do, and reports rather than approximating into

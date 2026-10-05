@@ -51,7 +51,7 @@ struct OrbbecRigSyncConfig {
 };
 
 /// @brief Parse a sync configuration document.
-/// @return The configuration; or @ref Status::Code::InvalidArgument naming what
+/// @return The configuration; or `Status::Code::InvalidArgument` naming what
 ///         is wrong: not JSON, no `devices`, a device without an `sn` or a
 ///         `syncConfig` whose fields are all present and typed, a `syncMode`
 ///         this driver does not name, a negative delay, a repeated serial, or
@@ -61,7 +61,7 @@ VR_SENSOR_ORBBEC_API core::Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(
 
 /// @brief Read and parse the sync configuration file at @p path.
 /// @return As @ref parse_orbbec_sync_config, messages naming the file; or
-///         @ref Status::Code::IoError if it cannot be read.
+///         `Status::Code::IoError` if it cannot be read.
 VR_SENSOR_ORBBEC_API core::Result<OrbbecRigSyncConfig> read_orbbec_sync_config(
     const std::string& path);
 

@@ -94,11 +94,11 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   ///         the first that decodes, so it tries only as many as it needs.
   static std::vector<VideoDecodeBackend> hardware_backends();
 
-  /// @return The decoder; @ref Status::Code::Unsupported for a named back end
+  /// @return The decoder; `Status::Code::Unsupported` for a named back end
   ///         not in @ref hardware_backends (the message lists those that
-  ///         are); @ref Status::Code::InvalidArgument for a negative thread
+  ///         are); `Status::Code::InvalidArgument` for a negative thread
   ///         count or an Nv12 layout, which only a device picture comes as;
-  ///         or @ref Status::Code::IoError if FFmpeg fails.
+  ///         or `Status::Code::IoError` if FFmpeg fails.
   static core::Result<HevcDecoder> create(const Options& options);
 
   HevcDecoder(HevcDecoder&& other) noexcept;
@@ -112,10 +112,10 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   /// @brief Hand the decoder one access unit; `size == 0` ends the stream,
   ///        after which @ref receive drains the pictures still held. Take
   ///        every ready picture with @ref receive before the next send.
-  /// @return OK; @ref Status::Code::Unsupported once a named hardware back
+  /// @return OK; `Status::Code::Unsupported` once a named hardware back
   ///         end meets a stream it cannot decode or crop, which ends the
-  ///         stream; @ref Status::Code::IoError if the data cannot be decoded;
-  ///         @ref Status::Code::InvalidArgument on a moved-from decoder, a
+  ///         stream; `Status::Code::IoError` if the data cannot be decoded;
+  ///         `Status::Code::InvalidArgument` on a moved-from decoder, a
   ///         null @p data with a size, data after the end, or pictures left
   ///         waiting.
   core::Status send(const std::uint8_t* data, std::size_t size,
@@ -124,10 +124,10 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   /// @brief Take the next decoded picture, if one is ready.
   /// @return The picture, valid until the next call on this decoder; empty
   ///         when the decoder needs more input or has drained;
-  ///         @ref Status::Code::Unsupported, as from @ref send, once the
+  ///         `Status::Code::Unsupported`, as from @ref send, once the
   ///         pictures decoded before a refusal are taken;
-  ///         @ref Status::Code::IoError if decoding failed; or
-  ///         @ref Status::Code::InvalidArgument on a moved-from decoder.
+  ///         `Status::Code::IoError` if decoding failed; or
+  ///         `Status::Code::InvalidArgument` on a moved-from decoder.
   core::Result<std::optional<DecodedPicture>> receive();
 
   /// @brief Start the stream afresh, as after a seek: the pictures still held
@@ -136,8 +136,8 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   ///        lead a CRA key frame, predicted from before it, are skipped
   ///        rather than decoded from references the decoder never had. For a
   ///        caller that lost access units. A refusal
-  ///        (@ref Status::Code::Unsupported) stands.
-  /// @return OK; @ref Status::Code::InvalidArgument on a moved-from decoder.
+  ///        (`Status::Code::Unsupported`) stands.
+  /// @return OK; `Status::Code::InvalidArgument` on a moved-from decoder.
   core::Status reset();
 
  private:
