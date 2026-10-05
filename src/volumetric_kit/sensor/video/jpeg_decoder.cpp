@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "cuda_pictures.hpp"
-#include "volumetric_kit/recon/core/device.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
 #endif
 #if defined(__APPLE__)
 #include "vt_jpeg.hpp"
@@ -106,8 +106,8 @@ bool refused(nvjpegStatus_t s) {
 struct NvjpegDecoder {
   // Null where nvJPEG cannot use @p device. Its picture buffers are made
   // through @p allocator.
-  static std::unique_ptr<NvjpegDecoder> open(const Device& device,
-                                             Allocator& allocator);
+  static std::unique_ptr<NvjpegDecoder> open(const core::Device& device,
+                                             core::Allocator& allocator);
   NvjpegDecoder() = default;
   ~NvjpegDecoder();
   NvjpegDecoder(const NvjpegDecoder&) = delete;
@@ -115,8 +115,8 @@ struct NvjpegDecoder {
 
   // The JPEG on the device; empty for one nvJPEG refuses, which goes to
   // software instead. An error means the device path failed.
-  Result<std::optional<DecodedPicture>> decode(const std::uint8_t* data,
-                                               std::size_t size);
+  core::Result<std::optional<DecodedPicture>> decode(const std::uint8_t* data,
+                                                     std::size_t size);
   bool add_engine(nvjpegBackend_t nv);
 
   JpegDecodeBackend backend = JpegDecodeBackend::Software;
@@ -142,8 +142,8 @@ struct NvjpegDecoder {
   std::unique_ptr<video::CudaPictures> pictures;
 };
 
-std::unique_ptr<NvjpegDecoder> NvjpegDecoder::open(const Device& device,
-                                                   Allocator& allocator) {
+std::unique_ptr<NvjpegDecoder> NvjpegDecoder::open(const core::Device& device,
+                                                   core::Allocator& allocator) {
   const video::CudaDriver* cu = video::cuda_driver();
   const Nvjpeg* n = nvjpeg();
   if (!device.exports_memory() || cu == nullptr || n == nullptr) return nullptr;
@@ -228,23 +228,24 @@ NvjpegDecoder::~NvjpegDecoder() {
   cu->cuDevicePrimaryCtxRelease(cuda_device);
 }
 
-Result<std::optional<DecodedPicture>> NvjpegDecoder::decode(
+core::Result<std::optional<DecodedPicture>> NvjpegDecoder::decode(
     const std::uint8_t* data, std::size_t size) {
   const video::CudaContextScope scope(context);
   if (!scope.ok()) {
-    return Status::io_error(std::string(kWho) +
-                            ": making the CUDA context current");
+    return core::Status::io_error(std::string(kWho) +
+                                  ": making the CUDA context current");
   }
   // nvJPEG's last status: one that refuses the JPEG sends it to software,
   // any other fails the device path.
   nvjpegStatus_t status = NVJPEG_STATUS_SUCCESS;
   const auto step = [&status](nvjpegStatus_t s) { return ok(status = s); };
   const auto failed =
-      [&status](const char* what) -> Result<std::optional<DecodedPicture>> {
+      [&status](
+          const char* what) -> core::Result<std::optional<DecodedPicture>> {
     if (refused(status)) return std::optional<DecodedPicture>();
-    return Status::io_error(std::string(kWho) + ": " + what +
-                            ": nvJPEG status " +
-                            std::to_string(static_cast<int>(status)));
+    return core::Status::io_error(std::string(kWho) + ": " + what +
+                                  ": nvJPEG status " +
+                                  std::to_string(static_cast<int>(status)));
   };
 
   // Only an 8-bit 4:2:0 JPEG, on the first engine that takes it.
@@ -289,8 +290,8 @@ Result<std::optional<DecodedPicture>> NvjpegDecoder::decode(
   const std::uint64_t chroma = video::round_up(cw * ch, 256);
   const std::uint64_t at[3] = {0, luma, luma + chroma};
   const std::uint64_t pitch[3] = {w, cw, cw};
-  VR_ASSIGN(video::CudaPictures::Target target,
-            pictures->take(luma + 2 * chroma));
+  VKC_ASSIGN(video::CudaPictures::Target target,
+             pictures->take(luma + 2 * chroma));
 
   nvjpegImage_t out{};
   for (int p = 0; p < 3; ++p) {
@@ -373,16 +374,16 @@ struct JpegDecoder::Impl {
     return false;
   }
 
-  Status open_software();
-  Result<DecodedPicture> decode_software(const std::uint8_t* data,
-                                         std::size_t size);
+  core::Status open_software();
+  core::Result<DecodedPicture> decode_software(const std::uint8_t* data,
+                                               std::size_t size);
 };
 
-Status JpegDecoder::Impl::open_software() {
+core::Status JpegDecoder::Impl::open_software() {
   const AVCodec* found = avcodec_find_decoder(AV_CODEC_ID_MJPEG);
   if (found == nullptr) {
-    return Status::io_error(std::string(kWho) +
-                            ": this FFmpeg has no JPEG decoder");
+    return core::Status::io_error(std::string(kWho) +
+                                  ": this FFmpeg has no JPEG decoder");
   }
   codec.reset(avcodec_alloc_context3(found));
   packet.reset(av_packet_alloc());
@@ -396,10 +397,11 @@ Status JpegDecoder::Impl::open_software() {
   return {};
 }
 
-Result<DecodedPicture> JpegDecoder::Impl::decode_software(
+core::Result<DecodedPicture> JpegDecoder::Impl::decode_software(
     const std::uint8_t* data, std::size_t size) {
   if (size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-    return Status::invalid_argument(std::string(kWho) + ": a JPEG past 2 GiB");
+    return core::Status::invalid_argument(std::string(kWho) +
+                                          ": a JPEG past 2 GiB");
   }
   av_frame_unref(frame.get());
   // Not reference-counted, so FFmpeg copies it, padded as it needs.
@@ -415,10 +417,10 @@ Result<DecodedPicture> JpegDecoder::Impl::decode_software(
   return converter.convert(*frame, VideoPixelLayout::Yuv420, kJfif);
 }
 
-Result<JpegDecoder> JpegDecoder::create(const Options& options) {
+core::Result<JpegDecoder> JpegDecoder::create(const Options& options) {
   if (options.configure_ffmpeg_logging) av_log_set_level(AV_LOG_ERROR);
   auto impl = std::make_unique<Impl>();
-  VR_TRY(impl->open_software());
+  VKC_TRY(impl->open_software());
 #if VR_SENSOR_VIDEO_WITH_CUDA
   if (options.device != nullptr && options.allocator != nullptr) {
     impl->gpu = NvjpegDecoder::open(*options.device, *options.allocator);
@@ -448,13 +450,13 @@ JpegDecoder::JpegDecoder(JpegDecoder&& other) noexcept = default;
 JpegDecoder& JpegDecoder::operator=(JpegDecoder&& other) noexcept = default;
 JpegDecoder::~JpegDecoder() = default;
 
-Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
-                                           std::size_t size) {
+core::Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
+                                                 std::size_t size) {
   if (impl_ == nullptr) {
-    return Status::invalid_argument(std::string(kWho) + ": moved from");
+    return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
   if (data == nullptr || size == 0) {
-    return Status::invalid_argument(std::string(kWho) + ": no JPEG");
+    return core::Status::invalid_argument(std::string(kWho) + ": no JPEG");
   }
 #if VR_SENSOR_VIDEO_WITH_CUDA
   if (impl_->gpu != nullptr) {

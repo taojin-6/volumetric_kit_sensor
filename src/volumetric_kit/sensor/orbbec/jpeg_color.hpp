@@ -26,7 +26,7 @@
 
 #include <libobsensor/ObSensor.hpp>
 
-#include "volumetric_kit/recon/core/result.hpp"
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
@@ -42,18 +42,18 @@ class JpegColorDecoder {
     // The device the GPU pass runs on, which the JPEGs are decoded onto
     // where the hardware takes them; null decodes in software. Borrowed: it
     // must outlive the decoder and every frame it hands on.
-    const Device* device = nullptr;
+    const core::Device* device = nullptr;
     // With device, the allocator nvJPEG's pictures are made through. Borrowed
     // as device is.
-    Allocator* allocator = nullptr;
+    core::Allocator* allocator = nullptr;
     bool configure_ffmpeg_logging = true;
     std::string who;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair --
   // its depth, and its colour in a raw_color_frame -- on that thread.
-  static Result<std::unique_ptr<JpegColorDecoder>> start(const Options& options,
-                                                         Sink sink);
+  static core::Result<std::unique_ptr<JpegColorDecoder>> start(
+      const Options& options, Sink sink);
 
   JpegColorDecoder(const JpegColorDecoder&) = delete;
   JpegColorDecoder& operator=(const JpegColorDecoder&) = delete;

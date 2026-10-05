@@ -91,7 +91,7 @@ struct DecodedPicture {
   /// wrote it, so a reader takes it over from `VK_QUEUE_FAMILY_EXTERNAL`
   /// first (`CommandBatch::acquire`), and a `YuvImage` of it carries
   /// `kQueueFamilyExternal`.
-  std::shared_ptr<const Buffer> device;
+  std::shared_ptr<const core::Buffer> device;
   std::uint64_t offset[3] = {};  ///< Each plane's byte offset in @ref device.
   /// Or on the device as images, from @ref HevcDecoder on VideoToolbox: NV12,
   /// `image[0]` the luma (`R8_UNORM`) and `image[1]` the chroma
@@ -101,7 +101,7 @@ struct DecodedPicture {
   /// reuse while they are held; drop them before the device they are on is
   /// destroyed. VideoToolbox has finished writing them, and a `YuvImage` of
   /// them takes them as its `image`.
-  std::shared_ptr<const Image> image[2];
+  std::shared_ptr<const core::Image> image[2];
   std::int64_t pts = 0;  ///< The one sent with its access unit.
   /// The matrix and range the stream declares: what Rgb24 was converted by,
   /// and what a Yuv420 consumer converts by. A stream that declares no matrix

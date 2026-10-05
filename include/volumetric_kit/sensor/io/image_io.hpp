@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "volumetric_kit/recon/core/result.hpp"
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/io/export.hpp"
 
 namespace volumetric_kit::recon::io {
@@ -28,7 +28,7 @@ namespace volumetric_kit::recon::io {
 /// @param expected_h Expected positive height; a mismatch is an error.
 /// @return Packed pixels, or non-OK Status for invalid dimensions, a decode
 ///         failure, or an allocation failure.
-VR_IO_API Result<std::vector<std::uint32_t>> load_color_packed(
+VR_IO_API core::Result<std::vector<std::uint32_t>> load_color_packed(
     const std::string& path, std::uint32_t expected_w,
     std::uint32_t expected_h);
 
@@ -45,10 +45,9 @@ VR_IO_API Result<std::vector<std::uint32_t>> load_color_packed(
 ///                    largest sample, 65535, a finite float depth.
 /// @return Depths in metres, or non-OK Status on invalid input, decode failure,
 ///         or allocation failure.
-VR_IO_API Result<std::vector<float>> load_depth_metres(const std::string& path,
-                                                       std::uint32_t expected_w,
-                                                       std::uint32_t expected_h,
-                                                       float depth_scale);
+VR_IO_API core::Result<std::vector<float>> load_depth_metres(
+    const std::string& path, std::uint32_t expected_w, std::uint32_t expected_h,
+    float depth_scale);
 
 /// @brief Write tightly packed, encoded RGBA8 rows to a PNG file.
 ///
@@ -66,9 +65,10 @@ VR_IO_API Result<std::vector<float>> load_depth_metres(const std::string& path,
 /// @param height Positive height supported by the encoder's integer bounds.
 /// @return OK after closing the file, or non-OK Status for invalid input,
 ///         allocation failure, or encoding/write failure.
-VR_IO_API Status write_png_rgba8(const std::string& path,
-                                 const std::uint8_t* pixels,
-                                 std::size_t byte_count, std::uint32_t width,
-                                 std::uint32_t height);
+VR_IO_API core::Status write_png_rgba8(const std::string& path,
+                                       const std::uint8_t* pixels,
+                                       std::size_t byte_count,
+                                       std::uint32_t width,
+                                       std::uint32_t height);
 
 }  // namespace volumetric_kit::recon::io

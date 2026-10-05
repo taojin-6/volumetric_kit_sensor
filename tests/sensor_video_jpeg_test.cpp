@@ -26,16 +26,18 @@
 #include "bare_device.hpp"
 #include "buffer_readback.hpp"
 #include "device_picture_readback.hpp"
-#include "volumetric_kit/recon/core/allocator.hpp"
-#include "volumetric_kit/recon/core/buffer.hpp"
-#include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/instance.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/instance.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/core/log.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 #include "yuv_reference.hpp"
 
 namespace vr = volumetric_kit::recon;
+namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 using sensor::JpegDecodeBackend;
 using sensor::JpegDecoder;
@@ -76,8 +78,8 @@ std::vector<std::uint8_t> read_file(const char* path) {
   return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-vr::Result<sensor::DecodedPicture> decode(JpegDecoder& decoder,
-                                          const std::vector<std::uint8_t>& b) {
+vkc::Result<sensor::DecodedPicture> decode(JpegDecoder& decoder,
+                                           const std::vector<std::uint8_t>& b) {
   return decoder.decode(b.data(), b.size());
 }
 
@@ -102,8 +104,8 @@ Planes from_host(const sensor::DecodedPicture& p) {
 }
 
 // nvJPEG's buffer or VideoToolbox's images, read back.
-Planes from_device(const sensor::DecodedPicture& p, vr::Device& device,
-                   vr::Allocator& allocator) {
+Planes from_device(const sensor::DecodedPicture& p, vkc::Device& device,
+                   vkc::Allocator& allocator) {
   Planes out{p.width, p.height, {}};
   vr_test::read_device_picture(p, device, allocator, out.plane);
   return out;
@@ -166,7 +168,7 @@ double chroma_at(const Planes& p, int plane, int x, int y, bool centred) {
 // swscale: old packed-RGB converters round vertical chroma weights wrongly.
 // The committed patch edges distinguish centred from left-aligned chroma.
 int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
-                        vr::Device& device, vr::Allocator& allocator,
+                        vkc::Device& device, vkc::Allocator& allocator,
                         sensor::GpuFramePrep& prep) {
   CHECK(planes.plane[0].size() == std::size_t{p.width} * p.height);
   CHECK(planes.plane[1].size() ==
@@ -257,16 +259,16 @@ int test_software() {
 // keeping VideoToolbox, where it does not. 4:2:2 still comes to the host. A
 // buffer is reused only once no picture holds it.
 int test_device() {
-  vr::Result<vr::Instance> instance = vr::Instance::create({});
+  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
   if (!instance) return 0;
-  vr::Result<vr::PhysicalDeviceInfo> gpu =
+  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
       instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  vr::Result<vr::Device> device = vr::Device::create(
+  vkc::Result<vkc::Device> device = vkc::Device::create(
       instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
-  vr::Result<vr::Allocator> allocator =
-      vr::Allocator::create(instance.value().handle(), device.value());
+  vkc::Result<vkc::Allocator> allocator =
+      vkc::Allocator::create(instance.value().handle(), device.value());
   CHECK(allocator.ok());
 
   JpegDecoder::Options options;
@@ -344,7 +346,7 @@ int test_device() {
     auto second = decode(decoder.value(), bytes);
     CHECK(first.ok() && second.ok());
     CHECK(first->device != second->device);  // the first still holds its own
-    const vr::Buffer* freed = first->device.get();
+    const vkc::Buffer* freed = first->device.get();
     first.value() = {};
     auto third = decode(decoder.value(), bytes);
     CHECK(third.ok() && third->device.get() == freed);
@@ -358,28 +360,28 @@ int test_device() {
 // A device the decoder can keep no picture on is said once, as a warning
 // naming whose decoder it is; no device says nothing.
 int test_host_warning() {
-  vr::Result<vr::Instance> instance = vr::Instance::create({});
+  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
   if (!instance) return 0;
-  vr::Result<vr::PhysicalDeviceInfo> gpu =
+  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
       instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  vr::Result<vr::Device> device = vr::Device::create(
+  vkc::Result<vkc::Device> device = vkc::Device::create(
       instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
-  vr::Result<vr::Device> bare =
+  vkc::Result<vkc::Device> bare =
       vr_test::bare_device(instance.value(), device.value());
   CHECK(bare.ok());
   std::vector<std::string> warnings;
-  vr::set_log_handler(
-      [&warnings](vr::LogLevel level, std::string_view, std::string_view m) {
-        if (level == vr::LogLevel::Warning) warnings.emplace_back(m);
+  vkc::set_log_handler(
+      [&warnings](vkc::LogLevel level, std::string_view, std::string_view m) {
+        if (level == vkc::LogLevel::Warning) warnings.emplace_back(m);
       });
   JpegDecoder::Options options;
   options.label = "camera 7";
   const bool quiet = JpegDecoder::create(options).ok() && warnings.empty();
   options.device = &bare.value();
   auto decoder = JpegDecoder::create(options);
-  vr::set_log_handler({});
+  vkc::set_log_handler({});
   CHECK(quiet && decoder.ok());
   CHECK(decoder->backend() == JpegDecodeBackend::Software);
   CHECK(warnings.size() == 1);
@@ -389,18 +391,18 @@ int test_host_warning() {
 }
 
 int test_refusals() {
-  vr::Result<vr::Instance> instance = vr::Instance::create({});
-  vr::Result<vr::PhysicalDeviceInfo> gpu =
+  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
+  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
       instance
           ? instance.value().select_physical_device(vr::device_requirements())
-          : vr::Result<vr::PhysicalDeviceInfo>(instance.status());
-  vr::Result<vr::Device> device =
-      gpu ? vr::Device::create(instance.value(), gpu.value(),
-                               vr::device_requirements())
-          : vr::Result<vr::Device>(gpu.status());
-  vr::Result<vr::Allocator> allocator =
-      device ? vr::Allocator::create(instance.value().handle(), device.value())
-             : vr::Result<vr::Allocator>(device.status());
+          : vkc::Result<vkc::PhysicalDeviceInfo>(instance.status());
+  vkc::Result<vkc::Device> device =
+      gpu ? vkc::Device::create(instance.value(), gpu.value(),
+                                vr::device_requirements())
+          : vkc::Result<vkc::Device>(gpu.status());
+  vkc::Result<vkc::Allocator> allocator =
+      device ? vkc::Allocator::create(instance.value().handle(), device.value())
+             : vkc::Result<vkc::Allocator>(device.status());
   JpegDecoder::Options options;
   options.device = device ? &device.value() : nullptr;
   options.allocator = allocator ? &allocator.value() : nullptr;
@@ -409,15 +411,15 @@ int test_refusals() {
 
   const std::vector<std::uint8_t> good = read_file(k420);
   CHECK(decoder->decode(nullptr, 16).status().domain() ==
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
   CHECK(decoder->decode(good.data(), 0).status().domain() ==
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
   // A corrupt frame is the camera's, not the GPU's, so neither costs the
   // device path: nvJPEG refuses the garbage, and decodes the cut one or not.
   const JpegDecodeBackend before = decoder->backend();
   const std::vector<std::uint8_t> garbage(64, 0x5a);
   CHECK(decode(decoder.value(), garbage).status().domain() ==
-        vr::Status::Code::IoError);
+        vkc::Status::Code::IoError);
   const std::vector<std::uint8_t> cut(good.begin(),
                                       good.begin() + good.size() / 2);
   (void)decode(decoder.value(), cut);
@@ -437,7 +439,7 @@ int test_moves() {
   JpegDecoder b(std::move(a));
   const std::vector<std::uint8_t> good = read_file(k420);
   CHECK(decode(a, good).status().domain() ==  // NOLINT: moved from
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
   CHECK(a.backend() == JpegDecodeBackend::Software);  // NOLINT: moved from
 
   auto other = JpegDecoder::create({});
@@ -445,7 +447,7 @@ int test_moves() {
   JpegDecoder c = std::move(other).value();
   c = std::move(b);                           // over a live decoder
   CHECK(decode(b, good).status().domain() ==  // NOLINT: moved from
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
 
   JpegDecoder* alias = &c;
   c = std::move(*alias);  // self-move

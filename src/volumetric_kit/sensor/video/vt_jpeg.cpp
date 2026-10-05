@@ -6,8 +6,8 @@
 #include <string>
 #include <utility>
 
-#include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/vulkan.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "vt_pictures.hpp"
 
 namespace volumetric_kit::recon::sensor::video {
@@ -74,7 +74,8 @@ CFMutableDictionaryRef dictionary() {
 
 }  // namespace
 
-std::unique_ptr<VtJpeg> VtJpeg::open(const Device& device, const char* who) {
+std::unique_ptr<VtJpeg> VtJpeg::open(const core::Device& device,
+                                     const char* who) {
   if (!VTIsHardwareDecodeSupported(kCMVideoCodecType_JPEG)) return nullptr;
   auto pictures = VtPictures::create(device, who);
   if (!pictures) return nullptr;
@@ -143,8 +144,8 @@ bool VtJpeg::start(std::uint32_t width, std::uint32_t height) {
   return true;
 }
 
-Result<std::optional<DecodedPicture>> VtJpeg::decode(const std::uint8_t* data,
-                                                     std::size_t size) {
+core::Result<std::optional<DecodedPicture>> VtJpeg::decode(
+    const std::uint8_t* data, std::size_t size) {
   const std::optional<JpegFrame> frame = read_frame(data, size);
   // A plane past the extent cannot be a texture (Metal aborts on one: a
   // 16400-wide JPEG on an M4, whose extent is 16384), so software takes it.
@@ -170,7 +171,7 @@ Result<std::optional<DecodedPicture>> VtJpeg::decode(const std::uint8_t* data,
   if (CMBlockBufferCreateWithMemoryBlock(
           kCFAllocatorDefault, const_cast<std::uint8_t*>(data), size,
           kCFAllocatorNull, nullptr, 0, size, 0, &block) != noErr) {
-    return Status::io_error(std::string(who_) + ": wrapping a JPEG");
+    return core::Status::io_error(std::string(who_) + ": wrapping a JPEG");
   }
   CMSampleBufferRef sample = nullptr;
   const std::size_t sizes[1] = {size};
@@ -178,7 +179,7 @@ Result<std::optional<DecodedPicture>> VtJpeg::decode(const std::uint8_t* data,
       kCFAllocatorDefault, block, format_, 1, 0, nullptr, 1, sizes, &sample);
   CFRelease(block);
   if (wrapped != noErr) {
-    return Status::io_error(std::string(who_) + ": wrapping a JPEG");
+    return core::Status::io_error(std::string(who_) + ": wrapping a JPEG");
   }
   CVPixelBufferRef picture = nullptr;
   const OSStatus decoded =
@@ -194,7 +195,7 @@ Result<std::optional<DecodedPicture>> VtJpeg::decode(const std::uint8_t* data,
   if (picture == nullptr) return std::optional<DecodedPicture>();
 
   DecodedPicture out;
-  const Result<bool> taken =
+  const core::Result<bool> taken =
       pictures_->import(picture, frame->width, frame->height, out);
   CVPixelBufferRelease(picture);  // the images hold their own
   if (!taken) return taken.status();

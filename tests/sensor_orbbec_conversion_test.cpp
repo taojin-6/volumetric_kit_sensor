@@ -16,6 +16,7 @@
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
 
 namespace vr = volumetric_kit::recon;
+namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;
 
@@ -41,8 +42,8 @@ OBCameraIntrinsic femto_color_720p() {
   return k;
 }
 
-bool invalid(const vr::Status& s) {
-  return s.domain() == vr::Status::Code::InvalidArgument;
+bool invalid(const vkc::Status& s) {
+  return s.domain() == vkc::Status::Code::InvalidArgument;
 }
 
 int test_color_camera() {
@@ -183,7 +184,7 @@ int test_lens_camera() {
   d.model = OB_DISTORTION_KANNALA_BRANDT4;
   CHECK(orbbec::lens_camera_from(femto_color_720p(), d, "colour")
             .status()
-            .domain() == vr::Status::Code::Unsupported);
+            .domain() == vkc::Status::Code::Unsupported);
   // The plain model is the polynomial k1..k3: whatever the SDK leaves in
   // k4..k6 is not a term of it, and would divide the radial term if read.
   d.model = OB_DISTORTION_BROWN_CONRADY;
@@ -201,7 +202,7 @@ int test_lens_camera() {
   OBCameraIntrinsic k = femto_color_720p();
   k.fx = 0.0f;
   d.k2 = 0.0f;
-  const vr::Status bad = orbbec::lens_camera_from(k, d, "depth").status();
+  const vkc::Status bad = orbbec::lens_camera_from(k, d, "depth").status();
   CHECK(invalid(bad));
   CHECK(bad.message().find("depth") != std::string::npos);
   CHECK(bad.message().find("colour") == std::string::npos);

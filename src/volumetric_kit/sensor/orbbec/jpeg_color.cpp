@@ -10,7 +10,7 @@
 
 namespace volumetric_kit::recon::sensor::orbbec {
 
-Result<std::unique_ptr<JpegColorDecoder>> JpegColorDecoder::start(
+core::Result<std::unique_ptr<JpegColorDecoder>> JpegColorDecoder::start(
     const Options& options, Sink sink) {
   std::unique_ptr<JpegColorDecoder> d(new JpegColorDecoder());
   d->options_ = options;
@@ -22,14 +22,14 @@ Result<std::unique_ptr<JpegColorDecoder>> JpegColorDecoder::start(
   decoding.label = options.who;
   auto decoder = JpegDecoder::create(decoding);
   if (!decoder) {
-    return Status::io_error(options.who + ": opening the JPEG decoder: " +
-                            decoder.status().message());
+    return core::Status::io_error(options.who + ": opening the JPEG decoder: " +
+                                  decoder.status().message());
   }
   d->decoder_.emplace(std::move(decoder).value());
   try {
     d->thread_ = std::thread([raw = d.get()] { raw->run(); });
   } catch (const std::system_error& e) {
-    return Status::io_error(
+    return core::Status::io_error(
         options.who + ": starting the colour decoding thread: " + e.what());
   }
   return d;

@@ -14,36 +14,37 @@
 #include <utility>
 #include <vector>
 
-#include "volumetric_kit/recon/core/allocator.hpp"
-#include "volumetric_kit/recon/core/buffer.hpp"
-#include "volumetric_kit/recon/core/command_batch.hpp"
-#include "volumetric_kit/recon/core/compute_util.hpp"
-#include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/image.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
+#include "volumetric_kit/core/vulkan/compute_util.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 
 namespace vr_test {
 
 namespace vr = volumetric_kit::recon;
+namespace vkc = volumetric_kit::core;
 
 // Fills `planes`, or leaves them empty if a step fails.
 inline void read_device_picture(const vr::sensor::DecodedPicture& p,
-                                vr::Device& device, vr::Allocator& allocator,
+                                vkc::Device& device, vkc::Allocator& allocator,
                                 std::vector<std::uint8_t> (&planes)[3]) {
   const std::uint32_t cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
   const bool images = p.image[0] != nullptr;
   // The images' rows packed, the chroma at the 4-byte offset a copy needs.
   const VkDeviceSize chroma_at =
       (VkDeviceSize{p.width} * p.height + 3) & ~VkDeviceSize{3};
-  std::shared_ptr<const vr::Buffer> source = p.device;
+  std::shared_ptr<const vkc::Buffer> source = p.device;
   if (images) {
-    auto made = vr::device_storage_buffer(
+    auto made = vkc::device_storage_buffer(
         allocator, chroma_at + VkDeviceSize{cw} * ch * 2);
     if (!made) return;
-    source = std::make_shared<const vr::Buffer>(std::move(made).value());
+    source = std::make_shared<const vkc::Buffer>(std::move(made).value());
   }
   std::vector<std::uint8_t> b(static_cast<std::size_t>(source->size()));
-  vr::CommandBatch batch(device, allocator);
+  vkc::CommandBatch batch(device, allocator);
   const bool recorded =
       images ? batch.copy(*p.image[0], p.width, p.height, *source, 0).ok() &&
                    batch.copy(*p.image[1], cw, ch, *source, chroma_at).ok()

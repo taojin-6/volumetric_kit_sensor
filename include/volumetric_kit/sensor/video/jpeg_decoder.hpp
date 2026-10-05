@@ -12,8 +12,8 @@
 #include <memory>
 #include <string>
 
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
-#include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 #include "volumetric_kit/recon/sensor/video/export.hpp"
 
@@ -59,13 +59,13 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
     /// after the device path fails once. A device path that does not open
     /// or fails is said once, as a warning through core's log handler.
     /// Borrowed: it must outlive the decoder and every picture on it.
-    const Device* device = nullptr;
+    const core::Device* device = nullptr;
     /// The allocator nvJPEG's picture buffers are made through: exported
     /// device-only memory, counted against its heap's budget like any other
     /// allocation. Needed with @ref device for nvJPEG; VideoToolbox's
     /// pictures need none. Borrowed: it must outlive the decoder and every
     /// picture on it.
-    Allocator* allocator = nullptr;
+    core::Allocator* allocator = nullptr;
     /// Set FFmpeg's log level to ERROR. Process-wide: FFmpeg has one logger.
     bool configure_ffmpeg_logging = true;
     /// Whose decoder this is (a camera, say), put ahead of its warnings so a
@@ -76,7 +76,7 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
   /// @return The decoder; or @ref Status::Code::IoError if FFmpeg's decoder
   ///         does not open. A device nvJPEG cannot use is not an error: the
   ///         decoder runs in software instead, as @ref backend says.
-  static Result<JpegDecoder> create(const Options& options);
+  static core::Result<JpegDecoder> create(const Options& options);
 
   ~JpegDecoder();
   JpegDecoder(JpegDecoder&& other) noexcept;
@@ -96,7 +96,8 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
   ///         them, a JPEG in a pixel format swscale cannot read, or a
   ///         moved-from decoder;
   ///         @ref Status::Code::IoError for bytes that do not decode.
-  Result<DecodedPicture> decode(const std::uint8_t* data, std::size_t size);
+  core::Result<DecodedPicture> decode(const std::uint8_t* data,
+                                      std::size_t size);
 
   /// @return What this decoder decodes a 4:2:0 JPEG on: Software once the
   ///         device path has failed.

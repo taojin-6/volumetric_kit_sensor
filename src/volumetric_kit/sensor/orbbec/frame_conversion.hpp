@@ -14,9 +14,9 @@
 
 #include <libobsensor/h/ObTypes.h>
 
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/camera_params.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
-#include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/lens.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_rig.hpp"
@@ -29,8 +29,8 @@ namespace volumetric_kit::recon::sensor::orbbec {
 /// width or height that is not positive is refused here rather than wrapped
 /// into a four-billion-pixel `uint32_t`; a focal length that is not finite and
 /// positive is refused because every unprojection divides by it.
-Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
-                                            const Mat4f& cam_to_world);
+core::Result<ColorCameraParams> color_camera_from(
+    const OBCameraIntrinsic& intrinsic, const Mat4f& cam_to_world);
 
 /// A stream's camera as it captures, for the GPU pass: its intrinsics (checked
 /// as @ref color_camera_from checks them) and its lens. The SDK's Brown-Conrady
@@ -39,9 +39,9 @@ Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
 /// them; its modified, inverse and Kannala-Brandt models are refused as
 /// `Unsupported`, since the pass samples through that one model. @p what names
 /// the stream, in the errors too.
-Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
-                                    const OBCameraDistortion& distortion,
-                                    const std::string& what);
+core::Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
+                                          const OBCameraDistortion& distortion,
+                                          const std::string& what);
 
 /// The SDK's extrinsic from one stream to another (`p_to = R p_from + t`,
 /// `rot` row-major, `trans` in millimetres) as the transform that takes a point
@@ -86,11 +86,11 @@ std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
 /// Everything about @p options that can be refused without a camera: sizes and
 /// rate, the depth range, the pose. The first check @ref OrbbecCapture::open
 /// makes, before it touches the SDK.
-Status validate(const OrbbecCapture::Options& options);
+core::Status validate(const OrbbecCapture::Options& options);
 
 /// The same for a rig, plus what only a rig has: at least two cameras, a
 /// calibration (if any) that @ref validate_rig_calibration accepts and that
 /// poses every one of them, and a sync tolerance under half a frame period.
-Status validate(const OrbbecRig::Options& options);
+core::Status validate(const OrbbecRig::Options& options);
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

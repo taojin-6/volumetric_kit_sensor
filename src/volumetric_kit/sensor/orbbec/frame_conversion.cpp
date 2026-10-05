@@ -12,24 +12,24 @@ namespace volumetric_kit::recon::sensor::orbbec {
 namespace {
 
 // A stream's pinhole camera, checked; `what` names the stream in the errors.
-Result<ColorCameraParams> pinhole_from(const OBCameraIntrinsic& intrinsic,
-                                       const Mat4f& cam_to_world,
-                                       const std::string& what) {
+core::Result<ColorCameraParams> pinhole_from(const OBCameraIntrinsic& intrinsic,
+                                             const Mat4f& cam_to_world,
+                                             const std::string& what) {
   if (intrinsic.width <= 0 || intrinsic.height <= 0) {
-    return Status::invalid_argument("Orbbec " + what + " intrinsics report a " +
-                                    std::to_string(intrinsic.width) + "x" +
-                                    std::to_string(intrinsic.height) +
-                                    " image");
+    return core::Status::invalid_argument(
+        "Orbbec " + what + " intrinsics report a " +
+        std::to_string(intrinsic.width) + "x" +
+        std::to_string(intrinsic.height) + " image");
   }
   for (const float f : {intrinsic.fx, intrinsic.fy}) {
     if (!std::isfinite(f) || !(f > 0.0f)) {
-      return Status::invalid_argument(
+      return core::Status::invalid_argument(
           "Orbbec " + what +
           " intrinsics report a focal length that is not finite and positive");
     }
   }
   if (!std::isfinite(intrinsic.cx) || !std::isfinite(intrinsic.cy)) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "Orbbec " + what + " intrinsics report a non-finite principal point");
   }
   ColorCameraParams cam{};
@@ -45,23 +45,23 @@ Result<ColorCameraParams> pinhole_from(const OBCameraIntrinsic& intrinsic,
 
 }  // namespace
 
-Result<ColorCameraParams> color_camera_from(const OBCameraIntrinsic& intrinsic,
-                                            const Mat4f& cam_to_world) {
+core::Result<ColorCameraParams> color_camera_from(
+    const OBCameraIntrinsic& intrinsic, const Mat4f& cam_to_world) {
   return pinhole_from(intrinsic, cam_to_world, "colour");
 }
 
-Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
-                                    const OBCameraDistortion& distortion,
-                                    const std::string& what) {
-  VR_ASSIGN(const ColorCameraParams pinhole,
-            pinhole_from(intrinsic, Mat4f(1.0f), what));
+core::Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
+                                          const OBCameraDistortion& distortion,
+                                          const std::string& what) {
+  VKC_ASSIGN(const ColorCameraParams pinhole,
+             pinhole_from(intrinsic, Mat4f(1.0f), what));
   switch (distortion.model) {
     case OB_DISTORTION_NONE:
     case OB_DISTORTION_BROWN_CONRADY:
     case OB_DISTORTION_BROWN_CONRADY_K6:
       break;
     default:
-      return Status::unsupported(
+      return core::Status::unsupported(
           "Orbbec " + what + " stream reports lens model " +
           std::to_string(static_cast<int>(distortion.model)) +
           ", which the GPU pass cannot undistort (it takes Brown-Conrady)");
@@ -88,8 +88,8 @@ Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
   for (const float k : {cam.lens.k1, cam.lens.k2, cam.lens.p1, cam.lens.p2,
                         cam.lens.k3, cam.lens.k4, cam.lens.k5, cam.lens.k6}) {
     if (!std::isfinite(k)) {
-      return Status::invalid_argument("Orbbec " + what +
-                                      " stream reports a non-finite lens");
+      return core::Status::invalid_argument(
+          "Orbbec " + what + " stream reports a non-finite lens");
     }
   }
   return cam;
@@ -151,22 +151,22 @@ OrbbecSyncMode sync_mode_from(OBMultiDeviceSyncMode mode) noexcept {
 
 namespace {
 
-Status validate_streams(const OrbbecStreamOptions& streams,
-                        const std::string& who) {
+core::Status validate_streams(const OrbbecStreamOptions& streams,
+                              const std::string& who) {
   if (streams.depth_width == 0 || streams.depth_height == 0 ||
       streams.color_width == 0 || streams.color_height == 0) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         who + ": depth and colour sizes must be non-zero");
   }
   if (streams.fps == 0) {
-    return Status::invalid_argument(who + ": fps must be non-zero");
+    return core::Status::invalid_argument(who + ": fps must be non-zero");
   }
   // NaN fails every comparison, so test for the good range rather than the
   // bad one; a NaN gate would otherwise reject every sample in silence.
   if (!std::isfinite(streams.min_depth) || !std::isfinite(streams.max_depth) ||
       !(streams.min_depth >= 0.0f) ||
       !(streams.min_depth < streams.max_depth)) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         who + ": depth range [" + std::to_string(streams.min_depth) + ", " +
         std::to_string(streams.max_depth) +
         "] m must be finite, non-negative and non-empty");
@@ -174,11 +174,12 @@ Status validate_streams(const OrbbecStreamOptions& streams,
   return {};
 }
 
-Status validate_pose(const Mat4f& cam_to_world, const std::string& who) {
+core::Status validate_pose(const Mat4f& cam_to_world, const std::string& who) {
   for (int c = 0; c < 4; ++c) {
     for (int r = 0; r < 4; ++r) {
       if (!std::isfinite(cam_to_world[c][r])) {
-        return Status::invalid_argument(who + ": cam_to_world must be finite");
+        return core::Status::invalid_argument(who +
+                                              ": cam_to_world must be finite");
       }
     }
   }
@@ -264,42 +265,44 @@ std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
   return out;
 }
 
-Status validate(const OrbbecCapture::Options& options) {
-  VR_TRY(validate_streams(options, "OrbbecCapture"));
+core::Status validate(const OrbbecCapture::Options& options) {
+  VKC_TRY(validate_streams(options, "OrbbecCapture"));
   return validate_pose(options.cam_to_world, "OrbbecCapture");
 }
 
-Status validate(const OrbbecRig::Options& options) {
-  VR_TRY(validate_streams(options, "OrbbecRig"));
+core::Status validate(const OrbbecRig::Options& options) {
+  VKC_TRY(validate_streams(options, "OrbbecRig"));
   if (options.sync.devices.size() < 2) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "OrbbecRig: a rig needs at least two cameras; OrbbecCapture opens "
         "one");
   }
   for (std::size_t i = 0; i < options.sync.devices.size(); ++i) {
     const std::string& serial = options.sync.devices[i].serial;
     if (serial.empty()) {
-      return Status::invalid_argument("OrbbecRig: camera " + std::to_string(i) +
-                                      " has no serial");
+      return core::Status::invalid_argument(
+          "OrbbecRig: camera " + std::to_string(i) + " has no serial");
     }
     for (std::size_t j = 0; j < i; ++j) {
       if (options.sync.devices[j].serial == serial) {
-        return Status::invalid_argument("OrbbecRig: camera " + serial +
-                                        " is listed twice");
+        return core::Status::invalid_argument("OrbbecRig: camera " + serial +
+                                              " is listed twice");
       }
     }
   }
   if (!options.calibration.empty()) {
-    const Status calibration = validate_rig_calibration(options.calibration);
+    const core::Status calibration =
+        validate_rig_calibration(options.calibration);
     if (!calibration.ok()) {
-      return Status::invalid_argument("OrbbecRig: " + calibration.message());
+      return core::Status::invalid_argument("OrbbecRig: " +
+                                            calibration.message());
     }
     for (const OrbbecSyncDevice& device : options.sync.devices) {
       const bool posed =
           std::any_of(options.calibration.begin(), options.calibration.end(),
                       [&](const auto& c) { return c.serial == device.serial; });
       if (!posed) {
-        return Status::invalid_argument(
+        return core::Status::invalid_argument(
             "OrbbecRig: the calibration has no "
             "camera " +
             device.serial);
@@ -311,7 +314,7 @@ Status validate(const OrbbecRig::Options& options) {
   const std::uint64_t half_period_us = 500000u / options.fps;
   if (options.sync_tolerance_us == 0 ||
       options.sync_tolerance_us >= half_period_us) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "OrbbecRig: sync_tolerance_us is " +
         std::to_string(options.sync_tolerance_us) +
         "; it must be non-zero and under half a frame period (" +

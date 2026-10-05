@@ -16,8 +16,8 @@ namespace {
 
 using nlohmann::json;
 
-Status bad(const std::string& what) {
-  return Status::invalid_argument("sync config: " + what);
+core::Status bad(const std::string& what) {
+  return core::Status::invalid_argument("sync config: " + what);
 }
 
 // The SDK's names, as its multi-device example and OrbbecViewer write them.
@@ -34,7 +34,8 @@ constexpr std::pair<const char*, OrbbecSyncMode> kModes[] = {
      OrbbecSyncMode::HardwareTriggering},
 };
 
-Result<int> delay(const json& sync, const char* key, const std::string& who) {
+core::Result<int> delay(const json& sync, const char* key,
+                        const std::string& who) {
   const auto it = sync.find(key);
   if (it == sync.end() || !it->is_number_integer()) {
     return bad(who + "missing integer \"" + key + "\"");
@@ -49,7 +50,8 @@ Result<int> delay(const json& sync, const char* key, const std::string& who) {
 
 }  // namespace
 
-Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(const std::string& text) {
+core::Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(
+    const std::string& text) {
   json doc;
   try {
     doc = json::parse(text);
@@ -96,12 +98,12 @@ Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(const std::string& text) {
       return bad(who + "unknown syncMode \"" + mode->get<std::string>() + "\"");
     }
     OrbbecSyncSettings& s = device.sync;
-    VR_ASSIGN(s.depth_delay_us, delay(*sync, "depthDelayUs", who));
-    VR_ASSIGN(s.color_delay_us, delay(*sync, "colorDelayUs", who));
-    VR_ASSIGN(s.trigger_to_image_delay_us,
-              delay(*sync, "trigger2ImageDelayUs", who));
-    VR_ASSIGN(s.trigger_out_delay_us, delay(*sync, "triggerOutDelayUs", who));
-    VR_ASSIGN(s.frames_per_trigger, delay(*sync, "framesPerTrigger", who));
+    VKC_ASSIGN(s.depth_delay_us, delay(*sync, "depthDelayUs", who));
+    VKC_ASSIGN(s.color_delay_us, delay(*sync, "colorDelayUs", who));
+    VKC_ASSIGN(s.trigger_to_image_delay_us,
+               delay(*sync, "trigger2ImageDelayUs", who));
+    VKC_ASSIGN(s.trigger_out_delay_us, delay(*sync, "triggerOutDelayUs", who));
+    VKC_ASSIGN(s.frames_per_trigger, delay(*sync, "framesPerTrigger", who));
     const auto out = sync->find("triggerOutEnable");
     if (out == sync->end() || !out->is_boolean()) {
       return bad(who + "missing boolean \"triggerOutEnable\"");
@@ -126,20 +128,22 @@ Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(const std::string& text) {
   return config;
 }
 
-Result<OrbbecRigSyncConfig> read_orbbec_sync_config(const std::string& path) {
+core::Result<OrbbecRigSyncConfig> read_orbbec_sync_config(
+    const std::string& path) {
   std::FILE* in = std::fopen(path.c_str(), "rb");
   if (in == nullptr)
-    return Status::io_error("sync config: cannot open " + path);
+    return core::Status::io_error("sync config: cannot open " + path);
   std::string text;
   char buf[4096];
   std::size_t n = 0;
   while ((n = std::fread(buf, 1, sizeof(buf), in)) > 0) text.append(buf, n);
   const bool failed = std::ferror(in) != 0;
   std::fclose(in);
-  if (failed) return Status::io_error("sync config: cannot read " + path);
+  if (failed) return core::Status::io_error("sync config: cannot read " + path);
   auto config = parse_orbbec_sync_config(text);
   if (!config.ok()) {
-    return Status::invalid_argument(path + ": " + config.status().message());
+    return core::Status::invalid_argument(path + ": " +
+                                          config.status().message());
   }
   return config;
 }

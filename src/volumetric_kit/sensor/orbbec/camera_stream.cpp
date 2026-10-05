@@ -72,7 +72,7 @@ std::string list_modes(const ob::StreamProfileList& profiles) {
 // its intrinsics do not describe, and nothing downstream can tell. Refused
 // rather than undone, since undoing it would mean writing the camera's
 // settings.
-Status check_orientation(ob::Device& device, const std::string& who) {
+core::Status check_orientation(ob::Device& device, const std::string& who) {
   struct BoolProp {
     OBPropertyID id;
     const char* name;
@@ -86,16 +86,17 @@ Status check_orientation(ob::Device& device, const std::string& who) {
   for (const BoolProp& prop : bool_props) {
     if (device.isPropertySupported(prop.id, OB_PERMISSION_READ) &&
         device.getBoolProperty(prop.id)) {
-      return Status::unsupported(who + " has " + prop.name +
-                                 " switched on; its intrinsics describe the "
-                                 "unmirrored image. Switch it off.");
+      return core::Status::unsupported(
+          who + " has " + prop.name +
+          " switched on; its intrinsics describe the "
+          "unmirrored image. Switch it off.");
     }
   }
   for (const OBPropertyID id :
        {OB_PROP_DEPTH_ROTATE_INT, OB_PROP_COLOR_ROTATE_INT}) {
     if (device.isPropertySupported(id, OB_PERMISSION_READ) &&
         device.getIntProperty(id) != 0) {
-      return Status::unsupported(
+      return core::Status::unsupported(
           who +
           " rotates its image; its intrinsics describe the unrotated one. Set "
           "the rotation to 0.");
@@ -119,19 +120,19 @@ static_assert(sizeof(OBExtrinsic) == 12 * sizeof(float));
 
 }  // namespace
 
-Status sdk_error(const std::string& who, const std::string& what,
-                 const std::exception& e) {
-  return Status::io_error(who + ": " + what + ": " + e.what());
+core::Status sdk_error(const std::string& who, const std::string& what,
+                       const std::exception& e) {
+  return core::Status::io_error(who + ": " + what + ": " + e.what());
 }
 
-Status check_color_codec(const OrbbecStreamOptions& streams,
-                         const std::string& who) {
+core::Status check_color_codec(const OrbbecStreamOptions& streams,
+                               const std::string& who) {
 #if VR_ORBBEC_WITH_VIDEO
   (void)streams;
   (void)who;
 #else
   if (streams.color_codec == OrbbecColorCodec::Hevc || streams.raw) {
-    return Status::unsupported(
+    return core::Status::unsupported(
         who + (streams.raw ? ": raw frames need" : ": H.265 colour needs") +
         " the video decoders, which this build left out (configure with "
         "-DVR_WITH_FFMPEG=ON)");
@@ -145,7 +146,7 @@ void configure_sdk_logging() {
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
 }
 
-Result<std::vector<std::shared_ptr<ob::Device>>> discover(
+core::Result<std::vector<std::shared_ptr<ob::Device>>> discover(
     ob::Context& context, const std::vector<std::string>& serials,
     std::uint32_t timeout_ms, const std::string& who) {
   const auto deadline =
@@ -172,7 +173,7 @@ Result<std::vector<std::shared_ptr<ob::Device>>> discover(
     }
     if (serials.empty()) {
       if (answered.size() > 1) {
-        return Status::invalid_argument(
+        return core::Status::invalid_argument(
             who + ": " + std::to_string(answered.size()) +
             " cameras answered (" + join(answered) + "); name one");
       }
@@ -195,11 +196,11 @@ Result<std::vector<std::shared_ptr<ob::Device>>> discover(
               ? std::string("no camera")
               : "camera" + std::string(missing.size() > 1 ? "s " : " ") +
                     join(missing) + " not";
-      return Status::not_found(who + ": " + wanted + " found within " +
-                               std::to_string(timeout_ms) + " ms" +
-                               (answered.empty()
-                                    ? std::string(" (none answered)")
-                                    : " (answered: " + join(answered) + ")"));
+      return core::Status::not_found(
+          who + ": " + wanted + " found within " + std::to_string(timeout_ms) +
+          " ms" +
+          (answered.empty() ? std::string(" (none answered)")
+                            : " (answered: " + join(answered) + ")"));
     }
     std::this_thread::sleep_for(kDiscoveryRetry);
   }
@@ -238,7 +239,7 @@ void Mailbox::on_devices_changed(const std::string& serial,
   }
 }
 
-Result<std::unique_ptr<CameraStream>> CameraStream::create(
+core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
     const OrbbecStreamOptions& streams, const Mat4f& cam_to_world,
     bool configure_logging, const std::string& who) {
@@ -264,14 +265,14 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
     }
     s->info_.sync_mode = s->sync_settings_.mode;
     if (s->info_.sync_mode == OrbbecSyncMode::SoftwareTriggering) {
-      return Status::unsupported(
+      return core::Status::unsupported(
           s->who_ +
           " is in software-triggering mode, which captures only when the host "
           "sends a trigger, and this driver sends none. Set another sync mode "
           "on the camera.");
     }
 
-    VR_TRY(check_orientation(*s->device_, s->who_));
+    VKC_TRY(check_orientation(*s->device_, s->who_));
 
     s->pipeline_ = std::make_shared<ob::Pipeline>(s->device_);
     const auto depth_modes =
@@ -286,11 +287,12 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
           static_cast<int>(streams.depth_height), OB_FORMAT_Y16,
           static_cast<int>(streams.fps));
     } catch (const ob::Error&) {
-      return Status::unsupported(s->who_ + " has no depth mode " +
-                                 std::to_string(streams.depth_width) + "x" +
-                                 std::to_string(streams.depth_height) + "@" +
-                                 std::to_string(streams.fps) +
-                                 " Y16; it offers " + list_modes(*depth_modes));
+      return core::Status::unsupported(
+          s->who_ + " has no depth mode " +
+          std::to_string(streams.depth_width) + "x" +
+          std::to_string(streams.depth_height) + "@" +
+          std::to_string(streams.fps) + " Y16; it offers " +
+          list_modes(*depth_modes));
     }
 #if VR_ORBBEC_WITH_VIDEO  // without it, open has refused Hevc and raw
     if (streams.raw && streams.color_codec == OrbbecColorCodec::Mjpeg) {
@@ -302,12 +304,12 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
             static_cast<int>(streams.color_height), OB_FORMAT_MJPG,
             static_cast<int>(streams.fps));
       } catch (const ob::Error&) {
-        return Status::unsupported(s->who_ + " has no colour mode " +
-                                   std::to_string(streams.color_width) + "x" +
-                                   std::to_string(streams.color_height) + "@" +
-                                   std::to_string(streams.fps) +
-                                   " MJPG; it offers " +
-                                   list_modes(*color_modes));
+        return core::Status::unsupported(
+            s->who_ + " has no colour mode " +
+            std::to_string(streams.color_width) + "x" +
+            std::to_string(streams.color_height) + "@" +
+            std::to_string(streams.fps) + " MJPG; it offers " +
+            list_modes(*color_modes));
       }
     }
     if (streams.color_codec == OrbbecColorCodec::Hevc) {
@@ -321,12 +323,12 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
             static_cast<int>(streams.color_height), OB_FORMAT_H265,
             static_cast<int>(streams.fps));
       } catch (const ob::Error&) {
-        return Status::unsupported(s->who_ + " has no colour mode " +
-                                   std::to_string(streams.color_width) + "x" +
-                                   std::to_string(streams.color_height) + "@" +
-                                   std::to_string(streams.fps) +
-                                   " H265; it offers " +
-                                   list_modes(*color_modes));
+        return core::Status::unsupported(
+            s->who_ + " has no colour mode " +
+            std::to_string(streams.color_width) + "x" +
+            std::to_string(streams.color_height) + "@" +
+            std::to_string(streams.fps) + " H265; it offers " +
+            list_modes(*color_modes));
       }
     }
 #endif
@@ -338,11 +340,12 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
           static_cast<int>(streams.color_height), OB_FORMAT_RGB,
           static_cast<int>(streams.fps));
     } catch (const ob::Error&) {
-      return Status::unsupported(s->who_ + " has no colour mode " +
-                                 std::to_string(streams.color_width) + "x" +
-                                 std::to_string(streams.color_height) + "@" +
-                                 std::to_string(streams.fps) +
-                                 " RGB; it offers " + list_modes(*color_modes));
+      return core::Status::unsupported(
+          s->who_ + " has no colour mode " +
+          std::to_string(streams.color_width) + "x" +
+          std::to_string(streams.color_height) + "@" +
+          std::to_string(streams.fps) + " RGB; it offers " +
+          list_modes(*color_modes));
     }
 
     // The pinhole camera of the undistorted colour image: undistortion keeps
@@ -351,20 +354,20 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
     // the first pair of every start.
     const OBCameraIntrinsic intrinsic =
         s->color_profile_->as<ob::VideoStreamProfile>()->getIntrinsic();
-    VR_ASSIGN(s->color_camera_, color_camera_from(intrinsic, cam_to_world));
+    VKC_ASSIGN(s->color_camera_, color_camera_from(intrinsic, cam_to_world));
     if (s->color_camera_.width != streams.color_width ||
         s->color_camera_.height != streams.color_height) {
-      return Status::io_error(
+      return core::Status::io_error(
           s->who_ + " reports colour intrinsics for a " +
           std::to_string(s->color_camera_.width) + "x" +
           std::to_string(s->color_camera_.height) + " image, not the " +
           std::to_string(streams.color_width) + "x" +
           std::to_string(streams.color_height) + " mode it opened");
     }
-    VR_ASSIGN(s->depth_camera_,
-              depth_from_registered_color(
-                  s->color_camera_, streams.color_width, streams.color_height,
-                  streams.min_depth, streams.max_depth));
+    VKC_ASSIGN(s->depth_camera_,
+               depth_from_registered_color(
+                   s->color_camera_, streams.color_width, streams.color_height,
+                   streams.min_depth, streams.max_depth));
     // The decoded frames are the RGB mode's camera, so the mode on the wire
     // must have its calibration: undistortion and registration read it off
     // the frame, and the raw path off the RGB profile. H.265's matched byte
@@ -379,7 +382,7 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
           !same_bytes(wire->getExtrinsicTo(s->depth_profile_),
                       rgb->getExtrinsicTo(s->depth_profile_))) {
         const bool hevc = streams.color_codec == OrbbecColorCodec::Hevc;
-        return Status::unsupported(
+        return core::Status::unsupported(
             s->who_ + "'s " + (hevc ? "H.265" : "MJPG") +
             " colour mode reports a calibration other than its RGB mode's, " +
             (streams.raw
@@ -397,17 +400,18 @@ Result<std::unique_ptr<CameraStream>> CameraStream::create(
       // registers.
       const auto depth_video = s->depth_profile_->as<ob::VideoStreamProfile>();
       const auto color_video = s->color_profile_->as<ob::VideoStreamProfile>();
-      VR_ASSIGN(s->raw_depth_camera_,
-                lens_camera_from(depth_video->getIntrinsic(),
-                                 depth_video->getDistortion(), "depth"));
-      VR_ASSIGN(s->raw_color_camera_,
-                lens_camera_from(color_video->getIntrinsic(),
-                                 color_video->getDistortion(), "colour"));
+      VKC_ASSIGN(s->raw_depth_camera_,
+                 lens_camera_from(depth_video->getIntrinsic(),
+                                  depth_video->getDistortion(), "depth"));
+      VKC_ASSIGN(s->raw_color_camera_,
+                 lens_camera_from(color_video->getIntrinsic(),
+                                  color_video->getDistortion(), "colour"));
       if (s->raw_depth_camera_.width != streams.depth_width ||
           s->raw_depth_camera_.height != streams.depth_height) {
-        return Status::io_error(s->who_ +
-                                " reports depth intrinsics for another size "
-                                "than the mode it opened");
+        return core::Status::io_error(
+            s->who_ +
+            " reports depth intrinsics for another size "
+            "than the mode it opened");
       }
       s->raw_color_pose_ = cam_to_world;
       s->raw_depth_pose_ =
@@ -463,13 +467,13 @@ OrbbecCaptureStats CameraStream::stats() const noexcept {
   return s;
 }
 
-Status CameraStream::start() {
+core::Status CameraStream::start() {
   Mailbox& box = *mailbox_;
   {
     std::lock_guard<std::mutex> lock(box.mutex);
     // Checked before `running`: a camera that went away while streaming is
     // not "already started".
-    if (!box.fault.empty()) return Status::io_error(box.fault);
+    if (!box.fault.empty()) return core::Status::io_error(box.fault);
     if (running_) return {};
     box.pending.clear();
   }
@@ -502,7 +506,7 @@ Status CameraStream::start() {
     decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
     configure_ffmpeg_logging_ = false;
     decoding.who = who_;
-    VR_ASSIGN(auto decoder, HevcColorDecoder::start(decoding, post));
+    VKC_ASSIGN(auto decoder, HevcColorDecoder::start(decoding, post));
     hevc_ = std::move(decoder);
   } else if (raw_) {
     JpegColorDecoder::Options decoding;
@@ -515,7 +519,7 @@ Status CameraStream::start() {
     decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
     configure_ffmpeg_logging_ = false;
     decoding.who = who_;
-    VR_ASSIGN(auto decoder, JpegColorDecoder::start(decoding, post));
+    VKC_ASSIGN(auto decoder, JpegColorDecoder::start(decoding, post));
     jpeg_ = std::move(decoder);
   }
 #endif
@@ -598,9 +602,9 @@ void CameraStream::set_queue_depth(std::size_t depth) {
   mailbox_->depth = depth > 0 ? depth : 1;
 }
 
-Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
+core::Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
   std::lock_guard<std::mutex> lock(mailbox_->mutex);
-  if (!mailbox_->fault.empty()) return Status::io_error(mailbox_->fault);
+  if (!mailbox_->fault.empty()) return core::Status::io_error(mailbox_->fault);
   if (!running_ || mailbox_->pending.empty()) {
     return std::shared_ptr<ob::FrameSet>{};
   }
@@ -611,9 +615,10 @@ Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
   return pair;
 }
 
-Status CameraStream::take_all(std::vector<std::shared_ptr<ob::FrameSet>>* out) {
+core::Status CameraStream::take_all(
+    std::vector<std::shared_ptr<ob::FrameSet>>* out) {
   std::lock_guard<std::mutex> lock(mailbox_->mutex);
-  if (!mailbox_->fault.empty()) return Status::io_error(mailbox_->fault);
+  if (!mailbox_->fault.empty()) return core::Status::io_error(mailbox_->fault);
   if (!running_) return {};
   for (auto& pair : mailbox_->pending) out->push_back(std::move(pair));
   mailbox_->pending.clear();
@@ -622,10 +627,10 @@ Status CameraStream::take_all(std::vector<std::shared_ptr<ob::FrameSet>>* out) {
 
 void CameraStream::discard() noexcept { ++discarded_; }
 
-Status CameraStream::apply_sync(const OrbbecSyncSettings& settings) {
+core::Status CameraStream::apply_sync(const OrbbecSyncSettings& settings) {
   if (running_) {
-    return Status::invalid_argument(who_ +
-                                    ": sync settings are written before start");
+    return core::Status::invalid_argument(
+        who_ + ": sync settings are written before start");
   }
   try {
     device_->setMultiDeviceSyncConfig(sdk_sync_config(settings));
@@ -653,26 +658,27 @@ std::uint64_t CameraStream::timestamp_us(const ob::FrameSet& pair) noexcept {
   }
 }
 
-Result<std::optional<CapturedFrame>> CameraStream::process(
+core::Result<std::optional<CapturedFrame>> CameraStream::process(
     const std::shared_ptr<ob::FrameSet>& frameset) {
   // The pair is delivered, or counted as failed by one of these two. `refuse`
   // is for a pair that contradicts the stream create() negotiated -- every
   // pair after it would too; `skip` for one the SDK failed on, which the next
   // may not be.
-  const auto refuse = [this](Status why) {
+  const auto refuse = [this](core::Status why) {
     ++failed_;
     return why;
   };
-  const auto skip =
-      [this](const std::string& why) -> Result<std::optional<CapturedFrame>> {
+  const auto skip = [this](const std::string& why)
+      -> core::Result<std::optional<CapturedFrame>> {
     ++failed_;
     if (++failed_in_a_row_ < kMaxFailedPairsInARow) {
       return ICameraCapture::no_frame();
     }
-    return Status::io_error(who_ + ": " + std::to_string(failed_in_a_row_) +
-                            " pairs in a row could not be processed; the "
-                            "last: " +
-                            why);
+    return core::Status::io_error(who_ + ": " +
+                                  std::to_string(failed_in_a_row_) +
+                                  " pairs in a row could not be processed; the "
+                                  "last: " +
+                                  why);
   };
 
   const std::uint32_t width = color_camera_.width;
@@ -703,7 +709,7 @@ Result<std::optional<CapturedFrame>> CameraStream::process(
     }
     if (depth->getWidth() != width || depth->getHeight() != height ||
         color->getWidth() != width || color->getHeight() != height) {
-      return refuse(Status::io_error(
+      return refuse(core::Status::io_error(
           who_ + ": processed pair is depth " +
           std::to_string(depth->getWidth()) + "x" +
           std::to_string(depth->getHeight()) + ", colour " +
@@ -713,12 +719,12 @@ Result<std::optional<CapturedFrame>> CameraStream::process(
     }
     if (depth->getFormat() != OB_FORMAT_Y16 ||
         depth->getDataSize() < pixels * sizeof(std::uint16_t)) {
-      return refuse(Status::io_error(
+      return refuse(core::Status::io_error(
           who_ + ": registered depth is not a full Y16 image"));
     }
     if (color->getFormat() != OB_FORMAT_RGB ||
         color->getDataSize() < pixels * 3) {
-      return refuse(Status::io_error(
+      return refuse(core::Status::io_error(
           who_ + ": undistorted colour is not a full RGB image"));
     }
     if (!first_pair_checked_) {
@@ -732,14 +738,14 @@ Result<std::optional<CapturedFrame>> CameraStream::process(
           color->getStreamProfile()->as<ob::VideoStreamProfile>();
       if (!same_pinhole(depth_video->getIntrinsic(), color_camera_,
                         kIntrinsicsTolerance)) {
-        return refuse(Status::io_error(
+        return refuse(core::Status::io_error(
             who_ +
             ": registered depth reports intrinsics other than the colour "
             "camera's; the frame would be unprojected wrongly"));
       }
       if (!same_pinhole(color_video->getIntrinsic(), color_camera_,
                         kIntrinsicsTolerance)) {
-        return refuse(Status::io_error(
+        return refuse(core::Status::io_error(
             who_ +
             ": undistorted colour reports intrinsics other than the ones "
             "read at open; the frame would be projected wrongly"));
@@ -748,16 +754,16 @@ Result<std::optional<CapturedFrame>> CameraStream::process(
       const OBCameraDistortion d = color_video->getDistortion();
       if (d.k1 != 0.0f || d.k2 != 0.0f || d.k3 != 0.0f || d.k4 != 0.0f ||
           d.k5 != 0.0f || d.k6 != 0.0f || d.p1 != 0.0f || d.p2 != 0.0f) {
-        return refuse(Status::io_error(
+        return refuse(core::Status::io_error(
             who_ + ": undistorted colour still reports lens distortion"));
       }
       first_pair_checked_ = true;
     }
     const float value_scale = depth->getValueScale();
     if (!std::isfinite(value_scale) || !(value_scale > 0.0f)) {
-      return refuse(Status::io_error(who_ +
-                                     ": depth frame reports value scale " +
-                                     std::to_string(value_scale)));
+      return refuse(
+          core::Status::io_error(who_ + ": depth frame reports value scale " +
+                                 std::to_string(value_scale)));
     }
     depth_metres_.resize(pixels);
     color_packed_.resize(pixels);
@@ -784,30 +790,32 @@ Result<std::optional<CapturedFrame>> CameraStream::process(
   return ICameraCapture::some_frame(frame);
 }
 
-Result<std::optional<RawFrame>> CameraStream::process_raw(
+core::Result<std::optional<RawFrame>> CameraStream::process_raw(
     const std::shared_ptr<ob::FrameSet>& pair) {
 #if !VR_ORBBEC_WITH_VIDEO
   // open refuses raw frames without the decoder whose planes they carry.
   (void)pair;
   ++failed_;
-  return Status::unsupported(who_ + ": raw frames need the video decoders");
+  return core::Status::unsupported(who_ +
+                                   ": raw frames need the video decoders");
 #else
   // As process(): a pair that contradicts the stream is refused, one the SDK
   // failed on is skipped, and only a run of skips is an error.
-  const auto refuse = [this](Status why) {
+  const auto refuse = [this](core::Status why) {
     ++failed_;
     return why;
   };
   const auto skip =
-      [this](const std::string& why) -> Result<std::optional<RawFrame>> {
+      [this](const std::string& why) -> core::Result<std::optional<RawFrame>> {
     ++failed_;
     if (++failed_in_a_row_ < kMaxFailedPairsInARow) {
       return std::optional<RawFrame>();
     }
-    return Status::io_error(who_ + ": " + std::to_string(failed_in_a_row_) +
-                            " pairs in a row could not be processed; the "
-                            "last: " +
-                            why);
+    return core::Status::io_error(who_ + ": " +
+                                  std::to_string(failed_in_a_row_) +
+                                  " pairs in a row could not be processed; the "
+                                  "last: " +
+                                  why);
   };
   held_.reset();
   RawFrame frame;
@@ -837,7 +845,7 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     }
     if (dv->getWidth() != d.width || dv->getHeight() != d.height ||
         color_width != c.width || color_height != c.height) {
-      return refuse(Status::io_error(
+      return refuse(core::Status::io_error(
           who_ + ": a raw pair is depth " + std::to_string(dv->getWidth()) +
           "x" + std::to_string(dv->getHeight()) + ", colour " +
           std::to_string(color_width) + "x" + std::to_string(color_height) +
@@ -848,13 +856,14 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     const std::size_t depth_pixels = std::size_t{d.width} * d.height;
     if (depth->getFormat() != OB_FORMAT_Y16 ||
         depth->getDataSize() < depth_pixels * sizeof(std::uint16_t)) {
-      return refuse(Status::io_error(who_ + ": depth is not a full Y16 image"));
+      return refuse(
+          core::Status::io_error(who_ + ": depth is not a full Y16 image"));
     }
     const float value_scale = depth->getValueScale();
     if (!std::isfinite(value_scale) || !(value_scale > 0.0f)) {
-      return refuse(Status::io_error(who_ +
-                                     ": depth frame reports value scale " +
-                                     std::to_string(value_scale)));
+      return refuse(
+          core::Status::io_error(who_ + ": depth frame reports value scale " +
+                                 std::to_string(value_scale)));
     }
     frame.depth = reinterpret_cast<const std::uint16_t*>(depth->getData());
     frame.metres_per_unit = value_scale / 1000.0f;  // mm per unit
@@ -869,7 +878,7 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
     const auto describe = [&](VideoColorMatrix matrix, bool full_range,
                               const std::optional<ColorEncoding>& encoding) {
       if (!encoding) {
-        return refuse(Status::unsupported(
+        return refuse(core::Status::unsupported(
             who_ +
             ": the colour stream declares a transfer or primaries "
             "ColorEncoding cannot name"));
@@ -879,13 +888,14 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
       frame.color.kb = weights.kb;
       frame.color.full_range = full_range;
       frame.color_encoding = *encoding;
-      return Status{};
+      return core::Status{};
     };
     frame.color.width = c.width;
     frame.color.height = c.height;
     if (picture) {
       place_device_color(*picture, &frame.color);
-      VR_TRY(describe(picture->matrix, picture->full_range, picture->encoding));
+      VKC_TRY(
+          describe(picture->matrix, picture->full_range, picture->encoding));
     } else {
       const std::uint32_t cw = (c.width + 1) / 2;
       const std::uint32_t ch = (c.height + 1) / 2;
@@ -893,14 +903,14 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
       const std::size_t chroma = std::size_t{cw} * ch;
       if (color->getFormat() != OB_FORMAT_I420 ||
           color->getDataSize() < luma + 2 * chroma) {
-        return refuse(Status::io_error(
+        return refuse(core::Status::io_error(
             who_ + ": decoded colour is not a full I420 image (format " +
             std::to_string(static_cast<int>(color->getFormat())) + ", " +
             std::to_string(color->getDataSize()) + " bytes)"));
       }
       const std::optional<PlanesColor> described = planes_color(*color);
       if (!described) {
-        return refuse(Status::io_error(
+        return refuse(core::Status::io_error(
             who_ + ": decoded colour carries no colour description"));
       }
       const std::uint8_t* planes = color->getData();
@@ -911,10 +921,10 @@ Result<std::optional<RawFrame>> CameraStream::process_raw(
       frame.color.stride[1] = cw;
       frame.color.stride[2] = cw;
       frame.color.chroma_location = described->chroma_location;
-      VR_TRY(describe(described->matrix, described->full_range,
-                      described->has_encoding
-                          ? std::optional<ColorEncoding>(described->encoding)
-                          : std::nullopt));
+      VKC_TRY(describe(described->matrix, described->full_range,
+                       described->has_encoding
+                           ? std::optional<ColorEncoding>(described->encoding)
+                           : std::nullopt));
     }
     frame.color_camera = c;
     frame.color_cam_to_world = raw_color_pose_;

@@ -26,6 +26,7 @@
 // Status/Result. That this test never names the volume or tsdf tier is the
 // point -- it is the same surface an out-of-tree driver compiles against.
 namespace vr = volumetric_kit::recon;
+namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 
 #define CHECK(cond)                                                        \
@@ -70,8 +71,8 @@ vr::ColorCameraParams arkit_like_color() {
 // once, and distinguish "nothing yet" from "the device broke".
 class FakeCapture final : public sensor::ICameraCapture {
  public:
-  vr::Status start() override {
-    if (failed_) return vr::Status::io_error("FakeCapture: device faulted");
+  vkc::Status start() override {
+    if (failed_) return vkc::Status::io_error("FakeCapture: device faulted");
     running_ = true;
     pending_ = make_frame();  // one frame waiting, as a live sensor would have
     return {};
@@ -82,8 +83,8 @@ class FakeCapture final : public sensor::ICameraCapture {
     pending_.reset();
   }
 
-  vr::Result<std::optional<sensor::CapturedFrame>> poll() override {
-    if (failed_) return vr::Status::io_error("FakeCapture: device faulted");
+  vkc::Result<std::optional<sensor::CapturedFrame>> poll() override {
+    if (failed_) return vkc::Status::io_error("FakeCapture: device faulted");
     if (!running_ || !pending_) return no_frame();
     sensor::CapturedFrame frame = *pending_;
     pending_.reset();
@@ -99,8 +100,9 @@ class FakeCapture final : public sensor::ICameraCapture {
   sensor::CapturedFrame make_frame() const {
     sensor::CapturedFrame frame{};
     frame.depth = depth_;
-    vr::Result<vr::DepthCameraParams> cam = sensor::depth_from_registered_color(
-        arkit_like_color(), 256, 192, 0.1f, 5.0f);
+    vkc::Result<vr::DepthCameraParams> cam =
+        sensor::depth_from_registered_color(arkit_like_color(), 256, 192, 0.1f,
+                                            5.0f);
     if (cam.ok()) frame.depth_camera = cam.value();
     frame.timestamp_ns = 1;
     return frame;
@@ -176,7 +178,7 @@ int main() {
 
   // ARKit's real shape: 1920x1440 colour -> 256x192 depth, both 1/7.5 scale.
   {
-    vr::Result<vr::DepthCameraParams> r =
+    vkc::Result<vr::DepthCameraParams> r =
         sensor::depth_from_registered_color(color, 256, 192, 0.1f, 5.0f);
     CHECK(r.ok());
     const vr::DepthCameraParams& d = r.value();
@@ -205,7 +207,7 @@ int main() {
     vr::ColorCameraParams posed = color;
     posed.cam_to_world[3] = vr::Vec4f(0.25f, -1.5f, 4.0f, 1.0f);
     posed.cam_to_world[1] = vr::Vec4f(0.0f, 0.0f, 1.0f, 0.0f);
-    vr::Result<vr::DepthCameraParams> r =
+    vkc::Result<vr::DepthCameraParams> r =
         sensor::depth_from_registered_color(posed, 256, 192, 0.1f, 5.0f);
     CHECK(r.ok());
     for (int c = 0; c < 4; ++c) {
@@ -217,7 +219,7 @@ int main() {
   // Rescaling to the same size is the identity -- the half-pixel term cancels
   // at s == 1, so an unscaled camera must come back untouched.
   {
-    vr::Result<vr::DepthCameraParams> r = sensor::depth_from_registered_color(
+    vkc::Result<vr::DepthCameraParams> r = sensor::depth_from_registered_color(
         color, color.width, color.height, 0.1f, 5.0f);
     CHECK(r.ok());
     CHECK(close(r.value().fx, color.fx) && close(r.value().fy, color.fy));
@@ -227,7 +229,7 @@ int main() {
   // Non-square scaling: each axis rescales independently, so a size change in
   // one axis must not disturb the other.
   {
-    vr::Result<vr::DepthCameraParams> r =
+    vkc::Result<vr::DepthCameraParams> r =
         sensor::depth_from_registered_color(color, 960, 1440, 0.1f, 5.0f);
     CHECK(r.ok());
     CHECK(close(r.value().fx, 720.0f));    // halved
@@ -295,7 +297,7 @@ int main() {
     CHECK(device.start().ok());
     CHECK(device.start().ok());  // idempotent
 
-    vr::Result<std::optional<sensor::CapturedFrame>> first = device.poll();
+    vkc::Result<std::optional<sensor::CapturedFrame>> first = device.poll();
     CHECK(first.ok() && first.value().has_value());
     CHECK(first.value()->depth == capture.depth_pixels());
     CHECK(first.value()->depth_camera.width == 256);
@@ -303,7 +305,7 @@ int main() {
 
     // Each frame is handed over once: polling faster than the sensor runs is
     // the ordinary case, and must read as "nothing yet", never as an error.
-    vr::Result<std::optional<sensor::CapturedFrame>> second = device.poll();
+    vkc::Result<std::optional<sensor::CapturedFrame>> second = device.poll();
     CHECK(second.ok() && !second.value().has_value());
     // ...and "nothing yet" is not "nothing ever": a live device never reports
     // itself exhausted, which is the contract's default so a driver that does
@@ -313,7 +315,8 @@ int main() {
     // Nor does one that knows nothing of raw frames have to say so: it hands
     // out processed frames, and asking it for raw ones is Unsupported.
     CHECK(!device.raw_frames());
-    CHECK(device.poll_raw().status().domain() == vr::Status::Code::Unsupported);
+    CHECK(device.poll_raw().status().domain() ==
+          vkc::Status::Code::Unsupported);
 
     // A device failure is distinguishable from an empty poll.
     capture.fail();

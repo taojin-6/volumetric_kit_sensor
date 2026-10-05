@@ -16,8 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
-#include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 #include "volumetric_kit/recon/sensor/video/export.hpp"
 #include "volumetric_kit/recon/sensor/video/video_backend.hpp"
@@ -71,13 +71,13 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// Auto moves to software is said once, as a warning through core's log
     /// handler.
     /// Borrowed: it must outlive the decoder and every picture on it.
-    const Device* device = nullptr;
+    const core::Device* device = nullptr;
     /// The allocator the Cuda back end makes its picture buffers through:
     /// exported device-only memory, counted against its heap's budget like
     /// any other allocation. Needed with @ref device for Cuda; VideoToolbox's
     /// pictures need none. Borrowed: it must outlive the decoder and every
     /// picture on it.
-    Allocator* allocator = nullptr;
+    core::Allocator* allocator = nullptr;
     /// Whose decoder this is (a camera, say), put ahead of its warnings so a
     /// program running several can tell them apart. Empty puts nothing.
     std::string label;
@@ -99,7 +99,7 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   ///         are); @ref Status::Code::InvalidArgument for a negative thread
   ///         count or an Nv12 layout, which only a device picture comes as;
   ///         or @ref Status::Code::IoError if FFmpeg fails.
-  static Result<HevcDecoder> create(const Options& options);
+  static core::Result<HevcDecoder> create(const Options& options);
 
   HevcDecoder(HevcDecoder&& other) noexcept;
   HevcDecoder& operator=(HevcDecoder&& other) noexcept;
@@ -118,7 +118,8 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   ///         @ref Status::Code::InvalidArgument on a moved-from decoder, a
   ///         null @p data with a size, data after the end, or pictures left
   ///         waiting.
-  Status send(const std::uint8_t* data, std::size_t size, std::int64_t pts);
+  core::Status send(const std::uint8_t* data, std::size_t size,
+                    std::int64_t pts);
 
   /// @brief Take the next decoded picture, if one is ready.
   /// @return The picture, valid until the next call on this decoder; empty
@@ -127,7 +128,7 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   ///         pictures decoded before a refusal are taken;
   ///         @ref Status::Code::IoError if decoding failed; or
   ///         @ref Status::Code::InvalidArgument on a moved-from decoder.
-  Result<std::optional<DecodedPicture>> receive();
+  core::Result<std::optional<DecodedPicture>> receive();
 
   /// @brief Start the stream afresh, as after a seek: the pictures still held
   ///        are dropped, the end of the stream is undone, and the next key
@@ -137,7 +138,7 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   ///        caller that lost access units. A refusal
   ///        (@ref Status::Code::Unsupported) stands.
   /// @return OK; @ref Status::Code::InvalidArgument on a moved-from decoder.
-  Status reset();
+  core::Status reset();
 
  private:
   struct Impl;

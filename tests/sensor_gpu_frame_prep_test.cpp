@@ -29,12 +29,13 @@
 
 #include "buffer_readback.hpp"
 #include "test_image.hpp"
-#include "volumetric_kit/recon/core/allocator.hpp"
-#include "volumetric_kit/recon/core/compute_util.hpp"
-#include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/instance.hpp"
-#include "volumetric_kit/recon/core/result.hpp"
-#include "volumetric_kit/recon/core/stage_metrics.hpp"
+#include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/compute_util.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/instance.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/lens.hpp"
 #include "volumetric_kit/recon/sensor/raw_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
@@ -43,6 +44,7 @@
 #include "volumetric_kit/recon/volume/voxel_hash_map.hpp"
 
 namespace vr = volumetric_kit::recon;
+namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace vol = volumetric_kit::recon::volume;
 namespace tsdf = volumetric_kit::recon::tsdf;
@@ -62,8 +64,8 @@ constexpr std::uint32_t kHeight = 240;
 constexpr float kScale = 0.001f;  // metres per unit
 
 // Where the passes' device-local outputs are read back through.
-vr::Device* g_device = nullptr;
-vr::Allocator* g_allocator = nullptr;
+vkc::Device* g_device = nullptr;
+vkc::Allocator* g_allocator = nullptr;
 
 sensor::LensCamera pinhole() {
   sensor::LensCamera c;
@@ -234,7 +236,7 @@ sensor::RawFrame frame_of(const std::vector<std::uint16_t>& depth,
 
 // A prepared frame's outputs, read back; empty if the copy failed.
 template <typename T>
-std::vector<T> read(const vr::Buffer& buffer, std::size_t count) {
+std::vector<T> read(const vkc::Buffer& buffer, std::size_t count) {
   auto out = vr_test::read_back<T>(*g_device, *g_allocator, buffer, count);
   if (!out) {
     std::fprintf(stderr, "read back: %s\n", out.status().message().c_str());
@@ -512,7 +514,7 @@ int test_chroma_locations(sensor::GpuFramePrep& prep) {
 }
 
 int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
-  const auto invalid = vr::Status::Code::InvalidArgument;
+  const auto invalid = vkc::Status::Code::InvalidArgument;
   const std::uint32_t w = kWidth + 1, h = kHeight + 1;
   sensor::LensCamera cam = lensed();
   cam.width = w;
@@ -536,7 +538,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   const auto refused = [&](const sensor::YuvImage& image,
                            const char* why = "") {
     f.color = image;
-    const vr::Status status = prep.prepare(f).status();
+    const vkc::Status status = prep.prepare(f).status();
     return status.domain() == invalid &&
            status.message().find(why) != std::string::npos;
   };
@@ -600,14 +602,14 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   const std::uint64_t i420_r = place(p.cr.data(), cr_i420, p.ch, p.cw, p.cw);
   blob.resize((blob.size() + 3) & ~std::size_t{3}, 0xEE);
   const auto on_device = [](const std::vector<std::uint8_t>& bytes)
-      -> std::shared_ptr<const vr::Buffer> {
-    auto made = vr::device_storage_buffer(*g_allocator, bytes.size());
+      -> std::shared_ptr<const vkc::Buffer> {
+    auto made = vkc::device_storage_buffer(*g_allocator, bytes.size());
     if (!made.ok() ||
         !vr_test::write_back(*g_device, *g_allocator, made.value(), bytes)
              .ok()) {
       return nullptr;
     }
-    return std::make_shared<const vr::Buffer>(std::move(made).value());
+    return std::make_shared<const vkc::Buffer>(std::move(made).value());
   };
   const auto planes = on_device(blob);
   CHECK(planes != nullptr);
@@ -672,7 +674,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
     auto made = test_image::make(*g_device, *g_allocator, format, iw, ih,
                                  texels, usage);
     return made.ok()
-               ? std::make_shared<const vr::Image>(std::move(made).value())
+               ? std::make_shared<const vkc::Image>(std::move(made).value())
                : nullptr;
   };
   const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -720,10 +722,10 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
                                  cbcr_tight.data(), 2 * p.cw, p.ch, 0);
   CHECK(refused(bad_images, "TRANSFER_SRC"));
   bad_images = images;
-  vr::ImageInfo shader_read = chroma->info();
+  vkc::ImageInfo shader_read = chroma->info();
   shader_read.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   bad_images.image[1] =
-      std::make_shared<const vr::Image>(shader_read, nullptr);  // borrowed
+      std::make_shared<const vkc::Image>(shader_read, nullptr);  // borrowed
   CHECK(refused(bad_images, "TRANSFER_SRC_OPTIMAL"));
 
   // Refused: host and device planes at once, even a stale third one; an NV12
@@ -753,16 +755,16 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   bad.stride[0] = w - 1;
   CHECK(refused(bad));
   bad = dev;
-  bad.device = std::make_shared<const vr::Buffer>();
+  bad.device = std::make_shared<const vkc::Buffer>();
   CHECK(refused(bad, "is empty"));
-  vr::BufferDesc desc;
+  vkc::BufferDesc desc;
   desc.size = planes->size();
   desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   auto unbindable = g_allocator->create_buffer(desc);
   CHECK(unbindable.ok());
   bad = dev;
   bad.device =
-      std::make_shared<const vr::Buffer>(std::move(unbindable).value());
+      std::make_shared<const vkc::Buffer>(std::move(unbindable).value());
   CHECK(refused(bad, "not a storage buffer"));
   std::uint32_t families = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(g_device->physical_device(),
@@ -770,7 +772,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   bad = dev;
   bad.queue_family = families;
   f.color = bad;
-  vr::StageMetrics metrics;
+  vkc::StageMetrics metrics;
   CHECK(prep.prepare(f, &metrics).status().domain() == invalid);
   CHECK(metrics.rows().size() == 1 && !metrics.rows()[0].has_gpu);
   std::printf(
@@ -783,7 +785,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
 // prepare_set runs each camera's pass on its own thread. Each frame comes out
 // as a pass of its own alone makes it, an empty slot stays empty, a refused
 // frame fails the set, and too few passes are refused.
-int test_prepare_set(vr::Device& device, vr::Allocator& allocator) {
+int test_prepare_set(vkc::Device& device, vkc::Allocator& allocator) {
   constexpr std::size_t kCams = 4;
   std::vector<sensor::GpuFramePrep> preps;
   for (std::size_t c = 0; c < kCams; ++c) {
@@ -833,11 +835,11 @@ int test_prepare_set(vr::Device& device, vr::Allocator& allocator) {
   std::vector<std::optional<sensor::RawFrame>> refused = frames;
   refused[1]->depth = nullptr;
   CHECK(sensor::prepare_set(preps, refused).status().domain() ==
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
   std::vector<sensor::GpuFramePrep> too_few;
   too_few.push_back(std::move(alone).value());
   CHECK(sensor::prepare_set(too_few, frames).status().domain() ==
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
   return 0;
 }
 
@@ -880,7 +882,7 @@ int test_coverage(sensor::GpuFramePrep& prep) {
 }
 
 int test_refusals(sensor::GpuFramePrep& prep) {
-  const auto invalid = vr::Status::Code::InvalidArgument;
+  const auto invalid = vkc::Status::Code::InvalidArgument;
   std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
   Planes p = make_planes();
 
@@ -922,13 +924,13 @@ int test_refusals(sensor::GpuFramePrep& prep) {
   CHECK(prep.prepare(f).status().domain() == invalid);
   f.color = p.image(0.299f, 0.114f, true);
   f.color_encoding.transfer = vr::ColorEncoding::Transfer::Bt2020Pq;
-  CHECK(prep.prepare(f).status().domain() == vr::Status::Code::Unsupported);
+  CHECK(prep.prepare(f).status().domain() == vkc::Status::Code::Unsupported);
   f.color_encoding = {};
   CHECK(prep.prepare(f).ok());
 
   // A colour half refused costs the depth half nothing either: both are
   // checked before anything is uploaded, so no pass is dispatched.
-  vr::StageMetrics metrics;
+  vkc::StageMetrics metrics;
   f.color.stride[1] = 4;
   CHECK(prep.prepare(f, &metrics).status().domain() == invalid);
   CHECK(metrics.rows().size() == 1);
@@ -941,7 +943,7 @@ int test_refusals(sensor::GpuFramePrep& prep) {
 int test_frames_hold_buffers(sensor::GpuFramePrep& prep) {
   std::vector<std::uint16_t> near(std::size_t{kWidth} * kHeight, 1000);
   std::vector<std::uint16_t> far(near.size(), 3000);
-  const vr::Buffer* held = nullptr;
+  const vkc::Buffer* held = nullptr;
   {
     auto first = prep.prepare(frame_of(near, pinhole()));
     CHECK(first.ok());
@@ -963,7 +965,7 @@ int test_frames_hold_buffers(sensor::GpuFramePrep& prep) {
 
 // One pass under `config`: a frame with colour prepares, its colour output
 // carries `want` as its sharing mode, and its depth stays EXCLUSIVE.
-int prepared_sharing(vr::Device& device, vr::Allocator& allocator,
+int prepared_sharing(vkc::Device& device, vkc::Allocator& allocator,
                      const sensor::GpuFramePrepConfig& config,
                      const sensor::RawFrame& frame, VkSharingMode want) {
   auto prep = sensor::GpuFramePrep::create(device, allocator, config);
@@ -984,7 +986,7 @@ int prepared_sharing(vr::Device& device, vr::Allocator& allocator,
 // own family named twice collapses to EXCLUSIVE, as does no config, and a
 // count past the array is refused. Depth is EXCLUSIVE throughout. The second
 // family is skipped on a device that has only one.
-int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
+int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
   std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
   Planes planes = make_planes();
   sensor::RawFrame f = frame_of(raw, pinhole());
@@ -1018,10 +1020,10 @@ int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
     std::printf("  one queue family: CONCURRENT outputs not exercised\n");
   }
   sensor::GpuFramePrepConfig too_many;
-  too_many.color_queue_family_count = vr::BufferDesc::kMaxQueueFamilies + 1;
+  too_many.color_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies + 1;
   CHECK(sensor::GpuFramePrep::create(device, allocator, too_many)
             .status()
-            .domain() == vr::Status::Code::InvalidArgument);
+            .domain() == vkc::Status::Code::InvalidArgument);
   return 0;
 }
 
@@ -1034,7 +1036,7 @@ int test_queue_families(vr::Device& device, vr::Allocator& allocator) {
 //     region a host projection puts inside its image. A mask that ignored the
 //     pose would keep a region 39 px to one side of it.
 //   - Off, and on a frame without colour, every depth pixel is kept.
-int test_depth_within_color(vr::Device& device, vr::Allocator& allocator) {
+int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   sensor::GpuFramePrepConfig on;
   on.depth_within_color = true;
   auto masked = sensor::GpuFramePrep::create(device, allocator, on);
@@ -1111,7 +1113,7 @@ int test_depth_within_color(vr::Device& device, vr::Allocator& allocator) {
 // Allocate `depth`'s band, retrying rounds that only lost bucket-lock races,
 // as examples/common/fuse_frame.hpp does: adjacent pixels dilate into one
 // block, and a round can hand back such failures over a map far from full.
-int allocate(vol::VoxelBlockGrid& grid, const vr::Buffer& depth,
+int allocate(vol::VoxelBlockGrid& grid, const vkc::Buffer& depth,
              const vr::DepthCameraParams& camera) {
   for (int round = 0; round < 5; ++round) {
     vol::AllocFailures why;
@@ -1124,7 +1126,7 @@ int allocate(vol::VoxelBlockGrid& grid, const vr::Buffer& depth,
 }
 
 // The pass's output straight into the device-input fusion overloads.
-int test_fuses(vr::Device& device, vr::Allocator& allocator,
+int test_fuses(vkc::Device& device, vkc::Allocator& allocator,
                sensor::GpuFramePrep& prep) {
   // A small depth camera, 80x60, beside the full colour one: the two sizes
   // differ, as a sensor's do. A tilted surface, 0.7-1.2 m, spreads the band
@@ -1189,24 +1191,24 @@ int test_fuses(vr::Device& device, vr::Allocator& allocator,
 }  // namespace
 
 int main() {
-  vr::Result<vr::Instance> instance = vr::Instance::create({});
+  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
   if (!instance) {
     std::fprintf(stderr, "no Vulkan instance (%s); skipping\n",
                  instance.status().message().c_str());
     return 0;
   }
-  vr::Result<vr::PhysicalDeviceInfo> gpu =
+  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
       instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) {
     std::fprintf(stderr, "no compute-capable device (%s); skipping\n",
                  gpu.status().message().c_str());
     return 0;
   }
-  vr::Result<vr::Device> device = vr::Device::create(
+  vkc::Result<vkc::Device> device = vkc::Device::create(
       instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
-  vr::Result<vr::Allocator> allocator =
-      vr::Allocator::create(instance.value().handle(), device.value());
+  vkc::Result<vkc::Allocator> allocator =
+      vkc::Allocator::create(instance.value().handle(), device.value());
   CHECK(allocator.ok());
   g_device = &device.value();
   g_allocator = &allocator.value();
@@ -1245,7 +1247,7 @@ int main() {
   sensor::GpuFramePrep other = std::move(moved);
   CHECK(!moved.valid());  // NOLINT: moved from
   CHECK(moved.prepare(frame_of(raw, pinhole())).status().domain() ==
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
   CHECK(other.prepare(frame_of(raw, pinhole())).ok());
   sensor::GpuFramePrep* alias = &other;
   other = std::move(*alias);  // self-move
