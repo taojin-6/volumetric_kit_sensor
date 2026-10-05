@@ -38,7 +38,7 @@ bool is_key_frame(const std::uint8_t* data, std::size_t size) noexcept {
   return false;
 }
 
-Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
+core::Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
     const Options& options, Sink sink) {
   std::unique_ptr<HevcColorDecoder> d(new HevcColorDecoder());
   d->options_ = options;
@@ -64,15 +64,15 @@ Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
   if (!decoder) {
     const std::string why = options.who + ": opening the HEVC decoder: " +
                             decoder.status().message();
-    return decoder.status().domain() == Status::Code::Unsupported
-               ? Status::unsupported(why)
-               : Status::io_error(why);
+    return decoder.status().domain() == core::Status::Code::Unsupported
+               ? core::Status::unsupported(why)
+               : core::Status::io_error(why);
   }
   d->decoder_.emplace(std::move(decoder).value());
   try {
     d->thread_ = std::thread([raw = d.get()] { raw->run(); });
   } catch (const std::system_error& e) {
-    return Status::io_error(
+    return core::Status::io_error(
         options.who + ": starting the colour decoding thread: " + e.what());
   }
   return d;

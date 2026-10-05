@@ -5,8 +5,8 @@
 
 namespace volumetric_kit::recon::sensor {
 
-Status to_canonical(const std::uint32_t* src, std::size_t count,
-                    const ColorEncoding& enc, std::uint32_t* dst) {
+core::Status to_canonical(const std::uint32_t* src, std::size_t count,
+                          const ColorEncoding& enc, std::uint32_t* dst) {
   // Ahead of the empty-frame shortcut: a declaration this repo cannot convert
   // is wrong however many pixels carry it, and reporting OK for a zero-length
   // PQ frame would let a driver's first (empty) poll validate a label its next
@@ -16,15 +16,15 @@ Status to_canonical(const std::uint32_t* src, std::size_t count,
     // canonical form is a tone-mapping problem, not a transfer conversion.
     // Report it rather than approximate, so a driver that declares PQ gets an
     // inspectable error instead of a quietly wrong reconstruction.
-    return Status::unsupported(
+    return core::Status::unsupported(
         "to_canonical: Transfer::Bt2020Pq needs tone mapping into the 8-bit "
         "canonical form, which is not implemented");
   }
   if (count == 0) {
-    return Status{};
+    return core::Status{};
   }
   if (src == nullptr || dst == nullptr) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "to_canonical: src and dst must be non-null for a non-zero count");
   }
 
@@ -45,7 +45,7 @@ Status to_canonical(const std::uint32_t* src, std::size_t count,
     for (std::size_t i = 0; i < count; ++i) {
       dst[i] = (src[i] & 0x00FFFFFFu) | 0xFF000000u;
     }
-    return Status{};
+    return core::Status{};
   }
 
   // Two steps, and the second is the one that is easy to forget: decode the
@@ -73,7 +73,7 @@ Status to_canonical(const std::uint32_t* src, std::size_t count,
     }
     dst[i] = pack_linear_to_srgb(v);
   }
-  return Status{};
+  return core::Status{};
 }
 
 }  // namespace volumetric_kit::recon::sensor

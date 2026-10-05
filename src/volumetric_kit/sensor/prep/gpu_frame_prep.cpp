@@ -18,10 +18,11 @@
 
 #include "undistort_color_comp.spv.hpp"
 #include "undistort_depth_comp.spv.hpp"
-#include "volumetric_kit/recon/core/command_batch.hpp"
-#include "volumetric_kit/recon/core/compute_util.hpp"
-#include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/image.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
+#include "volumetric_kit/core/vulkan/compute_util.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 
 namespace volumetric_kit::recon::sensor {
 namespace {
@@ -104,22 +105,24 @@ bool finite(float v) noexcept { return std::isfinite(v); }
 
 // A camera the pass can undistort: a non-empty image, positive finite focal
 // lengths, and a finite principal point and lens.
-Status check_camera(const char* what, const LensCamera& c) {
+core::Status check_camera(const char* what, const LensCamera& c) {
   const LensDistortion& d = c.lens;
   if (c.width == 0 || c.height == 0) {
-    return Status::invalid_argument(std::string("GpuFramePrep: the ") + what +
-                                    " camera has an empty image");
+    return core::Status::invalid_argument(std::string("GpuFramePrep: the ") +
+                                          what + " camera has an empty image");
   }
   if (!(finite(c.fx) && c.fx > 0.0f && finite(c.fy) && c.fy > 0.0f &&
         finite(c.cx) && finite(c.cy))) {
-    return Status::invalid_argument(std::string("GpuFramePrep: the ") + what +
-                                    " camera's intrinsics are not finite and "
-                                    "positive");
+    return core::Status::invalid_argument(
+        std::string("GpuFramePrep: the ") + what +
+        " camera's intrinsics are not finite and "
+        "positive");
   }
   for (const float k : {d.k1, d.k2, d.p1, d.p2, d.k3, d.k4, d.k5, d.k6}) {
     if (!finite(k)) {
-      return Status::invalid_argument(std::string("GpuFramePrep: the ") + what +
-                                      " camera's lens is not finite");
+      return core::Status::invalid_argument(std::string("GpuFramePrep: the ") +
+                                            what +
+                                            " camera's lens is not finite");
     }
   }
   return {};
@@ -131,19 +134,21 @@ Status check_camera(const char* what, const LensCamera& c) {
 // into. The staging is kept too: a batch stages through a buffer of its own
 // per call, and four passes doing that at once with 4K frames had VMA
 // allocate and free a block for every set.
-Status ensure_buffer(const Device& device, Allocator& allocator, Buffer& buffer,
-                     VkDeviceSize bytes, bool staging, const char* name) {
+core::Status ensure_buffer(const core::Device& device,
+                           core::Allocator& allocator, core::Buffer& buffer,
+                           VkDeviceSize bytes, bool staging, const char* name) {
   if (buffer.valid() && buffer.size() >= bytes) return {};
-  buffer = Buffer();
+  buffer = core::Buffer();
   if (staging) {
-    VR_ASSIGN(buffer, allocator.create_buffer(
-                          {bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                           MemoryUsage::Staging, HostAccess::SequentialWrite}));
+    VKC_ASSIGN(buffer,
+               allocator.create_buffer({bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                        core::MemoryUsage::Staging,
+                                        core::HostAccess::SequentialWrite}));
   } else {
-    VR_ASSIGN(buffer, device_storage_buffer(allocator, bytes));
+    VKC_ASSIGN(buffer, core::device_storage_buffer(allocator, bytes));
   }
   device.set_object_name(VK_OBJECT_TYPE_BUFFER,
-                         debug_object_handle(buffer.handle()), name);
+                         core::debug_object_handle(buffer.handle()), name);
   return {};
 }
 
@@ -185,15 +190,17 @@ bool plane_fits(std::uint64_t offset, std::uint64_t stride, std::uint64_t rows,
   return rows <= 1 || rows - 1 <= (size - offset - row_bytes) / stride;
 }
 
-Result<DepthLayout> check_depth(const RawFrame& frame, std::uint64_t max_pixels,
-                                VkDeviceSize max_range) {
+core::Result<DepthLayout> check_depth(const RawFrame& frame,
+                                      std::uint64_t max_pixels,
+                                      VkDeviceSize max_range) {
   const LensCamera& cam = frame.depth_camera;
   if (frame.depth == nullptr) {
-    return Status::invalid_argument("GpuFramePrep: the frame has no depth");
+    return core::Status::invalid_argument(
+        "GpuFramePrep: the frame has no depth");
   }
-  VR_TRY(check_camera("depth", cam));
+  VKC_TRY(check_camera("depth", cam));
   if (!(finite(frame.metres_per_unit) && frame.metres_per_unit > 0.0f)) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: metres_per_unit is not finite and positive");
   }
   // 0 is the pass's "no return", where the sensor had none and where the lens
@@ -202,92 +209,94 @@ Result<DepthLayout> check_depth(const RawFrame& frame, std::uint64_t max_pixels,
   // quietly fuse nothing.
   if (!(finite(frame.min_depth) && finite(frame.max_depth) &&
         frame.min_depth > 0.0f && frame.min_depth < frame.max_depth)) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the depth range [" + std::to_string(frame.min_depth) +
         ", " + std::to_string(frame.max_depth) +
         "] m must be finite, with 0 < min_depth < max_depth");
   }
   const std::uint64_t pixels = std::uint64_t{cam.width} * cam.height;
   if (pixels > max_pixels) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the depth image is past a single dispatch");
   }
   DepthLayout out;
   out.pixels = static_cast<std::uint32_t>(pixels);
   out.in_bytes = round_up4(pixels * sizeof(std::uint16_t));
   out.out_bytes = pixels * sizeof(float);
-  VR_TRY(check_storage_buffer_range("GpuFramePrep: the depth buffer",
-                                    out.out_bytes, max_range));
+  VKC_TRY(core::check_storage_buffer_range("GpuFramePrep: the depth buffer",
+                                           out.out_bytes, max_range));
   return out;
 }
 
 // NV12's two planes as images the pass can copy: R8 luma and R8G8 chroma,
 // each at least the picture's size, as CommandBatch::copy checks them too.
-Status check_images(const YuvImage& image) {
+core::Status check_images(const YuvImage& image) {
   if (image.layout != YuvLayout::Nv12 || image.image[0] == nullptr ||
       image.image[1] == nullptr) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: colour planes as images are NV12's two");
   }
-  const Image& y = *image.image[0];
-  const Image& c = *image.image[1];
+  const core::Image& y = *image.image[0];
+  const core::Image& c = *image.image[1];
   const std::uint32_t cw = image.width / 2 + image.width % 2;
   const std::uint32_t ch = image.height / 2 + image.height % 2;
   if (y.format() != VK_FORMAT_R8_UNORM || c.format() != VK_FORMAT_R8G8_UNORM ||
       y.width() < image.width || y.height() < image.height || c.width() < cw ||
       c.height() < ch) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the colour images must be R8 luma and R8G8 chroma, at "
         "least the picture's size");
   }
   if ((y.usage() & c.usage() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the colour images need TRANSFER_SRC usage");
   }
-  const auto copyable = [](const Image& i) {
+  const auto copyable = [](const core::Image& i) {
     return i.layout() == VK_IMAGE_LAYOUT_GENERAL ||
            i.layout() == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   };
   if (!copyable(y) || !copyable(c)) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the colour images must be in GENERAL or "
         "TRANSFER_SRC_OPTIMAL");
   }
   return {};
 }
 
-Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
-                                VkDeviceSize max_range,
-                                VkDeviceSize offset_alignment) {
+core::Result<ColorLayout> check_color(const RawFrame& frame,
+                                      std::uint64_t max_pixels,
+                                      VkDeviceSize max_range,
+                                      VkDeviceSize offset_alignment) {
   const LensCamera& cam = frame.color_camera;
   const YuvImage& image = frame.color;
   if (static_cast<unsigned>(image.chroma_location) >
       static_cast<unsigned>(ChromaLocation::Bottom)) {
-    return Status::invalid_argument("GpuFramePrep: unknown chroma location");
+    return core::Status::invalid_argument(
+        "GpuFramePrep: unknown chroma location");
   }
   if (!is_canonical(frame.color_encoding)) {
     // TODO(sensor): the other transfers and primaries, through the curve
     // and matrix sensor::to_canonical uses on the host.
-    return Status::unsupported(
+    return core::Status::unsupported(
         "GpuFramePrep: converts colour from the canonical encoding only (sRGB "
         "or BT.709 transfer, BT.709 primaries)");
   }
-  VR_TRY(check_camera("colour", cam));
+  VKC_TRY(check_camera("colour", cam));
   if (image.width != cam.width || image.height != cam.height) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the colour picture is " + std::to_string(image.width) +
         "x" + std::to_string(image.height) + ", its camera " +
         std::to_string(cam.width) + "x" + std::to_string(cam.height));
   }
   if (!(finite(image.kr) && finite(image.kb) && image.kr > 0.0f &&
         image.kb > 0.0f && image.kr + image.kb < 1.0f)) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the colour matrix's kr and kb must be positive and sum "
         "below 1");
   }
   const std::uint64_t pixels = std::uint64_t{cam.width} * cam.height;
   if (pixels > max_pixels) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the colour image is past a single dispatch");
   }
   const bool nv12 = image.layout == YuvLayout::Nv12;
@@ -296,13 +305,13 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
   const bool on_host = image.plane[0] != nullptr || image.plane[1] != nullptr ||
                        image.plane[2] != nullptr;
   if (int{on_host} + int{on_device} + int{as_images} > 1) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the colour planes must be on the host, in a buffer or "
         "images, one of the three");
   }
-  if (as_images) VR_TRY(check_images(image));
+  if (as_images) VKC_TRY(check_images(image));
   if (nv12 && image.plane[2] != nullptr) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: an NV12 picture has two planes, so plane[2] is null");
   }
   const int planes = nv12 ? 2 : 3;
@@ -314,7 +323,7 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
   for (int p = 0; p < planes && !as_images; ++p) {
     if ((!on_device && image.plane[p] == nullptr) ||
         image.stride[p] < row_bytes[p]) {
-      return Status::invalid_argument(
+      return core::Status::invalid_argument(
           std::string("GpuFramePrep: the colour picture needs ") +
           (nv12 ? "two planes" : "three planes") +
           ", each row at least its width");
@@ -337,15 +346,15 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
         (nv12 ? out.cb_offset : out.cr_offset) + round_up4(chroma_bytes);
     out.in_bytes = as_images ? 0 : out.bind_bytes;
   } else {
-    const Buffer& buffer = *image.device;
-    const StorageInput bound(buffer);
+    const core::Buffer& buffer = *image.device;
+    const core::StorageInput bound(buffer);
     // Empty or without storage usage, before its size is weighed.
-    VR_TRY(bound.check("GpuFramePrep: the colour planes' buffer", 0));
+    VKC_TRY(bound.check("GpuFramePrep: the colour planes' buffer", 0));
     std::uint64_t begin[3] = {}, end[3] = {};
     for (int p = 0; p < planes; ++p) {
       if (!plane_fits(image.offset[p], image.stride[p], rows[p], row_bytes[p],
                       buffer.size())) {
-        return Status::invalid_argument(
+        return core::Status::invalid_argument(
             "GpuFramePrep: a colour plane runs past its buffer");
       }
       begin[p] = image.offset[p];
@@ -356,7 +365,7 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
     for (int p = 0; p < planes; ++p) {
       for (int q = p + 1; q < planes; ++q) {
         if (begin[p] < end[q] && begin[q] < end[p]) {
-          return Status::invalid_argument(
+          return core::Status::invalid_argument(
               "GpuFramePrep: the colour planes overlap");
         }
       }
@@ -364,8 +373,8 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
     const std::uint64_t first = *std::min_element(begin, begin + planes);
     const std::uint64_t last = *std::max_element(end, end + planes);
     // The kernel reads whole words, so the last one must be in the buffer.
-    VR_TRY(bound.check("GpuFramePrep: the colour planes' buffer",
-                       round_up4(last)));
+    VKC_TRY(bound.check("GpuFramePrep: the colour planes' buffer",
+                        round_up4(last)));
     // Bound from the first plane, rounded down to the alignment a binding's
     // offset needs (and to a word, which the kernel reads), so the limits
     // below weigh the picture rather than where it sits in its buffer: a
@@ -384,25 +393,26 @@ Result<ColorLayout> check_color(const RawFrame& frame, std::uint64_t max_pixels,
   out.out_bytes = pixels * sizeof(std::uint32_t);
   // The kernel addresses the planes in 32-bit bytes from the binding.
   if (out.bind_bytes > std::numeric_limits<std::uint32_t>::max()) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "GpuFramePrep: the colour planes span more than 4 GiB");
   }
-  VR_TRY(check_storage_buffer_range("GpuFramePrep: the colour buffer",
-                                    out.out_bytes, max_range));
-  VR_TRY(check_storage_buffer_range("GpuFramePrep: the colour planes",
-                                    out.bind_bytes, max_range));
+  VKC_TRY(core::check_storage_buffer_range("GpuFramePrep: the colour buffer",
+                                           out.out_bytes, max_range));
+  VKC_TRY(core::check_storage_buffer_range("GpuFramePrep: the colour planes",
+                                           out.bind_bytes, max_range));
   return out;
 }
 
 }  // namespace
 
-Result<GpuFramePrep> GpuFramePrep::create(Device& device, Allocator& allocator,
-                                          const GpuFramePrepConfig& config) {
-  VR_TRY(check_device_requirements(device, "GpuFramePrep::create"));
+core::Result<GpuFramePrep> GpuFramePrep::create(
+    core::Device& device, core::Allocator& allocator,
+    const GpuFramePrepConfig& config) {
+  VKC_TRY(check_device_requirements(device, "GpuFramePrep::create"));
   // Here rather than at the first output, where it would surface as a buffer
   // failure on the first frame.
-  VR_TRY(check_queue_family_count(config.color_queue_family_count,
-                                  "GpuFramePrep::create"));
+  VKC_TRY(core::check_queue_family_count(config.color_queue_family_count,
+                                         "GpuFramePrep::create"));
   GpuFramePrep prep;
   prep.device_ = &device;
   prep.allocator_ = &allocator;
@@ -415,15 +425,15 @@ Result<GpuFramePrep> GpuFramePrep::create(Device& device, Allocator& allocator,
   depth_push.size = sizeof(DepthParams);
   VkPushConstantRange color_push = depth_push;
   color_push.size = sizeof(ColorParams);
-  KernelSetBuilder kb(device);
+  core::KernelSetBuilder kb(device);
   // Depth: raw in, depth out, and the overlap it masks by.
-  VR_TRY(kb.add(prep.depth_kernel_, "undistort_depth",
-                vr_undistort_depth_comp_spv, vr_undistort_depth_comp_spv_size,
-                3, &depth_push));
-  VR_TRY(kb.add(prep.color_kernel_, "undistort_color",
-                vr_undistort_color_comp_spv, vr_undistort_color_comp_spv_size,
-                2, &color_push));
-  VR_ASSIGN(prep.pool_, kb.build());
+  VKC_TRY(kb.add(prep.depth_kernel_, "undistort_depth",
+                 vr_undistort_depth_comp_spv, vr_undistort_depth_comp_spv_size,
+                 3, &depth_push));
+  VKC_TRY(kb.add(prep.color_kernel_, "undistort_color",
+                 vr_undistort_color_comp_spv, vr_undistort_color_comp_spv_size,
+                 2, &color_push));
+  VKC_ASSIGN(prep.pool_, kb.build());
 
   VkPhysicalDeviceProperties props{};
   vkGetPhysicalDeviceProperties(device.physical_device(), &props);
@@ -431,35 +441,35 @@ Result<GpuFramePrep> GpuFramePrep::create(Device& device, Allocator& allocator,
   prep.max_storage_buffer_range_ = props.limits.maxStorageBufferRange;
   prep.min_storage_buffer_offset_alignment_ =
       props.limits.minStorageBufferOffsetAlignment;
-  VR_ASSIGN(prep.gpu_timer_, GpuTimer::create(device));
+  VKC_ASSIGN(prep.gpu_timer_, core::GpuTimer::create(device));
   // Always bound, so the set is complete whether or not the mask runs; the
   // kernel reads it only when it does.
-  VR_ASSIGN(prep.overlap_,
-            device_storage_buffer(allocator, sizeof(OverlapParams)));
+  VKC_ASSIGN(prep.overlap_,
+             core::device_storage_buffer(allocator, sizeof(OverlapParams)));
   device.set_object_name(VK_OBJECT_TYPE_BUFFER,
-                         debug_object_handle(prep.overlap_.handle()),
+                         core::debug_object_handle(prep.overlap_.handle()),
                          "sensor.depth_overlap");
   prep.depth_kernel_.set.write_storage_buffer(2, prep.overlap_.handle(), 0,
                                               VK_WHOLE_SIZE);
   return prep;
 }
 
-Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
-                                          StageMetrics* metrics) {
-  GpuStageScope stage(metrics, gpu_timer_, "frame prep");
+core::Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
+                                                core::StageMetrics* metrics) {
+  core::GpuStageScope stage(metrics, gpu_timer_, "frame prep");
   if (!valid()) {
-    return Status::invalid_argument("GpuFramePrep: moved-from pass");
+    return core::Status::invalid_argument("GpuFramePrep: moved-from pass");
   }
   // Both halves checked before either is uploaded, so a refused frame costs
   // no work and leaves every buffer as it was.
   const std::uint64_t max_pixels =
       std::uint64_t{max_workgroup_count_x_} * kLocalSize;
-  VR_ASSIGN(const DepthLayout depth,
-            check_depth(frame, max_pixels, max_storage_buffer_range_));
+  VKC_ASSIGN(const DepthLayout depth,
+             check_depth(frame, max_pixels, max_storage_buffer_range_));
   ColorLayout color;
   if (frame.has_color()) {
-    VR_ASSIGN(color, check_color(frame, max_pixels, max_storage_buffer_range_,
-                                 min_storage_buffer_offset_alignment_));
+    VKC_ASSIGN(color, check_color(frame, max_pixels, max_storage_buffer_range_,
+                                  min_storage_buffer_offset_alignment_));
   }
   // Host planes go up with depth, plane images are copied in beside them,
   // and device planes are read where they are.
@@ -475,27 +485,27 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
   // over first refuses a family the device lacks before any work. The copies
   // are timed with the passes, so the row's device half counts moving the
   // frame too.
-  CommandBatch batch(*device_, *allocator_);
+  core::CommandBatch batch(*device_, *allocator_);
   if (frame.has_color() && !into_input) {
-    VR_TRY(batch.acquire(*image.device, image.queue_family));
+    VKC_TRY(batch.acquire(*image.device, image.queue_family));
   }
 
-  VR_TRY(ensure_buffer(*device_, *allocator_, depth_in_, depth.in_bytes, false,
-                       "sensor.raw_depth"));
-  VR_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame",
-                       /*color=*/false));
+  VKC_TRY(ensure_buffer(*device_, *allocator_, depth_in_, depth.in_bytes, false,
+                        "sensor.raw_depth"));
+  VKC_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame",
+                        /*color=*/false));
   if (frame.has_color()) {
     if (into_input) {
-      VR_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.bind_bytes,
-                           false, "sensor.raw_color"));
+      VKC_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.bind_bytes,
+                            false, "sensor.raw_color"));
     }
-    VR_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame",
-                         /*color=*/true));
+    VKC_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame",
+                          /*color=*/true));
   }
 
-  VR_TRY(ensure_buffer(*device_, *allocator_, staging_,
-                       depth.in_bytes + color.in_bytes, true,
-                       "sensor.raw_staging"));
+  VKC_TRY(ensure_buffer(*device_, *allocator_, staging_,
+                        depth.in_bytes + color.in_bytes, true,
+                        "sensor.raw_staging"));
 
   // The frame staged as the inputs lay it out: depth, then any host planes
   // packed tightly whatever the decoder's strides. A tight plane is one
@@ -526,16 +536,16 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     }
   }
 
-  VR_TRY(batch.copy(staging_, 0, depth_in_, 0, depth_bytes, &stage));
+  VKC_TRY(batch.copy(staging_, 0, depth_in_, 0, depth_bytes, &stage));
   if (host_color) {
-    VR_TRY(batch.copy(staging_, depth.in_bytes, color_in_, 0, color.in_bytes,
-                      &stage));
+    VKC_TRY(batch.copy(staging_, depth.in_bytes, color_in_, 0, color.in_bytes,
+                       &stage));
   }
   if (from_images) {
-    VR_TRY(batch.copy(*image.image[0], image.width, image.height, color_in_, 0,
-                      &stage));
-    VR_TRY(batch.copy(*image.image[1], (image.width + 1) / 2, color.ch,
-                      color_in_, color.cb_offset, &stage));
+    VKC_TRY(batch.copy(*image.image[0], image.width, image.height, color_in_, 0,
+                       &stage));
+    VKC_TRY(batch.copy(*image.image[1], (image.width + 1) / 2, color.ch,
+                       color_in_, color.cb_offset, &stage));
   }
 
   depth_kernel_.set.write_storage_buffer(0, depth_in_.handle(), 0,
@@ -549,13 +559,13 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     const OverlapParams overlap{
         lens_params(frame.color_camera),
         rigid_inverse(frame.color_cam_to_world) * frame.depth_cam_to_world};
-    VR_TRY(batch.upload(overlap_, 0, &overlap, sizeof(overlap)));
+    VKC_TRY(batch.upload(overlap_, 0, &overlap, sizeof(overlap)));
   }
   const DepthParams depth_params{lens_params(frame.depth_camera),
                                  frame.metres_per_unit, within_color ? 1u : 0u};
-  VR_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
-                        group_count(depth.pixels, kLocalSize),
-                        max_workgroup_count_x_, &stage));
+  VKC_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
+                         core::group_count(depth.pixels, kLocalSize),
+                         max_workgroup_count_x_, &stage));
   if (frame.has_color()) {
     color_kernel_.set.write_storage_buffer(
         0, into_input ? color_in_.handle() : image.device->handle(),
@@ -579,23 +589,23 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
                                    image.full_range ? 1u : 0u,
                                    chroma[0],
                                    chroma[1]};
-    VR_TRY(batch.dispatch(color_kernel_, &color_params, sizeof(color_params),
-                          group_count(color.pixels, kLocalSize),
-                          max_workgroup_count_x_, &stage));
+    VKC_TRY(batch.dispatch(color_kernel_, &color_params, sizeof(color_params),
+                           core::group_count(color.pixels, kLocalSize),
+                           max_workgroup_count_x_, &stage));
   }
-  const Status submitted = batch.submit();
+  const core::Status submitted = batch.submit();
   if (!submitted.ok()) {
     // A failed wait may leave the copy and the kernels running, so the
     // staging is let go rather than rewritten or freed, as the batch lets go
     // of its own; and so are the device planes, buffer or images, which the
     // caller may drop, and a decoder reuse, as soon as this returns.
-    static_cast<void>(new Buffer(std::move(staging_)));
+    static_cast<void>(new core::Buffer(std::move(staging_)));
     if (frame.has_color() && !into_input) {
-      static_cast<void>(new std::shared_ptr<const Buffer>(image.device));
+      static_cast<void>(new std::shared_ptr<const core::Buffer>(image.device));
     }
     if (from_images) {
-      static_cast<void>(new std::shared_ptr<const Image>(image.image[0]));
-      static_cast<void>(new std::shared_ptr<const Image>(image.image[1]));
+      static_cast<void>(new std::shared_ptr<const core::Image>(image.image[0]));
+      static_cast<void>(new std::shared_ptr<const core::Image>(image.image[1]));
     }
     return submitted;
   }
@@ -623,9 +633,9 @@ Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
   return out;
 }
 
-Status GpuFramePrep::ensure_output(std::shared_ptr<Buffer>& buffer,
-                                   VkDeviceSize bytes, const char* name,
-                                   bool color) {
+core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
+                                         VkDeviceSize bytes, const char* name,
+                                         bool color) {
   // Reused only when this pass holds the last reference: a DeviceFrame kept
   // past this call keeps its contents, and this frame goes to a new buffer,
   // which measured no slower than reusing one (the residency decision's step
@@ -640,37 +650,39 @@ Status GpuFramePrep::ensure_output(std::shared_ptr<Buffer>& buffer,
   // Device-local: only the kernels touch it, and on a discrete GPU the
   // fusion kernels' reads would otherwise cross the bus. The colour is shared
   // with the families the config names, for a consumer on another queue.
-  VR_ASSIGN(Buffer created, device_storage_buffer(
-                                *allocator_, bytes, 0,
-                                color ? config_.color_queue_families : nullptr,
-                                color ? config_.color_queue_family_count : 0));
+  VKC_ASSIGN(
+      core::Buffer created,
+      core::device_storage_buffer(
+          *allocator_, bytes, 0, color ? config_.color_queue_families : nullptr,
+          color ? config_.color_queue_family_count : 0));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
-                           debug_object_handle(created.handle()), name);
-  buffer = std::make_shared<Buffer>(std::move(created));
+                           core::debug_object_handle(created.handle()), name);
+  buffer = std::make_shared<core::Buffer>(std::move(created));
   return {};
 }
 
-Result<std::vector<std::optional<DeviceFrame>>> prepare_set(
+core::Result<std::vector<std::optional<DeviceFrame>>> prepare_set(
     std::vector<GpuFramePrep>& preps,
     const std::vector<std::optional<RawFrame>>& frames) {
   if (preps.size() < frames.size()) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "prepare_set: " + std::to_string(frames.size()) + " frames for " +
         std::to_string(preps.size()) + " passes");
   }
   std::vector<std::optional<DeviceFrame>> out(frames.size());
-  std::vector<Status> status(frames.size());
+  std::vector<core::Status> status(frames.size());
   // Never throws: an exception leaving a thread would end the process.
   const auto run = [&](std::size_t i) noexcept {
     try {
-      Result<DeviceFrame> prepared = preps[i].prepare(*frames[i]);
+      core::Result<DeviceFrame> prepared = preps[i].prepare(*frames[i]);
       if (prepared.ok()) {
         out[i] = std::move(prepared).value();
       } else {
         status[i] = prepared.status();
       }
     } catch (const std::bad_alloc&) {
-      status[i] = Status::out_of_memory("prepare_set: out of host memory");
+      status[i] =
+          core::Status::out_of_memory("prepare_set: out of host memory");
     }
   };
   // Joined on every way out, a throw included, so no thread outlives what it
@@ -700,7 +712,7 @@ Result<std::vector<std::optional<DeviceFrame>>> prepare_set(
     }
     if (last) run(*last);
   }
-  for (const Status& s : status) {
+  for (const core::Status& s : status) {
     if (!s.ok()) return s;
   }
   return out;

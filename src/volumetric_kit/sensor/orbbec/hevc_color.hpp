@@ -28,8 +28,8 @@
 #include <libobsensor/ObSensor.hpp>
 
 #include "picture_frames.hpp"
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
@@ -100,16 +100,16 @@ class HevcColorDecoder {
     // VideoToolbox leaves there is handed on in its raw_color_frame, and
     // only the others as I420. Borrowed: it must outlive the decoder and
     // every frame it hands on.
-    const Device* device = nullptr;
+    const core::Device* device = nullptr;
     // With device, the allocator NVDEC's pictures are made through. Borrowed
     // as device is.
-    Allocator* allocator = nullptr;
+    core::Allocator* allocator = nullptr;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on
   // that thread.
-  static Result<std::unique_ptr<HevcColorDecoder>> start(const Options& options,
-                                                         Sink sink);
+  static core::Result<std::unique_ptr<HevcColorDecoder>> start(
+      const Options& options, Sink sink);
 
   HevcColorDecoder(const HevcColorDecoder&) = delete;
   HevcColorDecoder& operator=(const HevcColorDecoder&) = delete;

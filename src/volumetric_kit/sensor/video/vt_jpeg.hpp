@@ -14,8 +14,8 @@
 #include <memory>
 #include <optional>
 
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
-#include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 
 namespace volumetric_kit::recon::sensor::video {
@@ -26,7 +26,8 @@ class VtJpeg {
  public:
   // Null where VideoToolbox has no hardware JPEG decoder or @p device imports
   // no Metal textures. @p who names the decoder in errors.
-  static std::unique_ptr<VtJpeg> open(const Device& device, const char* who);
+  static std::unique_ptr<VtJpeg> open(const core::Device& device,
+                                      const char* who);
   ~VtJpeg();
   VtJpeg(const VtJpeg&) = delete;
   VtJpeg& operator=(const VtJpeg&) = delete;
@@ -35,8 +36,8 @@ class VtJpeg {
   // baseline 8-bit 4:2:0, past the device's image extent, or refused by the
   // hardware -- which goes to software instead. An error means the device
   // path failed.
-  Result<std::optional<DecodedPicture>> decode(const std::uint8_t* data,
-                                               std::size_t size);
+  core::Result<std::optional<DecodedPicture>> decode(const std::uint8_t* data,
+                                                     std::size_t size);
 
  private:
   VtJpeg() = default;

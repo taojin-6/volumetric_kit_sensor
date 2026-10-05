@@ -30,8 +30,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/export.hpp"
 
 namespace volumetric_kit::recon::sensor {
@@ -67,14 +67,16 @@ namespace volumetric_kit::recon::sensor {
 ///              sentinel exact. May alias @p src exactly (in-place); may not
 ///              partially overlap.
 /// @return OK, or:
-///         - @ref Status::Code::InvalidArgument if @p src or @p dst is null
+///         - `Status::Code::InvalidArgument` if @p src or @p dst is null
 ///           with a non-zero @p count;
-///         - @ref Status::Code::Unsupported for
+///         - `Status::Code::Unsupported` for
 ///           @ref ColorEncoding::Transfer::Bt2020Pq, whose absolute-luminance
 ///           HDR curve needs tone mapping into an 8-bit SDR form -- something
 ///           this repo does not do, and reports rather than approximating into
 ///           a quietly wrong result.
-VR_SENSOR_API Status to_canonical(const std::uint32_t* src, std::size_t count,
-                                  const ColorEncoding& enc, std::uint32_t* dst);
+VR_SENSOR_API core::Status to_canonical(const std::uint32_t* src,
+                                        std::size_t count,
+                                        const ColorEncoding& enc,
+                                        std::uint32_t* dst);
 
 }  // namespace volumetric_kit::recon::sensor

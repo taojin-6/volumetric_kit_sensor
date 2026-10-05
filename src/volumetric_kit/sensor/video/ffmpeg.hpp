@@ -19,7 +19,7 @@ extern "C" {
 #include <memory>
 #include <string>
 
-#include "volumetric_kit/recon/core/result.hpp"
+#include "volumetric_kit/core/base/result.hpp"
 
 namespace volumetric_kit::recon::sensor::video {
 
@@ -52,9 +52,9 @@ std::string ffmpeg_message(int err);
 
 /// @return An IoError naming @p who, @p what it was doing and FFmpeg's
 ///         message for @p err.
-Status ffmpeg_error(const char* who, const std::string& what, int err);
+core::Status ffmpeg_error(const char* who, const std::string& what, int err);
 
 /// @return An IoError for an allocation FFmpeg refused.
-Status ffmpeg_alloc_error(const char* who, const std::string& what);
+core::Status ffmpeg_alloc_error(const char* who, const std::string& what);
 
 }  // namespace volumetric_kit::recon::sensor::video

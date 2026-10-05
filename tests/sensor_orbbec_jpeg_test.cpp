@@ -35,11 +35,13 @@
 #include "device_picture_readback.hpp"
 #include "jpeg_color.hpp"
 #include "picture_frames.hpp"
-#include "volumetric_kit/recon/core/allocator.hpp"
-#include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/instance.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/instance.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 
 namespace vr = volumetric_kit::recon;
+namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;
 
@@ -103,8 +105,8 @@ struct Run {
 // Push `in`, wait for `expect` pairs out, and stop. The queue holds all of
 // `in`, so none is skipped.
 Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
-        std::size_t expect, const vr::Device* device = nullptr,
-        vr::Allocator* allocator = nullptr) {
+        std::size_t expect, const vkc::Device* device = nullptr,
+        vkc::Allocator* allocator = nullptr) {
   struct Collected {
     std::mutex mutex;
     std::vector<std::shared_ptr<ob::FrameSet>> sets;
@@ -163,8 +165,8 @@ Planes from_i420(const ob::Frame& color) {
   return out;
 }
 
-Planes from_device(const sensor::DecodedPicture& p, vr::Device& device,
-                   vr::Allocator& allocator) {
+Planes from_device(const sensor::DecodedPicture& p, vkc::Device& device,
+                   vkc::Allocator& allocator) {
   std::vector<std::uint8_t> planes[3];
   vr_test::read_device_picture(p, device, allocator, planes);
   return {std::move(planes[0]), std::move(planes[1]), std::move(planes[2])};
@@ -303,15 +305,15 @@ int test_skips_when_behind() {
 // frame and released with it. Where no hardware takes the JPEG onto this
 // device, I420 frames as in software.
 int test_device() {
-  auto instance = vr::Instance::create({});
+  auto instance = vkc::Instance::create({});
   if (!instance) return 0;
   auto gpu = instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  auto device = vr::Device::create(instance.value(), gpu.value(),
-                                   vr::device_requirements());
+  auto device = vkc::Device::create(instance.value(), gpu.value(),
+                                    vr::device_requirements());
   CHECK(device.ok());
   auto allocator =
-      vr::Allocator::create(instance.value().handle(), device.value());
+      vkc::Allocator::create(instance.value().handle(), device.value());
   CHECK(allocator.ok());
   const std::vector<std::uint8_t> jpeg = read_file(kJpeg);
   Run r = run({pair(jpeg, 0), pair(jpeg, 1), pair(jpeg, 2)}, 3, &device.value(),

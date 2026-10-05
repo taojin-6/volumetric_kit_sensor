@@ -13,7 +13,7 @@
 #include "frame_conversion.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 
-namespace vr = volumetric_kit::recon;
+namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;
 
@@ -49,7 +49,7 @@ bool refused(const std::string& json) {
   const auto r = sensor::parse_orbbec_sync_config(json);
   if (r.ok()) return false;
   std::printf("  refused as expected: %s\n", r.status().message().c_str());
-  return r.status().domain() == vr::Status::Code::InvalidArgument;
+  return r.status().domain() == vkc::Status::Code::InvalidArgument;
 }
 
 int test_parse() {

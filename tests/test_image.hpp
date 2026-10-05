@@ -12,27 +12,27 @@
 #include <optional>
 #include <vector>
 
-#include "volumetric_kit/recon/core/allocator.hpp"
-#include "volumetric_kit/recon/core/compute_util.hpp"
-#include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/external_memory.hpp"
-#include "volumetric_kit/recon/core/image.hpp"
-#include "volumetric_kit/recon/core/result.hpp"
-#include "volumetric_kit/recon/core/vk_result.hpp"
-#include "volumetric_kit/recon/core/vulkan.hpp"
+#include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/compute_util.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/external_memory.hpp"
+#include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
+#include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace test_image {
 
 // A `width` x `height` image of `format` holding `texels`, rows packed, in
 // device-local memory of its own; `usage` beside TRANSFER_DST, which filling
 // it needs.
-inline volumetric_kit::recon::Result<volumetric_kit::recon::Image> make(
-    const volumetric_kit::recon::Device& device,
-    volumetric_kit::recon::Allocator& allocator, VkFormat format,
+inline volumetric_kit::core::Result<volumetric_kit::core::Image> make(
+    const volumetric_kit::core::Device& device,
+    volumetric_kit::core::Allocator& allocator, VkFormat format,
     std::uint32_t width, std::uint32_t height,
     const std::vector<std::uint8_t>& texels,
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT) {
-  namespace vr = volumetric_kit::recon;
+  namespace vkc = volumetric_kit::core;
   const VkDevice dev = device.handle();
   VkImageCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -46,11 +46,11 @@ inline volumetric_kit::recon::Result<volumetric_kit::recon::Image> make(
   info.usage = usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VkImage image = VK_NULL_HANDLE;
-  VR_VK_TRY(vkCreateImage(dev, &info, nullptr, &image));
+  VKC_VK_TRY(vkCreateImage(dev, &info, nullptr, &image));
   VkMemoryRequirements needs{};
   vkGetImageMemoryRequirements(dev, image, &needs);
   const std::optional<std::uint32_t> type =
-      vr::find_memory_type(device, needs.memoryTypeBits, 0);
+      vkc::find_memory_type(device, needs.memoryTypeBits, 0);
   VkMemoryAllocateInfo alloc{};
   alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
   alloc.allocationSize = needs.size;
@@ -60,25 +60,25 @@ inline volumetric_kit::recon::Result<volumetric_kit::recon::Image> make(
       vkBindImageMemory(dev, image, backing, 0) != VK_SUCCESS) {
     vkFreeMemory(dev, backing, nullptr);
     vkDestroyImage(dev, image, nullptr);
-    return vr::Status::out_of_memory("test image: no memory for it");
+    return vkc::Status::out_of_memory("test image: no memory for it");
   }
-  vr::ImageInfo adopted;
+  vkc::ImageInfo adopted;
   adopted.image = image;
   adopted.format = format;
   adopted.extent = info.extent;
   adopted.usage = info.usage;
   adopted.layout = VK_IMAGE_LAYOUT_GENERAL;
-  vr::Image out(adopted, [dev, image, backing] {
+  vkc::Image out(adopted, [dev, image, backing] {
     vkDestroyImage(dev, image, nullptr);
     vkFreeMemory(dev, backing, nullptr);
   });
 
-  VR_ASSIGN(
-      vr::Buffer source,
+  VKC_ASSIGN(
+      vkc::Buffer source,
       allocator.create_buffer({texels.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                               vr::MemoryUsage::Staging}));
+                               vkc::MemoryUsage::Staging}));
   std::memcpy(source.mapped(), texels.data(), texels.size());
-  VR_TRY(device.submit_single_time([&](VkCommandBuffer cmd) {
+  VKC_TRY(device.submit_single_time([&](VkCommandBuffer cmd) {
     VkImageMemoryBarrier b{};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;

@@ -28,14 +28,16 @@
 
 #include "bare_device.hpp"
 #include "device_picture_readback.hpp"
-#include "volumetric_kit/recon/core/allocator.hpp"
-#include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/instance.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/instance.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/core/log.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 #include "yuv_reference.hpp"
 
 namespace vr = volumetric_kit::recon;
+namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 using sensor::HevcDecoder;
 using sensor::VideoDecodeBackend;
@@ -120,31 +122,31 @@ AccessUnits access_units(const char* path) {
 }
 
 // Every picture of a clip, taking each as soon as it is ready.
-vr::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder,
-                                             const AccessUnits& units) {
+vkc::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder,
+                                              const AccessUnits& units) {
   std::vector<Picture> pictures;
-  const auto drain = [&]() -> vr::Status {
+  const auto drain = [&]() -> vkc::Status {
     for (;;) {
-      VR_ASSIGN(auto picture, decoder.receive());
+      VKC_ASSIGN(auto picture, decoder.receive());
       if (!picture) return {};
       pictures.push_back(copy(*picture));
     }
   };
   for (std::size_t i = 0; i < units.size(); ++i) {
-    VR_TRY(decoder.send(units[i].data(), units[i].size(),
-                        pts_of(static_cast<int>(i))));
-    VR_TRY(drain());
+    VKC_TRY(decoder.send(units[i].data(), units[i].size(),
+                         pts_of(static_cast<int>(i))));
+    VKC_TRY(drain());
   }
-  VR_TRY(decoder.send(nullptr, 0, 0));
-  VR_TRY(drain());
+  VKC_TRY(decoder.send(nullptr, 0, 0));
+  VKC_TRY(drain());
   return pictures;
 }
 
-vr::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder) {
+vkc::Result<std::vector<Picture>> decode_clip(HevcDecoder& decoder) {
   return decode_clip(decoder, access_units(kPatches));
 }
 
-vr::Result<std::vector<Picture>> decode_with(
+vkc::Result<std::vector<Picture>> decode_with(
     VideoDecodeBackend backend, VideoPixelLayout layout,
     std::optional<sensor::VideoColorDescription> unlabelled_color =
         std::nullopt,
@@ -153,9 +155,9 @@ vr::Result<std::vector<Picture>> decode_with(
   options.backend = backend;
   options.layout = layout;
   options.unlabelled_color = unlabelled_color;
-  VR_ASSIGN(HevcDecoder decoder, HevcDecoder::create(options));
+  VKC_ASSIGN(HevcDecoder decoder, HevcDecoder::create(options));
   if (backend != VideoDecodeBackend::Auto && decoder.backend() != backend) {
-    return vr::Status::io_error("decoder runs elsewhere");
+    return vkc::Status::io_error("decoder runs elsewhere");
   }
   return decode_clip(decoder, access_units(clip));
 }
@@ -332,7 +334,7 @@ int test_reset() {
     CHECK(dropped.ok() && !dropped.value());
     CHECK(decoder->send(nullptr, 0, 0).ok());
     CHECK(decoder->send(patches[0].data(), patches[0].size(), 0).domain() ==
-          vr::Status::Code::InvalidArgument);  // after the end
+          vkc::Status::Code::InvalidArgument);  // after the end
     CHECK(decoder->reset().ok());
     auto pictures = decode_clip(decoder.value(), patches);
     CHECK(pictures.ok());
@@ -416,8 +418,8 @@ int check_cropped(const std::vector<Picture>& cropped,
 // plane images, the same samples again; the clip cropped at the left and top
 // goes to software, which VideoToolbox cannot crop. Without either, pictures
 // still come to the host.
-Picture from_device(const sensor::DecodedPicture& p, vr::Device& device,
-                    vr::Allocator& allocator) {
+Picture from_device(const sensor::DecodedPicture& p, vkc::Device& device,
+                    vkc::Allocator& allocator) {
   Picture out;
   out.meta = p;
   vr_test::read_device_picture(p, device, allocator, out.planes);
@@ -425,16 +427,16 @@ Picture from_device(const sensor::DecodedPicture& p, vr::Device& device,
 }
 
 int test_device_pictures() {
-  vr::Result<vr::Instance> instance = vr::Instance::create({});
+  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
   if (!instance) return 0;
-  vr::Result<vr::PhysicalDeviceInfo> gpu =
+  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
       instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  vr::Result<vr::Device> device = vr::Device::create(
+  vkc::Result<vkc::Device> device = vkc::Device::create(
       instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
-  vr::Result<vr::Allocator> allocator =
-      vr::Allocator::create(instance.value().handle(), device.value());
+  vkc::Result<vkc::Allocator> allocator =
+      vkc::Allocator::create(instance.value().handle(), device.value());
   CHECK(allocator.ok());
   const auto hardware = HevcDecoder::hardware_backends();
   const bool cuda = std::find(hardware.begin(), hardware.end(),
@@ -522,21 +524,21 @@ int test_device_pictures() {
 // A device the decoder can keep no picture on is said once, as a warning
 // naming whose decoder it is; no device says nothing.
 int test_host_warning() {
-  vr::Result<vr::Instance> instance = vr::Instance::create({});
+  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
   if (!instance) return 0;
-  vr::Result<vr::PhysicalDeviceInfo> gpu =
+  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
       instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  vr::Result<vr::Device> device = vr::Device::create(
+  vkc::Result<vkc::Device> device = vkc::Device::create(
       instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
-  vr::Result<vr::Device> bare =
+  vkc::Result<vkc::Device> bare =
       vr_test::bare_device(instance.value(), device.value());
   CHECK(bare.ok());
   std::vector<std::string> warnings;
-  vr::set_log_handler(
-      [&warnings](vr::LogLevel level, std::string_view, std::string_view m) {
-        if (level == vr::LogLevel::Warning) warnings.emplace_back(m);
+  vkc::set_log_handler(
+      [&warnings](vkc::LogLevel level, std::string_view, std::string_view m) {
+        if (level == vkc::LogLevel::Warning) warnings.emplace_back(m);
       });
   HevcDecoder::Options options;
   options.layout = VideoPixelLayout::Yuv420;
@@ -544,7 +546,7 @@ int test_host_warning() {
   const bool quiet = HevcDecoder::create(options).ok() && warnings.empty();
   options.device = &bare.value();
   const bool made = HevcDecoder::create(options).ok();
-  vr::set_log_handler({});
+  vkc::set_log_handler({});
   CHECK(quiet && made);
   CHECK(warnings.size() == 1);
   CHECK(warnings[0].rfind("camera 7: HevcDecoder: no device path on ", 0) == 0);
@@ -567,7 +569,7 @@ int test_cropped() {
     CHECK(decoder.ok());
     auto pictures = decode_clip(decoder.value(), units);
     if (backend == VideoDecodeBackend::VideoToolbox) {
-      CHECK(pictures.status().domain() == vr::Status::Code::Unsupported);
+      CHECK(pictures.status().domain() == vkc::Status::Code::Unsupported);
       continue;
     }
     if (!pictures) {
@@ -607,7 +609,7 @@ int test_fallback() {
     auto pictures = decode_clip(decoder.value(), units);
     if (backend != VideoDecodeBackend::Auto &&
         backend != VideoDecodeBackend::Software) {
-      CHECK(pictures.status().domain() == vr::Status::Code::Unsupported);
+      CHECK(pictures.status().domain() == vkc::Status::Code::Unsupported);
       continue;
     }
     if (!pictures) {
@@ -678,18 +680,18 @@ int test_refusals() {
   options.backend = VideoDecodeBackend::VideoToolbox;
 #endif
   auto missing = HevcDecoder::create(options);
-  CHECK(missing.status().domain() == vr::Status::Code::Unsupported);
+  CHECK(missing.status().domain() == vkc::Status::Code::Unsupported);
   CHECK(missing.status().message().find("available: software") !=
         std::string::npos);
 
   options.backend = VideoDecodeBackend::Software;
   options.threads = -1;
   CHECK(HevcDecoder::create(options).status().domain() ==
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
   options.threads = 0;
   options.layout = VideoPixelLayout::Nv12;  // only a device picture is
   CHECK(HevcDecoder::create(options).status().domain() ==
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
   options.layout = VideoPixelLayout::Rgb24;
 
   auto decoder = HevcDecoder::create(options);
@@ -697,11 +699,11 @@ int test_refusals() {
   auto nothing = decoder->receive();  // before any input
   CHECK(nothing.ok() && !nothing.value());
   CHECK(decoder->send(nullptr, 16, 0).domain() ==
-        vr::Status::Code::InvalidArgument);
+        vkc::Status::Code::InvalidArgument);
   CHECK(decoder->send(nullptr, 0, 0).ok());
   const std::uint8_t byte = 0;
   CHECK(decoder->send(&byte, 1, 0).domain() ==
-        vr::Status::Code::InvalidArgument);  // after the end
+        vkc::Status::Code::InvalidArgument);  // after the end
   auto drained = decoder->receive();
   CHECK(drained.ok() && !drained.value());
   return 0;
@@ -716,9 +718,9 @@ int test_moves() {
 
   HevcDecoder b(std::move(a));
   CHECK(a.backend() == VideoDecodeBackend::Auto);  // NOLINT: moved from
-  CHECK(a.send(nullptr, 0, 0).domain() == vr::Status::Code::InvalidArgument);
-  CHECK(a.receive().status().domain() == vr::Status::Code::InvalidArgument);
-  CHECK(a.reset().domain() == vr::Status::Code::InvalidArgument);
+  CHECK(a.send(nullptr, 0, 0).domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(a.receive().status().domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(a.reset().domain() == vkc::Status::Code::InvalidArgument);
   CHECK(b.backend() == VideoDecodeBackend::Software);
 
   auto other = HevcDecoder::create(options);

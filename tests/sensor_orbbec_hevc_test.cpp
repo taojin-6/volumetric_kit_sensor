@@ -32,12 +32,14 @@
 #include "device_picture_readback.hpp"
 #include "hevc_color.hpp"
 #include "picture_frames.hpp"
-#include "volumetric_kit/recon/core/allocator.hpp"
-#include "volumetric_kit/recon/core/device.hpp"
-#include "volumetric_kit/recon/core/instance.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/instance.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "yuv_reference.hpp"
 
 namespace vr = volumetric_kit::recon;
+namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;
 
@@ -160,8 +162,8 @@ struct Run {
   std::uint64_t lost = 0;
 };
 Run run(const Pairs& in, std::size_t expect, bool yuv = false,
-        const vr::Device* device = nullptr,
-        vr::Allocator* allocator = nullptr) {
+        const vkc::Device* device = nullptr,
+        vkc::Allocator* allocator = nullptr) {
   auto collected = std::make_shared<Collected>();
   orbbec::HevcColorDecoder::Options options;
   options.fps = 30;
@@ -314,15 +316,15 @@ int test_hands_on_i420() {
 // frame does not extend. Where no hardware leaves pictures on this device,
 // they come as I420.
 int test_hands_on_device_pictures() {
-  auto instance = vr::Instance::create({});
+  auto instance = vkc::Instance::create({});
   if (!instance) return 0;
   auto gpu = instance.value().select_physical_device(vr::device_requirements());
   if (!gpu) return 0;
-  auto device = vr::Device::create(instance.value(), gpu.value(),
-                                   vr::device_requirements());
+  auto device = vkc::Device::create(instance.value(), gpu.value(),
+                                    vr::device_requirements());
   CHECK(device.ok());
   auto allocator =
-      vr::Allocator::create(instance.value().handle(), device.value());
+      vkc::Allocator::create(instance.value().handle(), device.value());
   CHECK(allocator.ok());
 
   Run r = run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8,

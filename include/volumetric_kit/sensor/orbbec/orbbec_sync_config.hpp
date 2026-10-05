@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "volumetric_kit/recon/core/result.hpp"
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/export.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
 
@@ -51,18 +51,18 @@ struct OrbbecRigSyncConfig {
 };
 
 /// @brief Parse a sync configuration document.
-/// @return The configuration; or @ref Status::Code::InvalidArgument naming what
+/// @return The configuration; or `Status::Code::InvalidArgument` naming what
 ///         is wrong: not JSON, no `devices`, a device without an `sn` or a
 ///         `syncConfig` whose fields are all present and typed, a `syncMode`
 ///         this driver does not name, a negative delay, a repeated serial, or
 ///         a `master_serial` that is not the one primary.
-VR_SENSOR_ORBBEC_API Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(
+VR_SENSOR_ORBBEC_API core::Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(
     const std::string& json);
 
 /// @brief Read and parse the sync configuration file at @p path.
 /// @return As @ref parse_orbbec_sync_config, messages naming the file; or
-///         @ref Status::Code::IoError if it cannot be read.
-VR_SENSOR_ORBBEC_API Result<OrbbecRigSyncConfig> read_orbbec_sync_config(
+///         `Status::Code::IoError` if it cannot be read.
+VR_SENSOR_ORBBEC_API core::Result<OrbbecRigSyncConfig> read_orbbec_sync_config(
     const std::string& path);
 
 }  // namespace volumetric_kit::recon::sensor

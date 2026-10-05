@@ -35,22 +35,22 @@ Mat4f cv_from_gl_camera(const Mat4f& cam_to_world) {
   return out;
 }
 
-Result<DepthCameraParams> depth_from_registered_color(
+core::Result<DepthCameraParams> depth_from_registered_color(
     const ColorCameraParams& color, std::uint32_t depth_width,
     std::uint32_t depth_height, float min_depth, float max_depth) {
   if (color.width == 0 || color.height == 0) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "depth_from_registered_color: color camera has a zero image size");
   }
   if (depth_width == 0 || depth_height == 0) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "depth_from_registered_color: depth image size must be non-zero");
   }
   // A negative near plane would unproject points behind the camera; an
   // unordered range rejects every sample, which would look like a dead sensor
   // rather than a bad argument.
   if (!(min_depth >= 0.0f) || !(min_depth < max_depth)) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "depth_from_registered_color: require 0 <= min_depth < max_depth");
   }
   // The unprojection this camera feeds divides by the focal length
@@ -60,7 +60,7 @@ Result<DepthCameraParams> depth_from_registered_color(
   // comparisons are written to reject NaN (every NaN compare is false).
   if (!(color.fx > 0.0f) || !(color.fy > 0.0f) || !std::isfinite(color.fx) ||
       !std::isfinite(color.fy)) {
-    return Status::invalid_argument(
+    return core::Status::invalid_argument(
         "depth_from_registered_color: color focal lengths must be finite and "
         "positive");
   }

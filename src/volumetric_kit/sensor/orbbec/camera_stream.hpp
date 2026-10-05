@@ -21,9 +21,9 @@
 
 #include <libobsensor/ObSensor.hpp>
 
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/camera_params.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
-#include "volumetric_kit/recon/core/result.hpp"
 #include "volumetric_kit/recon/sensor/camera_capture.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
@@ -36,8 +36,8 @@ class JpegColorDecoder;
 
 // The SDK reports every failure as a thrown ob::Error; this repo returns
 // Status across its API. `who` names the caller ("OrbbecCapture", ...).
-Status sdk_error(const std::string& who, const std::string& what,
-                 const std::exception& e);
+core::Status sdk_error(const std::string& who, const std::string& what,
+                       const std::exception& e);
 
 // The SDK's logger is process-wide: file sink off, console at WARN. One call
 // per sink -- setLoggerSeverity sets every sink, the file one included.
@@ -45,8 +45,8 @@ void configure_sdk_logging();
 
 // Unsupported for H.265 colour or raw frames in a build without the video
 // decoders; OK otherwise. Asked by open before the SDK is touched.
-Status check_color_codec(const OrbbecStreamOptions& streams,
-                         const std::string& who);
+core::Status check_color_codec(const OrbbecStreamOptions& streams,
+                               const std::string& who);
 
 // Find cameras on the network, re-querying until they answer or the window
 // closes; one query is not proof of absence for an Ethernet camera. Named
@@ -54,7 +54,7 @@ Status check_color_codec(const OrbbecStreamOptions& streams,
 // An empty `serials` asks for the only camera: it is opened once the whole
 // window has passed with no other answering, and refused as soon as a second
 // does.
-Result<std::vector<std::shared_ptr<ob::Device>>> discover(
+core::Result<std::vector<std::shared_ptr<ob::Device>>> discover(
     ob::Context& context, const std::vector<std::string>& serials,
     std::uint32_t timeout_ms, const std::string& who);
 
@@ -93,7 +93,7 @@ class CameraStream {
   // or a raw stream's MJPG) whose calibration is not the RGB mode's. Messages
   // name `who` and the serial. `configure_logging` sets FFmpeg's log level at
   // the first start, for a stream decoded here (H.265, or raw).
-  static Result<std::unique_ptr<CameraStream>> create(
+  static core::Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
       const OrbbecStreamOptions& streams, const Mat4f& cam_to_world,
       bool configure_logging, const std::string& who);
@@ -112,7 +112,7 @@ class CameraStream {
     return sync_settings_;
   }
   // Write sync settings to the camera, where they persist. Not while running.
-  Status apply_sync(const OrbbecSyncSettings& settings);
+  core::Status apply_sync(const OrbbecSyncSettings& settings);
   bool disconnected() const noexcept {
     return mailbox_->disconnected.load(std::memory_order_acquire);
   }
@@ -122,7 +122,7 @@ class CameraStream {
   // once the camera has disconnected, or if the SDK refuses. For a stream
   // decoded here (H.265, or raw MJPEG), Unsupported or IoError if the
   // decoder does not open or start.
-  Status start();
+  core::Status start();
   // Stop both streams; drop the pending pair and the processed frame's
   // storage. Idempotent. The camera stays open, and held.
   void stop() noexcept;
@@ -132,10 +132,10 @@ class CameraStream {
   // The newest pair not yet taken, or null, the older ones counted dropped;
   // IoError once disconnected. A taken pair is this stream's to account for:
   // process() it, or discard() it.
-  Result<std::shared_ptr<ob::FrameSet>> take();
+  core::Result<std::shared_ptr<ob::FrameSet>> take();
   // Every pair not yet taken, oldest first, appended to `out`; as take()
   // otherwise.
-  Status take_all(std::vector<std::shared_ptr<ob::FrameSet>>* out);
+  core::Status take_all(std::vector<std::shared_ptr<ob::FrameSet>>* out);
   // A taken pair that will never be processed, counted as dropped.
   void discard() noexcept;
   // A pair process() delivered that the caller will not hand out after all,
@@ -149,14 +149,14 @@ class CameraStream {
   // stop(). An empty optional is a pair the SDK failed on, skipped and
   // counted; IoError is a pair contradicting the negotiated stream, or a run
   // of ~a second's skips.
-  Result<std::optional<CapturedFrame>> process(
+  core::Result<std::optional<CapturedFrame>> process(
       const std::shared_ptr<ob::FrameSet>& pair);
   // A pair as the cameras captured it, for a stream opened raw: raw depth and
   // the decoded colour, each camera's lens and pose. The colour is the
   // picture the hardware left on the device, which the frame holds itself,
   // or I420 host planes. Depth and host planes point into the pair, which is
   // held until the next call or stop().
-  Result<std::optional<RawFrame>> process_raw(
+  core::Result<std::optional<RawFrame>> process_raw(
       const std::shared_ptr<ob::FrameSet>& pair);
   bool raw() const noexcept { return raw_; }
 
@@ -183,8 +183,8 @@ class CameraStream {
   bool configure_ffmpeg_logging_ = true;  // cleared by the first start
   // The device a raw stream's colour is decoded onto (streams.device), and the
   // allocator its pictures are made through (streams.allocator).
-  const Device* vulkan_device_ = nullptr;
-  Allocator* vulkan_allocator_ = nullptr;
+  const core::Device* vulkan_device_ = nullptr;
+  core::Allocator* vulkan_allocator_ = nullptr;
   // Decodes the H.265 colour, between the SDK and the mailbox; null for
   // MJPEG. Replaced at each start, so its counters start fresh with the rest.
   std::shared_ptr<HevcColorDecoder> hevc_;

@@ -82,7 +82,7 @@ struct ColorEncoding {
     /// BT.2020 with the PQ (SMPTE ST 2084) absolute-luminance HDR curve.
     /// Declarable so a driver can be truthful; mapping it into an 8-bit SDR
     /// canonical form needs tone mapping, which this repo does not do, so
-    /// `sensor::to_canonical` reports @ref Status::Code::Unsupported rather
+    /// `sensor::to_canonical` reports `Status::Code::Unsupported` rather
     /// than fusing something quietly wrong.
     Bt2020Pq,
   };
