@@ -22,9 +22,10 @@
 /// const CameraModel camera{{3840, 2160},
 ///                          {2239.5, 2239.0, 1913.2, 1039.2},
 ///                          {0.0754, -0.1053, -0.0003, 0.0003, 0.0436}};
-/// VKC_TRY(check_camera_model(camera));
-/// VKC_ASSIGN(const Vec2d pixel, project(camera, {0.2, -0.1, 2.0}));
-/// VKC_ASSIGN(const Vec2d ray, unproject(camera, pixel));  // (0.1, -0.05)
+/// VKC_ASSIGN(const CameraProjection projection,
+///            CameraProjection::create(camera));
+/// VKC_ASSIGN(const Vec2d pixel, projection.project({0.2, -0.1, 2.0}));
+/// VKC_ASSIGN(const Vec2d ray, projection.unproject(pixel));  // (0.1, -0.05)
 /// @endcode
 
 #include <array>
@@ -73,6 +74,8 @@ struct CameraModel {
   RationalDistortion distortion;  ///< All zero for a pinhole camera.
 };
 
+/// @brief A lens's coefficients as an array.
+/// @param d  The lens.
 /// @return The eight coefficients of @p d in OpenCV's order, as
 ///         @ref distort_rational and a solver's parameter block take them.
 inline std::array<double, 8> coefficients(const RationalDistortion& d) {
@@ -126,49 +129,61 @@ inline Vec2d distort_normalized(const RationalDistortion& d,
 ///        the radial factor's denominator reaches zero, whichever is nearer.
 ///
 /// Inside it every pixel has exactly one ray; past it, strong distortion
-/// folds several rays onto one pixel, and @ref unproject cannot say which is
-/// right. Found by a scan of 2% steps in r^2 out to r = 1000 (89.94 degrees
-/// off-axis), each crossing refined by bisection; a fold and an unfold within
-/// one step would be missed, which no physical lens produces.
+/// folds several rays onto one pixel, and @ref CameraProjection::unproject
+/// cannot say which is right. Found by a scan of 2% steps in r^2 out to
+/// r = 1000 (89.94 degrees off-axis), each crossing refined by bisection; a
+/// fold and an unfold within one step would be missed, which no physical lens
+/// produces.
 /// @param d  The lens.
 /// @return The squared normalized radius; +infinity when the lens never folds
 ///         within r = 1000.
 VR_CAMERA_API double invertible_radius2(const RationalDistortion& d) noexcept;
 
-/// @brief Project a point in the camera's frame to a pixel.
-/// @param camera        The model.
-/// @param point_camera  The point, in the camera's frame.
-/// @return The pixel, which may lie outside the image; or
-///         `Status::Code::InvalidArgument` for a model
-///         @ref check_camera_model refuses, or a point that is not finite or
-///         not in front of the camera (`z <= 0`); or `Status::Code::Numerical`
-///         if the projection overflows.
-VR_CAMERA_API core::Result<Vec2d> project(const CameraModel& camera,
-                                          const Vec3d& point_camera);
-
-/// @brief The ray through a pixel: the undistorted normalized point `(x, y)`,
-///        whose ray is `(x, y, 1)`.
+/// @brief A camera ready to project and unproject: a model
+///        @ref check_camera_model accepts, and its lens's
+///        @ref invertible_radius2, found once.
 ///
-/// Newton's method on the distortion, kept inside @ref invertible_radius2 so
-/// it cannot settle on a folded-back ray that also lands on the pixel.
-/// @param camera  The model.
-/// @param pixel   The pixel.
-/// @return The normalized point that @ref project maps to within 1e-9 px of
-///         @p pixel; `Status::Code::InvalidArgument` for a model
-///         @ref check_camera_model refuses or a pixel that is not finite; or
-///         `Status::Code::Numerical` if no ray inside the invertible radius
-///         lands on it.
-VR_CAMERA_API core::Result<Vec2d> unproject(const CameraModel& camera,
-                                            const Vec2d& pixel);
+/// Both directions keep to the radius, where each pixel has one ray: past
+/// it, a folded or sign-changed lens images a point at a wrong pixel, and
+/// several rays land on one pixel.
+class VR_CAMERA_API CameraProjection {
+ public:
+  /// @brief Check @p camera and find its lens's invertible radius.
+  /// @param camera  The model.
+  /// @return The projection; or `Status::Code::InvalidArgument` for a model
+  ///         @ref check_camera_model refuses.
+  static core::Result<CameraProjection> create(const CameraModel& camera);
 
-/// @brief @ref unproject with the lens's @ref invertible_radius2 computed
-///        once by the caller, for a loop over many pixels.
-/// @param camera          The model.
-/// @param pixel           The pixel.
-/// @param invertible_r2   `invertible_radius2(camera.distortion)`.
-/// @return As @ref unproject.
-VR_CAMERA_API core::Result<Vec2d> unproject(const CameraModel& camera,
-                                            const Vec2d& pixel,
-                                            double invertible_r2);
+  /// @return The model.
+  const CameraModel& camera() const noexcept { return camera_; }
+
+  /// @brief Project a point in the camera's frame to a pixel.
+  /// @param point_camera  The point, in the camera's frame.
+  /// @return The pixel, which may lie outside the image; or
+  ///         `Status::Code::InvalidArgument` for a point that is not finite,
+  ///         not in front of the camera (`z <= 0`), or past the invertible
+  ///         radius; or `Status::Code::Numerical` if the projection
+  ///         overflows.
+  core::Result<Vec2d> project(const Vec3d& point_camera) const;
+
+  /// @brief The ray through a pixel: the undistorted normalized point
+  ///        `(x, y)`, whose ray is `(x, y, 1)`.
+  ///
+  /// Newton's method on the distortion, kept inside the invertible radius so
+  /// it cannot settle on a folded-back ray that also lands on the pixel.
+  /// @param pixel  The pixel.
+  /// @return The normalized point that @ref project maps to within 1e-9 px
+  ///         of @p pixel; `Status::Code::InvalidArgument` for a pixel that is
+  ///         not finite; or `Status::Code::Numerical` if no ray inside the
+  ///         invertible radius lands on it.
+  core::Result<Vec2d> unproject(const Vec2d& pixel) const;
+
+ private:
+  CameraProjection(const CameraModel& camera, double invertible_r2)
+      : camera_(camera), invertible_r2_(invertible_r2) {}
+
+  CameraModel camera_;
+  double invertible_r2_ = 0.0;
+};
 
 }  // namespace volumetric_kit::recon::camera

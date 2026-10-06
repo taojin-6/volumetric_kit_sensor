@@ -13,8 +13,9 @@ namespace volumetric_kit::recon::camera {
 
 namespace {
 
-// unproject() stops once the re-projection error is below this: far finer
-// than any detector, yet ~100x above double rounding at the widest radii.
+// unproject() stops once project() maps its ray within this of the pixel: far
+// finer than any detector, yet ~100x above double rounding at the widest
+// radii.
 constexpr double kUnprojectTolerancePx = 1e-9;
 constexpr int kUnprojectMaxIterations = 50;
 constexpr int kMaxStepHalvings = 30;
@@ -66,6 +67,18 @@ std::array<double, 4> distort_jacobian(const RationalDistortion& k,
 }
 
 bool finite(const Vec2d& v) { return std::isfinite(v.x) && std::isfinite(v.y); }
+
+// The pixel a normalized point images at: project()'s arithmetic, which
+// unproject() measures its residual with.
+Vec2d project_normalized(const CameraModel& camera, const Vec2d& normalized) {
+  const PinholeIntrinsics& k = camera.intrinsics;
+  const double intrinsics[4] = {k.fx, k.fy, k.cx, k.cy};
+  const std::array<double, 8> d = coefficients(camera.distortion);
+  const double p[3] = {normalized.x, normalized.y, 1.0};
+  double uv[2];
+  project_rational(intrinsics, d.data(), p, uv);
+  return {uv[0], uv[1]};
+}
 
 }  // namespace
 
@@ -130,9 +143,13 @@ double invertible_radius2(const RationalDistortion& d) noexcept {
   return std::numeric_limits<double>::infinity();
 }
 
-core::Result<Vec2d> project(const CameraModel& camera,
-                            const Vec3d& point_camera) {
+core::Result<CameraProjection> CameraProjection::create(
+    const CameraModel& camera) {
   VKC_TRY(check_camera_model(camera));
+  return CameraProjection(camera, invertible_radius2(camera.distortion));
+}
+
+core::Result<Vec2d> CameraProjection::project(const Vec3d& point_camera) const {
   if (!(std::isfinite(point_camera.x) && std::isfinite(point_camera.y) &&
         std::isfinite(point_camera.z))) {
     return core::Status::invalid_argument("project: the point is not finite");
@@ -141,13 +158,13 @@ core::Result<Vec2d> project(const CameraModel& camera,
     return core::Status::invalid_argument(
         "project: the point is not in front of the camera (z <= 0)");
   }
-  const PinholeIntrinsics& k = camera.intrinsics;
-  const double intrinsics[4] = {k.fx, k.fy, k.cx, k.cy};
-  const std::array<double, 8> d = coefficients(camera.distortion);
-  const double p[3] = {point_camera.x, point_camera.y, point_camera.z};
-  double uv[2];
-  project_rational(intrinsics, d.data(), p, uv);
-  const Vec2d pixel(uv[0], uv[1]);
+  const Vec2d normalized(point_camera.x / point_camera.z,
+                         point_camera.y / point_camera.z);
+  if (!(glm::dot(normalized, normalized) < invertible_r2_)) {
+    return core::Status::invalid_argument(
+        "project: the point is past the lens's invertible radius");
+  }
+  const Vec2d pixel = project_normalized(camera_, normalized);
   if (!finite(pixel)) {
     return core::Status::numerical(
         "project: overflowed; the point is too far off-axis");
@@ -155,49 +172,45 @@ core::Result<Vec2d> project(const CameraModel& camera,
   return pixel;
 }
 
-core::Result<Vec2d> unproject(const CameraModel& camera, const Vec2d& pixel) {
-  return unproject(camera, pixel, invertible_radius2(camera.distortion));
-}
-
-core::Result<Vec2d> unproject(const CameraModel& camera, const Vec2d& pixel,
-                              double invertible_r2) {
-  VKC_TRY(check_camera_model(camera));
+core::Result<Vec2d> CameraProjection::unproject(const Vec2d& pixel) const {
   if (!finite(pixel)) {
     return core::Status::invalid_argument("unproject: the pixel is not finite");
   }
-  const PinholeIntrinsics& k = camera.intrinsics;
-  const RationalDistortion& lens = camera.distortion;
-  const Vec2d target((pixel.x - k.cx) / k.fx, (pixel.y - k.cy) / k.fy);
-  // Measured in pixels, so the tolerance means the same at any focal length.
-  const auto error_px = [&](const Vec2d& residual) {
-    return std::hypot(k.fx * residual.x, k.fy * residual.y);
+  const PinholeIntrinsics& k = camera_.intrinsics;
+  const RationalDistortion& lens = camera_.distortion;
+  // The residual is in pixels, as project() computes them, so the tolerance
+  // bounds the round trip exactly and means the same at any focal length.
+  const auto residual_at = [&](const Vec2d& u) {
+    return project_normalized(camera_, u) - pixel;
   };
 
-  // Newton's method on distort(u) = target, from the distorted point (exact
-  // for no distortion). Every iterate stays inside the invertible radius, so
-  // the search cannot settle on a folded-back ray that lands on the pixel too.
-  Vec2d u = target;
+  // Newton's method on distort(u) = the pixel's normalized point, from that
+  // point (exact for no distortion). Every iterate stays inside the
+  // invertible radius, so the search cannot settle on a folded-back ray that
+  // lands on the pixel too.
+  Vec2d u((pixel.x - k.cx) / k.fx, (pixel.y - k.cy) / k.fy);
   const double u2 = glm::dot(u, u);
-  if (u2 >= invertible_r2) u *= std::sqrt(0.5 * invertible_r2 / u2);
-  Vec2d residual = distort_normalized(lens, u) - target;
-  double error = error_px(residual);
+  if (u2 >= invertible_r2_) u *= std::sqrt(0.5 * invertible_r2_ / u2);
+  Vec2d residual = residual_at(u);
+  double error = std::hypot(residual.x, residual.y);
   for (int iteration = 0; iteration < kUnprojectMaxIterations; ++iteration) {
     if (error <= kUnprojectTolerancePx) return u;
     const std::array<double, 4> j = distort_jacobian(lens, u);
     const double det = j[0] * j[3] - j[1] * j[2];
     if (!(det > 0.0)) break;  // not locally invertible here
-    // Solve j * step = -residual (2x2, by the adjugate).
-    const Vec2d step((-j[3] * residual.x + j[1] * residual.y) / det,
-                     (j[2] * residual.x - j[0] * residual.y) / det);
+    // Solve j * step = -residual, in normalized units (2x2, by the adjugate).
+    const Vec2d r(residual.x / k.fx, residual.y / k.fy);
+    const Vec2d step((-j[3] * r.x + j[1] * r.y) / det,
+                     (j[2] * r.x - j[0] * r.y) / det);
     // Backtrack until the step reduces the error without leaving the radius.
     bool improved = false;
     double t = 1.0;
     for (int halving = 0; halving < kMaxStepHalvings; ++halving, t *= 0.5) {
       const Vec2d candidate = u + t * step;
-      if (glm::dot(candidate, candidate) >= invertible_r2) continue;
-      const Vec2d candidate_residual =
-          distort_normalized(lens, candidate) - target;
-      const double candidate_error = error_px(candidate_residual);
+      if (glm::dot(candidate, candidate) >= invertible_r2_) continue;
+      const Vec2d candidate_residual = residual_at(candidate);
+      const double candidate_error =
+          std::hypot(candidate_residual.x, candidate_residual.y);
       if (candidate_error < error) {
         u = candidate;
         residual = candidate_residual;

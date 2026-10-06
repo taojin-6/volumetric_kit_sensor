@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Tao Jin
 
 // The camera model: its checks, rescaling about pixel centres, projection
-// against OpenCV's own numbers, unprojection to 1e-9 px inside the lens's
-// invertible radius and refusal past it, and the scalar templates run with a
-// dual number, as a solver differentiates through them. Host-only.
+// against OpenCV's own numbers, projection and unprojection to 1e-9 px inside
+// the lens's invertible radius and refusal past it, and the scalar templates
+// run with a dual number, as a solver differentiates through them. Host-only.
 
 #include <array>
 #include <cmath>
@@ -44,6 +44,10 @@ bool invalid(const vkc::Status& s) {
   return s.domain() == vkc::Status::Code::InvalidArgument;
 }
 
+camera::CameraProjection projection_of(const camera::CameraModel& m) {
+  return camera::CameraProjection::create(m).value();
+}
+
 int test_checks() {
   CHECK(camera::check_camera_model(kFemto4k).ok());
   camera::CameraModel m = kFemto4k;
@@ -61,9 +65,8 @@ int test_checks() {
   m = kFemto4k;
   m.distortion.k6 = kInf;
   CHECK(invalid(camera::check_camera_model(m)));
-  // project and unproject check the model too.
-  CHECK(invalid(camera::project(m, {0.0, 0.0, 1.0}).status()));
-  CHECK(invalid(camera::unproject(m, {1.0, 1.0}).status()));
+  // A projection checks the model too.
+  CHECK(invalid(camera::CameraProjection::create(m).status()));
   return 0;
 }
 
@@ -114,6 +117,7 @@ int test_projection_matches_opencv() {
   }
 
   // cv::projectPoints through the Femto camera, at points in its frame.
+  const camera::CameraProjection femto = projection_of(kFemto4k);
   const struct {
     camera::Vec3d point;
     camera::Vec2d pixel;
@@ -123,7 +127,7 @@ int test_projection_matches_opencv() {
       {{0.9, 0.5, 1.0}, {3935.5409863296645, 2171.2312630499546}},
   };
   for (const auto& c : pixels) {
-    const auto got = camera::project(kFemto4k, c.point);
+    const auto got = femto.project(c.point);
     CHECK(got.ok());
     CHECK(std::fabs(got.value().x - c.pixel.x) < 1e-9);
     CHECK(std::fabs(got.value().y - c.pixel.y) < 1e-9);
@@ -138,9 +142,9 @@ int test_projection_matches_opencv() {
   k4.k4 = 0.1;  // the denominator cancels the numerator
   CHECK(camera::distort_normalized(k4, {0.5, 0.0}).x == 0.5);
 
-  CHECK(invalid(camera::project(kFemto4k, {0.0, 0.0, 0.0}).status()));
-  CHECK(invalid(camera::project(kFemto4k, {0.0, 0.0, -1.0}).status()));
-  CHECK(invalid(camera::project(kFemto4k, {kInf, 0.0, 1.0}).status()));
+  CHECK(invalid(femto.project({0.0, 0.0, 0.0}).status()));
+  CHECK(invalid(femto.project({0.0, 0.0, -1.0}).status()));
+  CHECK(invalid(femto.project({kInf, 0.0, 1.0}).status()));
   return 0;
 }
 
@@ -163,27 +167,27 @@ int test_float_lens_is_the_template() {
 }
 
 int test_unproject_round_trips() {
-  // Every pixel of a grid over the 4K image, corners included, back to the
-  // ray it came from to within 1e-9 px.
-  for (int gy = 0; gy <= 8; ++gy) {
-    for (int gx = 0; gx <= 8; ++gx) {
-      const camera::Vec2d pixel(-0.5 + 3840.0 * gx / 8.0,
-                                -0.5 + 2160.0 * gy / 8.0);
-      const auto ray = camera::unproject(kFemto4k, pixel);
+  // Every 4th pixel of the 4K image, corners included, back to the ray it
+  // came from to within 1e-9 px.
+  const camera::CameraProjection femto = projection_of(kFemto4k);
+  for (int y = 0; y <= 2160; y += 4) {
+    for (int x = 0; x <= 3840; x += 4) {
+      const camera::Vec2d pixel(x - 0.5, y - 0.5);
+      const auto ray = femto.unproject(pixel);
       CHECK(ray.ok());
-      const auto back =
-          camera::project(kFemto4k, {ray.value().x, ray.value().y, 1.0});
+      const auto back = femto.project({ray.value().x, ray.value().y, 1.0});
       CHECK(back.ok());
-      CHECK(std::hypot(back.value().x - pixel.x, back.value().y - pixel.y) <
+      CHECK(std::hypot(back.value().x - pixel.x, back.value().y - pixel.y) <=
             1e-9);
     }
   }
   // No distortion inverts in closed form.
   camera::CameraModel pinhole = kFemto4k;
   pinhole.distortion = {};
-  const auto ray = camera::unproject(pinhole, {2239.48193 + 1891.20874, 0.0});
+  const auto ray =
+      projection_of(pinhole).unproject({2239.48193 + 1891.20874, 0.0});
   CHECK(ray.ok() && std::fabs(ray.value().x - 1.0) < 1e-12);
-  CHECK(invalid(camera::unproject(kFemto4k, {std::nan(""), 0.0}).status()));
+  CHECK(invalid(femto.unproject({std::nan(""), 0.0}).status()));
   return 0;
 }
 
@@ -201,18 +205,25 @@ int test_invertible_radius() {
   CHECK(std::fabs(camera::invertible_radius2(pole) - 1.0) < 1e-12);
 
   // Past the fold, a pixel's rays fold back, and unproject refuses rather
-  // than return either.
-  const camera::CameraModel folding{
-      {1000, 1000}, {500, 500, 499.5, 499.5}, barrel};
+  // than return either; project refuses the points out there.
+  const camera::CameraProjection folding =
+      projection_of({{1000, 1000}, {500, 500, 499.5, 499.5}, barrel});
   // The fold's own image: r = sqrt(1/0.9) distorts to r (1 - 0.3/0.9).
   const double r_fold = std::sqrt(1.0 / 0.9);
   const double rd_fold = r_fold * (1.0 - 0.3 / 0.9);
   const auto inside =
-      camera::unproject(folding, {499.5 + 500.0 * 0.95 * rd_fold, 499.5});
+      folding.unproject({499.5 + 500.0 * 0.95 * rd_fold, 499.5});
   CHECK(inside.ok() && inside.value().x < r_fold);
-  const auto past =
-      camera::unproject(folding, {499.5 + 500.0 * 1.05 * rd_fold, 499.5});
+  const auto past = folding.unproject({499.5 + 500.0 * 1.05 * rd_fold, 499.5});
   CHECK(!past.ok() && past.status().domain() == vkc::Status::Code::Numerical);
+  CHECK(folding.project({0.99 * r_fold, 0.0, 1.0}).ok());
+  CHECK(invalid(folding.project({1.01 * r_fold, 0.0, 1.0}).status()));
+  // Past the pole the radial factor turns negative: x = 1.5 would image
+  // left of centre, so project refuses it.
+  const camera::CameraProjection poled =
+      projection_of({{1000, 1000}, {500, 500, 499.5, 499.5}, pole});
+  CHECK(poled.project({0.9, 0.0, 1.0}).ok());
+  CHECK(invalid(poled.project({1.5, 0.0, 1.0}).status()));
   // A lens that folds at r = 1 and unfolds at r^2 = 2 (1 - 1.5 s + 0.5 s^2 =
   // 0) images x = 1.6 only from r ~ 2.2, past the fold: Newton must not step
   // out to that ray, and unproject refuses. x = 0.58 has a ray inside.
@@ -220,19 +231,16 @@ int test_invertible_radius() {
   unfolding.k1 = -0.5;
   unfolding.k2 = 0.1;
   CHECK(std::fabs(camera::invertible_radius2(unfolding) - 1.0) < 1e-12);
-  const camera::CameraModel wavy{
-      {1000, 1000}, {500, 500, 499.5, 499.5}, unfolding};
-  const auto outside = camera::unproject(wavy, {499.5 + 500.0 * 1.6, 499.5});
+  const camera::CameraProjection wavy =
+      projection_of({{1000, 1000}, {500, 500, 499.5, 499.5}, unfolding});
+  const auto outside = wavy.unproject({499.5 + 500.0 * 1.6, 499.5});
   CHECK(!outside.ok() &&
         outside.status().domain() == vkc::Status::Code::Numerical);
-  const auto within = camera::unproject(wavy, {499.5 + 500.0 * 0.58, 499.5});
+  const auto within = wavy.unproject({499.5 + 500.0 * 0.58, 499.5});
   CHECK(within.ok() && within.value().x < 1.0);
-
-  // With the radius computed once, the same answer.
-  const double r2 = camera::invertible_radius2(barrel);
-  const auto cached =
-      camera::unproject(folding, {499.5 + 500.0 * 0.95 * rd_fold, 499.5}, r2);
-  CHECK(cached.ok() && cached.value().x == inside.value().x);
+  // Past the unfold the distorted radius grows again, onto pixels that rays
+  // inside already reach: project refuses those points too.
+  CHECK(invalid(wavy.project({1.6, 0.0, 1.0}).status()));
   return 0;
 }
 
@@ -264,7 +272,7 @@ int test_templates_take_a_dual_number() {
   const Dual point[3] = {Dual(0.2), Dual(-0.1), Dual(2.0)};
   Dual uv[2];
   camera::project_rational(intrinsics, d, point, uv);
-  const auto pixel = camera::project(kFemto4k, {0.2, -0.1, 2.0});
+  const auto pixel = projection_of(kFemto4k).project({0.2, -0.1, 2.0});
   CHECK(pixel.ok());
   // Equal up to the compiler's freedom to fuse a multiply-add.
   CHECK(std::fabs(uv[0].v - pixel.value().x) < 1e-9);

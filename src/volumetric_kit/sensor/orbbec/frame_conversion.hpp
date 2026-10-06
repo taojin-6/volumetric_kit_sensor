@@ -89,8 +89,9 @@ std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
 core::Status validate(const OrbbecCapture::Options& options);
 
 /// The same for a rig, plus what only a rig has: at least two cameras, a
-/// calibration (if any) that @ref validate_rig_calibration accepts and that
-/// poses every one of them, and a sync tolerance under half a frame period.
+/// calibration (if any) that @ref camera::validate_array_calibration accepts
+/// and that poses every one of them, and a sync tolerance under half a frame
+/// period.
 core::Status validate(const OrbbecRig::Options& options);
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

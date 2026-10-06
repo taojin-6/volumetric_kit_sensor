@@ -8,12 +8,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <nlohmann/json.hpp>
 
@@ -60,12 +64,12 @@ core::Result<double> number(const json& object, const char* key,
   return v;
 }
 
-core::Result<std::uint32_t> pixels(const json& object, const char* key,
-                                   const std::string& where) {
+core::Result<std::uint32_t> whole_number(const json& object, const char* key,
+                                         const std::string& where) {
   const auto it = object.find(key);
   if (it == object.end() || !it->is_number_unsigned() ||
       it->get<std::uint64_t>() > std::numeric_limits<std::uint32_t>::max()) {
-    return bad(where + "\"" + key + "\" is not a whole number of pixels");
+    return bad(where + "\"" + key + "\" is not a 32-bit whole number");
   }
   return static_cast<std::uint32_t>(it->get<std::uint64_t>());
 }
@@ -151,8 +155,8 @@ core::Result<CameraCalibration> camera_v2(const json& block,
     return bad(where + "\"source\" is \"" + source->get<std::string>() +
                "\", not \"factory\" or \"calibrated\"");
   }
-  VKC_ASSIGN(camera.model.size.width, pixels(block, "width", where));
-  VKC_ASSIGN(camera.model.size.height, pixels(block, "height", where));
+  VKC_ASSIGN(camera.model.size.width, whole_number(block, "width", where));
+  VKC_ASSIGN(camera.model.size.height, whole_number(block, "height", where));
   VKC_ASSIGN(const json* intrinsics, object_at(block, "intrinsics", where));
   if (intrinsics == nullptr) return bad(where + "no \"intrinsics\" object");
   VKC_ASSIGN(camera.model.intrinsics,
@@ -185,7 +189,7 @@ core::Result<WorldFrame> world_v2(const json& block) {
     return bad(where + "apriltag: missing string \"family\"");
   }
   world.tag.family = family->get<std::string>();
-  VKC_ASSIGN(world.tag.id, pixels(*tag, "id", where + "apriltag: "));
+  VKC_ASSIGN(world.tag.id, whole_number(*tag, "id", where + "apriltag: "));
   VKC_ASSIGN(world.tag.size_m, number(*tag, "size_m", where + "apriltag: "));
   return world;
 }
@@ -257,11 +261,13 @@ core::Result<ArrayCalibration> parse_v1(const json& section) {
     sensor.color_to_world = rigid_inverse(matrix_from_rodrigues(extrinsic));
     // The intrinsics form a camera only with the image they are in pixels of.
     VKC_ASSIGN(const json* intrinsics, object_at(*it, "intrinsics", where));
-    if (intrinsics != nullptr && intrinsics->contains("width")) {
+    if (intrinsics != nullptr && intrinsics->contains("width") &&
+        intrinsics->contains("height")) {
       const std::string w = where + "intrinsics ";
       CameraCalibration color;
-      VKC_ASSIGN(color.model.size.width, pixels(*intrinsics, "width", w));
-      VKC_ASSIGN(color.model.size.height, pixels(*intrinsics, "height", w));
+      VKC_ASSIGN(color.model.size.width, whole_number(*intrinsics, "width", w));
+      VKC_ASSIGN(color.model.size.height,
+                 whole_number(*intrinsics, "height", w));
       VKC_ASSIGN(color.model.intrinsics, pinhole(*intrinsics, w));
       VKC_ASSIGN(const json* distortion, object_at(*it, "distortion", where));
       if (distortion != nullptr) {
@@ -371,6 +377,8 @@ core::Status check_world(const ArrayCalibration& array) {
   return {};
 }
 
+// TODO: one read-whole-file helper in the core's base tier; the Orbbec sync
+// config reader (orbbec_sync_config.cpp) repeats this loop.
 core::Result<std::string> read_text(const std::string& path) {
   // stdio rather than a stream: a stream reports a failed read -- a directory,
   // say -- as the end of the file.
@@ -504,22 +512,37 @@ core::Result<std::string> format_array_calibration(
 core::Status write_array_calibration(const std::string& path,
                                      const ArrayCalibration& array) {
   VKC_ASSIGN(const std::string text, format_array_calibration(array));
-  // Written beside the file and renamed over it, so a failed write leaves the
-  // calibration that was there.
-  const std::string temporary = path + ".tmp";
+  // Written beside the file -- a symbolic link's target, so the link stays --
+  // synced, and renamed over it, so a failed write or a crash leaves the
+  // calibration that was there. The temporary is this process's own, and
+  // takes the old file's permissions.
+  std::error_code error;
+  const std::string target = std::filesystem::weakly_canonical(path, error);
+  if (error) {
+    return core::Status::io_error("array calibration: cannot resolve " + path);
+  }
+  const std::string temporary =
+      target + "." + std::to_string(::getpid()) + ".tmp";
   std::FILE* file = std::fopen(temporary.c_str(), "wb");
   if (file == nullptr) {
     return core::Status::io_error("array calibration: cannot create " +
                                   temporary);
   }
-  const bool written =
-      std::fwrite(text.data(), 1, text.size(), file) == text.size();
-  if (std::fclose(file) != 0 || !written) {
+  bool written =
+      std::fwrite(text.data(), 1, text.size(), file) == text.size() &&
+      std::fflush(file) == 0;
+  struct stat old{};
+  if (written && ::stat(target.c_str(), &old) == 0) {
+    written = ::fchmod(::fileno(file), old.st_mode & 07777) == 0;
+  }
+  written = written && ::fsync(::fileno(file)) == 0;
+  written = std::fclose(file) == 0 && written;
+  if (!written) {
     std::remove(temporary.c_str());
     return core::Status::io_error("array calibration: cannot write " +
                                   temporary);
   }
-  if (std::rename(temporary.c_str(), path.c_str()) != 0) {
+  if (std::rename(temporary.c_str(), target.c_str()) != 0) {
     std::remove(temporary.c_str());
     return core::Status::io_error("array calibration: cannot replace " + path);
   }

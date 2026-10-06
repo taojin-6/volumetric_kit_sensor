@@ -8,6 +8,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -170,6 +172,15 @@ int test_version1() {
   // B's do not, so they are dropped; its pose stays.
   if (check_b(a.sensors[1]) != 0) return 1;
   CHECK(!a.sensors[1].color);
+  // Nor do intrinsics with one side of their image.
+  for (const char* side : {R"("width": 64)", R"("height": 48)"}) {
+    const auto one_side = camera::parse_array_calibration(
+        std::string(R"({"device_calibration": {"A": {"intrinsics": {"fx": 50,
+            "fy": 50, "cx": 31.5, "cy": 23.5, )") +
+        side + R"(}, "pose": {"rvec": [0, 0, 0], "tvec": [0, 0, 0]}}}})");
+    CHECK(one_side.ok() && one_side.value().sensors[0].color_to_world &&
+          !one_side.value().sensors[0].color);
+  }
   return 0;
 }
 
@@ -230,6 +241,8 @@ int test_refusals() {
   CHECK(refused(
       one_sensor(pose, R"("world": {"apriltag": {"family": "tag36h11", "id": 0,
                                       "size_m": 0}}, )")));
+  CHECK(refused(one_sensor(pose, R"("world": {"apriltag": {"family": "tag36h11",
+                                      "id": -1, "size_m": 0.22}}, )")));
   CHECK(refused(one_sensor(pose, R"("world": {}, )")));
   // Version 1: every camera needs a pose.
   CHECK(refused(R"({"device_calibration": {"A": {"intrinsics":
@@ -291,8 +304,6 @@ int test_round_trip() {
   const std::string path =
       std::string(VR_TEST_SCRATCH_DIR) + "/array_calibration.json";
   CHECK(camera::write_array_calibration(path, written).ok());
-  std::FILE* leftover = std::fopen((path + ".tmp").c_str(), "rb");
-  CHECK(leftover == nullptr);  // renamed into place
   const auto read = camera::read_array_calibration(path);
   CHECK(read.ok());
   const camera::ArrayCalibration& a = read.value();
@@ -369,6 +380,37 @@ int test_writer_refusals() {
   return 0;
 }
 
+int test_write_in_place() {
+  // A rewrite through a symbolic link replaces its target, keeps the
+  // target's permissions, and leaves no temporary behind.
+  namespace fs = std::filesystem;
+  const fs::path dir =
+      fs::path(VR_TEST_SCRATCH_DIR) / "array_calibration_in_place";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  const fs::path file = dir / "array_calibration.json";
+  const fs::path link = dir / "link.json";
+  camera::ArrayCalibration array;
+  camera::SensorCalibration a;
+  a.id = "A";
+  array.sensors = {a};
+  CHECK(camera::write_array_calibration(file.string(), array).ok());
+  const fs::perms mode =
+      fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read;
+  fs::permissions(file, mode);
+  fs::create_symlink(file.filename(), link);
+
+  array.sensors[0].id = "B";
+  CHECK(camera::write_array_calibration(link.string(), array).ok());
+  CHECK(fs::is_symlink(link));
+  CHECK(fs::status(file).permissions() == mode);
+  const auto read = camera::read_array_calibration(file.string());
+  CHECK(read.ok() && read.value().sensors[0].id == "B");
+  CHECK(std::distance(fs::directory_iterator(dir), fs::directory_iterator()) ==
+        2);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -377,6 +419,7 @@ int main() {
   if (test_refusals() != 0) return 1;
   if (test_round_trip() != 0) return 1;
   if (test_writer_refusals() != 0) return 1;
+  if (test_write_in_place() != 0) return 1;
   std::printf("array calibration tests passed\n");
   return 0;
 }

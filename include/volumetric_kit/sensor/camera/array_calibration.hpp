@@ -124,6 +124,7 @@ struct ArrayCalibration {
   std::vector<SensorCalibration> sensors;  ///< In id order once read.
 };
 
+/// @brief Find a sensor by its id.
 /// @param array  A calibration.
 /// @param id     A sensor's id.
 /// @return The sensor of @p array with @p id, or null; valid while @p array
@@ -176,6 +177,11 @@ VR_CAMERA_API core::Result<std::string> format_array_calibration(
 
 /// @brief Write @p array to @p path as @ref format_array_calibration formats
 ///        it.
+///
+/// The document goes to a temporary file beside @p path (beside its target,
+/// for a symbolic link), is synced, and is renamed over it, so a failed write
+/// or a crash leaves the calibration that was there. A replaced file keeps
+/// its permissions.
 /// @param path   The file, created or replaced.
 /// @param array  The calibration.
 /// @return OK; `Status::Code::InvalidArgument` for a calibration
