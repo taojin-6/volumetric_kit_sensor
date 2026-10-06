@@ -19,6 +19,7 @@ namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;
+namespace camera = volumetric_kit::recon::camera;
 
 #define CHECK(cond)                                                        \
   do {                                                                     \
@@ -287,13 +288,23 @@ int test_validate_rig() {
   o.sync.devices[1].serial = "A";
   CHECK(invalid(orbbec::validate(o)));
   // A calibration must pose every camera, and pass its own checks.
+  const auto posed = [](const char* id) {
+    camera::SensorCalibration s;
+    s.id = id;
+    s.color_to_world = camera::Mat4d(1.0);
+    return s;
+  };
   o = r;
-  o.calibration = {{"A", vr::Mat4f(1.0f), {}, {}, {}}};
+  o.calibration.sensors = {posed("A")};
   CHECK(invalid(orbbec::validate(o)));
-  o.calibration.push_back({"B", vr::Mat4f(1.0f), {}, {}, {}});
-  o.calibration.push_back({"C", vr::Mat4f(1.0f), {}, {}, {}});  // extra: fine
+  camera::SensorCalibration unposed = posed("B");
+  unposed.color_to_world.reset();
+  o.calibration.sensors.push_back(unposed);  // listed, but not posed
+  CHECK(invalid(orbbec::validate(o)));
+  o.calibration.sensors[1] = posed("B");
+  o.calibration.sensors.push_back(posed("C"));  // extra: fine
   CHECK(orbbec::validate(o).ok());
-  o.calibration[1].cam_to_world = vr::Mat4f(2.0f);
+  o.calibration.sensors[1].color_to_world = camera::Mat4d(2.0);
   CHECK(invalid(orbbec::validate(o)));
 
   // A rig may be raw, over either codec.
