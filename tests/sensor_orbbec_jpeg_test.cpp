@@ -2,16 +2,16 @@
 // Copyright (c) 2026 Tao Jin
 
 // The Orbbec driver's MJPEG colour decoder, with no camera: the committed
-// JPEG (tools/make_jpeg_fixtures.sh) wrapped in SDK frames, each paired with a
-// depth frame. Every pair comes out with its depth and timestamps, its colour
-// the pattern: in software as an I420 frame carrying BT.601 full range, and
-// given a device the hardware decodes onto, as the picture on it, released
-// with its frame. A pair missing a frame, an empty colour frame and a JPEG
-// that does not decode each cost only themselves, and a decoder slower than
-// the camera skips pairs rather than falling behind.
+// JPEGs (tools/make_jpeg_fixtures.sh) wrapped in SDK frames, each paired with
+// a depth frame, decoded on this machine's hardware onto the device. Every
+// pair comes out with its depth and timestamps, its colour the pattern,
+// BT.601 full range, carried in its frame and released with it. A pair
+// missing a frame, an empty colour frame and a JPEG that does not decode each
+// cost only themselves; a JPEG the hardware does not take stops the decoder;
+// and a decoder slower than the camera skips pairs rather than falling behind.
 //
-// VR_TEST_HEVC_BACKEND=cuda also requires nvJPEG's picture on the device in a
-// VR_WITH_CUDA build, and =videotoolbox VideoToolbox's.
+// Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
+// sets on the legs that promise one, makes it fail instead.
 
 #include <chrono>
 #include <condition_variable>
@@ -25,7 +25,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -62,6 +61,11 @@ constexpr std::uint32_t kHeight = 144;
 constexpr std::uint64_t kStartUs = 1000000;
 constexpr std::uint64_t kPeriodUs = 33333;  // 30 fps
 constexpr const char* kJpeg = VR_JPEG_DATA "/patches_256x144.jpg";
+constexpr const char* k422 = VR_JPEG_DATA "/patches_422_256x144.jpg";
+
+// The device the decoders run on, set by main.
+vkc::Device* g_device = nullptr;
+vkc::Allocator* g_allocator = nullptr;
 
 // The fixture's pattern: patch p = (column + 3 * row) mod 8 over 32x72 luma
 // patches; Y = 40 + 24p, U = 64 + 16 (3p mod 8), V = 64 + 16 (5p mod 8).
@@ -102,13 +106,13 @@ std::shared_ptr<ob::FrameSet> pair(const std::vector<std::uint8_t>& jpeg,
 struct Run {
   std::vector<std::shared_ptr<ob::FrameSet>> out;
   std::uint64_t lost = 0;
+  vkc::Status failure;
 };
 
-// Push `in`, wait for `expect` pairs out, and stop. The queue holds all of
-// `in`, so none is skipped.
+// Push `in`, wait for `expect` pairs out or the decoder to stop, and stop it.
+// The queue holds all of `in`, so none is skipped.
 Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
-        std::size_t expect, const vkc::Device* device = nullptr,
-        vkc::Allocator* allocator = nullptr) {
+        std::size_t expect) {
   struct Collected {
     std::mutex mutex;
     std::vector<std::shared_ptr<ob::FrameSet>> sets;
@@ -116,8 +120,8 @@ Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
   auto collected = std::make_shared<Collected>();
   orbbec::JpegColorDecoder::Options options;
   options.depth = in.size();
-  options.device = device;
-  options.allocator = allocator;
+  options.device = g_device;
+  options.allocator = g_allocator;
   options.who = "test";
   auto decoder = orbbec::JpegColorDecoder::start(
       options, [collected](std::shared_ptr<ob::FrameSet> set) {
@@ -137,35 +141,27 @@ Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
       std::lock_guard<std::mutex> lock(collected->mutex);
       n = collected->sets.size();
     }
-    if (n >= expect || std::chrono::steady_clock::now() > deadline) break;
+    if (n >= expect || !decoder.value()->failure().ok() ||
+        std::chrono::steady_clock::now() > deadline) {
+      break;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   // Let anything that should not come out have its chance to.
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  decoder.value()->stop();
   Run r;
+  r.failure = decoder.value()->failure();
+  decoder.value()->stop();
   r.lost = decoder.value()->lost();
   std::lock_guard<std::mutex> lock(collected->mutex);
   r.out = collected->sets;
   return r;
 }
 
-// Y, U and V, packed, of a decoded pair's colour: an I420 frame's, or a
-// device picture's read back through a batch.
+// Y, U and V, packed, of a decoded pair's picture, read back through a batch.
 struct Planes {
   std::vector<std::uint8_t> y, u, v;
 };
-
-Planes from_i420(const ob::Frame& color) {
-  Planes out;
-  const std::uint8_t* d = color.getData();
-  const std::size_t luma = std::size_t{kWidth} * kHeight;
-  const std::size_t chroma = std::size_t{kWidth / 2} * (kHeight / 2);
-  out.y.assign(d, d + luma);
-  out.u.assign(d + luma, d + luma + chroma);
-  out.v.assign(d + luma + chroma, d + luma + 2 * chroma);
-  return out;
-}
 
 Planes from_device(const sensor::DecodedPicture& p, vkc::Device& device,
                    vkc::Allocator& allocator) {
@@ -190,35 +186,6 @@ int check_pattern(const Planes& p) {
       CHECK(near(p.u[c], 64 + 16 * ((3 * k) % 8)));
       CHECK(near(p.v[c], 64 + 16 * ((5 * k) % 8)));
     }
-  }
-  return 0;
-}
-
-// Every pair out, in order, with its depth, dated as it came, and its colour
-// the pattern: I420 frames in software, carrying BT.601 full range.
-int test_software() {
-  const std::vector<std::uint8_t> jpeg = read_file(kJpeg);
-  CHECK(!jpeg.empty());
-  std::vector<std::shared_ptr<ob::FrameSet>> in;
-  for (int f = 0; f < 5; ++f) in.push_back(pair(jpeg, f));
-  const Run r = run(in, 5);
-  CHECK(r.out.size() == 5 && r.lost == 0);
-  for (int f = 0; f < 5; ++f) {
-    const auto& set = *r.out[static_cast<std::size_t>(f)];
-    const std::uint64_t t =
-        kStartUs + static_cast<std::uint64_t>(f) * kPeriodUs;
-    const auto depth = set.getDepthFrame();
-    const auto color = set.getColorFrame();
-    CHECK(depth != nullptr && color != nullptr);
-    CHECK(depth->getTimeStampUs() == t && color->getTimeStampUs() == t);
-    CHECK(!orbbec::device_picture(*color).has_value());
-    CHECK(color->getFormat() == OB_FORMAT_I420);
-    const auto described = orbbec::planes_color(*color);
-    CHECK(described.has_value());
-    CHECK(described->matrix == sensor::VideoColorMatrix::Bt601 &&
-          described->full_range && described->has_encoding);
-    CHECK(described->chroma_location == sensor::ChromaLocation::Center);
-    CHECK(check_pattern(from_i420(*color)) == 0);
   }
   return 0;
 }
@@ -260,6 +227,8 @@ int test_skips_when_behind() {
   };
   orbbec::JpegColorDecoder::Options options;
   options.depth = 1;
+  options.device = g_device;
+  options.allocator = g_allocator;
   options.who = "test";
   auto decoder = orbbec::JpegColorDecoder::start(
       options, [gate](std::shared_ptr<ob::FrameSet> set) {
@@ -304,70 +273,65 @@ int test_skips_when_behind() {
   return 0;
 }
 
-// Given a device the hardware decodes onto, the picture on it, carried in its
-// frame and released with it. Where no hardware takes the JPEG onto this
-// device, I420 frames as in software.
+// Every pair out, in order, with its depth, dated as it came, its colour the
+// pattern, on the device: BT.601 full range, chroma centred, carried in its
+// frame and released with it.
 int test_device() {
-  auto instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  auto gpu = instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) {
-    return vr_test::no_device("no compute-capable device",
-                              gpu.status().message());
-  }
-  auto device = vkc::Device::create(instance.value(), gpu.value(),
-                                    vr::device_requirements());
-  CHECK(device.ok());
-  auto allocator =
-      vkc::Allocator::create(instance.value().handle(), device.value());
-  CHECK(allocator.ok());
   const std::vector<std::uint8_t> jpeg = read_file(kJpeg);
-  Run r = run({pair(jpeg, 0), pair(jpeg, 1), pair(jpeg, 2)}, 3, &device.value(),
-              &allocator.value());
-  CHECK(r.out.size() == 3 && r.lost == 0);
-  const bool on_device =
-      orbbec::device_picture(*r.out.front()->getColorFrame()).has_value();
-  // The legs whose hardware leaves its pictures on the device.
-  const char* required = std::getenv("VR_TEST_HEVC_BACKEND");
-  const std::string backend = required != nullptr ? required : "";
-  if (backend == "videotoolbox" || (VR_TEST_WITH_CUDA && backend == "cuda")) {
-    CHECK(on_device);
-  }
+  CHECK(!jpeg.empty());
+  std::vector<std::shared_ptr<ob::FrameSet>> in;
+  for (int f = 0; f < 5; ++f) in.push_back(pair(jpeg, f));
+  Run r = run(in, 5);
+  CHECK(r.out.size() == 5 && r.lost == 0 && r.failure.ok());
   std::shared_ptr<const void> held;
-  for (const auto& set : r.out) {
-    const auto color = set->getColorFrame();
+  for (int f = 0; f < 5; ++f) {
+    const auto& set = *r.out[static_cast<std::size_t>(f)];
+    const std::uint64_t t =
+        kStartUs + static_cast<std::uint64_t>(f) * kPeriodUs;
+    const auto depth = set.getDepthFrame();
+    const auto color = set.getColorFrame();
+    CHECK(depth != nullptr && color != nullptr);
+    CHECK(depth->getTimeStampUs() == t && color->getTimeStampUs() == t);
     const std::optional<sensor::DecodedPicture> p =
         orbbec::device_picture(*color);
-    CHECK(p.has_value() == on_device);
-    if (!p) {
-      CHECK(check_pattern(from_i420(*color)) == 0);
-      continue;
-    }
+    CHECK(p.has_value());
     CHECK(p->width == kWidth && p->height == kHeight);
     CHECK(p->matrix == sensor::VideoColorMatrix::Bt601 && p->full_range);
     CHECK(p->chroma_location == sensor::ChromaLocation::Center);
     sensor::YuvImage image;
     orbbec::place_device_color(*p, &image);
     CHECK(image.chroma_location == sensor::ChromaLocation::Center);
-    CHECK(check_pattern(from_device(*p, device.value(), allocator.value())) ==
-          0);
+    CHECK(check_pattern(from_device(*p, *g_device, *g_allocator)) == 0);
     if (p->device) {
       held = p->device;
     } else {
       held = p->image[0];
     }
   }
-  if (held != nullptr) {
-    CHECK(held.use_count() > 1);  // the frame still holds it
-    r.out.clear();
-    CHECK(held.use_count() == 1);  // and it went with the frame
-  }
-  std::printf("  device pictures: %s\n",
-              on_device ? "carried in their frames"
-                        : "not offered here; I420 frames instead");
+  CHECK(held.use_count() > 1);  // the frame still holds it
+  r.out.clear();
+  CHECK(held.use_count() == 1);  // and it went with the frame
+  return 0;
+}
+
+// A decoder with no device to decode onto does not start.
+int test_start_needs_device() {
+  orbbec::JpegColorDecoder::Options options;
+  options.who = "test";
+  auto decoder = orbbec::JpegColorDecoder::start(
+      options, [](std::shared_ptr<ob::FrameSet>) {});
+  CHECK(decoder.status().domain() == vkc::Status::Code::Unsupported);
+  return 0;
+}
+
+// A 4:2:2 JPEG, which the hardware does not take: the decoder stops for good,
+// Unsupported, and hands nothing on.
+int test_unsupported_jpeg() {
+  const std::vector<std::uint8_t> jpeg = read_file(k422);
+  CHECK(!jpeg.empty());
+  const Run r = run({pair(jpeg, 0), pair(jpeg, 1)}, 1);
+  CHECK(r.failure.domain() == vkc::Status::Code::Unsupported);
+  CHECK(r.out.empty());
   return 0;
 }
 
@@ -377,10 +341,45 @@ int main() {
   // The SDK writes a log file into the working directory unless told not to.
   ob::Context::setLoggerToFile(OB_LOG_SEVERITY_OFF, "");
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
-  if (test_software() != 0) return 1;
+  if (test_start_needs_device() != 0) return 1;
+
+  auto instance = vkc::Instance::create({});
+  if (!instance) {
+    return vr_test::no_device("no Vulkan instance",
+                              instance.status().message());
+  }
+  auto physical =
+      instance.value().select_physical_device(vr::device_requirements());
+  if (!physical) {
+    return vr_test::no_device("no compute-capable device",
+                              physical.status().message());
+  }
+  auto device = vkc::Device::create(instance.value(), physical.value(),
+                                    vr::device_requirements());
+  CHECK(device.ok());
+  auto allocator =
+      vkc::Allocator::create(instance.value().handle(), device.value());
+  CHECK(allocator.ok());
+  g_device = &device.value();
+  g_allocator = &allocator.value();
+  {
+    sensor::JpegDecoder::Options options;
+    options.device = g_device;
+    options.allocator = g_allocator;
+    auto probe = sensor::JpegDecoder::create(options);
+    if (!probe) {
+      if (probe.status().domain() != vkc::Status::Code::Unsupported) {
+        std::fprintf(stderr, "FAIL: %s\n", probe.status().message().c_str());
+        return 1;
+      }
+      return vr_test::no_decoder(probe.status().message());
+    }
+  }
+
+  if (test_device() != 0) return 1;
   if (test_losses() != 0) return 1;
   if (test_skips_when_behind() != 0) return 1;
-  if (test_device() != 0) return 1;
+  if (test_unsupported_jpeg() != 0) return 1;
   std::puts("sensor_orbbec_jpeg: OK");
   return 0;
 }

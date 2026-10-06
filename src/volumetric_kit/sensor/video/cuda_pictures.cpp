@@ -41,8 +41,10 @@ const CudaDriver* cuda_driver() {
 core::Status cuda_error(const char* who, CUresult result, const char* what) {
   const char* name = nullptr;
   cuda_driver()->cuGetErrorName(result, &name);
-  return core::Status::io_error(std::string(who) + ": " + what + ": " +
-                                (name != nullptr ? name : "CUDA error"));
+  return core::Status::backend_error(
+      static_cast<std::int64_t>(result),
+      std::string(who) + ": " + what + ": " +
+          (name != nullptr ? name : "CUDA error"));
 }
 
 core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who) {
@@ -59,7 +61,10 @@ core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who) {
                                      ": libcuda does not load");
   }
   CUresult r = cu->cuInit(0);
-  if (r != CUDA_SUCCESS) return cuda_error(who, r, "starting CUDA");
+  if (r != CUDA_SUCCESS) {
+    return core::Status::unsupported(
+        cuda_error(who, r, "starting CUDA").message());
+  }
   int count = 0;
   r = cu->cuDeviceGetCount(&count);
   if (r != CUDA_SUCCESS) return cuda_error(who, r, "counting CUDA devices");
@@ -72,8 +77,8 @@ core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who) {
     }
     if (std::memcmp(uuid.bytes, id.deviceUUID, VK_UUID_SIZE) == 0) return i;
   }
-  return core::Status::not_found(std::string(who) +
-                                 ": no CUDA device is the Vulkan device's GPU");
+  return core::Status::unsupported(
+      std::string(who) + ": no CUDA device is the Vulkan device's GPU");
 }
 
 core::Result<std::unique_ptr<CudaPictures>> CudaPictures::create(
@@ -156,8 +161,7 @@ core::Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
 core::Result<CudaPictures::Target> CudaPictures::take(std::uint64_t bytes) {
   const CudaContextScope scope(context_);
   if (!scope.ok()) {
-    return core::Status::io_error(std::string(who_) +
-                                  ": making the CUDA context current");
+    return cuda_error(who_, scope.result(), "making the CUDA context current");
   }
   VKC_ASSIGN(Slot * s, slot(bytes));
   return Target{s->buffer, s->pointer};
@@ -169,8 +173,7 @@ core::Status CudaPictures::copy(CUdeviceptr luma, std::size_t luma_pitch,
                                 DecodedPicture& out) {
   const CudaContextScope scope(context_);
   if (!scope.ok()) {
-    return core::Status::io_error(std::string(who_) +
-                                  ": making the CUDA context current");
+    return cuda_error(who_, scope.result(), "making the CUDA context current");
   }
   // Rows packed: Y, then the interleaved chroma at half height, each pair of
   // samples covering two luma columns, so a chroma row is the width rounded
@@ -207,14 +210,11 @@ core::Status CudaPictures::copy(CUdeviceptr luma, std::size_t luma_pitch,
   out.width = width;
   out.height = height;
   out.layout = VideoPixelLayout::Nv12;
-  out.plane[0] = out.plane[1] = out.plane[2] = nullptr;
   out.stride[0] = width;
   out.stride[1] = chroma_row;
-  out.stride[2] = 0;
   out.device = s->buffer;
   out.offset[0] = 0;
   out.offset[1] = chroma_at;
-  out.offset[2] = 0;
   return {};
 }
 

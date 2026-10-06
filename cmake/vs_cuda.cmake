@@ -6,7 +6,7 @@
 # API, which copies a picture into a Vulkan buffer CUDA has imported, and
 # nvJPEG's, which decodes into one. A prerequisite, found and never fetched,
 # like FFmpeg; included from the root CMakeLists only when VR_WITH_CUDA is ON,
-# which needs VR_WITH_FFMPEG.
+# which needs VR_WITH_FFMPEG, as VR_WITH_FFMPEG needs it off Apple.
 #
 # recon takes only headers from it and loads libcuda and libnvjpeg at run time,
 # but CMake's FindCUDAToolkit locates the toolkit through nvcc. On Ubuntu, from

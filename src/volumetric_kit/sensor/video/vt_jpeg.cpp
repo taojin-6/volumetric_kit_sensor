@@ -3,6 +3,7 @@
 
 #include "vt_jpeg.hpp"
 
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -74,14 +75,15 @@ CFMutableDictionaryRef dictionary() {
 
 }  // namespace
 
-std::unique_ptr<VtJpeg> VtJpeg::open(const core::Device& device,
-                                     const char* who) {
-  if (!VTIsHardwareDecodeSupported(kCMVideoCodecType_JPEG)) return nullptr;
-  auto pictures = VtPictures::create(device, who);
-  if (!pictures) return nullptr;
+core::Result<std::unique_ptr<VtJpeg>> VtJpeg::open(const core::Device& device,
+                                                   const char* who) {
+  if (!VTIsHardwareDecodeSupported(kCMVideoCodecType_JPEG)) {
+    return core::Status::unsupported(
+        std::string(who) + ": VideoToolbox has no hardware JPEG decoder");
+  }
   std::unique_ptr<VtJpeg> vt(new VtJpeg());
+  VKC_ASSIGN(vt->pictures_, VtPictures::create(device, who));
   vt->who_ = who;
-  vt->pictures_ = std::move(pictures).value();
   VkPhysicalDeviceProperties props{};
   vkGetPhysicalDeviceProperties(device.physical_device(), &props);
   vt->max_extent_ = props.limits.maxImageDimension2D;
@@ -144,26 +146,32 @@ bool VtJpeg::start(std::uint32_t width, std::uint32_t height) {
   return true;
 }
 
-core::Result<std::optional<DecodedPicture>> VtJpeg::decode(
-    const std::uint8_t* data, std::size_t size) {
+core::Result<DecodedPicture> VtJpeg::decode(const std::uint8_t* data,
+                                            std::size_t size) {
   const std::optional<JpegFrame> frame = read_frame(data, size);
-  // A plane past the extent cannot be a texture (Metal aborts on one: a
-  // 16400-wide JPEG on an M4, whose extent is 16384), so software takes it.
-  if (!frame || !frame->yuv420 || frame->width == 0 || frame->height == 0 ||
-      frame->width > max_extent_ || frame->height > max_extent_) {
-    return std::optional<DecodedPicture>();
+  const auto fail = [this](const std::string& why) {
+    return core::Status::io_error(std::string(who_) + ": " + why);
+  };
+  const auto refuse = [this](const std::string& why) {
+    return core::Status::unsupported(std::string(who_) + ": " + why);
+  };
+  if (!frame) return fail("no JPEG frame header ahead of its scan");
+  if (frame->width == 0 || frame->height == 0) return fail("a JPEG of no size");
+  if (!frame->yuv420) {
+    return refuse("the hardware takes baseline 8-bit 4:2:0 JPEGs only");
   }
-  if (session_ == nullptr || frame->width != width_ ||
-      frame->height != height_) {
-    // A size the hardware took no session for is not asked again each frame.
-    if (frame->width == refused_width_ && frame->height == refused_height_) {
-      return std::optional<DecodedPicture>();
-    }
-    if (!start(frame->width, frame->height)) {
-      refused_width_ = frame->width;
-      refused_height_ = frame->height;
-      return std::optional<DecodedPicture>();
-    }
+  const std::string size_text =
+      std::to_string(frame->width) + "x" + std::to_string(frame->height);
+  // A plane past the extent cannot be a texture (Metal aborts on one: a
+  // 16400-wide JPEG on an M4, whose extent is 16384).
+  if (frame->width > max_extent_ || frame->height > max_extent_) {
+    return refuse("a " + size_text + " JPEG is larger than the device's " +
+                  std::to_string(max_extent_) + "-pixel images");
+  }
+  if ((session_ == nullptr || frame->width != width_ ||
+       frame->height != height_) &&
+      !start(frame->width, frame->height)) {
+    return refuse("the hardware opens no session for a " + size_text + " JPEG");
   }
 
   // The bytes wrapped, not copied: they outlive the synchronous decode.
@@ -171,7 +179,7 @@ core::Result<std::optional<DecodedPicture>> VtJpeg::decode(
   if (CMBlockBufferCreateWithMemoryBlock(
           kCFAllocatorDefault, const_cast<std::uint8_t*>(data), size,
           kCFAllocatorNull, nullptr, 0, size, 0, &block) != noErr) {
-    return core::Status::io_error(std::string(who_) + ": wrapping a JPEG");
+    return core::Status::out_of_memory(std::string(who_) + ": wrapping a JPEG");
   }
   CMSampleBufferRef sample = nullptr;
   const std::size_t sizes[1] = {size};
@@ -179,32 +187,31 @@ core::Result<std::optional<DecodedPicture>> VtJpeg::decode(
       kCFAllocatorDefault, block, format_, 1, 0, nullptr, 1, sizes, &sample);
   CFRelease(block);
   if (wrapped != noErr) {
-    return core::Status::io_error(std::string(who_) + ": wrapping a JPEG");
+    return core::Status::out_of_memory(std::string(who_) + ": wrapping a JPEG");
   }
   CVPixelBufferRef picture = nullptr;
   const OSStatus decoded =
       VTDecompressionSessionDecodeFrame(session_, sample, 0, &picture, nullptr);
   CFRelease(sample);
-  // A session that fails is started afresh for the next JPEG, and this one
-  // goes to software, which says what is wrong with it if anything is.
+  // A session that fails is started afresh for the next JPEG.
   if (decoded != noErr) {
     if (picture != nullptr) CVPixelBufferRelease(picture);
     stop();
-    return std::optional<DecodedPicture>();
+    return fail("the JPEG does not decode (VideoToolbox status " +
+                std::to_string(decoded) + ")");
   }
-  if (picture == nullptr) return std::optional<DecodedPicture>();
+  if (picture == nullptr) return fail("the JPEG does not decode");
 
   DecodedPicture out;
-  const core::Result<bool> taken =
+  const core::Status imported =
       pictures_->import(picture, frame->width, frame->height, out);
   CVPixelBufferRelease(picture);  // the images hold their own
-  if (!taken) return taken.status();
-  if (!taken.value()) return std::optional<DecodedPicture>();
+  VKC_TRY(imported);
   // JFIF's matrix and range.
   out.matrix = VideoColorMatrix::Bt601;
   out.full_range = true;
   out.chroma_location = ChromaLocation::Center;
-  return std::optional<DecodedPicture>(std::move(out));
+  return out;
 }
 
 }  // namespace volumetric_kit::recon::sensor::video

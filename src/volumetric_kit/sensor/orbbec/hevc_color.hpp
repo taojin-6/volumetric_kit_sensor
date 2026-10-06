@@ -8,8 +8,7 @@
 // mailbox drops pairs and an H.265 frame dropped before decoding corrupts the
 // frames after it. So every pair is decoded, in order, before the mailbox,
 // and handed on with its colour as the picture the hardware left on the
-// device, or I420 planes (picture_frames.hpp); everything after the mailbox
-// is as for MJPEG.
+// device (picture_frames.hpp); everything after the mailbox is as for MJPEG.
 
 #include <atomic>
 #include <condition_variable>
@@ -87,19 +86,16 @@ class HevcColorDecoder {
     // unset. A test numbers its own frames, since an SDK frame's index
     // cannot be set.
     std::function<std::uint64_t(const ob::Frame&)> frame_index;
-    // The device the GPU pass runs on: a picture NVDEC or VideoToolbox leaves
-    // there is handed on in its raw_color_frame, and only the others as the
-    // decoded Y'CbCr planes, an I420 frame (Y, then Cb and Cr at half size,
-    // rows packed) carrying its PlanesColor. Borrowed: it must outlive the
-    // decoder and every frame it hands on.
+    // The device the pictures are decoded onto and handed on in their
+    // picture_frame: required. Borrowed: it must outlive the decoder and
+    // every frame it hands on.
     const core::Device* device = nullptr;
-    // With device, the allocator NVDEC's pictures are made through. Borrowed
-    // as device is.
+    // The allocator NVDEC's pictures are made through. Borrowed as device is.
     core::Allocator* allocator = nullptr;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on
-  // that thread.
+  // that thread. Unsupported where the decoder has no device path.
   static core::Result<std::unique_ptr<HevcColorDecoder>> start(
       const Options& options, Sink sink);
 
@@ -119,12 +115,17 @@ class HevcColorDecoder {
   void stop() noexcept;
 
   // Pairs that will not be handed on: from a gap in the colour stream's frame
-  // indices, an empty colour frame, a decode error or an overflowing queue
-  // until the next key frame, and any without both frames (decoded, if it
-  // has colour, and dropped after). The first key frame is waited for too.
+  // indices, an empty colour frame, a decode error (IoError) or an
+  // overflowing queue until the next key frame, and any without both frames
+  // (decoded, if it has colour, and dropped after). The first key frame is
+  // waited for too.
   std::uint64_t lost() const noexcept {
     return lost_.load(std::memory_order_relaxed);
   }
+  // Why decoding stopped for good -- a stream the hardware refuses
+  // (Unsupported), or a device path that failed (Backend, OutOfMemory) --
+  // after which nothing more is handed on; OK while it runs.
+  core::Status failure() const;
 
  private:
   HevcColorDecoder() = default;
@@ -134,16 +135,21 @@ class HevcColorDecoder {
   void lose(std::uint64_t pairs = 1) noexcept {
     lost_.fetch_add(pairs, std::memory_order_relaxed);
   }
+  // After a decoder error, whose pair the caller has counted lost: IoError
+  // waits for the next key frame, any other stops decoding. Decode thread
+  // only.
+  void decoder_error(core::Status why);
 
   Options options_;
   Sink sink_;
   std::optional<HevcDecoder> decoder_;
 
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::deque<std::shared_ptr<ob::FrameSet>> queue_;  // guarded by mutex_
   bool stopping_ = false;                            // guarded by mutex_
-  bool resync_ = false;  // guarded by mutex_: the queue overflowed
+  bool resync_ = false;   // guarded by mutex_: the queue overflowed
+  core::Status failure_;  // guarded by mutex_
   std::thread thread_;
   std::atomic<std::uint64_t> lost_{0};
 

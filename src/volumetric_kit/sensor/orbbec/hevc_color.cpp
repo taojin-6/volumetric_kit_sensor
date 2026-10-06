@@ -43,24 +43,14 @@ core::Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
   d->options_ = options;
   d->sink_ = std::move(sink);
   HevcDecoder::Options decoding;
-  decoding.layout = VideoPixelLayout::Yuv420;
-  // One thread, so no picture is held back. That leaves software decoding
-  // little headroom at 4K25 (the 2026-09-28 decision).
-  // TODO(sensor): goes with the decoders' host pictures, software decoding
-  // among them (DESIGN next work).
-  decoding.threads = 1;
   decoding.unlabelled_color = kFemtoMegaHevcColor;
   decoding.device = options.device;
   decoding.allocator = options.allocator;
   decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
-  decoding.label = options.who;
   auto decoder = HevcDecoder::create(decoding);
   if (!decoder) {
-    const std::string why = options.who + ": opening the HEVC decoder: " +
-                            decoder.status().message();
-    return decoder.status().domain() == core::Status::Code::Unsupported
-               ? core::Status::unsupported(why)
-               : core::Status::io_error(why);
+    return decoder.status().with_context(options.who +
+                                         ": opening the HEVC decoder");
   }
   d->decoder_.emplace(std::move(decoder).value());
   try {
@@ -74,12 +64,34 @@ core::Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
 
 HevcColorDecoder::~HevcColorDecoder() { stop(); }
 
+core::Status HevcColorDecoder::failure() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return failure_;
+}
+
+void HevcColorDecoder::decoder_error(core::Status why) {
+  if (why.domain() == core::Status::Code::IoError) {
+    gate_.resync();
+    return;
+  }
+  // The pairs waiting and in flight are lost with the stream.
+  std::uint64_t lost = in_flight_.size();
+  in_flight_.clear();
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lost += queue_.size();
+    queue_.clear();
+    failure_ = std::move(why).with_context(options_.who);
+  }
+  lose(lost);
+}
+
 void HevcColorDecoder::push(std::shared_ptr<ob::FrameSet> pair) noexcept {
   if (pair == nullptr) return;
   std::uint64_t lost = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (stopping_) return;
+    if (stopping_ || !failure_.ok()) return;
     const std::size_t limit =
         static_cast<std::size_t>(options_.fps) * kQueueSeconds;
     if (queue_.size() >= limit) {
@@ -166,9 +178,9 @@ void HevcColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
       // it drops the one and skips the other.
       lose(in_flight_.size());
       in_flight_.clear();
-      if (!decoder_->reset()) {
+      if (core::Status reset = decoder_->reset(); !reset.ok()) {
         lose();
-        gate_.resync();
+        decoder_error(std::move(reset));
         return;
       }
       break;
@@ -178,10 +190,10 @@ void HevcColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
 
   const std::int64_t pts = next_pts_++;
   in_flight_.emplace(pts, pair);
-  if (!decoder_->send(data, size, pts)) {
+  if (core::Status sent = decoder_->send(data, size, pts); !sent.ok()) {
     in_flight_.erase(pts);
     lose();
-    gate_.resync();
+    decoder_error(std::move(sent));
     return;
   }
   for (;;) {
@@ -189,7 +201,7 @@ void HevcColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
     if (!picture) {
       lose(in_flight_.size());
       in_flight_.clear();
-      gate_.resync();
+      decoder_error(picture.status());
       return;
     }
     if (!picture.value()) break;
@@ -214,10 +226,9 @@ void HevcColorDecoder::hand_on(const DecodedPicture& picture) {
     return;
   }
 
-  // For the GPU pass: the picture on the device where the hardware left it,
-  // else its planes.
+  // For the GPU pass: the picture on the device where the hardware left it.
   sink_(rebuilt_pair(pair->getDepthFrame(), *pair->getColorFrame(),
-                     raw_color_frame(picture)));
+                     picture_frame(picture)));
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

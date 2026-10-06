@@ -2,10 +2,12 @@
 # Copyright (c) 2026 Tao Jin
 
 # --- recon_sensor_video: the video decoders ---------------------------------
-# HEVC and JPEG decoders over FFmpeg and the hardware, built only with
-# VR_WITH_FFMPEG (see cmake/vr_ffmpeg.cmake). Camera-neutral, so it links
-# recon_core alone and a capture driver links it. FFmpeg is PRIVATE and no
-# FFmpeg type reaches the public headers; ffmpeg.hpp is the one include.
+# HEVC and JPEG decoders on the GPU's hardware, handing out pictures on the
+# device only, built only with VR_WITH_FFMPEG (see cmake/vr_ffmpeg.cmake):
+# VideoToolbox on Apple, NVDEC and nvJPEG through CUDA elsewhere.
+# Camera-neutral, so it links recon_core alone and a capture driver links it.
+# FFmpeg is PRIVATE and no FFmpeg type reaches the public headers; ffmpeg.hpp is
+# the one include.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -15,10 +17,8 @@ set(_vr_sensor_video_generated_inc
 add_library(recon_sensor_video)
 add_library(volumetric_kit::recon_sensor_video ALIAS recon_sensor_video)
 
-target_sources(
-  recon_sensor_video
-  PRIVATE ffmpeg.cpp hevc_decoder.cpp hw_backend.cpp jpeg_decoder.cpp
-          picture_converter.cpp video_backend.cpp)
+target_sources(recon_sensor_video PRIVATE ffmpeg.cpp frame_color.cpp
+                                          hevc_decoder.cpp jpeg_decoder.cpp)
 
 generate_export_header(
   recon_sensor_video
@@ -61,9 +61,8 @@ if(VR_WITH_CUDA)
   target_compile_definitions(recon_sensor_video
                              PRIVATE VR_SENSOR_VIDEO_WITH_CUDA=1)
 endif()
-# VideoToolbox answers whether its hardware decodes HEVC (hw_backend.cpp),
-# decodes JPEGs (vt_jpeg.cpp), and its pictures reach Vulkan as Metal textures
-# over their IOSurface (vt_pictures.mm): Objective-C++, with ARC.
+# VideoToolbox decodes JPEGs (vt_jpeg.cpp), and its pictures reach Vulkan as
+# Metal textures over their IOSurface (vt_pictures.mm): Objective-C++, with ARC.
 if(APPLE)
   target_sources(recon_sensor_video PRIVATE vt_jpeg.cpp vt_pictures.mm)
   set_source_files_properties(vt_pictures.mm PROPERTIES COMPILE_OPTIONS

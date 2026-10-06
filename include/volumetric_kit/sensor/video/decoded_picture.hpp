@@ -4,8 +4,7 @@
 #pragma once
 
 /// @file sensor/video/decoded_picture.hpp
-/// @brief A decoded picture: in host memory, borrowed from its decoder, or on
-///        the device, held by the picture.
+/// @brief A decoded picture, on the device and held by the picture.
 
 #include <cstddef>
 #include <cstdint>
@@ -20,13 +19,10 @@ namespace volumetric_kit::recon::sensor {
 
 /// @brief How a decoded picture's pixels are laid out.
 enum class VideoPixelLayout {
-  /// One plane of R, G, B bytes, converted by @ref DecodedPicture::matrix.
-  Rgb24,
-  /// Three 8-bit planes as decoded: Y, then U and V at half size.
+  /// Three 8-bit planes: Y, then U and V at half size, as nvJPEG decodes.
   Yuv420,
-  /// Two 8-bit planes: Y, then U and V interleaved at half size, U first. An
-  /// HEVC picture handed out on the device comes this way, as the hardware
-  /// decodes it.
+  /// Two 8-bit planes: Y, then U and V interleaved at half size, U first, as
+  /// NVDEC and VideoToolbox decode.
   Nv12,
 };
 
@@ -45,8 +41,8 @@ struct YcbcrWeights {
   float kb = 0.0f;  ///< Blue's weight in luma.
 };
 
-/// @return @p matrix's weights, as the standards give them: what a converter
-///         of its own (a GPU pass) needs in place of swscale's tables.
+/// @return @p matrix's weights, as the standards give them: what the GPU pass
+///         converts by.
 constexpr YcbcrWeights ycbcr_weights(VideoColorMatrix matrix) noexcept {
   switch (matrix) {
     case VideoColorMatrix::Bt601:
@@ -69,46 +65,41 @@ struct VideoColorDescription {
   bool full_range = false;  ///< Y in 0..255 rather than 16..235.
 };
 
-/// @brief One decoded picture. Host planes belong to the decoder and are valid
-///        until the decoder's next call; a device picture is held by the
-///        picture.
+/// @brief One decoded picture, on the device: in a buffer (@ref device) or as
+///        images (@ref image), never both. The picture holds them.
 struct DecodedPicture {
   /// Width in pixels, after the stream's crop: its display width.
   std::uint32_t width = 0;
   /// Height in pixels, after the stream's crop: its display height.
   std::uint32_t height = 0;
-  /// The layout the decoder was asked for; a device picture's as the
-  /// decoder hands it out.
-  VideoPixelLayout layout = VideoPixelLayout::Rgb24;
-  const std::uint8_t* plane[3] = {};  ///< Rgb24 uses plane[0] only.
-  std::size_t stride[3] = {};         ///< Bytes per row of each plane.
-  /// On the device instead, for a decoder given a device it decodes on, in
-  /// this storage buffer: NV12 from @ref HevcDecoder, Y at `offset[0]` and
-  /// the chroma at `offset[1]`, or Yuv420 from @ref JpegDecoder, Y, U and V
-  /// at `offset[0]` to `offset[2]`; rows `stride` bytes apart, and @ref plane
-  /// empty. The picture holds the buffer, and the decoder reuses it only once
-  /// nothing does; drop it before the device it is on is destroyed. CUDA
+  /// The layout the decoder handed it out in.
+  VideoPixelLayout layout = VideoPixelLayout::Nv12;
+  std::size_t stride[3] = {};  ///< Bytes per row of each plane in @ref device.
+  /// In this storage buffer, from NVDEC or nvJPEG (Linux, through CUDA): NV12
+  /// from @ref HevcDecoder, Y at `offset[0]` and the chroma at `offset[1]`, or
+  /// Yuv420 from @ref JpegDecoder, Y, U and V at `offset[0]` to `offset[2]`;
+  /// rows `stride` bytes apart. The decoder reuses the buffer only once
+  /// nothing holds it; drop it before the device it is on is destroyed. CUDA
   /// wrote it, so a reader takes it over from `VK_QUEUE_FAMILY_EXTERNAL`
   /// first (`CommandBatch::acquire`), and a `YuvImage` of it carries
   /// `kQueueFamilyExternal`.
   std::shared_ptr<const core::Buffer> device;
   std::uint64_t offset[3] = {};  ///< Each plane's byte offset in @ref device.
-  /// Or on the device as images, from @ref HevcDecoder on VideoToolbox: NV12,
+  /// Or as images, from VideoToolbox (Apple), for either decoder: NV12,
   /// `image[0]` the luma (`R8_UNORM`) and `image[1]` the chroma
   /// (`R8G8_UNORM`, U first), each at least the picture's size, chroma halved
-  /// and rounded up, the picture at their corner; @ref plane and @ref device
-  /// empty. The images hold the decoder's picture, which VideoToolbox does not
-  /// reuse while they are held; drop them before the device they are on is
-  /// destroyed. VideoToolbox has finished writing them, and a `YuvImage` of
-  /// them takes them as its `image`.
+  /// and rounded up, the picture at their corner. The images hold the
+  /// decoder's picture, which VideoToolbox does not reuse while they are
+  /// held; drop them before the device they are on is destroyed. VideoToolbox
+  /// has finished writing them, and a `YuvImage` of them takes them as its
+  /// `image`.
   std::shared_ptr<const core::Image> image[2];
   std::int64_t pts = 0;  ///< The one sent with its access unit.
-  /// The matrix and range the stream declares: what Rgb24 was converted by,
-  /// and what a Yuv420 consumer converts by. A stream that declares no matrix
-  /// takes the decoder's `Options::unlabelled_color` when it has one. Without
-  /// one, or for a matrix swscale has no table for, it is taken as BT.709
-  /// above 576 rows and BT.601 at or below, as players do. A stream coded as
-  /// RGB is converted to Yuv420 by that same choice.
+  /// The matrix and range the picture is coded in, which its consumer
+  /// converts by. A stream that declares no matrix takes the decoder's
+  /// `Options::unlabelled_color` when it has one; without one, or for a
+  /// matrix this type cannot name, it is taken as BT.709 above 576 rows and
+  /// BT.601 at or below, as players do.
   VideoColorMatrix matrix = VideoColorMatrix::Bt709;
   bool full_range = false;  ///< Y in 0..255 rather than 16..235.
   /// The transfer function and primaries the stream declares, as a capture
@@ -119,9 +110,8 @@ struct DecodedPicture {
   /// picture rather than fusing it through the wrong curve or basis.
   std::optional<ColorEncoding> encoding = ColorEncoding{
       ColorEncoding::Transfer::Bt709, ColorEncoding::Primaries::Bt709};
-  /// Chroma sample positions for Yuv420 and NV12. JPEG is Center; HEVC uses
-  /// its stream declaration, or Left when none is given. Preserved when
-  /// converting to Yuv420; unused for Rgb24.
+  /// Chroma sample positions. JPEG is Center; HEVC uses its stream's
+  /// declaration, or Left when none is given.
   ChromaLocation chroma_location = ChromaLocation::Left;
 };
 

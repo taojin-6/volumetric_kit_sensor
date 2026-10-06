@@ -111,8 +111,9 @@ class CameraStream {
   OrbbecStreamStats stats() const noexcept;
 
   // Start both streams, with fresh counters. OK if already running; IoError
-  // once the camera has disconnected, or if the SDK refuses; Unsupported or
-  // IoError if the colour decoder does not open or start.
+  // once the camera has disconnected, or if the SDK refuses; the colour
+  // decoder's error (Unsupported where it has no device path) if it does not
+  // open or start.
   core::Status start();
   // Stop both streams and drop the pending pairs. Idempotent. The camera stays
   // open, and held.
@@ -121,8 +122,9 @@ class CameraStream {
   // How many untaken pairs the mailbox keeps (default 1). Set before start.
   void set_queue_depth(std::size_t depth);
   // The newest pair not yet taken, or null, the older ones counted dropped;
-  // IoError once disconnected. A taken pair is this stream's to account for:
-  // read() it, or discard() it.
+  // IoError once disconnected, and the colour decoder's failure once it has
+  // stopped (Unsupported, Backend, OutOfMemory). A taken pair is this
+  // stream's to account for: read() it, or discard() it.
   core::Result<std::shared_ptr<ob::FrameSet>> take();
   // Every pair not yet taken, oldest first, appended to `out`; as take()
   // otherwise.
@@ -137,11 +139,10 @@ class CameraStream {
 
   // A pair as the cameras captured it: raw depth and the decoded colour, each
   // camera's model and the colour camera's pose. The colour is the picture
-  // the hardware left on the device, or I420 host planes. Depth and host
-  // planes point into the pair, which the frame holds with the SDK context,
-  // so it may outlive the stream. An empty optional is a pair the SDK failed
-  // on, skipped and counted; IoError is a pair contradicting the negotiated
-  // stream, or a run of ~a second's skips.
+  // the hardware left on the device. Depth points into the pair, which the
+  // frame holds with the SDK context, so it may outlive the stream. An empty
+  // optional is a pair the SDK failed on, skipped and counted; IoError is a
+  // pair contradicting the negotiated stream, or a run of ~a second's skips.
   core::Result<std::optional<RgbdFrame>> read(
       const std::shared_ptr<ob::FrameSet>& pair);
   // Each camera as it captures, the depth camera's extrinsic to the colour
@@ -162,6 +163,8 @@ class CameraStream {
 
  private:
   CameraStream() = default;
+  // The colour decoder's failure, OK while it runs.
+  core::Status decoder_failure() const;
 
   std::string who_;
   // Declared first so it is destroyed last: every SDK object below belongs to
@@ -197,10 +200,6 @@ class CameraStream {
   std::uint64_t delivered_ = 0;
   std::uint64_t failed_ = 0;
   std::uint64_t discarded_ = 0;
-  std::uint64_t host_pictures_ = 0;  // OrbbecStreamStats::host_pictures
-  // Whether the last frame read() delivered counted in host_pictures_, so
-  // withdraw() takes it back out.
-  bool host_picture_delivered_ = false;
   std::uint32_t failed_in_a_row_ = 0;
   bool running_ = false;
 

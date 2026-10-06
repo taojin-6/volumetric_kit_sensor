@@ -2,15 +2,19 @@
 // Copyright (c) 2026 Tao Jin
 
 // The Orbbec driver's H.265 colour decoder, with no camera: committed clips
-// wrapped in SDK frames, each paired with a depth frame and dated at 30 fps.
-// Every pair comes out, in display order, with its timestamps and depth, and
-// an unlabelled stream's colour decoded as the Femto Mega codes it (BT.601
-// full range), a labelled one's as it says. A frame lost from the stream, or
-// empty, costs the frames up to the next key frame, a pause in the
-// timestamps costs nothing, and decoding starts at the first key frame. The
+// wrapped in SDK frames, each paired with a depth frame and dated at 30 fps,
+// decoded on this machine's hardware onto the device. Every pair comes out,
+// in display order, with its timestamps and depth, its picture carried in its
+// frame and gone with it, an unlabelled stream's colour described as the
+// Femto Mega codes it (BT.601 full range), a labelled one's as it says. A
+// frame lost from the stream, or empty, costs the frames up to the next key
+// frame, a pause in the timestamps costs nothing, and decoding starts at the
+// first key frame; a stream the hardware refuses stops the decoder. The
 // frame-index gate is tested on its own, since a test cannot set an SDK
-// frame's index. Given a device, a picture the hardware leaves on it comes
-// out carried in its frame, and goes with it.
+// frame's index.
+//
+// Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
+// sets on the legs that promise one, makes it fail instead.
 
 #include <algorithm>
 #include <chrono>
@@ -64,7 +68,7 @@ constexpr std::uint64_t kPeriodUs = 33333;  // 30 fps
 // in open GOPs, 16 frames with a CRA every 6.
 constexpr const char* kUnlabelled = VR_HEVC_DATA "/unlabelled_256x144.h265";
 constexpr const char* kLabelled = VR_HEVC_DATA "/patches_256x144.h265";
-constexpr const char* kBFrames = VR_HEVC_DATA "/fallback_256x144.h265";
+constexpr const char* kBFrames = VR_HEVC_DATA "/refused_256x144.h265";
 constexpr const char* kOpenGop = VR_HEVC_DATA "/open_gop_256x144.h265";
 
 // The clip's pattern, as tools/make_hevc_fixtures.sh draws it.
@@ -122,15 +126,6 @@ std::shared_ptr<ob::FrameSet> pair(const std::vector<std::uint8_t>& unit, int f,
   return set;
 }
 
-struct Collected {
-  std::mutex mutex;
-  std::vector<std::shared_ptr<ob::FrameSet>> sets;
-  std::size_t size() {
-    std::lock_guard<std::mutex> lock(mutex);
-    return sets.size();
-  }
-};
-
 using Pairs = std::vector<std::shared_ptr<ob::FrameSet>>;
 
 // `frames` (access unit indices; -1 is a pair with no colour, -f - 2 frame
@@ -155,15 +150,56 @@ Pairs pairs(const Units& units, const std::vector<int>& frames,
   return out;
 }
 
-// Push `in`, wait for `expect` pairs out, and stop. The decoder hands on I420
-// frames, or pictures the hardware left on `device`.
-struct Run {
-  std::vector<std::shared_ptr<ob::FrameSet>> out;
-  std::uint64_t lost = 0;
+// The device the decoders run on, set by main.
+vkc::Device* g_device = nullptr;
+vkc::Allocator* g_allocator = nullptr;
+
+// A pair the decoder handed on, its picture read back as it arrived, so no
+// picture is held past its pair.
+struct Out {
+  std::uint64_t depth_us = 0;
+  std::uint64_t color_us = 0;
+  std::optional<sensor::DecodedPicture> meta;  // its storage let go
+  bool images = false;  // VideoToolbox's images, not a buffer
+  std::vector<std::uint8_t> planes[3];
 };
-Run run(const Pairs& in, std::size_t expect,
-        const vkc::Device* device = nullptr,
-        vkc::Allocator* allocator = nullptr) {
+
+Out read_out(const ob::FrameSet& set) {
+  Out o;
+  const auto depth = set.getDepthFrame();
+  const auto color = set.getColorFrame();
+  if (depth != nullptr) o.depth_us = depth->getTimeStampUs();
+  if (color == nullptr) return o;
+  o.color_us = color->getTimeStampUs();
+  std::optional<sensor::DecodedPicture> p = orbbec::device_picture(*color);
+  if (!p) return o;
+  vr_test::read_device_picture(*p, *g_device, *g_allocator, o.planes);
+  o.images = p->image[0] != nullptr;
+  p->device.reset();
+  p->image[0].reset();
+  p->image[1].reset();
+  o.meta = std::move(p);
+  return o;
+}
+
+struct Collected {
+  std::mutex mutex;
+  std::vector<Out> out;
+  std::vector<std::shared_ptr<ob::FrameSet>> frames;  // kept only when asked
+  std::size_t size() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return out.size();
+  }
+};
+
+// Push `in`, wait for `expect` pairs out, and stop.
+struct Run {
+  std::vector<Out> out;
+  std::vector<std::shared_ptr<ob::FrameSet>> frames;  // with keep_frames
+  std::uint64_t lost = 0;
+  vkc::Status failure;
+};
+Run run(const Pairs& in, std::size_t expect, bool keep_frames = false) {
   auto collected = std::make_shared<Collected>();
   orbbec::HevcColorDecoder::Options options;
   options.fps = 30;
@@ -171,12 +207,14 @@ Run run(const Pairs& in, std::size_t expect,
   options.frame_index = [](const ob::Frame& frame) {
     return frame.getSystemTimeStampUs();
   };
-  options.device = device;
-  options.allocator = allocator;
+  options.device = g_device;
+  options.allocator = g_allocator;
   auto decoder = orbbec::HevcColorDecoder::start(
-      options, [collected](std::shared_ptr<ob::FrameSet> set) {
+      options, [collected, keep_frames](std::shared_ptr<ob::FrameSet> set) {
+        Out o = read_out(*set);
         std::lock_guard<std::mutex> lock(collected->mutex);
-        collected->sets.push_back(std::move(set));
+        collected->out.push_back(std::move(o));
+        if (keep_frames) collected->frames.push_back(std::move(set));
       });
   if (!decoder) {
     std::fprintf(stderr, "%s\n", decoder.status().message().c_str());
@@ -185,69 +223,69 @@ Run run(const Pairs& in, std::size_t expect,
   for (const auto& p : in) decoder.value()->push(p);
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  while (collected->size() < expect &&
+  while (collected->size() < expect && decoder.value()->failure().ok() &&
          std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   // Let anything that should not come out have its chance to.
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  decoder.value()->stop();
   Run r;
+  r.failure = decoder.value()->failure();
+  decoder.value()->stop();
   r.lost = decoder.value()->lost();
   std::lock_guard<std::mutex> lock(collected->mutex);
-  r.out = collected->sets;
+  r.out = std::move(collected->out);
+  r.frames = std::move(collected->frames);
   return r;
 }
 
 // The slot a decoded pair was dated in, from its colour's timestamp.
-int slot_of(const ob::FrameSet& set) {
-  const auto color = set.getColorFrame();
-  return static_cast<int>((color->getTimeStampUs() - kStartUs) / kPeriodUs);
+int slot_of(const Out& o) {
+  return static_cast<int>((o.color_us - kStartUs) / kPeriodUs);
 }
 
-// A decoded pair: clip frame `frame`'s planes, dated in `slot`, as an I420
-// frame -- Y, then Cb and Cr at half size, rows packed -- each patch's value
-// as the clip was made, described as the Femto Mega codes its unlabelled
-// stream unless `matrix` says otherwise.
+// A decoded pair: clip frame `frame`'s picture, dated in `slot`, on the
+// device where this platform's hardware leaves it, each patch's value as the
+// clip was made, described as the Femto Mega codes its unlabelled stream
+// unless `matrix` says otherwise.
 int check_pair(
-    const ob::FrameSet& set, int frame, int slot,
+    const Out& o, int frame, int slot,
     sensor::VideoColorMatrix matrix = sensor::VideoColorMatrix::Bt601,
     bool full_range = true) {
-  const auto depth = set.getDepthFrame();
-  const auto color = set.getColorFrame();
-  CHECK(depth != nullptr && color != nullptr);
   const std::uint64_t t =
       kStartUs + static_cast<std::uint64_t>(slot) * kPeriodUs;
-  CHECK(depth->getTimeStampUs() == t);
-  CHECK(color->getTimeStampUs() == t);
-  CHECK(color->getFormat() == OB_FORMAT_I420);
-  const auto video = color->as<ob::VideoFrame>();
-  CHECK(video->getWidth() == static_cast<std::uint32_t>(kWidth));
-  CHECK(video->getHeight() == static_cast<std::uint32_t>(kHeight));
-  const int cw = kWidth / 2;
-  const int ch = kHeight / 2;
-  CHECK(color->getDataSize() ==
-        static_cast<std::uint32_t>(kWidth * kHeight + 2 * cw * ch));
-  const std::optional<orbbec::PlanesColor> described =
-      orbbec::planes_color(*color);
-  CHECK(described.has_value());
-  CHECK(described->matrix == matrix && described->full_range == full_range);
+  CHECK(o.depth_us == t);
+  CHECK(o.color_us == t);
+  CHECK(o.meta.has_value());
+  const sensor::DecodedPicture& p = *o.meta;
+  CHECK(p.width == static_cast<std::uint32_t>(kWidth));
+  CHECK(p.height == static_cast<std::uint32_t>(kHeight));
+  CHECK(p.layout == sensor::VideoPixelLayout::Nv12);
+#if defined(__APPLE__)
+  CHECK(o.images);
+#else
+  CHECK(!o.images);
+#endif
+  CHECK(p.matrix == matrix && p.full_range == full_range);
   // Neither clip declares a transfer or primaries ColorEncoding cannot name.
-  CHECK(described->has_encoding && is_canonical(described->encoding));
-  const std::uint8_t* y = color->getData();
-  const std::uint8_t* cb = y + kWidth * kHeight;
-  const std::uint8_t* cr = cb + cw * ch;
+  CHECK(p.encoding.has_value() && is_canonical(*p.encoding));
+  const int cw = kWidth / 2;
+  CHECK(o.planes[0].size() == static_cast<std::size_t>(kWidth * kHeight));
+  CHECK(o.planes[1].size() == static_cast<std::size_t>(cw * (kHeight / 2)));
   for (int row = 0; row < 2; ++row) {
     for (int col = 0; col < 8; ++col) {
-      const int p = patch(col, row, frame);
+      const int k = patch(col, row, frame);
       const int x = 32 * col + 16;
       const int yy = 72 * row + 36;
       const int c = (yy / 2) * cw + x / 2;
-      if (std::abs(y[yy * kWidth + x] - (40 + 24 * p)) > 2 ||
-          std::abs(cb[c] - (64 + 16 * ((3 * p) % 8))) > 2 ||
-          std::abs(cr[c] - (64 + 16 * ((5 * p) % 8))) > 2) {
+      const int y = o.planes[0][yy * kWidth + x];
+      const int cb = o.planes[1][c];
+      const int cr = o.planes[2][c];
+      if (std::abs(y - (40 + 24 * k)) > 2 ||
+          std::abs(cb - (64 + 16 * ((3 * k) % 8))) > 2 ||
+          std::abs(cr - (64 + 16 * ((5 * k) % 8))) > 2) {
         std::fprintf(stderr, "frame %d patch %d,%d: Y'CbCr %d %d %d\n", frame,
-                     col, row, y[yy * kWidth + x], cb[c], cr[c]);
+                     col, row, y, cb, cr);
         CHECK(false);
       }
     }
@@ -255,59 +293,23 @@ int check_pair(
   return 0;
 }
 
-// Given a device the hardware decodes onto, each picture comes out carried in
-// its frame, each patch's value as the clip was made, described as the Femto
-// Mega codes the unlabelled stream, and placed in a raw frame's colour as the
-// driver places it; and it lives as long as its frame, which a copy of the
-// frame does not extend. Where no hardware leaves pictures on this device,
-// they come as I420.
+// Each picture comes out carried in its frame, which has no pixels of its
+// own, and placed in a frame's colour as the driver places it; it lives as
+// long as its frame, which a copy of the frame does not extend.
 int test_hands_on_device_pictures() {
-  auto instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  auto gpu = instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) {
-    return vr_test::no_device("no compute-capable device",
-                              gpu.status().message());
-  }
-  auto device = vkc::Device::create(instance.value(), gpu.value(),
-                                    vr::device_requirements());
-  CHECK(device.ok());
-  auto allocator =
-      vkc::Allocator::create(instance.value().handle(), device.value());
-  CHECK(allocator.ok());
-
-  Run r = run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8,
-              &device.value(), &allocator.value());
-  CHECK(r.out.size() == 8 && r.lost == 0);
-  const bool on_device =
-      orbbec::device_picture(*r.out.front()->getColorFrame()).has_value();
-  // The legs whose hardware leaves its pictures on the device.
-  const char* required = std::getenv("VR_TEST_HEVC_BACKEND");
-  const std::string backend = required != nullptr ? required : "";
-  if (backend == "videotoolbox" || (VR_TEST_WITH_CUDA && backend == "cuda")) {
-    CHECK(on_device);
-  }
+  Run r =
+      run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8, true);
+  CHECK(r.frames.size() == 8 && r.lost == 0);
   std::shared_ptr<const void> held;
   std::shared_ptr<ob::Frame> copied;
   for (int f = 0; f < 8; ++f) {
-    const auto color = r.out[static_cast<std::size_t>(f)]->getColorFrame();
+    const auto color = r.frames[static_cast<std::size_t>(f)]->getColorFrame();
     CHECK(color != nullptr);
     const std::optional<sensor::DecodedPicture> p =
         orbbec::device_picture(*color);
-    CHECK(p.has_value() == on_device);
-    if (!p) {
-      CHECK(color->getFormat() == OB_FORMAT_I420);
-      continue;
-    }
+    CHECK(p.has_value());
     CHECK(color->as<ob::VideoFrame>()->getWidth() == 0);  // no pixels
-    CHECK(p->width == static_cast<std::uint32_t>(kWidth) &&
-          p->height == static_cast<std::uint32_t>(kHeight));
-    CHECK(p->layout == sensor::VideoPixelLayout::Nv12);
     CHECK((p->device != nullptr) != (p->image[0] != nullptr));
-    CHECK(p->matrix == sensor::VideoColorMatrix::Bt601 && p->full_range);
     sensor::YuvImage placed;
     orbbec::place_device_color(*p, &placed);
     CHECK(placed.layout == sensor::YuvLayout::Nv12);
@@ -323,21 +325,6 @@ int test_hands_on_device_pictures() {
       CHECK(placed.device == nullptr && placed.image[0] == p->image[0] &&
             placed.image[1] == p->image[1]);
     }
-    std::vector<std::uint8_t> got[3];
-    vr_test::read_device_picture(*p, device.value(), allocator.value(), got);
-    CHECK(got[0].size() == static_cast<std::size_t>(kWidth * kHeight));
-    const int cw = kWidth / 2;
-    for (int row = 0; row < 2; ++row) {
-      for (int col = 0; col < 8; ++col) {
-        const int k = patch(col, row, f);
-        const int x = 32 * col + 16;
-        const int yy = 72 * row + 36;
-        CHECK(std::abs(got[0][yy * kWidth + x] - (40 + 24 * k)) <= 2);
-        const int c = (yy / 2) * cw + x / 2;
-        CHECK(std::abs(got[1][c] - (64 + 16 * ((3 * k) % 8))) <= 2);
-        CHECK(std::abs(got[2][c] - (64 + 16 * ((5 * k) % 8))) <= 2);
-      }
-    }
     if (f == 7) {
       if (p->device)
         held = p->device;
@@ -351,20 +338,15 @@ int test_hands_on_device_pictures() {
           [](std::uint8_t* b) { delete[] b; }, color->getDataSize());
     }
   }
-  if (held != nullptr) {
-    CHECK(held.use_count() > 1);  // the frame still holds it
-    CHECK(orbbec::device_picture(*copied).has_value());  // as its copy sees
-    r.out.clear();
-    CHECK(held.use_count() == 1);  // and it went with the frame
-    CHECK(!orbbec::device_picture(*copied).has_value());  // nor its copy
-  }
+  CHECK(held.use_count() > 1);  // the frame still holds it
+  CHECK(orbbec::device_picture(*copied).has_value());  // as its copy sees
+  r.frames.clear();
+  CHECK(held.use_count() == 1);  // and it went with the frame
+  CHECK(!orbbec::device_picture(*copied).has_value());  // nor its copy
   // A frame that carries no picture reads as none.
   CHECK(!orbbec::device_picture(*ob::FrameFactory::createVideoFrame(
                                     OB_FRAME_COLOR, OB_FORMAT_NV12, 16, 16))
              .has_value());
-  std::printf("  device pictures: %s\n",
-              on_device ? "carried in their frames"
-                        : "not offered here; I420 frames instead");
   return 0;
 }
 
@@ -387,13 +369,9 @@ int test_every_pair_in_order() {
   CHECK(r.out.size() == 8);
   CHECK(r.lost == 0);
   for (int i = 0; i < 8; ++i) {
-    CHECK(slot_of(*r.out[static_cast<std::size_t>(i)]) == i);
-    if (check_pair(*r.out[static_cast<std::size_t>(i)], i, i) != 0) return 1;
+    CHECK(slot_of(r.out[static_cast<std::size_t>(i)]) == i);
+    if (check_pair(r.out[static_cast<std::size_t>(i)], i, i) != 0) return 1;
   }
-  // A frame the decoder did not make carries no description.
-  CHECK(!orbbec::planes_color(*ob::FrameFactory::createVideoFrame(
-                                  OB_FRAME_COLOR, OB_FORMAT_I420, 16, 16))
-             .has_value());
   return 0;
 }
 
@@ -407,8 +385,8 @@ int test_gap_waits_for_key_frame() {
   CHECK(r.lost == 2);
   const int want[] = {0, 4, 5, 6, 7};
   for (std::size_t i = 0; i < r.out.size(); ++i) {
-    CHECK(slot_of(*r.out[i]) == want[i]);
-    if (check_pair(*r.out[i], want[i], want[i]) != 0) return 1;
+    CHECK(slot_of(r.out[i]) == want[i]);
+    if (check_pair(r.out[i], want[i], want[i]) != 0) return 1;
   }
   return 0;
 }
@@ -424,8 +402,8 @@ int test_pause_costs_nothing() {
   CHECK(r.lost == 0);
   const int slots[] = {0, 120, 121, 122, 123, 124, 125, 126};
   for (int i = 0; i < 8; ++i) {
-    CHECK(slot_of(*r.out[static_cast<std::size_t>(i)]) == slots[i]);
-    if (check_pair(*r.out[static_cast<std::size_t>(i)], i, slots[i]) != 0) {
+    CHECK(slot_of(r.out[static_cast<std::size_t>(i)]) == slots[i]);
+    if (check_pair(r.out[static_cast<std::size_t>(i)], i, slots[i]) != 0) {
       return 1;
     }
   }
@@ -466,7 +444,7 @@ int test_start_waits_for_key_frame() {
   const Run r = run(pairs(access_units(kUnlabelled), {2, 3, 4, 5}), 2);
   CHECK(r.out.size() == 2);
   CHECK(r.lost == 2);
-  CHECK(slot_of(*r.out[0]) == 4 && slot_of(*r.out[1]) == 5);
+  CHECK(slot_of(r.out[0]) == 4 && slot_of(r.out[1]) == 5);
   return 0;
 }
 
@@ -480,8 +458,8 @@ int test_color_without_depth() {
   CHECK(r.lost == 1);
   const int want[] = {0, 1, 3, 4, 5, 6, 7};
   for (std::size_t i = 0; i < r.out.size(); ++i) {
-    CHECK(slot_of(*r.out[i]) == want[i]);
-    if (check_pair(*r.out[i], want[i], want[i]) != 0) return 1;
+    CHECK(slot_of(r.out[i]) == want[i]);
+    if (check_pair(r.out[i], want[i], want[i]) != 0) return 1;
   }
   return 0;
 }
@@ -504,8 +482,8 @@ int test_empty_frame() {
   CHECK(r.lost == 2);
   const int want[] = {0, 1, 4, 5, 6, 7};
   for (std::size_t i = 0; i < r.out.size(); ++i) {
-    CHECK(slot_of(*r.out[i]) == want[i]);
-    if (check_pair(*r.out[i], want[i], want[i]) != 0) return 1;
+    CHECK(slot_of(r.out[i]) == want[i]);
+    if (check_pair(r.out[i], want[i], want[i]) != 0) return 1;
   }
   return 0;
 }
@@ -517,7 +495,7 @@ int test_labelled_stream() {
   CHECK(r.out.size() == 8);
   CHECK(r.lost == 0);
   for (int i = 0; i < 8; ++i) {
-    if (check_pair(*r.out[static_cast<std::size_t>(i)], i, i,
+    if (check_pair(r.out[static_cast<std::size_t>(i)], i, i,
                    sensor::VideoColorMatrix::Bt709, false) != 0) {
       return 1;
     }
@@ -528,7 +506,10 @@ int test_labelled_stream() {
 // Which frame each access unit shows, in display order: decoded on its own,
 // each sent with its index as pts. Empty if it does not decode.
 std::vector<int> display_order(const Units& units) {
-  auto decoder = sensor::HevcDecoder::create({});
+  sensor::HevcDecoder::Options options;
+  options.device = g_device;
+  options.allocator = g_allocator;
+  auto decoder = sensor::HevcDecoder::create(options);
   if (!decoder) return {};
   std::vector<int> shows(units.size(), -1);
   int shown = 0;
@@ -581,11 +562,11 @@ int check_run(const Run& r, const std::vector<int>& want, int labelled_below,
   CHECK(r.out.size() + kHeldAtEnd >= want.size());
   for (std::size_t i = 0; i < r.out.size(); ++i) {
     const int slot = want[i];
-    CHECK(slot_of(*r.out[i]) == slot);
+    CHECK(slot_of(r.out[i]) == slot);
     const int status = slot < labelled_below
-                           ? check_pair(*r.out[i], frame_of(slot), slot,
+                           ? check_pair(r.out[i], frame_of(slot), slot,
                                         sensor::VideoColorMatrix::Bt709, false)
-                           : check_pair(*r.out[i], frame_of(slot), slot);
+                           : check_pair(r.out[i], frame_of(slot), slot);
     if (status != 0) return 1;
   }
   return 0;
@@ -666,6 +647,30 @@ int test_open_gop_restart() {
                    [](int slot) { return slot < 16 ? slot : (slot - 16) % 8; });
 }
 
+// A decoder with no device to decode onto does not start.
+int test_start_needs_device() {
+  orbbec::HevcColorDecoder::Options options;
+  options.who = "test";
+  auto decoder = orbbec::HevcColorDecoder::start(
+      options, [](std::shared_ptr<ob::FrameSet>) {});
+  CHECK(decoder.status().domain() == vkc::Status::Code::Unsupported);
+  return 0;
+}
+
+// The B-frame clip's 4:0:0 grey, which no hardware path hands out: the
+// decoder stops for good, Unsupported, having handed on patch frames before
+// it.
+int test_refused_stream() {
+  const Units units = access_units(kBFrames);
+  CHECK(units.size() == 10);
+  std::vector<int> frames;
+  for (int i = 0; i < 10; ++i) frames.push_back(i);
+  const Run r = run(pairs(units, frames), 10);
+  CHECK(r.failure.domain() == vkc::Status::Code::Unsupported);
+  CHECK(!r.out.empty());
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -673,11 +678,47 @@ int main() {
   ob::Context::setLoggerToFile(OB_LOG_SEVERITY_OFF, "");
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
   if (test_key_frames() != 0) return 1;
+  if (test_gate() != 0) return 1;
+  if (test_start_needs_device() != 0) return 1;
+
+  auto instance = vkc::Instance::create({});
+  if (!instance) {
+    return vr_test::no_device("no Vulkan instance",
+                              instance.status().message());
+  }
+  auto physical =
+      instance.value().select_physical_device(vr::device_requirements());
+  if (!physical) {
+    return vr_test::no_device("no compute-capable device",
+                              physical.status().message());
+  }
+  auto device = vkc::Device::create(instance.value(), physical.value(),
+                                    vr::device_requirements());
+  CHECK(device.ok());
+  auto allocator =
+      vkc::Allocator::create(instance.value().handle(), device.value());
+  CHECK(allocator.ok());
+  g_device = &device.value();
+  g_allocator = &allocator.value();
+  {
+    sensor::HevcDecoder::Options options;
+    options.device = g_device;
+    options.allocator = g_allocator;
+    auto probe = sensor::HevcDecoder::create(options);
+    if (!probe) {
+      if (probe.status().domain() != vkc::Status::Code::Unsupported) {
+        std::fprintf(stderr, "FAIL: %s\n", probe.status().message().c_str());
+        return 1;
+      }
+      return vr_test::no_decoder(probe.status().message());
+    }
+  }
+
   if (test_every_pair_in_order() != 0) return 1;
   if (test_hands_on_device_pictures() != 0) return 1;
+  if (test_refused_stream() != 0) return 1;
   if (test_gap_waits_for_key_frame() != 0) return 1;
   if (test_pause_costs_nothing() != 0) return 1;
-  if (test_gate() != 0) return 1;
   if (test_start_waits_for_key_frame() != 0) return 1;
   if (test_color_without_depth() != 0) return 1;
   if (test_pair_without_color() != 0) return 1;

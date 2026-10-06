@@ -22,8 +22,8 @@
 namespace volumetric_kit::recon::sensor {
 
 /// @brief How the colour stream crosses the wire. Either way the camera's
-///        colour is decoded on a thread per camera, onto the GPU where the
-///        hardware decoder takes it.
+///        colour is decoded on a thread per camera, onto the GPU by the
+///        hardware decoder.
 enum class OrbbecColorCodec {
   /// Motion JPEG, decoded by sensor/video's `JpegDecoder`: nvJPEG or
   /// VideoToolbox. About 185 Mbit/s at 4K.
@@ -65,15 +65,9 @@ struct OrbbecStreamStats {
   /// frame, and before the first. For MJPEG, a JPEG that did not decode and
   /// a pair missing a frame. Each is counted once, so
   /// `delivered + dropped + failed + lost <= received`; the difference is a
-  /// pair still pending or discarded by a stop.
+  /// pair still pending, discarded by a stop, or arriving after the colour
+  /// decoder failed.
   std::uint64_t lost = 0;
-  /// Of @ref delivered, the frames handed out with their colour on the host
-  /// although the stream was opened onto a device
-  /// (`OrbbecStreamOptions::device`): the decoder could not keep the picture
-  /// there, or its device path failed and every later picture followed. Each
-  /// costs a 4K frame's 12 MB across the bus on a discrete GPU, so a run that
-  /// should stay on the device reads 0 here.
-  std::uint64_t host_pictures = 0;
 };
 
 /// @brief The streams a camera is opened with -- the same for every camera of
@@ -100,17 +94,17 @@ struct OrbbecStreamOptions {
   float min_depth = 0.25f;
   /// Reject depth farther than this (metres).
   float max_depth = 5.0f;
-  /// The device the GPU pass prepares the frames on. A picture the hardware
-  /// decoder leaves there -- NVDEC's or nvJPEG's (VR_WITH_CUDA), or
-  /// VideoToolbox's -- stays there, and a frame's colour is that picture
-  /// (`YuvImage::device` or `YuvImage::image`), so it never crosses to the
-  /// host. Null, or a decode elsewhere, gives host planes. Borrowed: it must
+  /// The device the colour is decoded onto and the GPU pass prepares the
+  /// frames on: NVDEC's or nvJPEG's picture (VR_WITH_CUDA), or VideoToolbox's,
+  /// stays there, and a frame's colour is that picture (`YuvImage::device` or
+  /// `YuvImage::image`), so it never crosses to the host. Required: without
+  /// it, the start returns `Status::Code::Unsupported`. Borrowed: it must
   /// outlive the camera and every frame on it.
   const core::Device* device = nullptr;
-  /// With @ref device, the allocator NVDEC's and nvJPEG's pictures are made
-  /// through (exported device-only memory); without it, their pictures come
-  /// to the host. VideoToolbox's need none. Borrowed: it must outlive the
-  /// camera and every frame on it.
+  /// The allocator NVDEC's and nvJPEG's pictures are made through (exported
+  /// device-only memory): required with them, as @ref device is.
+  /// VideoToolbox's need none. Borrowed: it must outlive the camera and every
+  /// frame on it.
   core::Allocator* allocator = nullptr;
 };
 
