@@ -28,6 +28,7 @@
 
 #include "bare_device.hpp"
 #include "device_picture_readback.hpp"
+#include "no_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
@@ -428,10 +429,16 @@ Picture from_device(const sensor::DecodedPicture& p, vkc::Device& device,
 
 int test_device_pictures() {
   vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
-  if (!instance) return 0;
+  if (!instance) {
+    return vr_test::no_device("no Vulkan instance",
+                              instance.status().message());
+  }
   vkc::Result<vkc::PhysicalDeviceInfo> gpu =
       instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) return 0;
+  if (!gpu) {
+    return vr_test::no_device("no compute-capable device",
+                              gpu.status().message());
+  }
   vkc::Result<vkc::Device> device = vkc::Device::create(
       instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());
@@ -525,10 +532,16 @@ int test_device_pictures() {
 // naming whose decoder it is; no device says nothing.
 int test_host_warning() {
   vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
-  if (!instance) return 0;
+  if (!instance) {
+    return vr_test::no_device("no Vulkan instance",
+                              instance.status().message());
+  }
   vkc::Result<vkc::PhysicalDeviceInfo> gpu =
       instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) return 0;
+  if (!gpu) {
+    return vr_test::no_device("no compute-capable device",
+                              gpu.status().message());
+  }
   vkc::Result<vkc::Device> device = vkc::Device::create(
       instance.value(), gpu.value(), vr::device_requirements());
   CHECK(device.ok());

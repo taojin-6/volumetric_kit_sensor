@@ -31,6 +31,7 @@
 
 #include "device_picture_readback.hpp"
 #include "hevc_color.hpp"
+#include "no_device.hpp"
 #include "picture_frames.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -317,9 +318,15 @@ int test_hands_on_i420() {
 // they come as I420.
 int test_hands_on_device_pictures() {
   auto instance = vkc::Instance::create({});
-  if (!instance) return 0;
+  if (!instance) {
+    return vr_test::no_device("no Vulkan instance",
+                              instance.status().message());
+  }
   auto gpu = instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) return 0;
+  if (!gpu) {
+    return vr_test::no_device("no compute-capable device",
+                              gpu.status().message());
+  }
   auto device = vkc::Device::create(instance.value(), gpu.value(),
                                     vr::device_requirements());
   CHECK(device.ok());

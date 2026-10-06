@@ -40,6 +40,8 @@
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
 
+#include "no_device.hpp"
+
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
@@ -306,9 +308,15 @@ int test_skips_when_behind() {
 // device, I420 frames as in software.
 int test_device() {
   auto instance = vkc::Instance::create({});
-  if (!instance) return 0;
+  if (!instance) {
+    return vr_test::no_device("no Vulkan instance",
+                              instance.status().message());
+  }
   auto gpu = instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) return 0;
+  if (!gpu) {
+    return vr_test::no_device("no compute-capable device",
+                              gpu.status().message());
+  }
   auto device = vkc::Device::create(instance.value(), gpu.value(),
                                     vr::device_requirements());
   CHECK(device.ok());
