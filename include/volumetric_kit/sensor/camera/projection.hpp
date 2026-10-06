@@ -4,15 +4,13 @@
 #pragma once
 
 /// @file camera/projection.hpp
-/// @brief OpenCV's rational camera model as scalar templates: the one
+/// @brief OpenCV's rational lens model as a scalar template: the one
 ///        implementation every precision uses.
 ///
-/// Generic over the scalar so the same expressions serve each consumer:
-/// `double` on the host (`camera_model.hpp`), `float` in the sensor tier,
-/// whose GLSL lens mirrors this order of operations, and a solver's dual
-/// numbers (`ceres::Jet`), which differentiate through it. The parameters are
-/// plain arrays, as a solver's parameter blocks are; nothing is checked here,
-/// so a caller validates its model first (`check_camera_model`).
+/// Generic over the scalar so the same expressions serve `float` in the
+/// sensor tier, whose GLSL lens mirrors this order of operations, and
+/// `double` as the tests' reference. Nothing is checked here, so a caller
+/// validates its model first (`check_camera_model`).
 ///
 /// The distortion coefficients are OpenCV's eight, in its order: `k1, k2, p1,
 /// p2, k3, k4, k5, k6`. The radial factor is `(1 + k1 r^2 + k2 r^4 + k3 r^6) /
@@ -25,7 +23,7 @@ namespace volumetric_kit::recon::camera {
 ///        (`x = X / Z`) to the normalized coordinates it lands at.
 ///
 /// OpenCV's forward model, as `cv::projectPoints` applies it.
-/// @tparam T   The scalar: `float`, `double`, or a solver's dual number.
+/// @tparam T   The scalar: `float` or `double`.
 /// @param d    The eight distortion coefficients, in OpenCV's order.
 /// @param x    The normalized point's x.
 /// @param y    The normalized point's y.
@@ -41,26 +39,6 @@ inline void distort_rational(const T* d, const T& x, const T& y, T* xd, T* yd) {
   const T xy = x * y;
   *xd = x * radial + T(2) * d[2] * xy + d[3] * (r2 + T(2) * x * x);
   *yd = y * radial + d[2] * (r2 + T(2) * y * y) + T(2) * d[3] * xy;
-}
-
-/// @brief Project a point in the camera's frame to a pixel.
-///
-/// The camera looks down +Z with +Y down; pixel centres sit at integer
-/// coordinates.
-/// @tparam T  The scalar: `float`, `double`, or a solver's dual number.
-/// @param k   The intrinsics `fx, fy, cx, cy`, in pixels.
-/// @param d   The eight distortion coefficients, in OpenCV's order.
-/// @param p   The point `X, Y, Z`, with `Z > 0`.
-/// @param uv  Receives the pixel `u, v`.
-template <typename T>
-inline void project_rational(const T* k, const T* d, const T* p, T* uv) {
-  const T x = p[0] / p[2];
-  const T y = p[1] / p[2];
-  T xd;
-  T yd;
-  distort_rational(d, x, y, &xd, &yd);
-  uv[0] = k[0] * xd + k[2];
-  uv[1] = k[1] * yd + k[3];
 }
 
 }  // namespace volumetric_kit::recon::camera
