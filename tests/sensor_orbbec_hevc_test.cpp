@@ -313,7 +313,6 @@ int test_hands_on_device_pictures() {
     sensor::YuvImage placed;
     orbbec::place_device_color(*p, &placed);
     CHECK(placed.layout == sensor::YuvLayout::Nv12);
-    CHECK(placed.plane[0] == nullptr);
     if (p->device != nullptr) {
       CHECK(placed.device == p->device && placed.image[0] == nullptr);
       CHECK(placed.queue_family == sensor::kQueueFamilyExternal);

@@ -137,18 +137,43 @@ float edge_distance(vr::Vec2f p) {
   return std::min(fx, fy);
 }
 
+// `bytes` in a device storage buffer, as a decoder leaves its picture; null
+// if it cannot be made.
+std::shared_ptr<const vkc::Buffer> on_device(
+    const std::vector<std::uint8_t>& bytes) {
+  auto made = vkc::device_storage_buffer(*g_allocator, bytes.size());
+  if (!made.ok() ||
+      !vr_test::write_back(*g_device, *g_allocator, made.value(), bytes).ok()) {
+    return nullptr;
+  }
+  return std::make_shared<const vkc::Buffer>(std::move(made).value());
+}
+
 struct Planes {
   std::vector<std::uint8_t> y, cb, cr;
   std::uint32_t w = 0, h = 0;
   std::uint32_t cw = 0, ch = 0;
-  sensor::YuvImage image(float kr, float kb, bool full) {
+  // The picture as a decoder leaves it: I420 in a device buffer, each plane
+  // after the last, its rows `pad[k]` bytes longer than its width and the
+  // rest junk. Without colour if the buffer cannot be made.
+  sensor::YuvImage image(float kr, float kb, bool full,
+                         const std::uint32_t* pad = nullptr) const {
+    const std::vector<std::uint8_t>* planes[3] = {&y, &cb, &cr};
+    const std::uint32_t pw[3] = {w, cw, cw};
+    const std::uint32_t ph[3] = {h, ch, ch};
     sensor::YuvImage im;
-    im.plane[0] = y.data();
-    im.plane[1] = cb.data();
-    im.plane[2] = cr.data();
-    im.stride[0] = w;
-    im.stride[1] = cw;
-    im.stride[2] = cw;
+    std::vector<std::uint8_t> bytes;
+    for (int k = 0; k < 3; ++k) {
+      im.offset[k] = bytes.size();
+      im.stride[k] = pw[k] + (pad != nullptr ? pad[k] : 0);
+      bytes.resize(bytes.size() + im.stride[k] * ph[k], 0xAB);
+      for (std::uint32_t r = 0; r < ph[k]; ++r) {
+        std::memcpy(&bytes[im.offset[k] + r * im.stride[k]],
+                    planes[k]->data() + std::size_t{r} * pw[k], pw[k]);
+      }
+    }
+    bytes.resize((bytes.size() + 3) & ~std::size_t{3}, 0xAB);  // whole words
+    im.device = on_device(bytes);
     im.width = w;
     im.height = h;
     im.kr = kr;
@@ -266,18 +291,6 @@ std::vector<float> depth_of(const sensor::DeviceFrame& f) {
 std::vector<std::uint32_t> color_of(const sensor::DeviceFrame& f) {
   return read<std::uint32_t>(
       *f.color, std::size_t{f.color_camera.width} * f.color_camera.height);
-}
-
-// `bytes` in a device storage buffer, as a decoder leaves its picture; null
-// if it cannot be made.
-std::shared_ptr<const vkc::Buffer> on_device(
-    const std::vector<std::uint8_t>& bytes) {
-  auto made = vkc::device_storage_buffer(*g_allocator, bytes.size());
-  if (!made.ok() ||
-      !vr_test::write_back(*g_device, *g_allocator, made.value(), bytes).ok()) {
-    return nullptr;
-  }
-  return std::make_shared<const vkc::Buffer>(std::move(made).value());
 }
 
 // An iw x ih image of `format`, `texel` bytes a texel: `count` rows of
@@ -454,25 +467,10 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
   }
   Planes p = patterned(w, h);
   sensor::RgbdFrame f = frame_of(raw, cam);
-  f.color = p.image(0.2126f, 0.0722f, false);
+  const std::uint32_t pad[3] = {7, 5, 3};
+  f.color = p.image(0.2126f, 0.0722f, false, padded ? pad : nullptr);
   f.color_camera = cam;
-  std::vector<std::uint8_t> strided[3];
-  if (padded) {
-    const std::vector<std::uint8_t>* tight[3] = {&p.y, &p.cb, &p.cr};
-    const std::uint32_t pw[3] = {w, p.cw, p.cw};
-    const std::uint32_t ph[3] = {h, p.ch, p.ch};
-    const std::uint32_t pad[3] = {7, 5, 3};
-    for (int k = 0; k < 3; ++k) {
-      const std::uint32_t stride = pw[k] + pad[k];
-      strided[k].assign(std::size_t{stride} * ph[k], 0xAB);
-      for (std::uint32_t y = 0; y < ph[k]; ++y) {
-        std::memcpy(strided[k].data() + std::size_t{y} * stride,
-                    tight[k]->data() + std::size_t{y} * pw[k], pw[k]);
-      }
-      f.color.plane[k] = strided[k].data();
-      f.color.stride[k] = stride;
-    }
-  }
+  CHECK(f.has_color());
   auto out = prep.prepare(f);
   CHECK(out.ok());
   const std::vector<float> d = depth_of(out.value());
@@ -512,12 +510,11 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
   return 0;
 }
 
-// One picture, many ways: host I420, host NV12 with tight and padded rows,
-// device planes in either layout at odd offsets with padded rows, far
-// enough into their buffer that the binding starts past byte 0, taken over
-// from outside Vulkan or not, and with Cb and Cr rows of different lengths,
-// and NV12's planes as images larger than the picture. They are only
-// different addresses for the same samples, so all come out identical.
+// One picture, many ways: planes in a buffer in either layout at odd offsets
+// with padded rows, far enough into their buffer that the binding starts past
+// byte 0, taken over from outside Vulkan or not, and with Cb and Cr rows of
+// different lengths, and NV12's planes as images larger than the picture. They
+// are only different addresses for the same samples, so all come out identical.
 // Planes the pass cannot read are refused, before any work.
 // Every siting samples the same continuous chroma ramps. At luma (8, 8),
 // Y, Cb and Cr are all 128, so the prepared pixel must be neutral grey.
@@ -568,6 +565,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   sensor::RgbdFrame f = frame_of(raw, cam);
   f.color_camera = cam;
   sensor::YuvImage i420 = p.image(0.2126f, 0.0722f, false);
+  CHECK(i420.device != nullptr);
   i420.chroma_location = location;
   f.color = i420;
   auto base = prep.prepare(f);
@@ -605,21 +603,6 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
       }
     }
   }
-  sensor::YuvImage nv12 = i420;
-  nv12.layout = sensor::YuvLayout::Nv12;
-  nv12.plane[0] = y_rows.data();
-  nv12.plane[1] = cbcr.data();
-  nv12.plane[2] = nullptr;
-  nv12.stride[0] = y_stride;
-  nv12.stride[1] = c_stride;
-  CHECK(same(nv12));
-  // Tight rows: each plane is one copy into the staging.
-  sensor::YuvImage nv12_tight = nv12;
-  nv12_tight.plane[0] = p.y.data();
-  nv12_tight.plane[1] = cbcr_tight.data();
-  nv12_tight.stride[0] = w;
-  nv12_tight.stride[1] = 2 * std::size_t{p.cw};
-  CHECK(same(nv12_tight));
 
   // Device planes: one buffer holds the padded NV12 planes and the I420 ones,
   // each plane at an odd offset, all past a lead longer than any binding
@@ -649,7 +632,6 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   CHECK(planes != nullptr);
 
   sensor::YuvImage dev = i420;
-  dev.plane[0] = dev.plane[1] = dev.plane[2] = nullptr;
   dev.device = planes;
   dev.layout = sensor::YuvLayout::Nv12;
   dev.offset[0] = nv12_y;
@@ -703,22 +685,20 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
                                cbcr_tight.data(), 2 * p.cw, p.ch, src);
   CHECK(luma != nullptr && chroma != nullptr);
   sensor::YuvImage images = i420;
-  images.plane[0] = images.plane[1] = images.plane[2] = nullptr;
+  images.device = nullptr;
+  images.offset[0] = images.offset[1] = images.offset[2] = 0;
   images.stride[0] = images.stride[1] = images.stride[2] = 0;
   images.layout = sensor::YuvLayout::Nv12;
   images.image[0] = luma;
   images.image[1] = chroma;
   CHECK(same(images));
 
-  // Refused as images: beside host or device planes; I420; either one
-  // missing; the two swapped; one smaller than its plane; one the pass
-  // cannot copy, for its usage or its layout.
+  // Refused as images: beside planes in a buffer; I420; either one missing;
+  // the two swapped; one smaller than its plane; one the pass cannot copy,
+  // for its usage or its layout.
   sensor::YuvImage bad_images = images;
-  bad_images.plane[0] = p.y.data();
-  CHECK(refused(bad_images, "one of the three"));
-  bad_images = images;
   bad_images.device = planes;
-  CHECK(refused(bad_images, "one of the three"));
+  CHECK(refused(bad_images, "not both"));
   bad_images = images;
   bad_images.layout = sensor::YuvLayout::I420;
   CHECK(refused(bad_images, "NV12's two"));
@@ -747,21 +727,11 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
       std::make_shared<const vkc::Image>(shader_read, nullptr);  // borrowed
   CHECK(refused(bad_images, "TRANSFER_SRC_OPTIMAL"));
 
-  // Refused: host and device planes at once, even a stale third one; an NV12
-  // host picture with a third plane; a plane past the buffer; planes that
-  // overlap, as I420's do with its offsets left at zero; a row shorter than
-  // its picture; a buffer that is empty or the kernel cannot bind; and a
-  // queue family the device does not have.
+  // Refused: a plane past the buffer; planes that overlap, as I420's do with
+  // its offsets left at zero; a stride shorter than the picture's rows; a
+  // buffer that is empty or the kernel cannot bind; and a queue family the
+  // device does not have.
   sensor::YuvImage bad = dev;
-  bad.plane[0] = p.y.data();
-  CHECK(refused(bad));
-  bad = dev_i420;
-  bad.plane[2] = p.cr.data();
-  CHECK(refused(bad));
-  bad = nv12;
-  bad.plane[2] = p.cr.data();
-  CHECK(refused(bad));
-  bad = dev;
   bad.offset[1] = planes->size() - c_stride;  // the chroma's last rows past it
   CHECK(refused(bad));
   bad = dev_i420;
@@ -772,7 +742,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   CHECK(refused(bad));
   bad = dev;
   bad.stride[0] = w - 1;
-  CHECK(refused(bad));
+  CHECK(refused(bad, "stride is shorter"));
   bad = dev;
   bad.device = std::make_shared<const vkc::Buffer>();
   CHECK(refused(bad, "is empty"));
@@ -795,15 +765,15 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   CHECK(prep.prepare(f, &metrics).status().domain() == invalid);
   CHECK(metrics.rows().size() == 1 && !metrics.rows()[0].has_gpu);
   std::printf(
-      "  layouts: host I420 and NV12, device I420 and NV12, and NV12 images "
-      "agree, from byte %llu of their buffer\n",
+      "  layouts: I420 and NV12 in a buffer and NV12 images agree, from byte "
+      "%llu of their buffer\n",
       static_cast<unsigned long long>(nv12_y));
   return 0;
 }
 
 // prepare_batch prepares every camera's frame in one batch, each as a pass of
-// its own makes it alone, whichever way its colour arrives -- host planes,
-// device planes taken over from outside Vulkan, or NV12's planes as images --
+// its own makes it alone, whichever way its colour arrives -- planes in a
+// buffer, taken over from outside Vulkan or not, or NV12's planes as images --
 // with depth kept within colour; an empty slot stays empty. A set with a
 // refused frame is refused before any work, with that frame's refusal, and
 // too few passes are refused.
@@ -843,21 +813,10 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
     frames[c]->color_camera = pincushion;
   }
   frames[2].reset();  // a camera whose frame never arrived
+  for (const auto& f : frames) CHECK(!f || f->has_color());
 
-  // Camera 1's I420 planes in one device buffer, written by CUDA.
-  const Planes& p1 = planes[1];
-  std::vector<std::uint8_t> blob(p1.y);
-  blob.insert(blob.end(), p1.cb.begin(), p1.cb.end());
-  blob.insert(blob.end(), p1.cr.begin(), p1.cr.end());
-  blob.resize((blob.size() + 3) & ~std::size_t{3});  // whole words
-  sensor::YuvImage& dev = frames[1]->color;
-  dev.plane[0] = dev.plane[1] = dev.plane[2] = nullptr;
-  dev.device = on_device(blob);
-  CHECK(dev.device != nullptr);
-  dev.offset[0] = 0;
-  dev.offset[1] = p1.y.size();
-  dev.offset[2] = p1.y.size() + p1.cb.size();
-  dev.queue_family = sensor::kQueueFamilyExternal;
+  // Camera 1's planes written by CUDA.
+  frames[1]->color.queue_family = sensor::kQueueFamilyExternal;
   // Camera 3's as NV12 plane images, as VideoToolbox hands them out.
   const Planes& p3 = planes[3];
   std::vector<std::uint8_t> cbcr(2 * p3.cb.size());
@@ -867,7 +826,8 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   }
   const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   sensor::YuvImage& images = frames[3]->color;
-  images.plane[0] = images.plane[1] = images.plane[2] = nullptr;
+  images.device = nullptr;
+  images.offset[0] = images.offset[1] = images.offset[2] = 0;
   images.stride[0] = images.stride[1] = images.stride[2] = 0;
   images.layout = sensor::YuvLayout::Nv12;
   images.image[0] =
