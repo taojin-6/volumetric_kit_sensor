@@ -80,10 +80,9 @@ struct Mailbox {
 class CameraStream {
  public:
   // Read the camera's identity and role, check its orientation, find the
-  // modes, and read each camera's factory model. Does not start. Refuses a
-  // software-triggered camera, and a colour mode on the wire (H.265 or MJPG)
-  // whose calibration is not the RGB mode's. Messages name `who` and the
-  // serial. `configure_logging` sets FFmpeg's log level at the first start.
+  // modes, and read each camera's factory model at them. Does not start.
+  // Refuses a software-triggered camera. Messages name `who` and the serial.
+  // `configure_logging` sets FFmpeg's log level at the first start.
   static core::Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
       const OrbbecStreamOptions& streams, const camera::Mat4d& color_to_world,
@@ -173,11 +172,9 @@ class CameraStream {
   std::shared_ptr<ob::Device> device_;
   std::shared_ptr<ob::Pipeline> pipeline_;
   std::shared_ptr<ob::StreamProfile> depth_profile_;
-  // The RGB mode, whose calibration is the colour camera's. The wire carries
-  // `wire_color_profile_`, the H.265 or MJPG mode of the same size, whose
-  // calibration create() holds to be the same, byte for byte.
+  // The H.265 or MJPG mode streamed, whose calibration is the colour
+  // camera's.
   std::shared_ptr<ob::StreamProfile> color_profile_;
-  std::shared_ptr<ob::StreamProfile> wire_color_profile_;
   std::uint32_t fps_ = 0;
   bool configure_ffmpeg_logging_ = true;  // cleared by the first start
   // The device the colour is decoded onto (streams.device), and the allocator

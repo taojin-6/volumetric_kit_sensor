@@ -44,7 +44,10 @@ core::Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
   d->sink_ = std::move(sink);
   HevcDecoder::Options decoding;
   decoding.layout = VideoPixelLayout::Yuv420;
-  // One thread, so no picture is held back.
+  // One thread, so no picture is held back. That leaves software decoding
+  // little headroom at 4K25 (the 2026-09-28 decision).
+  // TODO(sensor): goes with the decoders' host pictures, software decoding
+  // among them (DESIGN next work).
   decoding.threads = 1;
   decoding.unlabelled_color = kFemtoMegaHevcColor;
   decoding.device = options.device;

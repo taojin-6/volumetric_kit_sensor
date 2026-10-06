@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstring>
 #include <thread>
 #include <utility>
 
@@ -96,19 +95,6 @@ core::Status check_orientation(ob::Device& device, const std::string& who) {
   }
   return {};
 }
-
-// Whether two of the SDK's calibration structs hold the same bytes: the
-// comparison the H.265 mode's calibration was measured to pass.
-template <typename T>
-bool same_bytes(const T& a, const T& b) noexcept {
-  return std::memcmp(&a, &b, sizeof(T)) == 0;
-}
-// None has padding, whose bytes would be indeterminate.
-static_assert(sizeof(OBCameraIntrinsic) ==
-              4 * sizeof(float) + 2 * sizeof(std::int16_t));
-static_assert(sizeof(OBCameraDistortion) ==
-              8 * sizeof(float) + sizeof(OBCameraDistortionModel));
-static_assert(sizeof(OBExtrinsic) == 12 * sizeof(float));
 
 }  // namespace
 
@@ -290,7 +276,7 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     // 2026-09-28 decision).
     const bool hevc = streams.color_codec == OrbbecColorCodec::Hevc;
     try {
-      s->wire_color_profile_ = color_modes->getVideoStreamProfile(
+      s->color_profile_ = color_modes->getVideoStreamProfile(
           static_cast<int>(streams.color_width),
           static_cast<int>(streams.color_height),
           hevc ? OB_FORMAT_H265 : OB_FORMAT_MJPG,
@@ -303,53 +289,24 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
           std::to_string(streams.fps) + (hevc ? " H265" : " MJPG") +
           "; it offers " + list_modes(*color_modes));
     }
-    try {
-      // The RGB mode of the same size, whose calibration the decoded colour
-      // carries.
-      s->color_profile_ = color_modes->getVideoStreamProfile(
-          static_cast<int>(streams.color_width),
-          static_cast<int>(streams.color_height), OB_FORMAT_RGB,
-          static_cast<int>(streams.fps));
-    } catch (const ob::Error&) {
-      return core::Status::unsupported(
-          s->who_ + " has no colour mode " +
-          std::to_string(streams.color_width) + "x" +
-          std::to_string(streams.color_height) + "@" +
-          std::to_string(streams.fps) + " RGB; it offers " +
-          list_modes(*color_modes));
-    }
 
-    // The decoded colour is the RGB mode's camera, read off its profile, so
-    // the mode on the wire must have its calibration. H.265's matched byte
-    // for byte on the Femto Mega at 720p, 1080p and 4K; a camera where they
-    // do not is refused, not trusted.
-    const auto wire = s->wire_color_profile_->as<ob::VideoStreamProfile>();
-    const auto rgb = s->color_profile_->as<ob::VideoStreamProfile>();
-    if (!same_bytes(wire->getIntrinsic(), rgb->getIntrinsic()) ||
-        !same_bytes(wire->getDistortion(), rgb->getDistortion()) ||
-        !same_bytes(wire->getExtrinsicTo(s->depth_profile_),
-                    rgb->getExtrinsicTo(s->depth_profile_))) {
-      return core::Status::unsupported(
-          s->who_ + "'s " + (hevc ? "H.265" : "MJPG") +
-          " colour mode reports a calibration other than its RGB mode's, "
-          "which a frame's colour camera is read from");
-    }
-
-    // Each camera as it captures, from the factory calibration: its lens, and
-    // the depth camera posed through its extrinsic to the colour one, which
-    // color_to_world poses. Nothing on the host undistorts or registers.
+    // Each camera as it captures, from the factory calibration of the modes
+    // streamed: its lens, and the depth camera posed through its extrinsic to
+    // the colour one, which color_to_world poses. Nothing on the host
+    // undistorts or registers.
     const auto depth_video = s->depth_profile_->as<ob::VideoStreamProfile>();
+    const auto color_video = s->color_profile_->as<ob::VideoStreamProfile>();
     VKC_ASSIGN(s->depth_camera_,
                camera_model_from(depth_video->getIntrinsic(),
                                  depth_video->getDistortion(), "depth"));
-    VKC_ASSIGN(
-        s->color_camera_,
-        camera_model_from(rgb->getIntrinsic(), rgb->getDistortion(), "colour"));
+    VKC_ASSIGN(s->color_camera_,
+               camera_model_from(color_video->getIntrinsic(),
+                                 color_video->getDistortion(), "colour"));
     if (s->depth_camera_.size.width != streams.depth_width ||
         s->depth_camera_.size.height != streams.depth_height ||
         s->color_camera_.size.width != streams.color_width ||
         s->color_camera_.size.height != streams.color_height) {
-      return core::Status::io_error(
+      return core::Status::invalid_argument(
           s->who_ + " reports intrinsics for another size than its mode");
     }
     s->color_to_world_ = color_to_world;
@@ -452,7 +409,7 @@ core::Status CameraStream::start() {
   try {
     auto config = std::make_shared<ob::Config>();
     config->enableStream(depth_profile_);
-    config->enableStream(wire_color_profile_);
+    config->enableStream(color_profile_);
     // Only pairs: a frame set missing either half is never handed over --
     // except for H.265, where every colour frame must reach the decoder,
     // paired or not. Requiring pairs there, a secondary's colour frame went

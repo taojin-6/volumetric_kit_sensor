@@ -93,8 +93,11 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///           camera is looked for -- a zero size or rate, a depth range
   ///           that is not finite, empty or starts at 0 (which the GPU pass
   ///           would refuse), a @ref Options::color_to_world that is not
-  ///           rigid -- or an empty @ref Options::serial with more than one
-  ///           camera answering within the discovery window;
+  ///           rigid -- an empty @ref Options::serial with more than one
+  ///           camera answering within the discovery window, or a factory
+  ///           calibration that cannot be used: intrinsics zeroed, not finite
+  ///           or for another size than the mode, or a depth-to-colour
+  ///           extrinsic zeroed or reflected, as an uncalibrated unit reports;
   ///         - `Status::Code::NotFound` if no camera (or not the named one)
   ///           answered within @ref Options::discovery_timeout_ms, naming the
   ///           cameras that did;
@@ -102,9 +105,8 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///           colour mode matching the options (the modes it offers are
   ///           listed), reports its image mirrored, flipped or rotated, is in
   ///           software-triggering mode or a sync mode this driver does not
-  ///           know, reports a lens model the GPU pass cannot undistort, or
-  ///           its colour mode on the wire reports a calibration other than
-  ///           its RGB mode's;
+  ///           know, or reports a lens model the GPU pass cannot
+  ///           undistort;
   ///         - `Status::Code::IoError` for any other SDK failure, with the
   ///           SDK's message.
   static core::Result<OrbbecSensor> open(const Options& options);
