@@ -241,7 +241,7 @@ void Mailbox::on_devices_changed(const std::string& serial,
 
 core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
-    const OrbbecStreamOptions& streams, const camera::Mat4d& cam_to_world,
+    const OrbbecStreamOptions& streams, const camera::Mat4d& color_to_world,
     bool configure_logging, const std::string& who) {
   std::unique_ptr<CameraStream> s(new CameraStream());
   s->fps_ = streams.fps;
@@ -355,7 +355,7 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     const OBCameraIntrinsic intrinsic =
         s->color_profile_->as<ob::VideoStreamProfile>()->getIntrinsic();
     VKC_ASSIGN(s->color_camera_,
-               color_camera_from(intrinsic, Mat4f(cam_to_world)));
+               color_camera_from(intrinsic, Mat4f(color_to_world)));
     if (s->color_camera_.width != streams.color_width ||
         s->color_camera_.height != streams.color_height) {
       return core::Status::io_error(
@@ -397,7 +397,7 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     if (streams.raw) {
       // Each camera as it captures, from the factory calibration: its lens,
       // and the depth camera posed through its extrinsic to the colour one,
-      // which cam_to_world poses. Nothing on the host undistorts or
+      // which color_to_world poses. Nothing on the host undistorts or
       // registers.
       const auto depth_video = s->depth_profile_->as<ob::VideoStreamProfile>();
       const auto color_video = s->color_profile_->as<ob::VideoStreamProfile>();
@@ -414,7 +414,7 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
             " reports depth intrinsics for another size "
             "than the mode it opened");
       }
-      s->raw_color_to_world_ = cam_to_world;
+      s->raw_color_to_world_ = color_to_world;
       VKC_ASSIGN(
           s->raw_depth_to_color_,
           transform_from(s->depth_profile_->getExtrinsicTo(s->color_profile_)));

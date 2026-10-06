@@ -97,7 +97,7 @@ class CameraStream {
   // the first start, for a stream decoded here (H.265, or raw).
   static core::Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
-      const OrbbecStreamOptions& streams, const camera::Mat4d& cam_to_world,
+      const OrbbecStreamOptions& streams, const camera::Mat4d& color_to_world,
       bool configure_logging, const std::string& who);
 
   CameraStream(const CameraStream&) = delete;
@@ -161,6 +161,18 @@ class CameraStream {
   core::Result<std::optional<RgbdFrame>> process_raw(
       const std::shared_ptr<ob::FrameSet>& pair);
   bool raw() const noexcept { return raw_; }
+  // A raw stream's cameras as they capture, and the depth camera's extrinsic
+  // to the colour one; identity and empty models for a stream not raw.
+  const camera::CameraModel& raw_depth_camera() const noexcept {
+    return raw_depth_camera_;
+  }
+  const camera::CameraModel& raw_color_camera() const noexcept {
+    return raw_color_camera_;
+  }
+  const camera::Mat4d& raw_depth_to_color() const noexcept {
+    return raw_depth_to_color_;
+  }
+  std::uint32_t fps() const noexcept { return fps_; }
 
  private:
   CameraStream() = default;
