@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <exception>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -93,12 +92,9 @@ core::Status validate_array_calibration(const ArrayCalibration& array) {
 
 core::Result<ArrayCalibration> parse_array_calibration(
     std::string_view json_text) {
-  json doc;
-  try {
-    doc = json::parse(json_text);
-  } catch (const std::exception& e) {  // json::parse_error names the byte
-    return bad(std::string("not JSON: ") + e.what());
-  }
+  // Without exceptions: calib compiles this tier with -fno-exceptions.
+  const json doc = json::parse(json_text, nullptr, /*allow_exceptions=*/false);
+  if (doc.is_discarded()) return bad("not JSON");
   if (!doc.is_object()) return bad("not a JSON object");
   const auto section = doc.find("device_calibration");
   if (section == doc.end() || !section->is_object()) {
