@@ -57,13 +57,47 @@ std::optional<JpegFrame> read_frame(const std::uint8_t* d, std::size_t n) {
   return std::nullopt;
 }
 
-// Decoding is synchronous, so the picture is handed back through the frame's
-// own pointer before the call returns; a JPEG the hardware refuses has none.
+// Both the decode call and its synchronous callback can fail. Keep the
+// callback's status even when it supplies no picture.
+struct Decoded {
+  CVPixelBufferRef picture = nullptr;
+  OSStatus status = noErr;
+};
+
 void on_picture(void*, void* frame, OSStatus status, VTDecodeInfoFlags,
                 CVImageBufferRef image, CMTime, CMTime) {
+  auto& decoded = *static_cast<Decoded*>(frame);
+  decoded.status = status;
   if (status == noErr && image != nullptr) {
-    *static_cast<CVPixelBufferRef*>(frame) = CVPixelBufferRetain(image);
+    decoded.picture = CVPixelBufferRetain(image);
   }
+}
+
+core::Status vt_error(const char* who, const std::string& what, OSStatus error,
+                      bool decoding = false) {
+  const std::string message = std::string(who) + ": " + what +
+                              " (VideoToolbox status " + std::to_string(error) +
+                              ")";
+  switch (error) {
+    case kVTParameterErr:
+      // DecodeFrame's arguments are already checked, but VideoToolbox also
+      // returns this for a truncated JPEG. At session creation it still
+      // means the device path failed.
+      if (decoding) return core::Status::io_error(message);
+      break;
+    case kVTVideoDecoderBadDataErr:
+    case kVTVideoDecoderReferenceMissingErr:
+      return core::Status::io_error(message);
+    case kVTVideoDecoderUnsupportedDataFormatErr:
+    case kVTCouldNotFindVideoDecoderErr:
+      return core::Status::unsupported(message);
+    case kVTAllocationFailedErr:
+    case kCMFormatDescriptionError_AllocationFailed:
+      return core::Status::out_of_memory(message);
+    default:
+      break;
+  }
+  return core::Status::backend_error(error, message);
 }
 
 // A dictionary to fill, released with its values.
@@ -105,14 +139,15 @@ void VtJpeg::stop() noexcept {
   width_ = height_ = 0;
 }
 
-bool VtJpeg::start(std::uint32_t width, std::uint32_t height) {
+core::Status VtJpeg::start(std::uint32_t width, std::uint32_t height) {
   stop();
-  if (CMVideoFormatDescriptionCreate(
-          kCFAllocatorDefault, kCMVideoCodecType_JPEG,
-          static_cast<std::int32_t>(width), static_cast<std::int32_t>(height),
-          nullptr, &format_) != noErr) {
+  const OSStatus described = CMVideoFormatDescriptionCreate(
+      kCFAllocatorDefault, kCMVideoCodecType_JPEG,
+      static_cast<std::int32_t>(width), static_cast<std::int32_t>(height),
+      nullptr, &format_);
+  if (described != noErr) {
     format_ = nullptr;
-    return false;
+    return vt_error(who_, "describing a JPEG", described);
   }
   // NV12 on an IOSurface Metal reads, full range as the JPEG's samples are;
   // on the hardware or not at all.
@@ -139,11 +174,14 @@ bool VtJpeg::start(std::uint32_t width, std::uint32_t height) {
   if (made != noErr) {
     session_ = nullptr;
     stop();
-    return false;
+    return vt_error(who_,
+                    "opening a " + std::to_string(width) + "x" +
+                        std::to_string(height) + " JPEG session",
+                    made);
   }
   width_ = width;
   height_ = height;
-  return true;
+  return {};
 }
 
 core::Result<DecodedPicture> VtJpeg::decode(const std::uint8_t* data,
@@ -168,10 +206,9 @@ core::Result<DecodedPicture> VtJpeg::decode(const std::uint8_t* data,
     return refuse("a " + size_text + " JPEG is larger than the device's " +
                   std::to_string(max_extent_) + "-pixel images");
   }
-  if ((session_ == nullptr || frame->width != width_ ||
-       frame->height != height_) &&
-      !start(frame->width, frame->height)) {
-    return refuse("the hardware opens no session for a " + size_text + " JPEG");
+  if (session_ == nullptr || frame->width != width_ ||
+      frame->height != height_) {
+    VKC_TRY(start(frame->width, frame->height));
   }
 
   // The bytes wrapped, not copied: they outlive the synchronous decode.
@@ -189,23 +226,23 @@ core::Result<DecodedPicture> VtJpeg::decode(const std::uint8_t* data,
   if (wrapped != noErr) {
     return core::Status::out_of_memory(std::string(who_) + ": wrapping a JPEG");
   }
-  CVPixelBufferRef picture = nullptr;
-  const OSStatus decoded =
-      VTDecompressionSessionDecodeFrame(session_, sample, 0, &picture, nullptr);
+  Decoded decoded;
+  OSStatus status =
+      VTDecompressionSessionDecodeFrame(session_, sample, 0, &decoded, nullptr);
   CFRelease(sample);
+  if (status == noErr) status = decoded.status;
   // A session that fails is started afresh for the next JPEG.
-  if (decoded != noErr) {
-    if (picture != nullptr) CVPixelBufferRelease(picture);
+  if (status != noErr) {
+    if (decoded.picture != nullptr) CVPixelBufferRelease(decoded.picture);
     stop();
-    return fail("the JPEG does not decode (VideoToolbox status " +
-                std::to_string(decoded) + ")");
+    return vt_error(who_, "decoding a JPEG", status, true);
   }
-  if (picture == nullptr) return fail("the JPEG does not decode");
+  if (decoded.picture == nullptr) return fail("the JPEG does not decode");
 
   DecodedPicture out;
   const core::Status imported =
-      pictures_->import(picture, frame->width, frame->height, out);
-  CVPixelBufferRelease(picture);  // the images hold their own
+      pictures_->import(decoded.picture, frame->width, frame->height, out);
+  CVPixelBufferRelease(decoded.picture);  // the images hold their own
   VKC_TRY(imported);
   // JFIF's matrix and range.
   out.matrix = VideoColorMatrix::Bt601;

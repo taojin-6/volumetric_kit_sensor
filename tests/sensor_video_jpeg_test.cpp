@@ -314,6 +314,8 @@ int test_corrupt(const Gpu& gpu) {
   const std::vector<std::uint8_t> cut(good.begin(),
                                       good.begin() + good.size() / 2);
   const auto partial = decode(decoder.value(), cut);  // decodes, or IoError
+  if (!partial && partial.status().domain() != vkc::Status::Code::IoError)
+    std::fprintf(stderr, "%s\n", partial.status().message().c_str());
   CHECK(partial.ok() ||
         partial.status().domain() == vkc::Status::Code::IoError);
   auto next = decode(decoder.value(), good);

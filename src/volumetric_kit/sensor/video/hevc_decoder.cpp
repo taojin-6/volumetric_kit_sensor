@@ -121,22 +121,20 @@ bool is_cropping_sps(const std::uint8_t* data, std::size_t begin,
          sps_crops_left_or_top(data + begin, end - begin);
 }
 
-// Whether an Annex B access unit carries an SPS that crops the left or top,
-// which VideoToolbox cannot: FFmpeg sizes its output at the display size,
-// which VideoToolbox fills from the coded picture's top-left corner, so such
-// a stream comes out showing the wrong region. Only the NAL units ahead of
-// its first slice are read: an SPS is sent before the slices that activate
-// it, and the slices are nearly all of the bytes.
-bool crops_left_or_top(const std::uint8_t* data, std::size_t size) {
+// The end of the first SPS whose prefix says it crops the left or top, or 0.
+// FFmpeg must still validate the whole SPS before the stream is refused.
+// Only NAL units ahead of the first slice are read: a cropping SPS must not
+// reach VideoToolbox, which would decode the wrong region of the picture.
+std::size_t cropping_sps_end(const std::uint8_t* data, std::size_t size) {
   std::size_t nal = size;  // where the NAL unit being scanned starts
   for (std::size_t i = 0; i + 3 <= size; ++i) {
     if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1) continue;
-    if (is_cropping_sps(data, nal, i)) return true;
+    if (is_cropping_sps(data, nal, i)) return i;
     nal = i + 3;
-    if (nal < size && ((data[nal] >> 1) & 0x3f) < 32) return false;  // VCL
+    if (nal < size && ((data[nal] >> 1) & 0x3f) < 32) return 0;  // VCL
     i += 2;
   }
-  return is_cropping_sps(data, nal, size);
+  return is_cropping_sps(data, nal, size) ? size : 0;
 }
 #endif
 
@@ -171,7 +169,6 @@ struct HevcDecoder::Impl {
   std::unique_ptr<video::CudaPictures> pictures;
 #else
   std::unique_ptr<video::VtPictures> pictures;
-  bool left_top_crop = false;  // an SPS so far crops the left or top
 #endif
 
   // @p frame handed over on the device; Unsupported for one the device path
@@ -193,13 +190,6 @@ struct HevcDecoder::Impl {
                       (name != nullptr ? name : "this stream's format");
       return AV_PIX_FMT_NONE;
     }
-#if !VR_SENSOR_VIDEO_WITH_CUDA
-    if (impl->left_top_crop) {
-      impl->refusal = std::string(kWho) +
-                      ": VideoToolbox cannot crop the left or top of a picture";
-      return AV_PIX_FMT_NONE;
-    }
-#endif
     for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; ++f) {
       if (*f == kDeviceFormat) return *f;
     }
@@ -327,6 +317,9 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   }
   context->opaque = impl.get();
   context->get_format = &Impl::pick_format;
+  // Parameter-only packets are parsed by send(), before it returns. Hardware
+  // decoding needs no frame threads holding those packets for a later call.
+  context->thread_count = 1;
   err = avcodec_open2(context, codec, nullptr);
   if (err < 0) return video::ffmpeg_error(kWho, "opening the decoder", err);
   return HevcDecoder(std::move(impl));
@@ -359,24 +352,37 @@ core::Status HevcDecoder::send(const std::uint8_t* data, std::size_t size,
     return core::Status::invalid_argument(
         std::string(kWho) + ": an access unit needs data and under 2 GiB");
   }
+  std::size_t crop_end = 0;
 #if !VR_SENSOR_VIDEO_WITH_CUDA
-  // Read before FFmpeg activates the SPS, which is when pick_format asks.
-  if (!impl_->left_top_crop)
-    impl_->left_top_crop = crops_left_or_top(data, size);
+  crop_end = cropping_sps_end(data, size);
 #endif
+  // Submit only through the suspect SPS: no slices can reach VideoToolbox
+  // before the crop is refused, and no later NAL can obscure whether this
+  // SPS parsed. Its preceding VPS is needed for that validation.
+  const std::size_t submitted = crop_end != 0 ? crop_end : size;
   AVPacket* packet = impl_->packet.get();
   av_packet_unref(packet);
-  int err = av_new_packet(packet, static_cast<int>(size));
+  int err = av_new_packet(packet, static_cast<int>(submitted));
   if (err < 0) return video::ffmpeg_error(kWho, "allocating a packet", err);
-  std::memcpy(packet->data, data, size);
+  std::memcpy(packet->data, data, submitted);
   packet->pts = pts;
+  // FFmpeg normally logs and skips a malformed parameter set. Require its
+  // error here so a truncated SPS cannot become a permanent crop refusal.
+  const int recognition = context->err_recognition;
+  if (crop_end != 0) context->err_recognition |= AV_EF_EXPLODE;
   err = avcodec_send_packet(context, packet);
+  context->err_recognition = recognition;
   if (!impl_->refusal.empty()) return core::Status::unsupported(impl_->refusal);
   if (err == AVERROR(EAGAIN)) {
     return core::Status::invalid_argument(
         std::string(kWho) + ": take the pictures waiting before sending more");
   }
   if (err < 0) return video::ffmpeg_error(kWho, "decoding", err);
+  if (crop_end != 0) {
+    impl_->refusal = std::string(kWho) +
+                     ": VideoToolbox cannot crop the left or top of a picture";
+    return core::Status::unsupported(impl_->refusal);
+  }
   return {};
 }
 

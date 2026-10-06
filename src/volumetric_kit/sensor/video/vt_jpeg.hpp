@@ -34,15 +34,15 @@ class VtJpeg {
   // The JPEG as NV12 images, with the codes JpegDecoder::decode documents:
   // IoError for bytes that do not decode, Unsupported for a JPEG the hardware
   // does not take -- not baseline 8-bit 4:2:0, past the device's image
-  // extent, or a size it opens no session for -- and OutOfMemory or Backend
+  // extent, or a size it does not support -- and OutOfMemory or Backend
   // if the device path fails.
   core::Result<DecodedPicture> decode(const std::uint8_t* data,
                                       std::size_t size);
 
  private:
   VtJpeg() = default;
-  // A session for JPEGs of this size; false where the hardware takes none.
-  bool start(std::uint32_t width, std::uint32_t height);
+  // A session for JPEGs of this size, preserving the platform's failure code.
+  core::Status start(std::uint32_t width, std::uint32_t height);
   void stop() noexcept;
 
   const char* who_ = nullptr;

@@ -336,6 +336,61 @@ int test_cropped(const Gpu& gpu) {
   return 0;
 }
 
+#if defined(__APPLE__)
+// The crop prefix is not proof of a valid SPS. Truncate the committed SPS
+// after its crop offsets but before the remaining syntax, retaining its VPS.
+// Check recovery both with and without reset, and with the rest of the access
+// unit still present. No rejected bytes may latch a permanent refusal.
+int test_malformed_cropped_sps(const Gpu& gpu) {
+  const AccessUnits cropped = access_units(kCropped);
+  const AccessUnits patches = access_units(kPatches);
+  CHECK(!cropped.empty());
+  const auto& unit = cropped[0];
+  std::size_t sps = 0;
+  std::size_t end = 0;
+  for (std::size_t i = 0; i + 3 < unit.size(); ++i) {
+    if (unit[i] != 0 || unit[i + 1] != 0 || unit[i + 2] != 1) continue;
+    if (sps != 0) {
+      end = i;
+      break;
+    }
+    if (((unit[i + 3] >> 1) & 0x3f) == 33) sps = i + 3;
+  }
+  CHECK(sps != 0 && end > sps + 30);
+  for (const std::size_t kept : {25u, 30u}) {
+    for (const bool slices : {false, true}) {
+      auto damaged = std::vector<std::uint8_t>(
+          unit.begin(), unit.begin() + static_cast<std::ptrdiff_t>(sps + kept));
+      if (slices)
+        damaged.insert(damaged.end(),
+                       unit.begin() + static_cast<std::ptrdiff_t>(end),
+                       unit.end());
+      for (const bool reset : {false, true}) {
+        auto decoder = HevcDecoder::create(gpu.options());
+        CHECK(decoder.ok());
+        CHECK(decoder->send(damaged.data(), damaged.size(), 0).domain() ==
+              vkc::Status::Code::IoError);
+        auto waiting = decoder->receive();
+        CHECK(waiting.ok() && !waiting.value());
+        if (reset) CHECK(decoder->reset().ok());
+        CHECK(check_clip_shape(decode_clip(*decoder, patches, gpu)) == 0);
+      }
+    }
+  }
+
+  // A complete cropped SPS sent without a slice still refuses the stream;
+  // resetting must not turn a genuine refusal into an accepted crop.
+  auto decoder = HevcDecoder::create(gpu.options());
+  CHECK(decoder.ok());
+  CHECK(decoder->send(unit.data(), end, 0).domain() ==
+        vkc::Status::Code::Unsupported);
+  CHECK(decoder->reset().ok());
+  CHECK(decoder->send(patches[0].data(), patches[0].size(), 0).domain() ==
+        vkc::Status::Code::Unsupported);
+  return 0;
+}
+#endif
+
 // The refused clip: 8 frames with B-frames, then 2 of 4:0:0 grey that no
 // hardware path hands out. The pictures decoded before the grey come out, in
 // display order, each a distinct pts sent before it; then the refusal, which
@@ -467,6 +522,9 @@ int main() {
   if (test_unlabelled_color(gpu) != 0) return 1;
   if (test_reset(gpu) != 0) return 1;
   if (test_cropped(gpu) != 0) return 1;
+#if defined(__APPLE__)
+  if (test_malformed_cropped_sps(gpu) != 0) return 1;
+#endif
   if (test_refused(gpu) != 0) return 1;
   if (test_create_refusals(gpu) != 0) return 1;
   if (test_arguments(gpu) != 0) return 1;
