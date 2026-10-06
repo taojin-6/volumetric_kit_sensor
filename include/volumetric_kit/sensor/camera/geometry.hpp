@@ -7,11 +7,9 @@
 /// @brief The camera tier's geometry: double-precision vectors and matrices,
 ///        rigid transforms, and the Rodrigues form OpenCV writes them in.
 ///
-/// Double, not float: calibration solves in double and writes the shortest
-/// text that reads back to the same value, so the tier that reads and writes
-/// its results keeps every digit. A GPU consumer narrows once, where it
-/// uploads (`Mat4f(m)`). The types are GLM's, column-major like the rest of
-/// this repo (`m[column][row]`), so an Eigen consumer maps them in place.
+/// Double, not float, so a calibration's poses keep every digit until a GPU
+/// consumer narrows them once, where it uploads (`Mat4f(m)`). The types are
+/// GLM's, column-major like the rest of this repo (`m[column][row]`).
 ///
 /// A transform is named by what it maps: `color_to_world` takes a point in
 /// the colour camera's frame to the world's.
@@ -64,30 +62,10 @@ VR_CAMERA_API Mat4d rigid_inverse(const Mat4d& transform) noexcept;
 /// @return The rotation matrix.
 VR_CAMERA_API Mat3d rotation_from_rodrigues(const Vec3d& rvec) noexcept;
 
-/// @brief The Rodrigues vector of a rotation, its angle in [0, pi].
-///
-/// The angle comes from `atan2` rather than `acos`, which turns round-off in
-/// the matrix into angle error as the angle nears 0 or pi. Past pi/2 the axis
-/// comes from the matrix's symmetric part, since `sin(angle)` vanishes toward
-/// pi. At exactly pi the axis's sign is arbitrary, as it is for OpenCV.
-/// @pre @p rotation is a rotation.
-/// @param rotation  The rotation.
-/// @return The rotation vector, which @ref rotation_from_rodrigues maps back to
-///         @p rotation.
-VR_CAMERA_API Vec3d rodrigues_from_rotation(const Mat3d& rotation) noexcept;
-
 /// @brief The matrix of a transform OpenCV wrote: `[R(rvec) | tvec]`.
 /// @param transform  The transform.
 /// @return The same transform as a matrix.
 VR_CAMERA_API Mat4d
 matrix_from_rodrigues(const RodriguesTransform& transform) noexcept;
-
-/// @brief A rigid transform in OpenCV's form; the inverse of
-///        @ref matrix_from_rodrigues.
-/// @pre @p transform is rigid (@ref check_rigid).
-/// @param transform  The transform.
-/// @return The transform as a Rodrigues vector and a translation.
-VR_CAMERA_API RodriguesTransform
-rodrigues_from_matrix(const Mat4d& transform) noexcept;
 
 }  // namespace volumetric_kit::recon::camera

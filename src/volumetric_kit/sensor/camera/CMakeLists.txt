@@ -2,14 +2,13 @@
 # Copyright (c) 2026 Tao Jin
 
 # --- recon_camera: the family's camera vocabulary ----------------------------
-# The camera model (image size, intrinsics, OpenCV's rational lens), its
-# projection as scalar templates, rigid transforms and their Rodrigues form, and
-# the sensor array's calibration file (the 2026-10-06 decision).
+# The camera model (image size, intrinsics, OpenCV's rational lens), the lens as
+# a scalar template, rigid transforms, and the sensor array's calibration file
+# (the 2026-10-06 decisions).
 #
 # It links volumetric_kit_core's base tier and GLM and nothing else -- no Vulkan
-# and no recon_core -- because its consumers are not all GPU code: calib solves
-# for these models and writes this file, and a driver reports its factory
-# calibration in them. The sensor tier builds on it.
+# and no recon_core -- so a driver can report its factory calibration in it
+# without a GPU API. The sensor tier builds on it.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -51,8 +50,8 @@ target_compile_features(recon_camera PUBLIC cxx_std_17)
 # double types.
 target_link_libraries(recon_camera PUBLIC volumetric_kit::core_base glm::glm)
 
-# nlohmann/json parses and writes the calibration file: a PRIVATE SYSTEM
-# include, so it reaches no public header, no link line and no consumer.
+# nlohmann/json parses the calibration file: a PRIVATE SYSTEM include, so it
+# reaches no public header, no link line and no consumer.
 if(NOT VR_JSON_INCLUDE_DIR)
   message(FATAL_ERROR "recon_camera: VR_JSON_INCLUDE_DIR is unset -- "
                       "third_party/ must be configured before src/.")

@@ -299,7 +299,7 @@ core::Status validate(const OrbbecRig::Options& options) {
     for (const OrbbecSyncDevice& device : options.sync.devices) {
       const camera::SensorCalibration* sensor =
           camera::find_sensor(options.calibration, device.serial);
-      if (sensor == nullptr || !sensor->color_to_world) {
+      if (sensor == nullptr) {
         return core::Status::invalid_argument(
             "OrbbecRig: the calibration does not pose camera " + device.serial);
       }

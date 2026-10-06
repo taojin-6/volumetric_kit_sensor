@@ -2,9 +2,8 @@
 // Copyright (c) 2026 Tao Jin
 
 // The camera tier's geometry: what check_rigid refuses, the rigid inverse,
-// Rodrigues against OpenCV's matrix and through its edge cases (no turn, a
-// tiny one, turns of pi and just under, where sin vanishes), and OpenCV's
-// extrinsic turned into a camera's pose. Host-only.
+// Rodrigues against OpenCV's matrix, and OpenCV's extrinsic turned into a
+// camera's pose. Host-only.
 
 #include <cmath>
 #include <cstdio>
@@ -26,15 +25,6 @@ namespace camera = volumetric_kit::recon::camera;
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-
-bool near(const camera::Mat3d& a, const camera::Mat3d& b, double eps) {
-  for (int c = 0; c < 3; ++c) {
-    for (int r = 0; r < 3; ++r) {
-      if (std::fabs(a[c][r] - b[c][r]) > eps) return false;
-    }
-  }
-  return true;
-}
 
 bool near(const camera::Mat4d& a, const camera::Mat4d& b, double eps) {
   for (int c = 0; c < 4; ++c) {
@@ -91,22 +81,6 @@ int test_rodrigues() {
       CHECK(std::fabs(r[col][row] - cv[row][col]) < 1e-15);
     }
   }
-
-  // Each rotation back to its vector and out again, at the edge cases.
-  const camera::Vec3d axis_a = glm::normalize(camera::Vec3d(0.3, 0.5, 0.8));
-  const camera::Vec3d axis_b = glm::normalize(camera::Vec3d(1.0, 1.0, 0.0));
-  const camera::Vec3d axis_c = glm::normalize(camera::Vec3d(0.2, 0.9, -0.4));
-  for (const camera::Vec3d rvec :
-       {camera::Vec3d(0.0), 1e-7 * axis_a, camera::Vec3d(0.3, -0.8, 0.52),
-        camera::Vec3d(kPi, 0.0, 0.0), kPi * axis_b, 3.1415 * axis_c}) {
-    const camera::Mat3d rotation = camera::rotation_from_rodrigues(rvec);
-    const camera::Vec3d back = camera::rodrigues_from_rotation(rotation);
-    CHECK(near(camera::rotation_from_rodrigues(back), rotation, 1e-12));
-    // At exactly pi the axis's sign is arbitrary; elsewhere the vector is.
-    if (std::fabs(glm::length(rvec) - kPi) > 1e-12) {
-      CHECK(glm::length(back - rvec) < 1e-12);
-    }
-  }
   return 0;
 }
 
@@ -124,12 +98,6 @@ int test_extrinsic_is_world_to_camera() {
   const glm::dvec4 ahead = camera_to_world * glm::dvec4(0.0, 0.0, 1.0, 1.0);
   CHECK(glm::length(camera::Vec3d(ahead) - camera::Vec3d(1.0, 0.0, 0.0)) <
         1e-15);
-
-  // And back to the same Rodrigues form.
-  const camera::RodriguesTransform back =
-      camera::rodrigues_from_matrix(camera::rigid_inverse(camera_to_world));
-  CHECK(glm::length(back.rvec - extrinsic.rvec) < 1e-15);
-  CHECK(glm::length(back.tvec - extrinsic.tvec) < 1e-15);
   return 0;
 }
 

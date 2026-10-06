@@ -297,11 +297,7 @@ int test_validate_rig() {
   o = r;
   o.calibration.sensors = {posed("A")};
   CHECK(invalid(orbbec::validate(o)));
-  camera::SensorCalibration unposed = posed("B");
-  unposed.color_to_world.reset();
-  o.calibration.sensors.push_back(unposed);  // listed, but not posed
-  CHECK(invalid(orbbec::validate(o)));
-  o.calibration.sensors[1] = posed("B");
+  o.calibration.sensors.push_back(posed("B"));
   o.calibration.sensors.push_back(posed("C"));  // extra: fine
   CHECK(orbbec::validate(o).ok());
   o.calibration.sensors[1].color_to_world = camera::Mat4d(2.0);
