@@ -829,8 +829,12 @@ int test_prepare_set(vkc::Device& device, vkc::Allocator& allocator) {
   }
   frames[2].reset();  // a camera whose frame never arrived
 
+  // On threads, one submit a camera, and in one batch, one submit for all:
+  // each frame comes out as it would alone.
   for (int round = 0; round < 10; ++round) {
-    auto set = sensor::prepare_set(preps, frames);
+    auto set = round % 2 == 0
+                   ? sensor::prepare_set(preps, frames)
+                   : sensor::GpuFramePrep::prepare_batch(preps, frames);
     CHECK(set.ok());
     CHECK(set.value().size() == kCams && !set.value()[2]);
     for (std::size_t c = 0; c < kCams; ++c) {
@@ -842,15 +846,32 @@ int test_prepare_set(vkc::Device& device, vkc::Allocator& allocator) {
       CHECK(color_of(*set.value()[c]) == color_of(one.value()));
     }
   }
+  // A set with no frame is nothing to do.
+  std::vector<std::optional<sensor::RgbdFrame>> empty(kCams);
+  auto none = sensor::GpuFramePrep::prepare_batch(preps, empty);
+  CHECK(none.ok() && none.value().size() == kCams && !none.value()[0]);
 
   std::vector<std::optional<sensor::RgbdFrame>> refused = frames;
   refused[1]->depth = nullptr;
   CHECK(sensor::prepare_set(preps, refused).status().domain() ==
         vkc::Status::Code::InvalidArgument);
+  // A refused frame refuses the batch before anything is recorded: the
+  // passes still hold the last batch's outputs.
+  auto before = sensor::GpuFramePrep::prepare_batch(preps, frames);
+  CHECK(before.ok());
+  const std::vector<float> kept = depth_of(*before.value()[0]);
+  before = vkc::Status::invalid_argument("dropped");  // let the outputs go
+  CHECK(sensor::GpuFramePrep::prepare_batch(preps, refused).status().domain() ==
+        vkc::Status::Code::InvalidArgument);
+  auto after = sensor::GpuFramePrep::prepare_batch(preps, frames);
+  CHECK(after.ok() && depth_of(*after.value()[0]) == kept);
   std::vector<sensor::GpuFramePrep> too_few;
   too_few.push_back(std::move(alone).value());
   CHECK(sensor::prepare_set(too_few, frames).status().domain() ==
         vkc::Status::Code::InvalidArgument);
+  CHECK(
+      sensor::GpuFramePrep::prepare_batch(too_few, frames).status().domain() ==
+      vkc::Status::Code::InvalidArgument);
   return 0;
 }
 

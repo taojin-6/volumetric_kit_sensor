@@ -21,10 +21,14 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/recon/camera/array_calibration.hpp"
 #include "volumetric_kit/recon/sensor/array/export.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
+#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 
 namespace volumetric_kit::recon::sensor {
 
@@ -72,6 +76,15 @@ struct FrameSet {
   bool complete() const noexcept { return count() == frames.size(); }
 };
 
+/// @brief A set prepared on the GPU: each frame undistorted and converted,
+///        left on the device for fusion.
+struct DeviceFrameSet {
+  std::uint64_t timestamp_ns = 0;  ///< As @ref FrameSet::timestamp_ns.
+  std::uint64_t sequence = 0;      ///< As @ref FrameSet::sequence.
+  /// One per sensor, in the array's order; empty where the set had no frame.
+  std::vector<std::optional<DeviceFrame>> frames;
+};
+
 /// @brief Counters a caller reads to see how the array is keeping up.
 struct SensorArrayStats {
   std::uint64_t sets = 0;  ///< Sets handed out since @ref SensorArray::start.
@@ -91,7 +104,8 @@ struct SensorArrayStats {
 /// @ref SyncMode, and that the calibration poses each of them. @ref start
 /// starts every secondary before the primary -- the primary's first trigger
 /// is what they wait for. @ref poll_set drains every sensor's frames, groups
-/// them, and hands out a set, each frame posed by the calibration.
+/// them, and hands out a set, each frame posed by the calibration;
+/// @ref process prepares a set on the GPU, every stream in one batch.
 ///
 /// @code
 /// std::vector<std::unique_ptr<IRgbdSensor>> sensors;
@@ -108,6 +122,10 @@ struct SensorArrayStats {
 ///                                                 options));
 /// VKC_TRY(array.start());
 /// VKC_ASSIGN(std::optional<FrameSet> set, array.poll_set());
+/// if (set) {
+///   VKC_ASSIGN(const DeviceFrameSet prepared, array.process(*set));
+///   // fuse prepared.frames: allocate_from_depth and integrate, batched
+/// }
 /// @endcode
 ///
 /// @warning Not thread-safe: open, start, poll and stop from one thread.
@@ -128,6 +146,15 @@ class VR_SENSOR_ARRAY_API SensorArray {
     /// array must be posed in it; no sensors leaves each frame where its
     /// driver put it.
     camera::ArrayCalibration calibration;
+    /// The device @ref process prepares sets on, with a pass per sensor;
+    /// null for an array whose sets are not prepared here. Borrowed: it must
+    /// outlive the array and every set it prepares.
+    core::Device* device = nullptr;
+    /// The allocator the passes' buffers come from; needed with @ref device.
+    /// Borrowed, as @ref device is.
+    core::Allocator* allocator = nullptr;
+    /// How the passes share their colour (`GpuFramePrepConfig`).
+    GpuFramePrepConfig prep{};
   };
 
   /// @brief Check that @p sensors form an array, and take them.
@@ -141,12 +168,14 @@ class VR_SENSOR_ARRAY_API SensorArray {
   /// @param options  How they are grouped and posed.
   /// @return The array; `Status::Code::InvalidArgument` for no sensors, a
   ///         null one, an empty or repeated id, a queue depth of 0, a
-  ///         calibration that is invalid or does not pose a sensor, or,
-  ///         under `SyncMode::Trigger`, a tolerance of 0 or of half a frame
-  ///         period or more; or `Status::Code::Unsupported` for a tracked
-  ///         sensor, or, under `SyncMode::Trigger`, no primary or more than
-  ///         one, a free-running member, or one whose timestamps are on its
-  ///         own clock.
+  ///         calibration that is invalid or does not pose a sensor, a device
+  ///         without an allocator, or, under `SyncMode::Trigger`, a tolerance
+  ///         of 0 or of half a frame period or more; what
+  ///         `GpuFramePrep::create` returns for a device the passes cannot be
+  ///         built on; or `Status::Code::Unsupported` for a tracked sensor,
+  ///         or, under `SyncMode::Trigger`, no primary or more than one, a
+  ///         free-running member, or one whose timestamps are on its own
+  ///         clock.
   static core::Result<SensorArray> open(
       std::vector<std::unique_ptr<IRgbdSensor>>&& sensors,
       const Options& options);
@@ -185,6 +214,21 @@ class VR_SENSOR_ARRAY_API SensorArray {
   ///         not started; `Status::Code::InvalidArgument` on a moved-from
   ///         array; or the first sensor's failure.
   core::Result<std::optional<FrameSet>> poll_set();
+
+  /// @brief Prepare @p set on the array's device: every stream of every
+  ///        sensor undistorted and converted in one batch, one submit and
+  ///        one wait for the set (`GpuFramePrep::prepare_batch`).
+  ///
+  /// Returns once the set is ready, so a caller fuses it as soon as this
+  /// returns; a pass reuses its buffers once no `DeviceFrame` holds them.
+  /// @param set      A set this array handed out.
+  /// @param metrics  Optional: one `"frame prep"` row for the set.
+  /// @return The prepared set; `Status::Code::InvalidArgument` on a
+  ///         moved-from array, one opened without a device, a set of
+  ///         another size, or a frame the passes refuse; otherwise a buffer
+  ///         or submit failure.
+  core::Result<DeviceFrameSet> process(const FrameSet& set,
+                                       core::StageMetrics* metrics = nullptr);
 
   /// @return `true` on a moved-from array; once a sensor of a
   ///         `SyncMode::Trigger` array is exhausted (a disconnected camera);

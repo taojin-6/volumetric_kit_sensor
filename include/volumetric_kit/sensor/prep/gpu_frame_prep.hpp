@@ -24,6 +24,7 @@
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -185,11 +186,52 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   core::Result<DeviceFrame> prepare(const RgbdFrame& frame,
                                     core::StageMetrics* metrics = nullptr);
 
+  /// @brief @ref prepare several cameras' frames in one batch: every frame's
+  ///        uploads and passes recorded into one command buffer, submitted
+  ///        once and waited on once.
+  ///
+  /// The array's way (`SensorArray::process`): one submit and one wait for
+  /// the set rather than one a camera, each camera's host data staged on a
+  /// thread of its own first. Every frame is checked before any is recorded,
+  /// so a refused set leaves every pass as it was.
+  /// @param preps    One pass per camera, all on one device; `preps[i]`
+  ///                 prepares `frames[i]`.
+  /// @param frames   One entry per camera, an empty one skipped.
+  /// @param metrics  Optional: one `"frame prep"` row for the whole batch,
+  ///                 timed by the first pass used.
+  /// @return One `DeviceFrame` per present frame, empty where the frame was;
+  ///         `Status::Code::InvalidArgument` for fewer passes than frames,
+  ///         passes on different devices, or a frame @ref prepare refuses;
+  ///         otherwise a buffer or submit failure.
+  static core::Result<std::vector<std::optional<DeviceFrame>>> prepare_batch(
+      std::vector<GpuFramePrep>& preps,
+      const std::vector<std::optional<RgbdFrame>>& frames,
+      core::StageMetrics* metrics = nullptr);
+
   /// @return `true` if this owns its pipelines (`false` when moved-from).
   bool valid() const noexcept { return depth_kernel_.valid(); }
 
  private:
   GpuFramePrep() = default;
+
+  // A checked frame's layout (gpu_frame_prep.cpp).
+  struct Layout;
+  // The whole frame checked, before anything is uploaded.
+  core::Result<Layout> check(const RgbdFrame& frame) const;
+  // Device planes taken over from their writer's family, into `batch`.
+  core::Status acquire(core::CommandBatch& batch, const RgbdFrame& frame,
+                       const Layout& layout);
+  // The buffers made big enough, and the host data staged; touches only this
+  // pass, so passes stage on threads of their own.
+  core::Status stage(const RgbdFrame& frame, const Layout& layout);
+  // The copies up and both passes, recorded into `batch`; the outputs hold
+  // the result once the batch is submitted.
+  core::Status record(core::CommandBatch& batch, const RgbdFrame& frame,
+                      const Layout& layout, core::GpuStageScope* stage);
+  // After a submit that failed: let go of what the GPU may still read.
+  void abandon(const RgbdFrame& frame, const Layout& layout);
+  // The frame handed out after a submit that succeeded.
+  DeviceFrame finish(const RgbdFrame& frame) const;
 
   // An output of at least `bytes`: the one held, when no DeviceFrame still
   // holds it too and it is big enough, else a new one, shared with the
