@@ -39,7 +39,9 @@ enum class SyncMode : std::uint8_t {
   /// `RgbdFrame::sequence` numbers, as a recording or a dataset gives. Every
   /// set is handed out, in order, once each sensor has sent its frame for it
   /// or moved past it or run out; nothing waits on a clock, so a replay is
-  /// deterministic.
+  /// deterministic. A frame for a set already handed out joins none, and a
+  /// sensor ahead of one that has fallen behind holds
+  /// @ref SensorArray::Options::queue_depth frames, letting its oldest go.
   Sequence,
 };
 
@@ -48,8 +50,9 @@ VR_SENSOR_ARRAY_API const char* to_string(SyncMode mode) noexcept;
 
 /// @brief The frames one trigger produced across the array.
 struct FrameSet {
-  /// The trigger's time (ns): the primary's frame's for `SyncMode::Trigger`,
-  /// the first sensor's present for `SyncMode::Sequence`.
+  /// The trigger's time (ns): the primary's frame's for `SyncMode::Trigger`;
+  /// for `SyncMode::Sequence`, the frame's of the first sensor present, in
+  /// the array's order.
   std::uint64_t timestamp_ns = 0;
   /// The set's sequence number for `SyncMode::Sequence`; the primary's
   /// frame's for `SyncMode::Trigger`.
@@ -75,7 +78,8 @@ struct SensorArrayStats {
   std::uint64_t incomplete = 0;  ///< Of those, sets missing a sensor.
   /// Frames drained from the sensors that joined no set handed out: their
   /// trigger was overtaken by a newer one, they came too early or too late
-  /// for any, or they had no timestamp to group by.
+  /// for any, they had no timestamp to group by, or a full queue let them
+  /// go.
   std::uint64_t unmatched = 0;
   /// Each sensor's own counters, in the array's order.
   std::vector<SensorStats> sensors;
@@ -94,7 +98,7 @@ struct SensorArrayStats {
 /// for (const std::string& serial : serials) {
 ///   OrbbecSensor::Options o;
 ///   o.serial = serial;
-///   o.clock_sync_interval_ms = 60000;  // Trigger groups on the host clock
+///   o.sync_clock_to_host = true;  // Trigger groups on the host clock
 ///   VKC_ASSIGN(OrbbecSensor s, OrbbecSensor::open(o));
 ///   sensors.push_back(std::make_unique<OrbbecSensor>(std::move(s)));
 /// }
@@ -131,22 +135,26 @@ class VR_SENSOR_ARRAY_API SensorArray {
   /// None is started. Under `SyncMode::Trigger`, more than one sensor needs
   /// exactly one primary, the rest secondaries, all on the host's clock;
   /// under `SyncMode::Sequence` any sensors do.
-  /// @param sensors  The sensors, in the order sets report them.
+  /// @param sensors  The sensors, in the order sets report them; taken only
+  ///                 once the array opens, so a refusal leaves them open
+  ///                 with the caller.
   /// @param options  How they are grouped and posed.
   /// @return The array; `Status::Code::InvalidArgument` for no sensors, a
   ///         null one, an empty or repeated id, a queue depth of 0, a
-  ///         tolerance of 0 or of half a frame period or more, or a
-  ///         calibration that is invalid or does not pose a sensor; or
-  ///         `Status::Code::Unsupported` for a tracked sensor, or, under
-  ///         `SyncMode::Trigger`, no primary or more than one, a free-running
-  ///         member, or one whose timestamps are on its own clock.
+  ///         calibration that is invalid or does not pose a sensor, or,
+  ///         under `SyncMode::Trigger`, a tolerance of 0 or of half a frame
+  ///         period or more; or `Status::Code::Unsupported` for a tracked
+  ///         sensor, or, under `SyncMode::Trigger`, no primary or more than
+  ///         one, a free-running member, or one whose timestamps are on its
+  ///         own clock.
   static core::Result<SensorArray> open(
-      std::vector<std::unique_ptr<IRgbdSensor>> sensors,
+      std::vector<std::unique_ptr<IRgbdSensor>>&& sensors,
       const Options& options);
 
   SensorArray(SensorArray&& other) noexcept;
+  /// Stops the sensors of the array it replaces, as @ref stop does.
   SensorArray& operator=(SensorArray&& other) noexcept;
-  /// Stops the sensors if they are running.
+  /// Stops the sensors if they are running, as @ref stop does.
   ~SensorArray();
 
   /// @return How many sensors the array has; 0 on a moved-from array.
@@ -161,12 +169,15 @@ class VR_SENSOR_ARRAY_API SensorArray {
   SensorArrayStats stats() const;
 
   /// @brief Start every sensor, each secondary before the primary.
-  ///        Idempotent.
+  ///        Idempotent: on a running array each sensor is started again,
+  ///        which is OK for a running one and says why one has failed since
+  ///        (a disconnected camera).
   /// @return OK once all run; `Status::Code::InvalidArgument` on a moved-from
   ///         array; or the first sensor's failure, with every sensor stopped.
   core::Status start();
 
-  /// @brief Stop every sensor and drop the frames held. Idempotent.
+  /// @brief Stop every sensor, the primary first, and drop the frames held.
+  ///        Idempotent.
   void stop() noexcept;
 
   /// @brief Take the next set ready to hand out.

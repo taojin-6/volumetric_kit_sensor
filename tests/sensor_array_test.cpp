@@ -2,12 +2,14 @@
 // Copyright (c) 2026 Tao Jin
 
 // The sensor array over scripted fake sensors: the arrays it refuses, the
-// order it starts sensors in and its stop on a failed start, trigger grouping
-// (complete sets, a silent secondary, the newest set winning, frames with no
-// clock), sequence grouping (in order, a missing frame, waiting on a live
-// sensor, the end of a recording), poses from the calibration, and a
-// moved-from array. Host-only.
+// order it starts and stops sensors in, a failed start, a start of a running
+// array and a move over one, trigger grouping (complete sets, a silent
+// secondary, the newest set winning, frames with no clock), sequence grouping
+// (in order, a missing frame, waiting on a live sensor, the end of a
+// recording, a late frame, a sensor far ahead, a restart), a drain that fails
+// partway, poses from the calibration, and a moved-from array. Host-only.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -60,24 +62,35 @@ class Scripted final : public sensor::IRgbdSensor {
     f.sequence = sequence;
     f.depth_to_color = info_.depth_to_color;
     f.color_to_world[3] = glm::dvec4(9.0, 9.0, 9.0, 1.0);  // the driver's
+    auto pixels = std::make_shared<int>(0);
+    last_pixels = pixels;
+    f.pixels = std::move(pixels);
     frames_.push_back(std::move(f));
   }
   sensor::SensorInfo& mutable_info() { return info_; }
   bool fail_start = false;
   bool done = false;  // a recording's end
   std::size_t queue_depth = 0;
+  // Hand out this many frames, then fail, as a driver may.
+  std::optional<std::size_t> fail_drain_after;
+  std::weak_ptr<const void> last_pixels;  // the last frame pushed's
 
   const sensor::SensorInfo& info() const noexcept override { return info_; }
   vkc::Status set_queue_depth(std::size_t frames) override {
+    if (started_) return vkc::Status::invalid_argument("already started");
     queue_depth = frames;
     return {};
   }
   vkc::Status start() override {
     g_log.push_back("start " + info_.id);
     if (fail_start) return vkc::Status::io_error(info_.id + " will not start");
+    started_ = true;
     return {};
   }
-  void stop() noexcept override { g_log.push_back("stop " + info_.id); }
+  void stop() noexcept override {
+    g_log.push_back("stop " + info_.id);
+    started_ = false;
+  }
   vkc::Result<std::optional<sensor::RgbdFrame>> poll() override {
     if (frames_.empty()) return no_frame();
     sensor::RgbdFrame f = std::move(frames_.back());
@@ -85,8 +98,12 @@ class Scripted final : public sensor::IRgbdSensor {
     return some_frame(std::move(f));
   }
   vkc::Status drain(std::vector<sensor::RgbdFrame>* out) override {
-    for (auto& f : frames_) out->push_back(std::move(f));
+    const std::size_t n =
+        std::min(frames_.size(), fail_drain_after.value_or(frames_.size()));
+    for (std::size_t i = 0; i < n; ++i) out->push_back(std::move(frames_[i]));
+    const bool fail = n < frames_.size();
     frames_.clear();
+    if (fail) return vkc::Status::io_error(info_.id + " failed mid-drain");
     return {};
   }
   bool exhausted() const noexcept override { return done && frames_.empty(); }
@@ -95,6 +112,7 @@ class Scripted final : public sensor::IRgbdSensor {
  private:
   sensor::SensorInfo info_;
   std::vector<sensor::RgbdFrame> frames_;
+  bool started_ = false;
 };
 
 struct Rig {
@@ -133,6 +151,27 @@ camera::ArrayCalibration calibration(const std::vector<std::string>& ids) {
     c.sensors.push_back(s);
   }
   return c;
+}
+
+sensor::SensorArray::Options sequence_options() {
+  sensor::SensorArray::Options o;
+  o.sync = sensor::SyncMode::Sequence;
+  return o;
+}
+
+// Two free-running sensors "A" and "B" on their own clocks.
+Rig sequence_rig() {
+  Rig r;
+  r.add(std::make_unique<Scripted>("A", sensor::SyncRole::FreeRun,
+                                   sensor::ClockDomain::Device));
+  r.add(std::make_unique<Scripted>("B", sensor::SyncRole::FreeRun,
+                                   sensor::ClockDomain::Device));
+  return r;
+}
+
+sensor::SensorArray open_array(Rig* r, const sensor::SensorArray::Options& o) {
+  auto opened = sensor::SensorArray::open(std::move(r->sensors), o);
+  return std::move(opened).value();  // aborts if refused
 }
 
 Code refusal(Rig r, const sensor::SensorArray::Options& o) {
@@ -191,6 +230,14 @@ int test_refusals() {
   o = trigger_options();
   o.calibration = calibration({"S1", "P"});
   CHECK(refusal(triggered_rig(), o) == Code::InvalidArgument);
+  {  // A refusal leaves the sensors with the caller.
+    Rig r = triggered_rig();
+    auto bad = trigger_options();
+    bad.queue_depth = 0;
+    CHECK(!sensor::SensorArray::open(std::move(r.sensors), bad).ok());
+    // NOLINTNEXTLINE(bugprone-use-after-move): open takes them only on success
+    CHECK(r.sensors.size() == 3 && r.sensors[1] != nullptr);
+  }
   // A sequence array takes any roles and clocks.
   {
     Rig r = triggered_rig();
@@ -220,14 +267,36 @@ int test_start_order() {
   array.stop();
   CHECK((g_log == std::vector<std::string>{"stop P", "stop S2", "stop S1"}));
 
-  // A sensor that will not start stops them all.
+  // A sensor that will not start stops them all, the primary first.
   p->fail_start = true;
   g_log.clear();
   const vkc::Status failed = array.start();
   CHECK(!failed.ok() && failed.domain() == Code::IoError);
-  CHECK(g_log.size() == 6);  // three starts, then a stop each
+  CHECK((g_log == std::vector<std::string>{"start S1", "start S2", "start P",
+                                           "stop P", "stop S2", "stop S1"}));
   auto none = array.poll_set();
   CHECK(none.ok() && !none.value());  // not running
+
+  // Starting a running array starts each sensor again, without setting its
+  // queue, and stops them all once one has failed since.
+  p->fail_start = false;
+  CHECK(array.start().ok());
+  CHECK(array.start().ok());
+  p->fail_start = true;
+  g_log.clear();
+  CHECK(array.start().domain() == Code::IoError);
+  CHECK((g_log == std::vector<std::string>{"start S1", "start S2", "start P",
+                                           "stop P", "stop S2", "stop S1"}));
+  none = array.poll_set();
+  CHECK(none.ok() && !none.value());  // stopped
+
+  // A move over a running array stops its sensors in order.
+  p->fail_start = false;
+  CHECK(array.start().ok());
+  Rig other = triggered_rig();
+  g_log.clear();
+  array = open_array(&other, trigger_options());
+  CHECK((g_log == std::vector<std::string>{"stop P", "stop S2", "stop S1"}));
   return 0;
 }
 
@@ -276,10 +345,11 @@ int test_trigger() {
   for (std::uint64_t t = 2; t < 5; ++t) trigger(t, true);
   set = array.poll_set();
   CHECK(set.ok() && set.value() && set.value()->sequence == 104);
-  // A frame without a timestamp has no trigger.
+  // A frame without a timestamp has no trigger, and is let go at once.
   f[0]->push(0, 999);
   set = array.poll_set();
   CHECK(set.ok() && !set.value());
+  CHECK(f[0]->last_pixels.expired());
 
   const sensor::SensorArrayStats st = array.stats();
   CHECK(st.sets == 3 && st.incomplete == 1);
@@ -290,16 +360,10 @@ int test_trigger() {
 }
 
 int test_sequence() {
-  Rig r;
-  Scripted& a = r.add(std::make_unique<Scripted>("A", sensor::SyncRole::FreeRun,
-                                                 sensor::ClockDomain::Device));
-  Scripted& b = r.add(std::make_unique<Scripted>("B", sensor::SyncRole::FreeRun,
-                                                 sensor::ClockDomain::Device));
-  sensor::SensorArray::Options o;
-  o.sync = sensor::SyncMode::Sequence;
-  auto opened = sensor::SensorArray::open(std::move(r.sensors), o);
-  CHECK(opened.ok());
-  sensor::SensorArray array = std::move(opened).value();
+  Rig r = sequence_rig();
+  Scripted& a = *r.fakes[0];
+  Scripted& b = *r.fakes[1];
+  sensor::SensorArray array = open_array(&r, sequence_options());
   CHECK(array.start().ok());
 
   // A has 0, 2, 1 (out of turn); B has only 0 so far and is still live.
@@ -331,6 +395,74 @@ int test_sequence() {
   return 0;
 }
 
+int test_sequence_bounds() {
+  Rig r = sequence_rig();
+  Scripted& a = *r.fakes[0];
+  Scripted& b = *r.fakes[1];
+  auto o = sequence_options();
+  o.queue_depth = 3;
+  sensor::SensorArray array = open_array(&r, o);
+  CHECK(array.start().ok());
+
+  // A frame for a set already handed out joins no other.
+  a.push(0, 1);
+  b.push(1000, 0);
+  b.push(1100, 1);
+  auto set = array.poll_set();
+  CHECK(set.ok() && set.value() && set.value()->sequence == 0);
+  CHECK(!set.value()->frames[0]);
+  a.push(5000, 0);  // late
+  set = array.poll_set();
+  CHECK(set.ok() && set.value() && set.value()->sequence == 1);
+  CHECK(set.value()->complete());
+  // The first present sensor's time, though it reports none.
+  CHECK(set.value()->timestamp_ns == 0);
+  set = array.poll_set();
+  CHECK(set.ok() && !set.value());
+  CHECK(array.stats().unmatched == 1);
+
+  // A sensor far ahead of a live, silent one holds only the newest frames.
+  for (std::uint64_t s = 2; s < 7; ++s) a.push(s * 1000, s);
+  set = array.poll_set();
+  CHECK(set.ok() && !set.value());  // B may still send 2
+  CHECK(array.stats().unmatched == 1 + 2);
+  b.push(4100, 4);
+  set = array.poll_set();
+  CHECK(set.ok() && set.value() && set.value()->sequence == 4);
+  CHECK(set.value()->complete());
+
+  // A restart may number its frames from 0 again.
+  array.stop();
+  CHECK(array.start().ok());
+  a.push(1000, 0);
+  b.push(1100, 0);
+  set = array.poll_set();
+  CHECK(set.ok() && set.value() && set.value()->sequence == 0);
+  CHECK(set.value()->complete());
+  return 0;
+}
+
+int test_failed_drain() {
+  Rig r = sequence_rig();
+  Scripted& a = *r.fakes[0];
+  Scripted& b = *r.fakes[1];
+  sensor::SensorArray array = open_array(&r, sequence_options());
+  CHECK(array.start().ok());
+
+  // A hands out frame 0 before it fails: the failure is returned and the
+  // frame kept for its set.
+  a.push(1000, 0);
+  a.push(2000, 1);
+  a.fail_drain_after = 1;
+  b.push(1100, 0);
+  CHECK(array.poll_set().status().domain() == Code::IoError);
+  a.fail_drain_after.reset();
+  auto set = array.poll_set();
+  CHECK(set.ok() && set.value() && set.value()->sequence == 0);
+  CHECK(set.value()->complete());
+  return 0;
+}
+
 int test_moved_from() {
   Rig r = triggered_rig();
   auto opened =
@@ -353,6 +485,8 @@ int main() {
   if (test_start_order() != 0) return 1;
   if (test_trigger() != 0) return 1;
   if (test_sequence() != 0) return 1;
+  if (test_sequence_bounds() != 0) return 1;
+  if (test_failed_drain() != 0) return 1;
   if (test_moved_from() != 0) return 1;
   std::printf("sensor array tests passed\n");
   return 0;

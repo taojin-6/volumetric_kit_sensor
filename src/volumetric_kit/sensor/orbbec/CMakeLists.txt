@@ -24,7 +24,7 @@ target_sources(
           orbbec_sync_config.cpp
           camera_stream.cpp
           frame_conversion.cpp
-          trigger_grouping.cpp)
+          rig_start_order.cpp)
 
 generate_export_header(
   recon_sensor_orbbec

@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/recon/sensor/trigger_grouper.hpp"
 
 namespace volumetric_kit::recon::sensor {
@@ -43,7 +44,8 @@ const char* to_string(SyncMode mode) noexcept {
 
 struct SensorArray::Impl {
   std::vector<std::unique_ptr<IRgbdSensor>> sensors;
-  Options options;
+  SyncMode sync = SyncMode::Trigger;
+  std::size_t queue_depth = 0;
   // Each sensor's pose from the calibration; empty without one.
   std::vector<std::optional<camera::Mat4d>> poses;
   std::vector<std::size_t> start_order;  // secondaries, then the primary
@@ -53,11 +55,13 @@ struct SensorArray::Impl {
   // SyncMode::Trigger: the frames drained and not yet handed out, by the id
   // the grouper knows them by.
   std::optional<TriggerGrouper> grouper;
-  std::unordered_map<std::uint64_t, std::pair<std::size_t, RgbdFrame>> held;
+  std::unordered_map<std::uint64_t, RgbdFrame> held;
   std::uint64_t next_id = 0;
   std::vector<std::uint64_t> released;
-  // SyncMode::Sequence: each sensor's frames not yet in a set, in order.
+  // SyncMode::Sequence: each sensor's frames not yet in a set, in order, and
+  // the last set handed out, which a later frame must be past.
   std::vector<std::deque<RgbdFrame>> queues;
+  std::optional<std::uint64_t> last_sequence;
 
   std::vector<RgbdFrame> drained;  // reused per sensor per poll
   std::uint64_t sets = 0;
@@ -79,6 +83,22 @@ struct SensorArray::Impl {
       unmatched += q.size();
       q.clear();
     }
+    last_sequence.reset();  // a restart may number its frames from 0
+  }
+
+  // The primary first, so the secondaries see no trigger after their own
+  // stop.
+  void stop() noexcept {
+    for (auto it = start_order.rbegin(); it != start_order.rend(); ++it) {
+      sensors[*it]->stop();
+    }
+    forget();
+    running = false;
+  }
+
+  // Also when a move assignment replaces the array.
+  ~Impl() {
+    if (running) stop();
   }
 
   FrameSet finish(FrameSet set) {
@@ -98,12 +118,11 @@ SensorArray::SensorArray(std::unique_ptr<Impl> impl) noexcept
     : impl_(std::move(impl)) {}
 SensorArray::SensorArray(SensorArray&& other) noexcept = default;
 SensorArray& SensorArray::operator=(SensorArray&& other) noexcept = default;
-SensorArray::~SensorArray() {
-  if (impl_ != nullptr) stop();
-}
+SensorArray::~SensorArray() = default;
 
 core::Result<SensorArray> SensorArray::open(
-    std::vector<std::unique_ptr<IRgbdSensor>> sensors, const Options& options) {
+    std::vector<std::unique_ptr<IRgbdSensor>>&& sensors,
+    const Options& options) {
   if (sensors.empty()) return bad("an array needs at least one sensor");
   for (std::size_t i = 0; i < sensors.size(); ++i) {
     if (sensors[i] == nullptr) {
@@ -117,7 +136,7 @@ core::Result<SensorArray> SensorArray::open(
       }
     }
     if (sensors[i]->info().pose == PoseSource::Tracked) {
-      // TODO(sensor): tracked members, registered to the array's world.
+      // TODO: tracked members, registered to the array's world.
       return unsupported("sensor " + id +
                          " tracks its own pose, which an array does not take "
                          "yet");
@@ -128,7 +147,8 @@ core::Result<SensorArray> SensorArray::open(
   }
 
   auto impl = std::make_unique<Impl>();
-  impl->options = options;
+  impl->sync = options.sync;
+  impl->queue_depth = options.queue_depth;
   impl->poses.resize(sensors.size());
   if (!options.calibration.sensors.empty()) {
     const core::Status valid =
@@ -189,7 +209,7 @@ core::Result<SensorArray> SensorArray::open(
       for (const auto& s : sensors) {
         const SensorInfo& info = s->info();
         if (info.role == SyncRole::FreeRun) {
-          // TODO(sensor): free-running members, joined by their nearest frame.
+          // TODO: free-running members, joined by their nearest frame.
           return unsupported("sensor " + info.id +
                              " runs on its own clock rather than the "
                              "primary's trigger");
@@ -230,7 +250,10 @@ std::size_t SensorArray::size() const noexcept {
   return impl_ != nullptr ? impl_->sensors.size() : 0;
 }
 
-IRgbdSensor& SensorArray::sensor(std::size_t i) { return *impl_->sensors[i]; }
+IRgbdSensor& SensorArray::sensor(std::size_t i) {
+  VKC_CHECK(i < size(), "SensorArray::sensor: index past the array");
+  return *impl_->sensors[i];
+}
 
 std::size_t SensorArray::primary() const noexcept {
   return impl_ != nullptr ? impl_->primary : 0;
@@ -250,48 +273,45 @@ SensorArrayStats SensorArray::stats() const {
 core::Status SensorArray::start() {
   if (impl_ == nullptr) return bad("start on a moved-from array");
   Impl& a = *impl_;
-  if (a.running) return {};
-  for (const auto& s : a.sensors) {
-    VKC_TRY(s->set_queue_depth(a.options.queue_depth));
+  if (!a.running) {
+    for (const auto& s : a.sensors) {
+      VKC_TRY(s->set_queue_depth(a.queue_depth));
+    }
   }
+  // Running sensors too: their start is OK, and a failed one's -- a camera
+  // gone away -- says why.
   for (const std::size_t i : a.start_order) {
     const core::Status started = a.sensors[i]->start();
     if (!started.ok()) {
-      for (const auto& s : a.sensors) s->stop();
+      a.stop();
       return started;
     }
   }
-  a.sets = 0;
-  a.incomplete = 0;
-  a.unmatched = 0;
-  a.running = true;
+  if (!a.running) {
+    a.sets = 0;
+    a.incomplete = 0;
+    a.unmatched = 0;
+    a.running = true;
+  }
   return {};
 }
 
 void SensorArray::stop() noexcept {
-  if (impl_ == nullptr) return;
-  Impl& a = *impl_;
-  // The primary first, so the secondaries see no trigger after their own
-  // stop.
-  for (auto it = a.start_order.rbegin(); it != a.start_order.rend(); ++it) {
-    a.sensors[*it]->stop();
-  }
-  a.forget();
-  a.running = false;
+  if (impl_ != nullptr) impl_->stop();
 }
 
 core::Result<std::optional<FrameSet>> SensorArray::poll_set() {
   if (impl_ == nullptr) return bad("poll_set on a moved-from array");
   if (!impl_->running) return std::optional<FrameSet>{};
-  return impl_->options.sync == SyncMode::Trigger ? impl_->take_trigger()
-                                                  : impl_->take_sequence();
+  return impl_->sync == SyncMode::Trigger ? impl_->take_trigger()
+                                          : impl_->take_sequence();
 }
 
 core::Result<std::optional<FrameSet>> SensorArray::Impl::take_trigger() {
   const std::uint64_t now = now_us();
   for (std::size_t c = 0; c < sensors.size(); ++c) {
-    drained.clear();
-    VKC_TRY(sensors[c]->drain(&drained));
+    // The frames before a failure were counted delivered: held all the same.
+    const core::Status status = sensors[c]->drain(&drained);
     for (RgbdFrame& frame : drained) {
       if (frame.timestamp_ns == 0) {  // no clock to group it by
         ++unmatched;
@@ -299,9 +319,11 @@ core::Result<std::optional<FrameSet>> SensorArray::Impl::take_trigger() {
       }
       const std::uint64_t id = next_id++;
       const std::uint64_t ts = frame.timestamp_ns / 1000;
-      held.emplace(id, std::make_pair(c, std::move(frame)));
+      held.emplace(id, std::move(frame));
       grouper->add(c, ts, id, now, &released);
     }
+    drained.clear();  // and with it the frames not held
+    VKC_TRY(status);
   }
   release();
   const std::optional<TriggerGrouper::Group> group =
@@ -314,7 +336,7 @@ core::Result<std::optional<FrameSet>> SensorArray::Impl::take_trigger() {
   for (std::size_t c = 0; c < sensors.size(); ++c) {
     if (!group->ids[c]) continue;
     const auto it = held.find(*group->ids[c]);
-    set.frames[c] = std::move(it->second.second);
+    set.frames[c] = std::move(it->second);
     held.erase(it);
   }
   const RgbdFrame& anchor = *set.frames[primary];
@@ -325,15 +347,27 @@ core::Result<std::optional<FrameSet>> SensorArray::Impl::take_trigger() {
 
 core::Result<std::optional<FrameSet>> SensorArray::Impl::take_sequence() {
   for (std::size_t c = 0; c < sensors.size(); ++c) {
-    drained.clear();
-    VKC_TRY(sensors[c]->drain(&drained));
+    // The frames before a failure were counted delivered: queued all the same.
+    const core::Status status = sensors[c]->drain(&drained);
+    std::deque<RgbdFrame>& q = queues[c];
     for (RgbdFrame& frame : drained) {
+      if (last_sequence && frame.sequence <= *last_sequence) {
+        ++unmatched;  // its set has gone out
+        continue;
+      }
       // In sequence order: a source may hand one out of turn.
-      std::deque<RgbdFrame>& q = queues[c];
       auto at = q.end();
       while (at != q.begin() && std::prev(at)->sequence > frame.sequence) --at;
       q.insert(at, std::move(frame));
     }
+    drained.clear();  // and with it the frames not queued
+    // A sensor ahead of one that has fallen behind costs its oldest frames,
+    // not memory.
+    while (q.size() > queue_depth) {
+      q.pop_front();
+      ++unmatched;
+    }
+    VKC_TRY(status);
   }
   // The next set is the lowest sequence number held; it is ready once every
   // sensor has sent a frame at or past it, or will send none.
@@ -354,17 +388,19 @@ core::Result<std::optional<FrameSet>> SensorArray::Impl::take_sequence() {
   for (std::size_t c = 0; c < sensors.size(); ++c) {
     std::deque<RgbdFrame>& q = queues[c];
     if (q.empty() || q.front().sequence != *next) continue;
-    if (set.timestamp_ns == 0) set.timestamp_ns = q.front().timestamp_ns;
+    // The first present sensor's.
+    if (set.count() == 0) set.timestamp_ns = q.front().timestamp_ns;
     set.frames[c] = std::move(q.front());
     q.pop_front();
   }
+  last_sequence = *next;
   return std::optional<FrameSet>{finish(std::move(set))};
 }
 
 bool SensorArray::exhausted() const noexcept {
   if (impl_ == nullptr) return true;
   const Impl& a = *impl_;
-  if (a.options.sync == SyncMode::Trigger) {
+  if (a.sync == SyncMode::Trigger) {
     return std::any_of(a.sensors.begin(), a.sensors.end(),
                        [](const auto& s) { return s->exhausted(); });
   }
