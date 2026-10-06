@@ -4,16 +4,14 @@
 #include "frame_conversion.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <string>
 
 namespace volumetric_kit::recon::sensor::orbbec {
 
-namespace {
-
-// A stream's pinhole camera, checked; `what` names the stream in the errors.
-core::Result<ColorCameraParams> pinhole_from(const OBCameraIntrinsic& intrinsic,
-                                             const Mat4f& cam_to_world,
-                                             const std::string& what) {
+core::Result<camera::CameraModel> camera_model_from(
+    const OBCameraIntrinsic& intrinsic, const OBCameraDistortion& distortion,
+    const std::string& what) {
   if (intrinsic.width <= 0 || intrinsic.height <= 0) {
     return core::Status::invalid_argument(
         "Orbbec " + what + " intrinsics report a " +
@@ -31,29 +29,6 @@ core::Result<ColorCameraParams> pinhole_from(const OBCameraIntrinsic& intrinsic,
     return core::Status::invalid_argument(
         "Orbbec " + what + " intrinsics report a non-finite principal point");
   }
-  ColorCameraParams cam{};
-  cam.fx = intrinsic.fx;
-  cam.fy = intrinsic.fy;
-  cam.cx = intrinsic.cx;
-  cam.cy = intrinsic.cy;
-  cam.width = static_cast<std::uint32_t>(intrinsic.width);
-  cam.height = static_cast<std::uint32_t>(intrinsic.height);
-  cam.cam_to_world = cam_to_world;
-  return cam;
-}
-
-}  // namespace
-
-core::Result<ColorCameraParams> color_camera_from(
-    const OBCameraIntrinsic& intrinsic, const Mat4f& cam_to_world) {
-  return pinhole_from(intrinsic, cam_to_world, "colour");
-}
-
-core::Result<camera::CameraModel> camera_model_from(
-    const OBCameraIntrinsic& intrinsic, const OBCameraDistortion& distortion,
-    const std::string& what) {
-  VKC_ASSIGN(const ColorCameraParams pinhole,
-             pinhole_from(intrinsic, Mat4f(1.0f), what));
   switch (distortion.model) {
     case OB_DISTORTION_NONE:
     case OB_DISTORTION_BROWN_CONRADY:
@@ -66,8 +41,9 @@ core::Result<camera::CameraModel> camera_model_from(
           ", which the GPU pass cannot undistort (it takes Brown-Conrady)");
   }
   camera::CameraModel cam;
-  cam.size = {pinhole.width, pinhole.height};
-  cam.intrinsics = {pinhole.fx, pinhole.fy, pinhole.cx, pinhole.cy};
+  cam.size = {static_cast<std::uint32_t>(intrinsic.width),
+              static_cast<std::uint32_t>(intrinsic.height)};
+  cam.intrinsics = {intrinsic.fx, intrinsic.fy, intrinsic.cx, intrinsic.cy};
   camera::RationalDistortion& lens = cam.distortion;
   if (distortion.model != OB_DISTORTION_NONE) {
     lens.k1 = distortion.k1;
@@ -100,9 +76,6 @@ core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic) {
   // A Femto Mega's factory depth-to-colour rotation has its first row 0.6%
   // short of unit length (measured 2026-10-06); its nearest rotation is the
   // tilt the rest of the matrix describes.
-  // TODO(calib): measure against the colour board whether this rotation or
-  // the SDK's own matrix, which its host alignment (process()) still uses,
-  // puts depth closer to the scene.
   camera::Mat4d m(camera::nearest_rotation(rotation));
   for (int r = 0; r < 3; ++r) m[3][r] = extrinsic.trans[r] / 1000.0;
   // A zeroed or reflected matrix, as an uncalibrated unit can report, comes
@@ -113,30 +86,6 @@ core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic) {
                                           rigid.message());
   }
   return m;
-}
-
-bool same_pinhole(const OBCameraIntrinsic& intrinsic,
-                  const ColorCameraParams& cam, float tol) noexcept {
-  const auto near = [tol](float a, float b) { return std::fabs(a - b) <= tol; };
-  return near(intrinsic.fx, cam.fx) && near(intrinsic.fy, cam.fy) &&
-         near(intrinsic.cx, cam.cx) && near(intrinsic.cy, cam.cy);
-}
-
-void depth_to_metres(const std::uint16_t* src, std::size_t count,
-                     float value_scale_mm, float* dst) {
-  const float metres_per_unit = value_scale_mm * 0.001f;
-  for (std::size_t i = 0; i < count; ++i) {
-    dst[i] = static_cast<float>(src[i]) * metres_per_unit;
-  }
-}
-
-void pack_rgb(const std::uint8_t* rgb, std::size_t count, std::uint32_t* dst) {
-  for (std::size_t i = 0; i < count; ++i) {
-    const std::uint8_t* p = rgb + 3 * i;
-    dst[i] = static_cast<std::uint32_t>(p[0]) |
-             (static_cast<std::uint32_t>(p[1]) << 8) |
-             (static_cast<std::uint32_t>(p[2]) << 16);
-  }
 }
 
 OrbbecSyncMode sync_mode_from(OBMultiDeviceSyncMode mode) noexcept {
@@ -160,20 +109,6 @@ OrbbecSyncMode sync_mode_from(OBMultiDeviceSyncMode mode) noexcept {
   }
 }
 
-namespace {
-
-core::Status validate_pose(const camera::Mat4d& cam_to_world,
-                           const std::string& who) {
-  const core::Status rigid = camera::check_rigid(cam_to_world);
-  if (!rigid.ok()) {
-    return core::Status::invalid_argument(who +
-                                          ": cam_to_world: " + rigid.message());
-  }
-  return {};
-}
-
-}  // namespace
-
 core::Status validate_streams(const OrbbecStreamOptions& streams,
                               const std::string& who) {
   if (streams.depth_width == 0 || streams.depth_height == 0 ||
@@ -185,19 +120,15 @@ core::Status validate_streams(const OrbbecStreamOptions& streams,
     return core::Status::invalid_argument(who + ": fps must be non-zero");
   }
   // NaN fails every comparison, so test for the good range rather than the
-  // bad one; a NaN gate would otherwise reject every sample in silence.
+  // bad one; a NaN gate would otherwise reject every sample in silence. The
+  // GPU pass gates depth at min_depth > 0, and would refuse every frame.
   if (!std::isfinite(streams.min_depth) || !std::isfinite(streams.max_depth) ||
-      !(streams.min_depth >= 0.0f) ||
-      !(streams.min_depth < streams.max_depth)) {
+      !(streams.min_depth > 0.0f) || !(streams.min_depth < streams.max_depth)) {
     return core::Status::invalid_argument(
         who + ": depth range [" + std::to_string(streams.min_depth) + ", " +
         std::to_string(streams.max_depth) +
-        "] m must be finite, non-negative and non-empty");
-  }
-  // The GPU pass gates depth at min_depth > 0, and would refuse every frame.
-  if (streams.raw && !(streams.min_depth > 0.0f)) {
-    return core::Status::invalid_argument(
-        who + ": raw frames need min_depth > 0, as the GPU pass does");
+        "] m must be finite and non-empty, with min_depth > 0, as the GPU "
+        "pass requires");
   }
   return {};
 }
@@ -279,16 +210,11 @@ std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
   return out;
 }
 
-core::Status validate(const OrbbecCapture::Options& options) {
-  VKC_TRY(validate_streams(options, "OrbbecCapture"));
-  return validate_pose(options.cam_to_world, "OrbbecCapture");
-}
-
 core::Status validate(const OrbbecRig::Options& options) {
   VKC_TRY(validate_streams(options, "OrbbecRig"));
   if (options.sync.devices.size() < 2) {
     return core::Status::invalid_argument(
-        "OrbbecRig: a rig needs at least two cameras; OrbbecCapture opens "
+        "OrbbecRig: a rig needs at least two cameras; OrbbecSensor opens "
         "one");
   }
   for (std::size_t i = 0; i < options.sync.devices.size(); ++i) {

@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 
-# --- recon_sensor_orbbec: the Orbbec (Femto Mega) capture driver -------------
-# An ICameraCapture over the Orbbec SDK, built only with VR_WITH_ORBBEC (see
-# cmake/vr_orbbec.cmake). Its own target so recon_sensor -- the contract an
-# out-of-tree driver compiles against -- stays free of the SDK (the 2026-09-26
-# decision). The SDK is PRIVATE and no SDK type reaches the public header, but
-# linking still needs its library, so the package config re-finds the SDK.
+# --- recon_sensor_orbbec: the Orbbec (Femto Mega) driver ---------------------
+# OrbbecSensor, an IRgbdSensor over the Orbbec SDK, and OrbbecRig, built only
+# with VR_WITH_ORBBEC (see cmake/vr_orbbec.cmake). Its own target so
+# recon_sensor -- the interface an out-of-tree driver compiles against -- stays
+# free of the SDK (the 2026-09-26 decision). The SDK is PRIVATE and no SDK type
+# reaches the public header, but linking still needs its library, so the package
+# config re-finds the SDK.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -18,12 +19,14 @@ add_library(volumetric_kit::recon_sensor_orbbec ALIAS recon_sensor_orbbec)
 
 target_sources(
   recon_sensor_orbbec
-  PRIVATE orbbec_capture.cpp
-          orbbec_rig.cpp
+  PRIVATE orbbec_rig.cpp
           orbbec_sensor.cpp
           orbbec_sync_config.cpp
           camera_stream.cpp
           frame_conversion.cpp
+          hevc_color.cpp
+          jpeg_color.cpp
+          picture_frames.cpp
           rig_start_order.cpp)
 
 generate_export_header(
@@ -50,24 +53,14 @@ endif()
 
 target_compile_features(recon_sensor_orbbec PUBLIC cxx_std_17)
 
-# PUBLIC recon_sensor: the capture *is* an ICameraCapture, and its header hands
-# out the contract's frame. PRIVATE ob::OrbbecSDK: see above.
+# PUBLIC recon_sensor: the sensor *is* an IRgbdSensor, and its header hands out
+# the sensor tier's frame. PRIVATE ob::OrbbecSDK: see above. PRIVATE
+# recon_sensor_video, which decodes the cameras' colour: no decoder type reaches
+# the public header.
 target_link_libraries(
   recon_sensor_orbbec
   PUBLIC recon_sensor
-  PRIVATE ob::OrbbecSDK)
-
-# H.265 colour (OrbbecColorCodec::Hevc) and raw frames, when the video decoders
-# are built: their own sources and a PRIVATE link, since no decoder type reaches
-# the public header. Without them the driver refuses both at open.
-if(TARGET recon_sensor_video)
-  target_sources(recon_sensor_orbbec PRIVATE hevc_color.cpp jpeg_color.cpp
-                                             picture_frames.cpp)
-  target_link_libraries(recon_sensor_orbbec PRIVATE recon_sensor_video)
-  target_compile_definitions(recon_sensor_orbbec PRIVATE VR_ORBBEC_WITH_VIDEO=1)
-else()
-  target_compile_definitions(recon_sensor_orbbec PRIVATE VR_ORBBEC_WITH_VIDEO=0)
-endif()
+  PRIVATE ob::OrbbecSDK recon_sensor_video)
 
 target_include_directories(
   recon_sensor_orbbec

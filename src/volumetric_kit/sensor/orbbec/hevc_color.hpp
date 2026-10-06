@@ -3,14 +3,13 @@
 
 #pragma once
 
-// Internal (not installed), and built only with VR_WITH_FFMPEG: one camera's
-// H.265 colour, decoded on a thread of its own. A pair cannot wait in the
-// mailbox as compressed colour, since the mailbox drops pairs and an H.265
-// frame dropped before decoding corrupts the frames after it. So every pair
-// is decoded, in order, before the mailbox, and handed on with its colour as
-// an RGB frame, or for the GPU pass as I420 planes or a picture the hardware
-// left on the device (picture_frames.hpp); everything after the mailbox is
-// as for MJPEG.
+// Internal (not installed): one camera's H.265 colour, decoded on a thread of
+// its own. A pair cannot wait in the mailbox as compressed colour, since the
+// mailbox drops pairs and an H.265 frame dropped before decoding corrupts the
+// frames after it. So every pair is decoded, in order, before the mailbox,
+// and handed on with its colour as the picture the hardware left on the
+// device, or I420 planes (picture_frames.hpp); everything after the mailbox
+// is as for MJPEG.
 
 #include <atomic>
 #include <condition_variable>
@@ -82,24 +81,17 @@ class HevcColorDecoder {
 
   struct Options {
     std::uint32_t fps = 30;  // the stream's rate, which sizes the queue
-    // Stamped on each RGB frame, so the SDK's filters see the colour
-    // camera's calibration; null leaves the frame without one (the tests).
-    // Never on an I420 frame, whose format it would restamp as RGB.
-    std::shared_ptr<ob::StreamProfile> rgb_profile;
     bool configure_ffmpeg_logging = true;
     std::string who;
     // A colour frame's number, by which a loss shows: the SDK's index when
     // unset. A test numbers its own frames, since an SDK frame's index
     // cannot be set.
     std::function<std::uint64_t(const ob::Frame&)> frame_index;
-    // Hand colour on as the decoded Y'CbCr planes, an I420 frame (Y, then Cb
-    // and Cr at half size, rows packed) carrying its PlanesColor, for the GPU
-    // pass; RGB otherwise.
-    bool yuv = false;
-    // With yuv, the device the GPU pass runs on: a picture NVDEC or
-    // VideoToolbox leaves there is handed on in its raw_color_frame, and
-    // only the others as I420. Borrowed: it must outlive the decoder and
-    // every frame it hands on.
+    // The device the GPU pass runs on: a picture NVDEC or VideoToolbox leaves
+    // there is handed on in its raw_color_frame, and only the others as the
+    // decoded Y'CbCr planes, an I420 frame (Y, then Cb and Cr at half size,
+    // rows packed) carrying its PlanesColor. Borrowed: it must outlive the
+    // decoder and every frame it hands on.
     const core::Device* device = nullptr;
     // With device, the allocator NVDEC's pictures are made through. Borrowed
     // as device is.
@@ -122,8 +114,8 @@ class HevcColorDecoder {
   // thrown. A call after stop() is ignored.
   void push(std::shared_ptr<ob::FrameSet> pair) noexcept;
 
-  // Stop the thread, drop what is queued, uncounted, and release the decoder
-  // and the RGB profile. Idempotent.
+  // Stop the thread, drop what is queued, uncounted, and release the decoder.
+  // Idempotent.
   void stop() noexcept;
 
   // Pairs that will not be handed on: from a gap in the colour stream's frame

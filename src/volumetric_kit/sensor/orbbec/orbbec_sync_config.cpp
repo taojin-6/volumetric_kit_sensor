@@ -50,6 +50,41 @@ core::Result<int> delay(const json& sync, const char* key,
 
 }  // namespace
 
+bool waits_for_primary(OrbbecSyncMode mode) noexcept {
+  // Not SoftwareTriggering: that waits for the host, not another camera, and
+  // a camera's open refuses it.
+  switch (mode) {
+    case OrbbecSyncMode::Secondary:
+    case OrbbecSyncMode::SecondarySynced:
+    case OrbbecSyncMode::HardwareTriggering:
+      return true;
+    default:
+      return false;
+  }
+}
+
+const char* to_string(OrbbecSyncMode mode) noexcept {
+  switch (mode) {
+    case OrbbecSyncMode::FreeRun:
+      return "free-run";
+    case OrbbecSyncMode::Standalone:
+      return "standalone";
+    case OrbbecSyncMode::Primary:
+      return "primary";
+    case OrbbecSyncMode::Secondary:
+      return "secondary";
+    case OrbbecSyncMode::SecondarySynced:
+      return "secondary-synced";
+    case OrbbecSyncMode::SoftwareTriggering:
+      return "software-triggering";
+    case OrbbecSyncMode::HardwareTriggering:
+      return "hardware-triggering";
+    case OrbbecSyncMode::Other:
+      break;
+  }
+  return "other";
+}
+
 core::Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(
     const std::string& text) {
   json doc;

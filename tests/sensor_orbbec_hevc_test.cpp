@@ -37,7 +37,6 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "yuv_reference.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
@@ -156,13 +155,13 @@ Pairs pairs(const Units& units, const std::vector<int>& frames,
   return out;
 }
 
-// Push `in`, wait for `expect` pairs out, and stop; `yuv` has the decoder
-// hand on I420 frames, for the GPU pass, or pictures on `device`.
+// Push `in`, wait for `expect` pairs out, and stop. The decoder hands on I420
+// frames, or pictures the hardware left on `device`.
 struct Run {
   std::vector<std::shared_ptr<ob::FrameSet>> out;
   std::uint64_t lost = 0;
 };
-Run run(const Pairs& in, std::size_t expect, bool yuv = false,
+Run run(const Pairs& in, std::size_t expect,
         const vkc::Device* device = nullptr,
         vkc::Allocator* allocator = nullptr) {
   auto collected = std::make_shared<Collected>();
@@ -172,7 +171,6 @@ Run run(const Pairs& in, std::size_t expect, bool yuv = false,
   options.frame_index = [](const ob::Frame& frame) {
     return frame.getSystemTimeStampUs();
   };
-  options.yuv = yuv;
   options.device = device;
   options.allocator = allocator;
   auto decoder = orbbec::HevcColorDecoder::start(
@@ -207,8 +205,10 @@ int slot_of(const ob::FrameSet& set) {
   return static_cast<int>((color->getTimeStampUs() - kStartUs) / kPeriodUs);
 }
 
-// A decoded pair: clip frame `frame`'s pixels, dated in `slot`, decoded as
-// the Femto Mega codes its unlabelled stream unless `matrix` says otherwise.
+// A decoded pair: clip frame `frame`'s planes, dated in `slot`, as an I420
+// frame -- Y, then Cb and Cr at half size, rows packed -- each patch's value
+// as the clip was made, described as the Femto Mega codes its unlabelled
+// stream unless `matrix` says otherwise.
 int check_pair(
     const ob::FrameSet& set, int frame, int slot,
     sensor::VideoColorMatrix matrix = sensor::VideoColorMatrix::Bt601,
@@ -220,90 +220,35 @@ int check_pair(
       kStartUs + static_cast<std::uint64_t>(slot) * kPeriodUs;
   CHECK(depth->getTimeStampUs() == t);
   CHECK(color->getTimeStampUs() == t);
-  CHECK(color->getFormat() == OB_FORMAT_RGB);
+  CHECK(color->getFormat() == OB_FORMAT_I420);
   const auto video = color->as<ob::VideoFrame>();
   CHECK(video->getWidth() == static_cast<std::uint32_t>(kWidth));
   CHECK(video->getHeight() == static_cast<std::uint32_t>(kHeight));
-  CHECK(color->getDataSize() >=
-        static_cast<std::uint32_t>(kWidth * kHeight * 3));
-  const std::uint8_t* rgb = color->getData();
+  const int cw = kWidth / 2;
+  const int ch = kHeight / 2;
+  CHECK(color->getDataSize() ==
+        static_cast<std::uint32_t>(kWidth * kHeight + 2 * cw * ch));
+  const std::optional<orbbec::PlanesColor> described =
+      orbbec::planes_color(*color);
+  CHECK(described.has_value());
+  CHECK(described->matrix == matrix && described->full_range == full_range);
+  // Neither clip declares a transfer or primaries ColorEncoding cannot name.
+  CHECK(described->has_encoding && is_canonical(described->encoding));
+  const std::uint8_t* y = color->getData();
+  const std::uint8_t* cb = y + kWidth * kHeight;
+  const std::uint8_t* cr = cb + cw * ch;
   for (int row = 0; row < 2; ++row) {
     for (int col = 0; col < 8; ++col) {
       const int p = patch(col, row, frame);
-      const auto want =
-          yuv_reference::rgb(40 + 24 * p, 64 + 16 * ((3 * p) % 8),
-                             64 + 16 * ((5 * p) % 8), matrix, full_range);
       const int x = 32 * col + 16;
-      const int y = 72 * row + 36;
-      for (int k = 0; k < 3; ++k) {
-        const int got = rgb[3 * (y * kWidth + x) + k];
-        if (std::abs(got - want[k]) > 3) {
-          std::fprintf(stderr, "frame %d patch %d,%d channel %d: %d vs %d\n",
-                       frame, col, row, k, got, want[k]);
-          CHECK(false);
-        }
-      }
-    }
-  }
-  return 0;
-}
-
-// For the GPU pass: the decoded planes as an I420 frame, Y then Cb and Cr at
-// half size, rows packed, each patch's value as the clip was made, carrying
-// the matrix and range they are coded in -- the Femto Mega's BT.601 full range
-// for the unlabelled stream, and what a labelled one says -- and a canonical
-// encoding, since neither declares a transfer or primaries it cannot name.
-int test_hands_on_i420() {
-  for (const bool labelled : {false, true}) {
-    const Run r = run(pairs(access_units(labelled ? kLabelled : kUnlabelled),
-                            {0, 1, 2, 3, 4, 5, 6, 7}),
-                      8, true);
-    CHECK(r.out.size() == 8);
-    for (const auto& set : r.out) {
-      const auto color = set->getColorFrame();
-      CHECK(color != nullptr);
-      const std::optional<orbbec::PlanesColor> described =
-          orbbec::planes_color(*color);
-      CHECK(described.has_value());
-      CHECK(described->matrix == (labelled ? sensor::VideoColorMatrix::Bt709
-                                           : sensor::VideoColorMatrix::Bt601));
-      CHECK(described->full_range == !labelled);
-      CHECK(described->has_encoding && is_canonical(described->encoding));
-    }
-  }
-  // A frame the decoder did not make carries none.
-  CHECK(!orbbec::planes_color(*ob::FrameFactory::createVideoFrame(
-                                  OB_FRAME_COLOR, OB_FORMAT_I420, 16, 16))
-             .has_value());
-
-  const Run r =
-      run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8, true);
-  CHECK(r.out.size() == 8);
-  CHECK(r.lost == 0);
-  for (int f = 0; f < 8; ++f) {
-    const auto& set = *r.out[static_cast<std::size_t>(f)];
-    CHECK(set.getDepthFrame() != nullptr);
-    const auto color = set.getColorFrame();
-    CHECK(color != nullptr && color->getFormat() == OB_FORMAT_I420);
-    const auto video = color->as<ob::VideoFrame>();
-    CHECK(video->getWidth() == static_cast<std::uint32_t>(kWidth));
-    CHECK(video->getHeight() == static_cast<std::uint32_t>(kHeight));
-    const int cw = kWidth / 2;
-    const int ch = kHeight / 2;
-    CHECK(color->getDataSize() ==
-          static_cast<std::uint32_t>(kWidth * kHeight + 2 * cw * ch));
-    const std::uint8_t* y = color->getData();
-    const std::uint8_t* cb = y + kWidth * kHeight;
-    const std::uint8_t* cr = cb + cw * ch;
-    for (int row = 0; row < 2; ++row) {
-      for (int col = 0; col < 8; ++col) {
-        const int p = patch(col, row, f);
-        const int x = 32 * col + 16;
-        const int yy = 72 * row + 36;
-        CHECK(std::abs(y[yy * kWidth + x] - (40 + 24 * p)) <= 2);
-        const int c = (yy / 2) * cw + x / 2;
-        CHECK(std::abs(cb[c] - (64 + 16 * ((3 * p) % 8))) <= 2);
-        CHECK(std::abs(cr[c] - (64 + 16 * ((5 * p) % 8))) <= 2);
+      const int yy = 72 * row + 36;
+      const int c = (yy / 2) * cw + x / 2;
+      if (std::abs(y[yy * kWidth + x] - (40 + 24 * p)) > 2 ||
+          std::abs(cb[c] - (64 + 16 * ((3 * p) % 8))) > 2 ||
+          std::abs(cr[c] - (64 + 16 * ((5 * p) % 8))) > 2) {
+        std::fprintf(stderr, "frame %d patch %d,%d: Y'CbCr %d %d %d\n", frame,
+                     col, row, y[yy * kWidth + x], cb[c], cr[c]);
+        CHECK(false);
       }
     }
   }
@@ -335,7 +280,7 @@ int test_hands_on_device_pictures() {
   CHECK(allocator.ok());
 
   Run r = run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8,
-              true, &device.value(), &allocator.value());
+              &device.value(), &allocator.value());
   CHECK(r.out.size() == 8 && r.lost == 0);
   const bool on_device =
       orbbec::device_picture(*r.out.front()->getColorFrame()).has_value();
@@ -445,6 +390,10 @@ int test_every_pair_in_order() {
     CHECK(slot_of(*r.out[static_cast<std::size_t>(i)]) == i);
     if (check_pair(*r.out[static_cast<std::size_t>(i)], i, i) != 0) return 1;
   }
+  // A frame the decoder did not make carries no description.
+  CHECK(!orbbec::planes_color(*ob::FrameFactory::createVideoFrame(
+                                  OB_FRAME_COLOR, OB_FORMAT_I420, 16, 16))
+             .has_value());
   return 0;
 }
 
@@ -725,7 +674,6 @@ int main() {
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
   if (test_key_frames() != 0) return 1;
   if (test_every_pair_in_order() != 0) return 1;
-  if (test_hands_on_i420() != 0) return 1;
   if (test_hands_on_device_pictures() != 0) return 1;
   if (test_gap_waits_for_key_frame() != 0) return 1;
   if (test_pause_costs_nothing() != 0) return 1;

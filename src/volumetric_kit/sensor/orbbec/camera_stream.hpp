@@ -4,9 +4,9 @@
 #pragma once
 
 // Internal (not installed): one Orbbec camera's streams and frame path, shared
-// by OrbbecCapture (one camera) and OrbbecRig (several). Taking a pair and
-// processing it are separate calls so the rig can group pairs by timestamp
-// before it pays for processing any.
+// by OrbbecSensor (one camera) and OrbbecRig (several). Taking a pair and
+// reading it into a frame are separate calls so the rig can group pairs by
+// timestamp first.
 
 #include <atomic>
 #include <cstddef>
@@ -24,10 +24,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
-#include "volumetric_kit/recon/core/camera_params.hpp"
-#include "volumetric_kit/recon/core/math/vector_types.hpp"
-#include "volumetric_kit/recon/sensor/camera_capture.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
+#include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 
@@ -37,18 +34,13 @@ class HevcColorDecoder;
 class JpegColorDecoder;
 
 // The SDK reports every failure as a thrown ob::Error; this repo returns
-// Status across its API. `who` names the caller ("OrbbecCapture", ...).
+// Status across its API. `who` names the caller ("OrbbecSensor", ...).
 core::Status sdk_error(const std::string& who, const std::string& what,
                        const std::exception& e);
 
 // The SDK's logger is process-wide: file sink off, console at WARN. One call
 // per sink -- setLoggerSeverity sets every sink, the file one included.
 void configure_sdk_logging();
-
-// Unsupported for H.265 colour or raw frames in a build without the video
-// decoders; OK otherwise. Asked by open before the SDK is touched.
-core::Status check_color_codec(const OrbbecStreamOptions& streams,
-                               const std::string& who);
 
 // Find cameras on the network, re-querying until they answer or the window
 // closes; one query is not proof of absence for an Ethernet camera. Named
@@ -78,8 +70,6 @@ struct Mailbox {
   std::atomic<std::uint64_t> received{0};
   std::atomic<std::uint64_t> dropped{0};
 
-  // A pair from the SDK: counted as received, and posted.
-  void on_frameset(std::shared_ptr<ob::FrameSet> frameset);
   // A pair into `pending`, uncounted: one the SDK delivered already and a
   // colour decoder has decoded.
   void post(std::shared_ptr<ob::FrameSet> frameset);
@@ -90,11 +80,9 @@ struct Mailbox {
 class CameraStream {
  public:
   // Read the camera's identity and role, check its orientation, find the
-  // modes, derive the frame's cameras, and build the filters. Does not start.
-  // Refuses a software-triggered camera, and a colour mode on the wire (H.265,
-  // or a raw stream's MJPG) whose calibration is not the RGB mode's. Messages
-  // name `who` and the serial. `configure_logging` sets FFmpeg's log level at
-  // the first start, for a stream decoded here (H.265, or raw).
+  // modes, and read each camera's factory model at them. Does not start.
+  // Refuses a software-triggered camera. Messages name `who` and the serial.
+  // `configure_logging` sets FFmpeg's log level at the first start.
   static core::Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
       const OrbbecStreamOptions& streams, const camera::Mat4d& color_to_world,
@@ -105,9 +93,6 @@ class CameraStream {
   ~CameraStream();
 
   const OrbbecDeviceInfo& info() const noexcept { return info_; }
-  const ColorCameraParams& color_camera() const noexcept {
-    return color_camera_;
-  }
   bool running() const noexcept { return running_; }
   // The camera's stored sync settings, as the SDK reads them back.
   const OrbbecSyncSettings& sync_settings() const noexcept {
@@ -123,59 +108,55 @@ class CameraStream {
   bool disconnected() const noexcept {
     return mailbox_->disconnected.load(std::memory_order_acquire);
   }
-  OrbbecCaptureStats stats() const noexcept;
+  OrbbecStreamStats stats() const noexcept;
 
   // Start both streams, with fresh counters. OK if already running; IoError
-  // once the camera has disconnected, or if the SDK refuses. For a stream
-  // decoded here (H.265, or raw MJPEG), Unsupported or IoError if the
-  // decoder does not open or start.
+  // once the camera has disconnected, or if the SDK refuses; Unsupported or
+  // IoError if the colour decoder does not open or start.
   core::Status start();
-  // Stop both streams; drop the pending pair and the processed frame's
-  // storage. Idempotent. The camera stays open, and held.
+  // Stop both streams and drop the pending pairs. Idempotent. The camera stays
+  // open, and held.
   void stop() noexcept;
 
   // How many untaken pairs the mailbox keeps (default 1). Set before start.
   void set_queue_depth(std::size_t depth);
   // The newest pair not yet taken, or null, the older ones counted dropped;
   // IoError once disconnected. A taken pair is this stream's to account for:
-  // process() it, or discard() it.
+  // read() it, or discard() it.
   core::Result<std::shared_ptr<ob::FrameSet>> take();
   // Every pair not yet taken, oldest first, appended to `out`; as take()
   // otherwise.
   core::Status take_all(std::vector<std::shared_ptr<ob::FrameSet>>* out);
   // A taken pair that will never be processed, counted as dropped.
   void discard() noexcept;
-  // A pair process() delivered that the caller will not hand out after all,
+  // A pair read() delivered that the caller will not hand out after all,
   // recounted as dropped.
   void withdraw() noexcept;
   // The device timestamp of a pair's depth frame (us), or 0 when it has none.
   static std::uint64_t timestamp_us(const ob::FrameSet& pair) noexcept;
 
-  // Undistort colour, register depth to it, convert -- into this stream's
-  // storage, which the returned frame borrows until the next process() or
-  // stop(). An empty optional is a pair the SDK failed on, skipped and
-  // counted; IoError is a pair contradicting the negotiated stream, or a run
-  // of ~a second's skips.
-  core::Result<std::optional<CapturedFrame>> process(
+  // A pair as the cameras captured it: raw depth and the decoded colour, each
+  // camera's model and the colour camera's pose. The colour is the picture
+  // the hardware left on the device, or I420 host planes. Depth and host
+  // planes point into the pair, which the frame holds with the SDK context,
+  // so it may outlive the stream. An empty optional is a pair the SDK failed
+  // on, skipped and counted; IoError is a pair contradicting the negotiated
+  // stream, or a run of ~a second's skips.
+  core::Result<std::optional<RgbdFrame>> read(
       const std::shared_ptr<ob::FrameSet>& pair);
-  // A pair as the cameras captured it, for a stream opened raw: raw depth and
-  // the decoded colour, each camera's model and the colour camera's pose. The
-  // colour is the picture the hardware left on the device, or I420 host
-  // planes. Depth and host planes point into the pair, which the frame holds
-  // with the SDK context, so it may outlive the stream.
-  core::Result<std::optional<RgbdFrame>> process_raw(
-      const std::shared_ptr<ob::FrameSet>& pair);
-  bool raw() const noexcept { return raw_; }
-  // A raw stream's cameras as they capture, and the depth camera's extrinsic
-  // to the colour one; identity and empty models for a stream not raw.
-  const camera::CameraModel& raw_depth_camera() const noexcept {
-    return raw_depth_camera_;
+  // Each camera as it captures, the depth camera's extrinsic to the colour
+  // one, and the colour camera's pose.
+  const camera::CameraModel& depth_camera() const noexcept {
+    return depth_camera_;
   }
-  const camera::CameraModel& raw_color_camera() const noexcept {
-    return raw_color_camera_;
+  const camera::CameraModel& color_camera() const noexcept {
+    return color_camera_;
   }
-  const camera::Mat4d& raw_depth_to_color() const noexcept {
-    return raw_depth_to_color_;
+  const camera::Mat4d& depth_to_color() const noexcept {
+    return depth_to_color_;
+  }
+  const camera::Mat4d& color_to_world() const noexcept {
+    return color_to_world_;
   }
   std::uint32_t fps() const noexcept { return fps_; }
 
@@ -191,59 +172,42 @@ class CameraStream {
   std::shared_ptr<ob::Device> device_;
   std::shared_ptr<ob::Pipeline> pipeline_;
   std::shared_ptr<ob::StreamProfile> depth_profile_;
-  // The RGB mode: the colour camera's calibration, and the profile of the
-  // frames process() is handed. It is also what the wire carries, unless
-  // `wire_color_profile_` is set: the H.265 mode of the same size, or a raw
-  // stream's MJPG one, whose calibration create() holds to be the same, byte
-  // for byte.
+  // The H.265 or MJPG mode streamed, whose calibration is the colour
+  // camera's.
   std::shared_ptr<ob::StreamProfile> color_profile_;
-  std::shared_ptr<ob::StreamProfile> wire_color_profile_;
   std::uint32_t fps_ = 0;
   bool configure_ffmpeg_logging_ = true;  // cleared by the first start
-  // The device a raw stream's colour is decoded onto (streams.device), and the
-  // allocator its pictures are made through (streams.allocator).
+  // The device the colour is decoded onto (streams.device), and the allocator
+  // its pictures are made through (streams.allocator).
   const core::Device* vulkan_device_ = nullptr;
   core::Allocator* vulkan_allocator_ = nullptr;
-  // Decodes the H.265 colour, between the SDK and the mailbox; null for
-  // MJPEG. Replaced at each start, so its counters start fresh with the rest.
+  // The colour decoder between the SDK and the mailbox: hevc_ for H.265,
+  // jpeg_ for MJPEG, the other null. Replaced at each start, so its counters
+  // start fresh with the rest.
   std::shared_ptr<HevcColorDecoder> hevc_;
-  // Decodes a raw MJPEG stream's colour onto the GPU, between the SDK and the
-  // mailbox; null otherwise. Replaced at each start, as hevc_ is.
   std::shared_ptr<JpegColorDecoder> jpeg_;
   OrbbecColorCodec color_codec_ = OrbbecColorCodec::Mjpeg;
-  std::shared_ptr<ob::UnDistortionFilter> undistort_color_;
-  std::shared_ptr<ob::Align> align_to_color_;
   bool device_callback_registered_ = false;
   OBCallbackId device_callback_id_ = 0;
 
   OrbbecDeviceInfo info_;
   OrbbecSyncSettings sync_settings_;
-  ColorCameraParams color_camera_{};
-  DepthCameraParams depth_camera_{};
 
   // The polling thread's counters; the SDK's thread counts in the mailbox.
   std::uint64_t delivered_ = 0;
   std::uint64_t failed_ = 0;
   std::uint64_t discarded_ = 0;
-  std::uint64_t host_pictures_ = 0;  // OrbbecCaptureStats::host_pictures
-  // Whether the last frame process_raw() delivered counted in host_pictures_,
-  // so withdraw() takes it back out.
+  std::uint64_t host_pictures_ = 0;  // OrbbecStreamStats::host_pictures
+  // Whether the last frame read() delivered counted in host_pictures_, so
+  // withdraw() takes it back out.
   bool host_picture_delivered_ = false;
   std::uint32_t failed_in_a_row_ = 0;
   bool running_ = false;
-  // Whether this start's first processed pair has been held to the camera
-  // the frames are stamped with.
-  bool first_pair_checked_ = false;
 
-  std::vector<float> depth_metres_;
-  std::vector<std::uint32_t> color_packed_;
-
-  // A raw stream's cameras (OrbbecStreamOptions::raw) and poses.
-  bool raw_ = false;
-  camera::CameraModel raw_depth_camera_;
-  camera::CameraModel raw_color_camera_;
-  camera::Mat4d raw_color_to_world_ = camera::Mat4d(1.0);
-  camera::Mat4d raw_depth_to_color_ = camera::Mat4d(1.0);
+  camera::CameraModel depth_camera_;
+  camera::CameraModel color_camera_;
+  camera::Mat4d color_to_world_ = camera::Mat4d(1.0);
+  camera::Mat4d depth_to_color_ = camera::Mat4d(1.0);
   float min_depth_ = 0.0f;
   float max_depth_ = 0.0f;
 };

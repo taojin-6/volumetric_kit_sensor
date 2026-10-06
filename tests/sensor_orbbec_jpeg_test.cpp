@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// The Orbbec driver's raw MJPEG colour decoder, with no camera: the committed
+// The Orbbec driver's MJPEG colour decoder, with no camera: the committed
 // JPEG (tools/make_jpeg_fixtures.sh) wrapped in SDK frames, each paired with a
 // depth frame. Every pair comes out with its depth and timestamps, its colour
 // the pattern: in software as an I420 frame carrying BT.601 full range, and

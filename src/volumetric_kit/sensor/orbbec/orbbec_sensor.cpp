@@ -38,21 +38,18 @@ OrbbecSensor& OrbbecSensor::operator=(OrbbecSensor&& other) noexcept = default;
 OrbbecSensor::~OrbbecSensor() = default;
 
 core::Result<OrbbecSensor> OrbbecSensor::open(const Options& options) {
-  OrbbecStreamOptions streams = options;
-  streams.raw = true;
-  VKC_TRY(orbbec::validate_streams(streams, "OrbbecSensor"));
+  VKC_TRY(orbbec::validate_streams(options, "OrbbecSensor"));
   const core::Status rigid = camera::check_rigid(options.color_to_world);
   if (!rigid.ok()) {
     return core::Status::invalid_argument("OrbbecSensor: color_to_world: " +
                                           rigid.message());
   }
-  VKC_TRY(orbbec::check_color_codec(streams, "OrbbecSensor"));
 
   auto impl = std::make_unique<Impl>();
   impl->sync_clock_to_host = options.sync_clock_to_host;
   VKC_ASSIGN(impl->stream,
              orbbec::open_camera(options.serial, options.discovery_timeout_ms,
-                                 options.configure_sdk_logging, streams,
+                                 options.configure_sdk_logging, options,
                                  options.color_to_world, "OrbbecSensor"));
   const orbbec::CameraStream& stream = *impl->stream;
   if (stream.info().sync_mode == OrbbecSyncMode::Other) {
@@ -65,9 +62,9 @@ core::Result<OrbbecSensor> OrbbecSensor::open(const Options& options) {
   SensorInfo& info = impl->info;
   info.id = stream.info().serial;
   info.model = stream.info().name;
-  info.color = stream.raw_color_camera();
-  info.depth = stream.raw_depth_camera();
-  info.depth_to_color = stream.raw_depth_to_color();
+  info.color = stream.color_camera();
+  info.depth = stream.depth_camera();
+  info.depth_to_color = stream.depth_to_color();
   info.role = role_of(stream.info().sync_mode);
   info.clock =
       options.sync_clock_to_host ? ClockDomain::Host : ClockDomain::Device;
@@ -81,8 +78,8 @@ const OrbbecDeviceInfo& OrbbecSensor::device_info() const noexcept {
   return impl_ != nullptr ? impl_->stream->info() : kEmpty;
 }
 
-OrbbecCaptureStats OrbbecSensor::orbbec_stats() const noexcept {
-  return impl_ != nullptr ? impl_->stream->stats() : OrbbecCaptureStats{};
+OrbbecStreamStats OrbbecSensor::orbbec_stats() const noexcept {
+  return impl_ != nullptr ? impl_->stream->stats() : OrbbecStreamStats{};
 }
 
 const SensorInfo& OrbbecSensor::info() const noexcept {
@@ -129,7 +126,7 @@ core::Result<std::optional<RgbdFrame>> OrbbecSensor::poll() {
   }
   VKC_ASSIGN(std::shared_ptr<ob::FrameSet> pair, impl_->stream->take());
   if (pair == nullptr) return no_frame();
-  return impl_->stream->process_raw(pair);
+  return impl_->stream->read(pair);
 }
 
 core::Status OrbbecSensor::drain(std::vector<RgbdFrame>* out) {
@@ -142,7 +139,7 @@ core::Status OrbbecSensor::drain(std::vector<RgbdFrame>* out) {
   VKC_TRY(impl_->stream->take_all(&pairs));
   for (std::size_t i = 0; i < pairs.size(); ++i) {
     core::Result<std::optional<RgbdFrame>> frame =
-        impl_->stream->process_raw(pairs[i]);
+        impl_->stream->read(pairs[i]);
     if (!frame.ok()) {
       // The frames before it stay handed out; the rest were taken and will
       // not be.
@@ -161,7 +158,7 @@ bool OrbbecSensor::exhausted() const noexcept {
 }
 
 SensorStats OrbbecSensor::stats() const noexcept {
-  const OrbbecCaptureStats s = orbbec_stats();
+  const OrbbecStreamStats s = orbbec_stats();
   return SensorStats{s.received, s.delivered, s.dropped, s.failed + s.lost};
 }
 

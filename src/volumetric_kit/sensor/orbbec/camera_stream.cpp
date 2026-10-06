@@ -6,18 +6,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstring>
 #include <thread>
 #include <utility>
 
 #include "frame_conversion.hpp"
-#include "volumetric_kit/recon/sensor/camera_conventions.hpp"
-
-#if VR_ORBBEC_WITH_VIDEO
 #include "hevc_color.hpp"
 #include "jpeg_color.hpp"
 #include "picture_frames.hpp"
-#endif
 
 namespace volumetric_kit::recon::sensor::orbbec {
 
@@ -29,13 +24,9 @@ const char* or_empty(const char* s) { return s != nullptr ? s : ""; }
 // second probing for Ethernet devices, so this only spaces out the retries.
 constexpr std::chrono::milliseconds kDiscoveryRetry{250};
 
-// Pairs in a row process() may skip before it calls the camera broken: about
-// a second at the 30 fps default.
+// Pairs in a row read() may skip before it calls the camera broken: about a
+// second at the 30 fps default.
 constexpr std::uint32_t kMaxFailedPairsInARow = 30;
-
-// How far the SDK's intrinsics may sit from the camera a frame is stamped with
-// before the first-pair check refuses them, in pixels.
-constexpr float kIntrinsicsTolerance = 1e-3f;
 
 std::string join(const std::vector<std::string>& items) {
   std::string out;
@@ -105,40 +96,11 @@ core::Status check_orientation(ob::Device& device, const std::string& who) {
   return {};
 }
 
-// Whether two of the SDK's calibration structs hold the same bytes: the
-// comparison the H.265 mode's calibration was measured to pass.
-template <typename T>
-bool same_bytes(const T& a, const T& b) noexcept {
-  return std::memcmp(&a, &b, sizeof(T)) == 0;
-}
-// None has padding, whose bytes would be indeterminate.
-static_assert(sizeof(OBCameraIntrinsic) ==
-              4 * sizeof(float) + 2 * sizeof(std::int16_t));
-static_assert(sizeof(OBCameraDistortion) ==
-              8 * sizeof(float) + sizeof(OBCameraDistortionModel));
-static_assert(sizeof(OBExtrinsic) == 12 * sizeof(float));
-
 }  // namespace
 
 core::Status sdk_error(const std::string& who, const std::string& what,
                        const std::exception& e) {
   return core::Status::io_error(who + ": " + what + ": " + e.what());
-}
-
-core::Status check_color_codec(const OrbbecStreamOptions& streams,
-                               const std::string& who) {
-#if VR_ORBBEC_WITH_VIDEO
-  (void)streams;
-  (void)who;
-#else
-  if (streams.color_codec == OrbbecColorCodec::Hevc || streams.raw) {
-    return core::Status::unsupported(
-        who + (streams.raw ? ": raw frames need" : ": H.265 colour needs") +
-        " the video decoders, which this build left out (configure with "
-        "-DVR_WITH_FFMPEG=ON)");
-  }
-#endif
-  return {};
 }
 
 void configure_sdk_logging() {
@@ -206,13 +168,6 @@ core::Result<std::vector<std::shared_ptr<ob::Device>>> discover(
   }
 }
 
-void Mailbox::on_frameset(std::shared_ptr<ob::FrameSet> frameset) {
-  // Runs on the SDK's thread; it must never throw back into the SDK.
-  if (frameset == nullptr) return;
-  received.fetch_add(1, std::memory_order_relaxed);
-  post(std::move(frameset));
-}
-
 void Mailbox::post(std::shared_ptr<ob::FrameSet> frameset) {
   if (frameset == nullptr) return;
   std::lock_guard<std::mutex> lock(mutex);
@@ -266,8 +221,8 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
   s->fps_ = streams.fps;
   s->color_codec_ = streams.color_codec;
   s->configure_ffmpeg_logging_ = configure_logging;
-  s->vulkan_device_ = streams.raw ? streams.device : nullptr;
-  s->vulkan_allocator_ = streams.raw ? streams.allocator : nullptr;
+  s->vulkan_device_ = streams.device;
+  s->vulkan_allocator_ = streams.allocator;
   s->context_ = std::move(context);
   s->device_ = std::move(device);
   try {
@@ -313,141 +268,53 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
           std::to_string(streams.fps) + " Y16; it offers " +
           list_modes(*depth_modes));
     }
-#if VR_ORBBEC_WITH_VIDEO  // without it, open has refused Hevc and raw
-    if (streams.raw && streams.color_codec == OrbbecColorCodec::Mjpeg) {
-      // The camera's JPEGs themselves, for the decoder on the GPU: the SDK's
-      // RGB mode would decode them on the host.
-      try {
-        s->wire_color_profile_ = color_modes->getVideoStreamProfile(
-            static_cast<int>(streams.color_width),
-            static_cast<int>(streams.color_height), OB_FORMAT_MJPG,
-            static_cast<int>(streams.fps));
-      } catch (const ob::Error&) {
-        return core::Status::unsupported(
-            s->who_ + " has no colour mode " +
-            std::to_string(streams.color_width) + "x" +
-            std::to_string(streams.color_height) + "@" +
-            std::to_string(streams.fps) + " MJPG; it offers " +
-            list_modes(*color_modes));
-      }
-    }
-    if (streams.color_codec == OrbbecColorCodec::Hevc) {
-      // TODO(sensor): the camera's H.265 encoder settings -- its key-frame
-      // interval above all, since a lost frame costs the frames up to the
-      // next key frame (30 at the default) -- are left as the camera has
-      // them (the 2026-09-28 decision).
-      try {
-        s->wire_color_profile_ = color_modes->getVideoStreamProfile(
-            static_cast<int>(streams.color_width),
-            static_cast<int>(streams.color_height), OB_FORMAT_H265,
-            static_cast<int>(streams.fps));
-      } catch (const ob::Error&) {
-        return core::Status::unsupported(
-            s->who_ + " has no colour mode " +
-            std::to_string(streams.color_width) + "x" +
-            std::to_string(streams.color_height) + "@" +
-            std::to_string(streams.fps) + " H265; it offers " +
-            list_modes(*color_modes));
-      }
-    }
-#endif
+    // The camera's JPEGs or H.265 themselves, for the decoder on the GPU: the
+    // SDK's RGB mode would decode them on the host.
+    // TODO(sensor): the camera's H.265 encoder settings -- its key-frame
+    // interval above all, since a lost frame costs the frames up to the next
+    // key frame (30 at the default) -- are left as the camera has them (the
+    // 2026-09-28 decision).
+    const bool hevc = streams.color_codec == OrbbecColorCodec::Hevc;
     try {
-      // RGB: MJPG on the wire, decoded on the SDK's thread -- or, for H.265
-      // and raw MJPEG, the mode whose calibration the decoded frames carry.
       s->color_profile_ = color_modes->getVideoStreamProfile(
           static_cast<int>(streams.color_width),
-          static_cast<int>(streams.color_height), OB_FORMAT_RGB,
+          static_cast<int>(streams.color_height),
+          hevc ? OB_FORMAT_H265 : OB_FORMAT_MJPG,
           static_cast<int>(streams.fps));
     } catch (const ob::Error&) {
       return core::Status::unsupported(
           s->who_ + " has no colour mode " +
           std::to_string(streams.color_width) + "x" +
           std::to_string(streams.color_height) + "@" +
-          std::to_string(streams.fps) + " RGB; it offers " +
-          list_modes(*color_modes));
+          std::to_string(streams.fps) + (hevc ? " H265" : " MJPG") +
+          "; it offers " + list_modes(*color_modes));
     }
 
-    // The pinhole camera of the undistorted colour image: undistortion keeps
-    // the stream's intrinsics and drops only the distortion, and registration
-    // re-projects depth with exactly these. process() checks both claims on
-    // the first pair of every start.
-    const OBCameraIntrinsic intrinsic =
-        s->color_profile_->as<ob::VideoStreamProfile>()->getIntrinsic();
-    VKC_ASSIGN(s->color_camera_,
-               color_camera_from(intrinsic, Mat4f(color_to_world)));
-    if (s->color_camera_.width != streams.color_width ||
-        s->color_camera_.height != streams.color_height) {
-      return core::Status::io_error(
-          s->who_ + " reports colour intrinsics for a " +
-          std::to_string(s->color_camera_.width) + "x" +
-          std::to_string(s->color_camera_.height) + " image, not the " +
-          std::to_string(streams.color_width) + "x" +
-          std::to_string(streams.color_height) + " mode it opened");
-    }
+    // Each camera as it captures, from the factory calibration of the modes
+    // streamed: its lens, and the depth camera posed through its extrinsic to
+    // the colour one, which color_to_world poses. Nothing on the host
+    // undistorts or registers.
+    const auto depth_video = s->depth_profile_->as<ob::VideoStreamProfile>();
+    const auto color_video = s->color_profile_->as<ob::VideoStreamProfile>();
     VKC_ASSIGN(s->depth_camera_,
-               depth_from_registered_color(
-                   s->color_camera_, streams.color_width, streams.color_height,
-                   streams.min_depth, streams.max_depth));
-    // The decoded frames are the RGB mode's camera, so the mode on the wire
-    // must have its calibration: undistortion and registration read it off
-    // the frame, and the raw path off the RGB profile. H.265's matched byte
-    // for byte on the Femto Mega at 720p, 1080p and 4K; a camera where they
-    // do not is refused, not trusted. Host MJPEG streams the RGB mode itself,
-    // so it is the way round a camera refused here.
-    if (s->wire_color_profile_ != nullptr) {
-      const auto wire = s->wire_color_profile_->as<ob::VideoStreamProfile>();
-      const auto rgb = s->color_profile_->as<ob::VideoStreamProfile>();
-      if (!same_bytes(wire->getIntrinsic(), rgb->getIntrinsic()) ||
-          !same_bytes(wire->getDistortion(), rgb->getDistortion()) ||
-          !same_bytes(wire->getExtrinsicTo(s->depth_profile_),
-                      rgb->getExtrinsicTo(s->depth_profile_))) {
-        const bool hevc = streams.color_codec == OrbbecColorCodec::Hevc;
-        return core::Status::unsupported(
-            s->who_ + "'s " + (hevc ? "H.265" : "MJPG") +
-            " colour mode reports a calibration other than its RGB mode's, " +
-            (streams.raw
-                 ? "which a raw frame's colour camera is read from; stream "
-                   "MJPEG without raw frames"
-                 : "which the decoded frames are undistorted and registered "
-                   "with; stream MJPEG"));
-      }
+               camera_model_from(depth_video->getIntrinsic(),
+                                 depth_video->getDistortion(), "depth"));
+    VKC_ASSIGN(s->color_camera_,
+               camera_model_from(color_video->getIntrinsic(),
+                                 color_video->getDistortion(), "colour"));
+    if (s->depth_camera_.size.width != streams.depth_width ||
+        s->depth_camera_.size.height != streams.depth_height ||
+        s->color_camera_.size.width != streams.color_width ||
+        s->color_camera_.size.height != streams.color_height) {
+      return core::Status::invalid_argument(
+          s->who_ + " reports intrinsics for another size than its mode");
     }
-
-    if (streams.raw) {
-      // Each camera as it captures, from the factory calibration: its lens,
-      // and the depth camera posed through its extrinsic to the colour one,
-      // which color_to_world poses. Nothing on the host undistorts or
-      // registers.
-      const auto depth_video = s->depth_profile_->as<ob::VideoStreamProfile>();
-      const auto color_video = s->color_profile_->as<ob::VideoStreamProfile>();
-      VKC_ASSIGN(s->raw_depth_camera_,
-                 camera_model_from(depth_video->getIntrinsic(),
-                                   depth_video->getDistortion(), "depth"));
-      VKC_ASSIGN(s->raw_color_camera_,
-                 camera_model_from(color_video->getIntrinsic(),
-                                   color_video->getDistortion(), "colour"));
-      if (s->raw_depth_camera_.size.width != streams.depth_width ||
-          s->raw_depth_camera_.size.height != streams.depth_height) {
-        return core::Status::io_error(
-            s->who_ +
-            " reports depth intrinsics for another size "
-            "than the mode it opened");
-      }
-      s->raw_color_to_world_ = color_to_world;
-      VKC_ASSIGN(
-          s->raw_depth_to_color_,
-          transform_from(s->depth_profile_->getExtrinsicTo(s->color_profile_)));
-      s->min_depth_ = streams.min_depth;
-      s->max_depth_ = streams.max_depth;
-      s->raw_ = true;
-    } else {
-      s->undistort_color_ =
-          std::make_shared<ob::UnDistortionFilter>(OB_STREAM_COLOR);
-      s->align_to_color_ = std::make_shared<ob::Align>(OB_STREAM_COLOR);
-      // Registered depth at the colour image's full size -- the frame's one
-      // resolution. Set rather than left to the SDK's default.
-      s->align_to_color_->setMatchTargetResolution(true);
-    }
+    s->color_to_world_ = color_to_world;
+    VKC_ASSIGN(
+        s->depth_to_color_,
+        transform_from(s->depth_profile_->getExtrinsicTo(s->color_profile_)));
+    s->min_depth_ = streams.min_depth;
+    s->max_depth_ = streams.max_depth;
 
     s->device_callback_id_ = s->context_->registerDeviceChangedCallback(
         [mailbox = s->mailbox_, serial = s->info_.serial](
@@ -473,20 +340,18 @@ CameraStream::~CameraStream() {
   }
 }
 
-OrbbecCaptureStats CameraStream::stats() const noexcept {
-  OrbbecCaptureStats s;
+OrbbecStreamStats CameraStream::stats() const noexcept {
+  OrbbecStreamStats s;
   s.received = mailbox_->received.load(std::memory_order_relaxed);
   s.delivered = delivered_;
   s.dropped = mailbox_->dropped.load(std::memory_order_relaxed) + discarded_;
   s.failed = failed_;
   s.host_pictures = host_pictures_;
-#if VR_ORBBEC_WITH_VIDEO
   if (hevc_ != nullptr) s.lost = hevc_->lost();
   if (jpeg_ != nullptr) {
     s.dropped += jpeg_->dropped();
     s.lost = jpeg_->lost();
   }
-#endif
   return s;
 }
 
@@ -508,20 +373,16 @@ core::Status CameraStream::start() {
   host_pictures_ = 0;
   host_picture_delivered_ = false;
   failed_in_a_row_ = 0;
-  first_pair_checked_ = false;
-  // The colour decoder: every H.265 pair goes through it, in order, and on
-  // to the mailbox decoded; and every raw MJPEG pair, onto the GPU.
+  // The colour decoder: every pair goes through it, H.265 in order, and on to
+  // the mailbox decoded.
   hevc_.reset();
   jpeg_.reset();
-#if VR_ORBBEC_WITH_VIDEO
   const auto post = [mailbox = mailbox_](std::shared_ptr<ob::FrameSet> fs) {
     mailbox->post(std::move(fs));
   };
   if (color_codec_ == OrbbecColorCodec::Hevc) {
     HevcColorDecoder::Options decoding;
     decoding.fps = fps_;
-    decoding.rgb_profile = color_profile_;
-    decoding.yuv = raw_;
     decoding.device = vulkan_device_;
     decoding.allocator = vulkan_allocator_;
     // Once: the first start sets FFmpeg's level, and a later one leaves it
@@ -531,7 +392,7 @@ core::Status CameraStream::start() {
     decoding.who = who_;
     VKC_ASSIGN(auto decoder, HevcColorDecoder::start(decoding, post));
     hevc_ = std::move(decoder);
-  } else if (raw_) {
+  } else {
     JpegColorDecoder::Options decoding;
     {
       std::lock_guard<std::mutex> lock(box.mutex);
@@ -545,12 +406,10 @@ core::Status CameraStream::start() {
     VKC_ASSIGN(auto decoder, JpegColorDecoder::start(decoding, post));
     jpeg_ = std::move(decoder);
   }
-#endif
   try {
     auto config = std::make_shared<ob::Config>();
     config->enableStream(depth_profile_);
-    config->enableStream(wire_color_profile_ != nullptr ? wire_color_profile_
-                                                        : color_profile_);
+    config->enableStream(color_profile_);
     // Only pairs: a frame set missing either half is never handed over --
     // except for H.265, where every colour frame must reach the decoder,
     // paired or not. Requiring pairs there, a secondary's colour frame went
@@ -564,31 +423,21 @@ core::Status CameraStream::start() {
     pipeline_->enableFrameSync();
     pipeline_->start(config, [mailbox = mailbox_, hevc = hevc_,
                               jpeg = jpeg_](std::shared_ptr<ob::FrameSet> fs) {
+      // Runs on the SDK's thread; it must never throw back into the SDK.
       try {
-#if VR_ORBBEC_WITH_VIDEO
+        if (fs == nullptr) return;
+        mailbox->received.fetch_add(1, std::memory_order_relaxed);
         if (hevc != nullptr) {
-          if (fs == nullptr) return;
-          mailbox->received.fetch_add(1, std::memory_order_relaxed);
           hevc->push(std::move(fs));
-          return;
-        }
-        if (jpeg != nullptr) {
-          if (fs == nullptr) return;
-          mailbox->received.fetch_add(1, std::memory_order_relaxed);
+        } else {
           jpeg->push(std::move(fs));
-          return;
         }
-#endif
-        mailbox->on_frameset(std::move(fs));
       } catch (...) {
-        // Never throw into the SDK's thread.
       }
     });
   } catch (const std::exception& e) {  // ob::Error is one
-#if VR_ORBBEC_WITH_VIDEO
     if (hevc_ != nullptr) hevc_->stop();
     if (jpeg_ != nullptr) jpeg_->stop();
-#endif
     return sdk_error(who_, "starting", e);
   }
   running_ = true;
@@ -607,16 +456,10 @@ void CameraStream::stop() noexcept {
   }
   // After the pipeline, so nothing more is pushed; before the mailbox is
   // cleared, so nothing more is posted.
-#if VR_ORBBEC_WITH_VIDEO
   if (hevc_ != nullptr) hevc_->stop();
   if (jpeg_ != nullptr) jpeg_->stop();
-#endif
-  {
-    std::lock_guard<std::mutex> lock(mailbox_->mutex);
-    mailbox_->pending.clear();
-  }
-  depth_metres_.clear();
-  color_packed_.clear();
+  std::lock_guard<std::mutex> lock(mailbox_->mutex);
+  mailbox_->pending.clear();
 }
 
 void CameraStream::set_queue_depth(std::size_t depth) {
@@ -689,149 +532,12 @@ std::uint64_t CameraStream::timestamp_us(const ob::FrameSet& pair) noexcept {
   }
 }
 
-core::Result<std::optional<CapturedFrame>> CameraStream::process(
-    const std::shared_ptr<ob::FrameSet>& frameset) {
+core::Result<std::optional<RgbdFrame>> CameraStream::read(
+    const std::shared_ptr<ob::FrameSet>& pair) {
   // The pair is delivered, or counted as failed by one of these two. `refuse`
   // is for a pair that contradicts the stream create() negotiated -- every
   // pair after it would too; `skip` for one the SDK failed on, which the next
   // may not be.
-  const auto refuse = [this](core::Status why) {
-    ++failed_;
-    return why;
-  };
-  const auto skip = [this](const std::string& why)
-      -> core::Result<std::optional<CapturedFrame>> {
-    ++failed_;
-    if (++failed_in_a_row_ < kMaxFailedPairsInARow) {
-      return ICameraCapture::no_frame();
-    }
-    return core::Status::io_error(who_ + ": " +
-                                  std::to_string(failed_in_a_row_) +
-                                  " pairs in a row could not be processed; the "
-                                  "last: " +
-                                  why);
-  };
-
-  const std::uint32_t width = color_camera_.width;
-  const std::uint32_t height = color_camera_.height;
-  const std::size_t pixels = static_cast<std::size_t>(width) * height;
-  std::uint64_t timestamp_us = 0;
-  try {
-    // Undistort colour, then register depth to it: the SDK's registration
-    // ignores the colour lens, so the order is what puts both on one pinhole
-    // camera (the 2026-09-26 decision).
-    // TODO(sensor): the same steps as GPU kernels, keeping the frame on the
-    // device through fusion -- which needs device-resident fusion entry
-    // points, or the upload is merely moved. And measure the camera's own
-    // registration (ALIGN_D2C_HW_MODE; the 2026-09-26 decision).
-    const auto undistorted = undistort_color_->process(frameset);
-    if (undistorted == nullptr) {
-      return skip("colour undistortion produced no frame");
-    }
-    const auto registered = align_to_color_->process(undistorted);
-    if (registered == nullptr) {
-      return skip("depth registration produced no frame");
-    }
-    const auto pair = registered->as<ob::FrameSet>();
-    const auto depth = pair->getDepthFrame();
-    const auto color = pair->getColorFrame();
-    if (depth == nullptr || color == nullptr) {
-      return skip("a processed pair is missing its depth or colour frame");
-    }
-    if (depth->getWidth() != width || depth->getHeight() != height ||
-        color->getWidth() != width || color->getHeight() != height) {
-      return refuse(core::Status::io_error(
-          who_ + ": processed pair is depth " +
-          std::to_string(depth->getWidth()) + "x" +
-          std::to_string(depth->getHeight()) + ", colour " +
-          std::to_string(color->getWidth()) + "x" +
-          std::to_string(color->getHeight()) + "; expected both " +
-          std::to_string(width) + "x" + std::to_string(height)));
-    }
-    if (depth->getFormat() != OB_FORMAT_Y16 ||
-        depth->getDataSize() < pixels * sizeof(std::uint16_t)) {
-      return refuse(core::Status::io_error(
-          who_ + ": registered depth is not a full Y16 image"));
-    }
-    if (color->getFormat() != OB_FORMAT_RGB ||
-        color->getDataSize() < pixels * 3) {
-      return refuse(core::Status::io_error(
-          who_ + ": undistorted colour is not a full RGB image"));
-    }
-    if (!first_pair_checked_) {
-      // The frames are stamped with the camera computed at create; hold the
-      // SDK to it once per start. Registration must have re-projected into
-      // these intrinsics, and undistortion must have kept them and dropped
-      // only the distortion.
-      const auto depth_video =
-          depth->getStreamProfile()->as<ob::VideoStreamProfile>();
-      const auto color_video =
-          color->getStreamProfile()->as<ob::VideoStreamProfile>();
-      if (!same_pinhole(depth_video->getIntrinsic(), color_camera_,
-                        kIntrinsicsTolerance)) {
-        return refuse(core::Status::io_error(
-            who_ +
-            ": registered depth reports intrinsics other than the colour "
-            "camera's; the frame would be unprojected wrongly"));
-      }
-      if (!same_pinhole(color_video->getIntrinsic(), color_camera_,
-                        kIntrinsicsTolerance)) {
-        return refuse(core::Status::io_error(
-            who_ +
-            ": undistorted colour reports intrinsics other than the ones "
-            "read at open; the frame would be projected wrongly"));
-      }
-      // `!= 0` refuses a NaN coefficient too.
-      const OBCameraDistortion d = color_video->getDistortion();
-      if (d.k1 != 0.0f || d.k2 != 0.0f || d.k3 != 0.0f || d.k4 != 0.0f ||
-          d.k5 != 0.0f || d.k6 != 0.0f || d.p1 != 0.0f || d.p2 != 0.0f) {
-        return refuse(core::Status::io_error(
-            who_ + ": undistorted colour still reports lens distortion"));
-      }
-      first_pair_checked_ = true;
-    }
-    const float value_scale = depth->getValueScale();
-    if (!std::isfinite(value_scale) || !(value_scale > 0.0f)) {
-      return refuse(
-          core::Status::io_error(who_ + ": depth frame reports value scale " +
-                                 std::to_string(value_scale)));
-    }
-    depth_metres_.resize(pixels);
-    color_packed_.resize(pixels);
-    depth_to_metres(reinterpret_cast<const std::uint16_t*>(depth->getData()),
-                    pixels, value_scale, depth_metres_.data());
-    pack_rgb(color->getData(), pixels, color_packed_.data());
-    // The camera's hardware clock -- on one clock with the rest of a rig's
-    // cameras once OrbbecRig has the SDK sync them.
-    timestamp_us = depth->getTimeStampUs();
-  } catch (const std::exception& e) {  // ob::Error is one
-    return skip(std::string("the SDK failed on it: ") + e.what());
-  }
-
-  CapturedFrame frame{};
-  frame.depth = depth_metres_.data();
-  frame.color = color_packed_.data();
-  frame.depth_camera = depth_camera_;
-  frame.color_camera = color_camera_;
-  // The camera's colour is ordinary 8-bit sRGB: the canonical form, declared
-  // by leaving the default.
-  frame.timestamp_ns = timestamp_us * 1000;
-  failed_in_a_row_ = 0;
-  ++delivered_;
-  return ICameraCapture::some_frame(frame);
-}
-
-core::Result<std::optional<RgbdFrame>> CameraStream::process_raw(
-    const std::shared_ptr<ob::FrameSet>& pair) {
-#if !VR_ORBBEC_WITH_VIDEO
-  // open refuses raw frames without the decoder whose planes they carry.
-  (void)pair;
-  ++failed_;
-  return core::Status::unsupported(who_ +
-                                   ": raw frames need the video decoders");
-#else
-  // As process(): a pair that contradicts the stream is refused, one the SDK
-  // failed on is skipped, and only a run of skips is an error.
   const auto refuse = [this](core::Status why) {
     ++failed_;
     return why;
@@ -856,8 +562,8 @@ core::Result<std::optional<RgbdFrame>> CameraStream::process_raw(
     if (depth == nullptr || color == nullptr) {
       return skip("a pair is missing its depth or colour frame");
     }
-    const camera::ImageSize& d = raw_depth_camera_.size;
-    const camera::ImageSize& c = raw_color_camera_.size;
+    const camera::ImageSize& d = depth_camera_.size;
+    const camera::ImageSize& c = color_camera_.size;
     const auto dv = depth->as<ob::VideoFrame>();
     // A picture left on the device has a size of its own; other colour is a
     // video frame of it.
@@ -876,8 +582,8 @@ core::Result<std::optional<RgbdFrame>> CameraStream::process_raw(
     if (dv->getWidth() != d.width || dv->getHeight() != d.height ||
         color_width != c.width || color_height != c.height) {
       return refuse(core::Status::io_error(
-          who_ + ": a raw pair is depth " + std::to_string(dv->getWidth()) +
-          "x" + std::to_string(dv->getHeight()) + ", colour " +
+          who_ + ": a pair is depth " + std::to_string(dv->getWidth()) + "x" +
+          std::to_string(dv->getHeight()) + ", colour " +
           std::to_string(color_width) + "x" + std::to_string(color_height) +
           "; expected " + std::to_string(d.width) + "x" +
           std::to_string(d.height) + " and " + std::to_string(c.width) + "x" +
@@ -897,13 +603,12 @@ core::Result<std::optional<RgbdFrame>> CameraStream::process_raw(
     }
     frame.depth = reinterpret_cast<const std::uint16_t*>(depth->getData());
     frame.metres_per_unit = value_scale / 1000.0f;  // mm per unit
-    frame.depth_camera = raw_depth_camera_;
+    frame.depth_camera = depth_camera_;
     frame.min_depth = min_depth_;
     frame.max_depth = max_depth_;
     // The matrix, range and encoding the decoder resolved: the stream's own
     // when it names them, the Femto Mega's unlabelled BT.601 full range
-    // otherwise -- as the host path converts -- and the transfer and
-    // primaries it declares.
+    // otherwise, and the transfer and primaries it declares.
     const auto describe = [&](VideoColorMatrix matrix, bool full_range,
                               const std::optional<ColorEncoding>& encoding) {
       if (!encoding) {
@@ -955,9 +660,9 @@ core::Result<std::optional<RgbdFrame>> CameraStream::process_raw(
                            ? std::optional<ColorEncoding>(described->encoding)
                            : std::nullopt));
     }
-    frame.color_camera = raw_color_camera_;
-    frame.color_to_world = raw_color_to_world_;
-    frame.depth_to_color = raw_depth_to_color_;
+    frame.color_camera = color_camera_;
+    frame.color_to_world = color_to_world_;
+    frame.depth_to_color = depth_to_color_;
     frame.timestamp_ns = depth->getTimeStampUs() * 1000;
     frame.sequence = depth->getIndex();
   } catch (const std::exception& e) {  // ob::Error is one
@@ -975,7 +680,6 @@ core::Result<std::optional<RgbdFrame>> CameraStream::process_raw(
   host_picture_delivered_ = vulkan_device_ != nullptr && host_color;
   if (host_picture_delivered_) ++host_pictures_;
   return std::optional<RgbdFrame>(std::move(frame));
-#endif
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

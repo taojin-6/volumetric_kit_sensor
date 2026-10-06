@@ -24,9 +24,44 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/export.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
 
 namespace volumetric_kit::recon::sensor {
+
+/// @brief A camera's role in a hardware-synchronised rig, as the camera itself
+///        reports it.
+///
+/// Read when a camera is opened and written only when asked
+/// (`OrbbecRig::Options::apply_sync_config`): the role persists on the
+/// camera, and changing it for a one-camera run would break the rig for the
+/// next. See @ref waits_for_primary for what it means to a caller.
+enum class OrbbecSyncMode {
+  FreeRun,     ///< Not synchronised; streams on its own clock.
+  Standalone,  ///< Not synchronised; streams on its own clock.
+  Primary,     ///< Streams on its own and drives the sync line.
+  Secondary,   ///< Captures only on the primary's sync signal.
+  /// The rig's secondaries. The SDK says this mode captures on its own and
+  /// re-times to a signal; measured, it delivers nothing without one, so this
+  /// driver treats it as @ref Secondary.
+  SecondarySynced,
+  /// Captures only on a host trigger, which this driver never sends; a
+  /// camera's open refuses it.
+  SoftwareTriggering,
+  /// Captures only on a trigger another camera sends down the sync line.
+  HardwareTriggering,
+  Other,  ///< A mode this driver does not name.
+};
+
+/// @param mode  A camera's reported sync mode.
+/// @return `true` when the camera produces frames only on another camera's
+///         signal. Started on its own, such a camera delivers nothing -- a
+///         poll keeps returning no frame, as if it were merely slow. `false`
+///         for @ref OrbbecSyncMode::SoftwareTriggering, which waits for the
+///         host and which a camera's open refuses.
+VR_SENSOR_ORBBEC_API bool waits_for_primary(OrbbecSyncMode mode) noexcept;
+
+/// @return A stable lowercase name for @p mode (`"primary"`,
+///         `"secondary-synced"`, ...), for logs.
+VR_SENSOR_ORBBEC_API const char* to_string(OrbbecSyncMode mode) noexcept;
 
 /// @brief One camera's sync settings: the SDK's `OBMultiDeviceSyncConfig`.
 struct OrbbecSyncSettings {

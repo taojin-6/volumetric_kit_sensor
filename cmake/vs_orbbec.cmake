@@ -13,7 +13,7 @@
 # environment, once for every repo:
 #
 # ~~~
-# cmake -B build -DVR_WITH_ORBBEC=ON -DOrbbecSDK_ROOT=<sdk>
+# cmake -B build -DVR_WITH_ORBBEC=ON -DVR_WITH_FFMPEG=ON -DOrbbecSDK_ROOT=<sdk>
 # export OrbbecSDK_ROOT=<sdk>
 # ~~~
 #
@@ -30,6 +30,13 @@
 # installs, and keep it in lockstep with any sibling that finds the same copy
 # and with the SDK CI installs (.github/workflows/_build.yml).
 set(VR_ORBBEC_SDK_MIN_VERSION 2.9.3)
+
+# The driver decodes each camera's colour itself, onto the GPU, so it needs the
+# video decoders: without them it could open no camera.
+if(NOT VR_WITH_FFMPEG)
+  message(FATAL_ERROR "VR_WITH_ORBBEC needs VR_WITH_FFMPEG: the Orbbec driver "
+                      "decodes the cameras' colour through FFmpeg.")
+endif()
 
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   message(

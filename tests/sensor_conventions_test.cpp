@@ -312,11 +312,6 @@ int main() {
     // not override it (this fake, the ARKit source out of tree) keeps a
     // consumer waiting rather than ending its run on the first idle tick.
     CHECK(!device.exhausted());
-    // Nor does one that knows nothing of raw frames have to say so: it hands
-    // out processed frames, and asking it for raw ones is Unsupported.
-    CHECK(!device.raw_frames());
-    CHECK(device.poll_raw().status().domain() ==
-          vkc::Status::Code::Unsupported);
 
     // A device failure is distinguishable from an empty poll.
     capture.fail();

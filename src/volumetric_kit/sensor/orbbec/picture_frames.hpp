@@ -3,13 +3,13 @@
 
 #pragma once
 
-// Internal (not installed), and built only with the video decoders: the SDK
-// colour frame a raw pair hands a decoded picture on in, from a decode thread
-// through the mailbox. A picture the hardware left on the GPU travels with a
-// frame whose bytes only name it, so it lives exactly as long as its frame --
-// dropped with it, grouped into a rig's set with it, held with it -- and
-// every step between the SDK and the raw frame goes on handling frame sets.
-// A picture on the host travels as an I420 frame of its planes.
+// Internal (not installed): the SDK colour frame a pair hands a decoded
+// picture on in, from a decode thread through the mailbox. A picture the
+// hardware left on the GPU travels with a frame whose bytes only name it, so
+// it lives exactly as long as its frame -- dropped with it, grouped into a
+// rig's set with it, held with it -- and every step between the SDK and the
+// sensor's frame goes on handling frame sets. A picture on the host travels
+// as an I420 frame of its planes.
 
 #include <memory>
 #include <optional>
