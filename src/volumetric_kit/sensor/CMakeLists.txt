@@ -3,7 +3,8 @@
 
 # --- recon_sensor: capture contract -----------------------------------------
 # The ICameraCapture interface, the CapturedFrame view the fusion tiers already
-# consume, and the camera-convention conversions. Carries no driver itself: one
+# consume, and the camera-convention conversions. The calibration file is the
+# camera tier's (camera/array_calibration.hpp). Carries no driver itself: one
 # ships in this repo only if this repo can build *and* test it (the 2026-08-02
 # decision), and the one that does, Orbbec, is its own target (orbbec/, below).
 #
@@ -24,7 +25,7 @@ add_library(recon_sensor)
 add_library(volumetric_kit::recon_sensor ALIAS recon_sensor)
 
 target_sources(recon_sensor PRIVATE camera_conventions.cpp
-                                    color_conventions.cpp rig_calibration.cpp)
+                                    color_conventions.cpp)
 
 # Per-tier export header (VR_SENSOR_API / VR_SENSOR_STATIC_DEFINE), isolated so
 # the macros never collide with another tier's on one include path.
@@ -50,19 +51,10 @@ endif()
 
 target_compile_features(recon_sensor PUBLIC cxx_std_17)
 
-# PUBLIC: the sensor public headers expose core types only (DepthCameraParams /
-# ColorCameraParams / Result), so a consumer compiles against recon_core and
-# nothing else.
-target_link_libraries(recon_sensor PUBLIC recon_core)
-
-# nlohmann/json parses the rig calibration file (rig_calibration.cpp): a PRIVATE
-# SYSTEM include, as VMA is to recon_core, so it reaches no public header, no
-# link line and no consumer.
-if(NOT VR_JSON_INCLUDE_DIR)
-  message(FATAL_ERROR "recon_sensor: VR_JSON_INCLUDE_DIR is unset -- "
-                      "third_party/ must be configured before src/.")
-endif()
-target_include_directories(recon_sensor SYSTEM PRIVATE "${VR_JSON_INCLUDE_DIR}")
+# PUBLIC: the sensor public headers expose core types (DepthCameraParams /
+# ColorCameraParams / Result) and the camera tier's projection, which the lens
+# delegates to, so a consumer compiles against recon_core and recon_camera.
+target_link_libraries(recon_sensor PUBLIC recon_camera recon_core)
 
 target_include_directories(
   recon_sensor

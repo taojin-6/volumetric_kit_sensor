@@ -3,7 +3,6 @@
 
 #include "frame_conversion.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -290,22 +289,19 @@ core::Status validate(const OrbbecRig::Options& options) {
       }
     }
   }
-  if (!options.calibration.empty()) {
+  if (!options.calibration.sensors.empty()) {
     const core::Status calibration =
-        validate_rig_calibration(options.calibration);
+        camera::validate_array_calibration(options.calibration);
     if (!calibration.ok()) {
       return core::Status::invalid_argument("OrbbecRig: " +
                                             calibration.message());
     }
     for (const OrbbecSyncDevice& device : options.sync.devices) {
-      const bool posed =
-          std::any_of(options.calibration.begin(), options.calibration.end(),
-                      [&](const auto& c) { return c.serial == device.serial; });
-      if (!posed) {
+      const camera::SensorCalibration* sensor =
+          camera::find_sensor(options.calibration, device.serial);
+      if (sensor == nullptr || !sensor->color_to_world) {
         return core::Status::invalid_argument(
-            "OrbbecRig: the calibration has no "
-            "camera " +
-            device.serial);
+            "OrbbecRig: the calibration does not pose camera " + device.serial);
       }
     }
   }
