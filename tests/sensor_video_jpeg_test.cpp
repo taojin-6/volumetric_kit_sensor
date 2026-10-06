@@ -377,7 +377,7 @@ int main() {
       std::fprintf(stderr, "FAIL: %s\n", probe.status().message().c_str());
       return 1;
     }
-    return vr_test::no_decoder(probe.status().message());
+    return vr_test::no_jpeg_decoder(probe.status().message());
   }
 
   if (test_device(gpu) != 0) return 1;
