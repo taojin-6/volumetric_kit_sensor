@@ -12,8 +12,6 @@
 #include <memory>
 #include <new>
 #include <string>
-#include <system_error>
-#include <thread>
 #include <utility>
 
 #include "undistort_color_comp.spv.hpp"
@@ -33,30 +31,6 @@ constexpr std::uint32_t kLocalSize = 256;
 // The most commands record_uploads and record_passes time for one frame: the
 // depth copy and two plane-image copies, and the two passes.
 constexpr std::uint32_t kSpansPerFrame = 5;
-
-// `work(i)` for every i in `indices`, each on a thread of its own but the
-// last, which runs on this one; a thread that cannot start runs its work here
-// instead. Returns once every call has, so no thread outlives what it writes
-// to. `work` is noexcept, as an exception leaving a thread ends the process.
-template <typename Work>
-void run_each(const std::vector<std::size_t>& indices, const Work& work) {
-  static_assert(noexcept(work(std::size_t{0})), "work must not throw");
-  struct Workers {
-    std::vector<std::thread> threads;
-    ~Workers() {
-      for (std::thread& t : threads) t.join();
-    }
-  } workers;
-  workers.threads.reserve(indices.size());
-  for (std::size_t k = 0; k + 1 < indices.size(); ++k) {
-    try {
-      workers.threads.emplace_back(work, indices[k]);
-    } catch (const std::system_error&) {
-      work(indices[k]);
-    }
-  }
-  if (!indices.empty()) work(indices.back());
-}
 
 // shaders/lens.glsl's LensCamera, under scalar layout.
 struct LensParams {
@@ -197,18 +171,16 @@ struct DepthLayout {
 
 // A frame's colour half, checked: the range of the planes' buffer the kernel
 // binds, where it finds each plane in that range, and the bytes it moves.
-// Host planes are staged packed tightly, each starting on a word, and bound
-// from byte 0, and plane images are copied in the same way; device planes are
-// read where they are, bound from the first.
+// Plane images are copied into the pass's input packed tightly, each plane
+// starting on a word, and bound from byte 0; planes in a buffer are read where
+// they are, bound from the first.
 struct ColorLayout {
   std::uint32_t pixels = 0;
   std::uint32_t ch = 0;  // chroma rows
-  int planes = 0;        // 3 for I420, 2 for NV12
   // Each plane's first byte, from bind_offset, and its row stride; chroma
   // samples c_step bytes apart.
   VkDeviceSize y_offset = 0, cb_offset = 0, cr_offset = 0;
   VkDeviceSize y_stride = 0, cb_stride = 0, cr_stride = 0, c_step = 1;
-  VkDeviceSize in_bytes = 0;  // staged: none for device planes or images
   VkDeviceSize bind_offset = 0, bind_bytes = 0;
   VkDeviceSize out_bytes = 0;
 };
@@ -336,49 +308,36 @@ core::Result<ColorLayout> check_color(const RgbdFrame& frame,
   const bool nv12 = image.layout == YuvLayout::Nv12;
   const bool on_device = image.device != nullptr;
   const bool as_images = image.image[0] != nullptr || image.image[1] != nullptr;
-  const bool on_host = image.plane[0] != nullptr || image.plane[1] != nullptr ||
-                       image.plane[2] != nullptr;
-  if (int{on_host} + int{on_device} + int{as_images} > 1) {
+  if (on_device && as_images) {
     return core::Status::invalid_argument(
-        "GpuFramePrep: the colour planes must be on the host, in a buffer or "
-        "images, one of the three");
+        "GpuFramePrep: the colour planes must be in a buffer or images, not "
+        "both");
   }
   if (as_images) VKC_TRY(check_images(image));
-  if (nv12 && image.plane[2] != nullptr) {
-    return core::Status::invalid_argument(
-        "GpuFramePrep: an NV12 picture has two planes, so plane[2] is null");
-  }
   const int planes = nv12 ? 2 : 3;
   const std::uint64_t cw = (std::uint64_t{image.width} + 1) / 2;
   const std::uint64_t ch = (std::uint64_t{image.height} + 1) / 2;
   const std::uint64_t c_row = nv12 ? 2 * cw : cw;
   const std::uint64_t rows[3] = {image.height, ch, ch};
   const std::uint64_t row_bytes[3] = {image.width, c_row, c_row};
-  for (int p = 0; p < planes && !as_images; ++p) {
-    if ((!on_device && image.plane[p] == nullptr) ||
-        image.stride[p] < row_bytes[p]) {
+  for (int p = 0; p < planes && on_device; ++p) {
+    if (image.stride[p] < row_bytes[p]) {
       return core::Status::invalid_argument(
-          std::string("GpuFramePrep: the colour picture needs ") +
-          (nv12 ? "two planes" : "three planes") +
-          ", each row at least its width");
+          "GpuFramePrep: a colour plane's stride is shorter than its rows");
     }
   }
 
   ColorLayout out;
   out.pixels = static_cast<std::uint32_t>(pixels);
   out.ch = static_cast<std::uint32_t>(ch);
-  out.planes = planes;
   out.c_step = nv12 ? 2 : 1;
-  if (!on_device) {
-    const std::uint64_t chroma_bytes = c_row * ch;
+  if (as_images) {
+    // NV12, so Cr sits one byte after Cb.
     out.y_stride = image.width;
     out.cb_stride = out.cr_stride = c_row;
     out.cb_offset = round_up4(pixels);
-    out.cr_offset =
-        nv12 ? out.cb_offset + 1 : out.cb_offset + round_up4(chroma_bytes);
-    out.bind_bytes =
-        (nv12 ? out.cb_offset : out.cr_offset) + round_up4(chroma_bytes);
-    out.in_bytes = as_images ? 0 : out.bind_bytes;
+    out.cr_offset = out.cb_offset + 1;
+    out.bind_bytes = out.cb_offset + round_up4(c_row * ch);
   } else {
     const core::Buffer& buffer = *image.device;
     const core::StorageInput bound(buffer);
@@ -492,9 +451,8 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
 struct GpuFramePrep::Layout {
   DepthLayout depth;
   ColorLayout color;
-  bool host_color = false;   // host planes, staged with depth
-  bool from_images = false;  // NV12 plane images, copied into the input
-  bool into_input = false;   // either: colour read from color_in_
+  // NV12 plane images, copied into color_in_; else colour is read in place.
+  bool from_images = false;
 };
 
 core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
@@ -512,13 +470,8 @@ core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
                check_color(frame, max_pixels, max_storage_buffer_range_,
                            min_storage_buffer_offset_alignment_));
   }
-  // Host planes go up with depth, plane images are copied in beside them,
-  // and device planes are read where they are.
-  const YuvImage& image = frame.color;
-  layout.from_images = image.image[0] != nullptr || image.image[1] != nullptr;
-  layout.host_color =
-      frame.has_color() && image.device == nullptr && !layout.from_images;
-  layout.into_input = layout.host_color || layout.from_images;
+  layout.from_images =
+      frame.color.image[0] != nullptr || frame.color.image[1] != nullptr;
   return layout;
 }
 
@@ -527,7 +480,7 @@ core::Status GpuFramePrep::acquire(core::CommandBatch& batch,
                                    const Layout& layout) {
   // Device planes taken over from the family that wrote them, first, so a
   // family the device lacks is refused before any work.
-  if (frame.has_color() && !layout.into_input) {
+  if (frame.has_color() && !layout.from_images) {
     VKC_TRY(batch.acquire(*frame.color.device, frame.color.queue_family));
   }
   return {};
@@ -537,13 +490,12 @@ core::Status GpuFramePrep::stage_host(const RgbdFrame& frame,
                                       const Layout& layout) {
   const DepthLayout& depth = layout.depth;
   const ColorLayout& color = layout.color;
-  const YuvImage& image = frame.color;
   VKC_TRY(ensure_buffer(*device_, *allocator_, depth_in_, depth.in_bytes, false,
                         "sensor.raw_depth"));
   VKC_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame",
                         /*color=*/false));
   if (frame.has_color()) {
-    if (layout.into_input) {
+    if (layout.from_images) {
       VKC_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.bind_bytes,
                             false, "sensor.raw_color"));
     }
@@ -551,39 +503,10 @@ core::Status GpuFramePrep::stage_host(const RgbdFrame& frame,
                           /*color=*/true));
   }
 
-  VKC_TRY(ensure_buffer(*device_, *allocator_, staging_,
-                        depth.in_bytes + color.in_bytes, true,
+  VKC_TRY(ensure_buffer(*device_, *allocator_, staging_, depth.in_bytes, true,
                         "sensor.raw_staging"));
-
-  // The frame staged as the inputs lay it out: depth, then any host planes
-  // packed tightly whatever the decoder's strides. A tight plane is one
-  // memcpy: row by row, it cost the 5090 0.2 ms a 4K frame. Device planes
-  // are read where they are.
-  auto* staged = static_cast<std::uint8_t*>(staging_.mapped());
-  const VkDeviceSize depth_bytes =
-      VkDeviceSize{depth.pixels} * sizeof(std::uint16_t);
-  std::memcpy(staged, frame.depth, static_cast<std::size_t>(depth_bytes));
-  if (layout.host_color) {
-    // Packed, so each plane's stride in the staging is its row.
-    const VkDeviceSize widths[3] = {color.y_stride, color.cb_stride,
-                                    color.cr_stride};
-    const std::uint32_t heights[3] = {image.height, color.ch, color.ch};
-    const VkDeviceSize offsets[3] = {0, color.cb_offset, color.cr_offset};
-    std::uint8_t* dst = staged + depth.in_bytes;
-    for (int p = 0; p < color.planes; ++p) {
-      const auto row = static_cast<std::size_t>(widths[p]);
-      std::uint8_t* plane = dst + static_cast<std::size_t>(offsets[p]);
-      if (image.stride[p] == row) {
-        std::memcpy(plane, image.plane[p], row * heights[p]);
-        continue;
-      }
-      for (std::uint32_t r = 0; r < heights[p]; ++r) {
-        std::memcpy(plane + std::size_t{r} * row,
-                    image.plane[p] + std::size_t{r} * image.stride[p], row);
-      }
-    }
-  }
-
+  std::memcpy(staging_.mapped(), frame.depth,
+              std::size_t{depth.pixels} * sizeof(std::uint16_t));
   return {};
 }
 
@@ -599,10 +522,6 @@ core::Status GpuFramePrep::record_uploads(core::CommandBatch& batch,
   const VkDeviceSize depth_bytes =
       VkDeviceSize{depth.pixels} * sizeof(std::uint16_t);
   VKC_TRY(batch.copy(staging_, 0, depth_in_, 0, depth_bytes, stage));
-  if (layout.host_color) {
-    VKC_TRY(batch.copy(staging_, depth.in_bytes, color_in_, 0, color.in_bytes,
-                       stage));
-  }
   if (layout.from_images) {
     VKC_TRY(batch.copy(*image.image[0], image.width, image.height, color_in_, 0,
                        stage));
@@ -638,7 +557,7 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
                          max_workgroup_count_x_, stage));
   if (frame.has_color()) {
     color_kernel_.set.write_storage_buffer(
-        0, layout.into_input ? color_in_.handle() : image.device->handle(),
+        0, layout.from_images ? color_in_.handle() : image.device->handle(),
         color.bind_offset, color.bind_bytes);
     color_kernel_.set.write_storage_buffer(1, color_out_->handle(), 0,
                                            color.out_bytes);
@@ -672,7 +591,7 @@ void GpuFramePrep::abandon(const RgbdFrame& frame, const Layout& layout) {
   // own; and so are the device planes, buffer or images, which the caller may
   // drop, and a decoder reuse, as soon as the call returns.
   static_cast<void>(new core::Buffer(std::move(staging_)));
-  if (frame.has_color() && !layout.into_input) {
+  if (frame.has_color() && !layout.from_images) {
     static_cast<void>(
         new std::shared_ptr<const core::Buffer>(frame.color.device));
   }
@@ -765,19 +684,14 @@ GpuFramePrep::prepare_batch(std::vector<GpuFramePrep>& preps,
   for (const std::size_t i : present) {
     VKC_TRY(preps[i].acquire(batch, *frames[i], *layouts[i]));
   }
-  // Each camera's host data staged on a thread of its own -- a 4K frame's
-  // planes are 12 MB of copying -- and only then recorded, on this thread:
-  // a batch records from one.
-  std::vector<core::Status> staged(frames.size());
-  run_each(present, [&](std::size_t i) noexcept {
-    try {
-      staged[i] = preps[i].stage_host(*frames[i], *layouts[i]);
-    } catch (const std::bad_alloc&) {
-      staged[i] = core::Status::out_of_memory(
-          "GpuFramePrep::prepare_batch: out of host memory");
+  try {
+    for (const std::size_t i : present) {
+      VKC_TRY(preps[i].stage_host(*frames[i], *layouts[i]));
     }
-  });
-  for (const core::Status& s : staged) VKC_TRY(s);
+  } catch (const std::bad_alloc&) {
+    return core::Status::out_of_memory(
+        "GpuFramePrep::prepare_batch: out of host memory");
+  }
   // Every camera's uploads, then every camera's passes: the uploads write
   // buffers of their own, so they run with no barrier between them.
   for (const std::size_t i : present) {

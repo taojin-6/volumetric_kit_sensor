@@ -45,16 +45,15 @@ inline constexpr std::uint32_t kQueueFamilyIgnored = ~std::uint32_t{0};
 ///        `VK_QUEUE_FAMILY_EXTERNAL`.
 inline constexpr std::uint32_t kQueueFamilyExternal = ~std::uint32_t{0} - 1;
 
-/// @brief An 8-bit Y'CbCr 4:2:0 picture, on the host or already on the
-///        device, and the matrix and range it was coded with.
+/// @brief An 8-bit Y'CbCr 4:2:0 picture on the device, as a hardware decoder
+///        left it, and the matrix and range it was coded with.
 ///
 /// Chroma's position is given by @ref YuvImage::chroma_location, defaulting to
 /// H.265's left alignment. JPEG uses centred chroma. The planes are Y,
 /// then Cb and Cr at half size (rounded up) for I420, or Y then CbCr for
-/// NV12, whose chroma rows hold both samples of each pair. They are host
-/// memory in @ref plane or, where a decoder left its picture on the GPU,
-/// ranges of @ref device that do not overlap or the @ref image planes; one of
-/// the three.
+/// NV12, whose chroma rows hold both samples of each pair. They are ranges of
+/// @ref device that do not overlap, or the @ref image planes; one or the
+/// other.
 ///
 /// @code
 /// YuvImage image;  // a decoder's NV12 picture, left on the device
@@ -70,12 +69,8 @@ inline constexpr std::uint32_t kQueueFamilyExternal = ~std::uint32_t{0} - 1;
 /// @endcode
 struct YuvImage {
   YuvLayout layout = YuvLayout::I420;  ///< How the chroma is laid out.
-  /// The planes on the host; `plane[2]` is unused for NV12, and so null.
-  /// Held by the frame's `RgbdFrame::pixels`.
-  const std::uint8_t* plane[3] = {};
-  std::size_t stride[3] = {};  ///< Bytes per row of each plane.
-  /// Or the planes on the device: a storage buffer on the device the frame
-  /// is prepared on, holding plane `p` at byte @ref offset `[p]`.
+  /// The planes in a storage buffer on the device the frame is prepared on,
+  /// plane `p` at byte @ref offset `[p]`, @ref stride `[p]` bytes a row.
   ///
   /// Its writer must have **finished** before the frame is prepared -- a
   /// fence waited on, or the CUDA stream synchronized -- since the pass
@@ -85,6 +80,7 @@ struct YuvImage {
   /// fails holds it for good, as the device may still read it.
   std::shared_ptr<const core::Buffer> device;
   std::uint64_t offset[3] = {};  ///< Each plane's byte offset in @ref device.
+  std::size_t stride[3] = {};  ///< Bytes per row of each plane in @ref device.
   /// The queue family that wrote @ref device, which the pass takes it over
   /// from before reading: another family of the device, whose writer
   /// released the whole buffer to the pass's family, or
@@ -113,8 +109,8 @@ struct YuvImage {
 ///
 /// It holds what it points to, so a consumer may keep several -- a sensor
 /// array groups each sensor's frames by trigger before it prepares any: the
-/// host pixels through @ref pixels, a device picture through
-/// `YuvImage::device` or `YuvImage::image`. A driver's buffers go back to it
+/// depth through @ref pixels, the colour picture through `YuvImage::device` or
+/// `YuvImage::image`. A driver's buffers go back to it
 /// once every copy of the frame is gone, so a consumer that keeps frames
 /// keeps the driver's buffers from it.
 ///
@@ -125,7 +121,7 @@ struct YuvImage {
 /// frame.depth_camera = factory_depth_model;  // lens included
 /// frame.min_depth = 0.25f;
 /// frame.max_depth = 5.0f;
-/// frame.color = decoded_picture;             // Y'CbCr, host or device
+/// frame.color = decoded_picture;             // Y'CbCr, on the device
 /// frame.color_camera = factory_color_model;
 /// frame.depth_to_color = factory_extrinsic;  // depth camera -> colour camera
 /// frame.color_to_world = pose;
@@ -144,9 +140,8 @@ struct RgbdFrame {
   float min_depth = 0.0f;
   float max_depth = 0.0f;  ///< Farther samples are dropped (metres).
 
-  /// The colour picture; with none of `color.plane[0]`, `color.device` and
-  /// `color.image` set, the frame has none. Its size is @ref color_camera's.
-  /// Host planes are held by @ref pixels.
+  /// The colour picture; with neither `color.device` nor `color.image` set,
+  /// the frame has none. Its size is @ref color_camera's.
   YuvImage color{};
   camera::CameraModel color_camera;  ///< The colour camera, lens included.
   /// What the R'G'B' the matrix gives is encoded as; the pass converts only
@@ -169,14 +164,14 @@ struct RgbdFrame {
   /// counts within one capture session; it may begin again at a restart.
   std::uint64_t sequence = 0;
 
-  /// What @ref depth and the host colour planes point into, held for as long
-  /// as the frame is; null when they need no owner.
+  /// What @ref depth points into, held for as long as the frame is; null when
+  /// it needs no owner.
   std::shared_ptr<const void> pixels;
 
   /// @return `true` if this frame carries colour.
   bool has_color() const noexcept {
-    return color.plane[0] != nullptr || color.device != nullptr ||
-           color.image[0] != nullptr || color.image[1] != nullptr;
+    return color.device != nullptr || color.image[0] != nullptr ||
+           color.image[1] != nullptr;
   }
 };
 

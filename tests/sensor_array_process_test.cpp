@@ -7,6 +7,7 @@
 // without the other, an array without a device and a set of another size are
 // refused. Skips where no device is.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -41,38 +42,41 @@ namespace {
 constexpr std::uint32_t kW = 160, kH = 120;
 
 // A recording of one frame per sequence number, depth and I420 colour each
-// sensor's own pattern, which holds its pixels.
+// sensor's own pattern: the depth held by the frame, the colour in a device
+// buffer, as a decoder leaves it.
 class Recording final : public sensor::IRgbdSensor {
  public:
   Recording(std::string id, int seed) : seed_(seed) {
     info_.id = std::move(id);
   }
-  void push(std::uint64_t sequence) {
-    struct Pixels {
-      std::vector<std::uint16_t> depth;
-      std::vector<std::uint8_t> y, cb, cr;
-    };
-    auto px = std::make_shared<Pixels>();
-    px->depth.resize(std::size_t{kW} * kH);
-    for (std::size_t i = 0; i < px->depth.size(); ++i) {
-      px->depth[i] = static_cast<std::uint16_t>(800 + 37 * seed_ + i % 211);
+  vkc::Status push(std::uint64_t sequence, const vkc::Device& device,
+                   vkc::Allocator& allocator) {
+    auto depth =
+        std::make_shared<std::vector<std::uint16_t>>(std::size_t{kW} * kH);
+    for (std::size_t i = 0; i < depth->size(); ++i) {
+      (*depth)[i] = static_cast<std::uint16_t>(800 + 37 * seed_ + i % 211);
     }
-    px->y.resize(std::size_t{kW} * kH);
-    for (std::size_t i = 0; i < px->y.size(); ++i) {
-      px->y[i] = static_cast<std::uint8_t>(30 * seed_ + i % 180);
+    const std::size_t luma = std::size_t{kW} * kH;
+    const std::size_t chroma = std::size_t{kW / 2} * (kH / 2);
+    std::vector<std::uint8_t> planes(luma + 2 * chroma);
+    for (std::size_t i = 0; i < luma; ++i) {
+      planes[i] = static_cast<std::uint8_t>(30 * seed_ + i % 180);
     }
-    px->cb.assign(std::size_t{kW / 2} * (kH / 2), 110 + seed_);
-    px->cr.assign(std::size_t{kW / 2} * (kH / 2), 140 - seed_);
+    std::fill_n(planes.begin() + luma, chroma, 110 + seed_);
+    std::fill_n(planes.begin() + luma + chroma, chroma, 140 - seed_);
+    VKC_ASSIGN(vkc::Buffer buffer,
+               vr_test::upload_device_buffer(device, allocator, planes.data(),
+                                             planes.size()));
     sensor::RgbdFrame f;
-    f.depth = px->depth.data();
+    f.depth = depth->data();
     f.depth_camera = {{kW, kH},
                       {150.0, 150.0, 79.5, 59.5},
                       {-0.2, 0.05, 0.001, -0.001, 0.0, 0.03, 0.0, 0.0}};
     f.min_depth = 0.1f;
     f.max_depth = 10.0f;
-    f.color.plane[0] = px->y.data();
-    f.color.plane[1] = px->cb.data();
-    f.color.plane[2] = px->cr.data();
+    f.color.device = std::make_shared<const vkc::Buffer>(std::move(buffer));
+    f.color.offset[1] = luma;
+    f.color.offset[2] = luma + chroma;
     f.color.stride[0] = kW;
     f.color.stride[1] = f.color.stride[2] = kW / 2;
     f.color.width = kW;
@@ -83,8 +87,9 @@ class Recording final : public sensor::IRgbdSensor {
     f.depth_to_color[3] = glm::dvec4(-0.03, 0.0, 0.0, 1.0);
     f.timestamp_ns = 1000 + sequence;
     f.sequence = sequence;
-    f.pixels = px;
+    f.pixels = depth;
     frames_.push_back(std::move(f));
+    return {};
   }
   bool done = false;
 
@@ -155,7 +160,7 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   for (std::uint64_t seq = 0; seq < 3; ++seq) {
     for (std::size_t i = 0; i < recordings.size(); ++i) {
       if (seq == 1 && i == 2) continue;  // C's frame 1 never came
-      recordings[i]->push(seq);
+      CHECK(recordings[i]->push(seq, device, allocator).ok());
     }
   }
   for (Recording* r : recordings) r->done = true;
