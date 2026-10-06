@@ -100,7 +100,7 @@ add_subdirectory(utils)
 add_subdirectory(array)
 
 # The FFmpeg-backed video decoder; see video/CMakeLists.txt. Ahead of the Orbbec
-# driver, which decodes its H.265 colour with it when it is built.
+# driver, which decodes its cameras' colour with it.
 if(VR_WITH_FFMPEG)
   add_subdirectory(video)
 endif()

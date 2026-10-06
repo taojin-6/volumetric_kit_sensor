@@ -21,7 +21,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/export.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
+#include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
 
@@ -34,7 +34,7 @@ namespace volumetric_kit::recon::sensor {
 /// factory model and the factory depth-to-colour extrinsic (its rotation
 /// made one; the 2026-10-06 sensor-frame decision). Nothing on the host
 /// undistorts, registers or converts: `sensor/utils`'s GPU pass does. Either
-/// codec is decoded here, so this needs a build with VR_WITH_FFMPEG.
+/// codec is decoded here, by the video decoders VR_WITH_ORBBEC builds with.
 ///
 /// A frame holds the SDK pair it was read from, so it outlives the next
 /// poll; the SDK has the pair's buffers back once every copy of the frame is
@@ -57,15 +57,14 @@ namespace volumetric_kit::recon::sensor {
 class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
  public:
   /// @brief Which camera, which streams, and where it sits.
-  ///
-  /// `OrbbecStreamOptions::raw` is ignored: this sensor's frames are always
-  /// as captured.
   struct Options : OrbbecStreamOptions {
     /// Serial number of the camera to open. Empty opens the only camera that
     /// answers, after waiting out all of @ref discovery_timeout_ms, and is
     /// refused when more than one does.
     std::string serial;
-    /// How long @ref open re-queries the network for the camera.
+    /// How long @ref open re-queries the network for the camera. An Ethernet
+    /// camera can take seconds to answer from cold, so one query is not proof
+    /// of absence.
     std::uint32_t discovery_timeout_ms = 8000;
     /// The colour camera's frame to the world's, stamped on every frame as
     /// `RgbdFrame::color_to_world`; rigid. Identity places the world at the
@@ -78,20 +77,36 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
     /// camera's alone, and before it streams, so no timestamp steps; its
     /// clock drifts from the host's from then on, until the next start.
     bool sync_clock_to_host = false;
-    /// As `OrbbecCapture::Options::configure_sdk_logging`.
+    /// Switch off the SDK's log file (it writes `./Log/` at DEBUG by default)
+    /// and route its console sink at WARN, at @ref open, and set FFmpeg's log
+    /// level to ERROR at the first @ref start. Process-wide: the SDK and
+    /// FFmpeg have one logger each, so an application configuring either
+    /// itself turns this off.
     bool configure_sdk_logging = true;
   };
 
   /// @brief Find the camera, check it can stream the requested modes, and
   ///        read its factory calibration. Does not start streaming.
   /// @param options  The camera and its streams.
-  /// @return The sensor; or what `OrbbecCapture::open` returns for these
-  ///         streams opened raw -- `Status::Code::InvalidArgument` for
-  ///         options refused before the camera is looked for, among them a
-  ///         `min_depth` of 0, which the GPU pass would refuse, and a
-  ///         @ref Options::color_to_world that is not rigid -- and
-  ///         `Status::Code::Unsupported` for a camera in a sync mode this
-  ///         driver does not know.
+  /// @return The sensor, not yet started; or:
+  ///         - `Status::Code::InvalidArgument` for options refused before the
+  ///           camera is looked for -- a zero size or rate, a depth range
+  ///           that is not finite, empty or starts at 0 (which the GPU pass
+  ///           would refuse), a @ref Options::color_to_world that is not
+  ///           rigid -- or an empty @ref Options::serial with more than one
+  ///           camera answering within the discovery window;
+  ///         - `Status::Code::NotFound` if no camera (or not the named one)
+  ///           answered within @ref Options::discovery_timeout_ms, naming the
+  ///           cameras that did;
+  ///         - `Status::Code::Unsupported` if the camera has no depth or
+  ///           colour mode matching the options (the modes it offers are
+  ///           listed), reports its image mirrored, flipped or rotated, is in
+  ///           software-triggering mode or a sync mode this driver does not
+  ///           know, reports a lens model the GPU pass cannot undistort, or
+  ///           its colour mode on the wire reports a calibration other than
+  ///           its RGB mode's;
+  ///         - `Status::Code::IoError` for any other SDK failure, with the
+  ///           SDK's message.
   static core::Result<OrbbecSensor> open(const Options& options);
 
   OrbbecSensor(OrbbecSensor&& other) noexcept;
@@ -105,7 +120,7 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   /// @return The driver's own counters, which split `SensorStats::failed`
   ///         into failed and lost and count the pictures a device-bound
   ///         stream handed out on the host.
-  OrbbecCaptureStats orbbec_stats() const noexcept;
+  OrbbecStreamStats orbbec_stats() const noexcept;
 
   /// @return What the sensor is: its serial, its cameras' factory models at
   ///         the opened modes, the factory extrinsic, its rig role, its
@@ -114,10 +129,13 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   /// @return As `IRgbdSensor::set_queue_depth`; also
   ///         `Status::Code::InvalidArgument` on a moved-from sensor.
   core::Status set_queue_depth(std::size_t frames) override;
-  /// @return OK once streaming; `Status::Code::InvalidArgument` on a
-  ///         moved-from sensor; or what `OrbbecCapture::start` returns, and
-  ///         `Status::Code::IoError` if the camera cannot sync its clock
-  ///         (@ref Options::sync_clock_to_host).
+  /// @return OK once streaming, and if already streaming;
+  ///         `Status::Code::InvalidArgument` on a moved-from sensor;
+  ///         `Status::Code::IoError` if the SDK refuses, the camera has
+  ///         disconnected or cannot sync its clock
+  ///         (@ref Options::sync_clock_to_host), or the colour decoder will
+  ///         not open or its thread will not start; and
+  ///         `Status::Code::Unsupported` if FFmpeg has no HEVC decoder.
   core::Status start() override;
   /// @brief As `IRgbdSensor::stop`, letting go of the frames waiting for
   ///        the colour decoder too. The camera stays open, for another

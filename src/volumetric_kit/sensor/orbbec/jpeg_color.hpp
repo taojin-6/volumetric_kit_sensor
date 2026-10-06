@@ -3,14 +3,13 @@
 
 #pragma once
 
-// Internal (not installed), and built only with the video decoders: one
-// camera's MJPEG colour for a raw stream, decoded on a thread of its own
-// before the mailbox, onto the GPU pass's device where nvJPEG or VideoToolbox
-// takes the JPEG, in software to I420 planes otherwise. On its own thread, so
-// a rig's cameras decode at once rather than one after another on the
-// polling thread. A JPEG depends on no other frame, so, unlike H.265's, a
-// pair lost here costs only itself, and a decoder slower than the camera
-// skips pairs rather than falling behind.
+// Internal (not installed): one camera's MJPEG colour, decoded on a thread of
+// its own before the mailbox, onto the GPU pass's device where nvJPEG or
+// VideoToolbox takes the JPEG, in software to I420 planes otherwise. On its
+// own thread, so a rig's cameras decode at once rather than one after another
+// on the polling thread. A JPEG depends on no other frame, so, unlike
+// H.265's, a pair lost here costs only itself, and a decoder slower than the
+// camera skips pairs rather than falling behind.
 
 #include <atomic>
 #include <condition_variable>

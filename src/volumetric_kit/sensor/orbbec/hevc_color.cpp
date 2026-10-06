@@ -3,7 +3,6 @@
 
 #include "hevc_color.hpp"
 
-#include <cstring>
 #include <memory>
 #include <system_error>
 #include <utility>
@@ -44,20 +43,12 @@ core::Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
   d->options_ = options;
   d->sink_ = std::move(sink);
   HevcDecoder::Options decoding;
-  decoding.layout =
-      options.yuv ? VideoPixelLayout::Yuv420 : VideoPixelLayout::Rgb24;
-  // One thread, so no picture is held back. That leaves software decoding
-  // little headroom at 4K25 (the 2026-09-28 decision).
-  // TODO(sensor): frame threads in software alone, or the host path's
-  // conversion on the GPU as the raw path's is, once a host without a
-  // hardware HEVC
-  // decoder needs 4K.
+  decoding.layout = VideoPixelLayout::Yuv420;
+  // One thread, so no picture is held back.
   decoding.threads = 1;
   decoding.unlabelled_color = kFemtoMegaHevcColor;
-  if (options.yuv) {
-    decoding.device = options.device;
-    decoding.allocator = options.allocator;
-  }
+  decoding.device = options.device;
+  decoding.allocator = options.allocator;
   decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
   decoding.label = options.who;
   auto decoder = HevcDecoder::create(decoding);
@@ -118,7 +109,6 @@ void HevcColorDecoder::stop() noexcept {
   // session. Nothing reads them once the thread is gone.
   in_flight_.clear();
   decoder_.reset();
-  options_.rgb_profile.reset();
 }
 
 void HevcColorDecoder::run() {
@@ -221,31 +211,10 @@ void HevcColorDecoder::hand_on(const DecodedPicture& picture) {
     return;
   }
 
-  const auto color = pair->getColorFrame();
-  // A frame allocated and copied per picture: 0.5 ms at 4K against the
-  // decode's 24 (the 2026-09-28 decision).
-  std::shared_ptr<ob::Frame> rgb;
-  if (options_.yuv) {
-    // For the GPU pass: the picture on the device where the hardware left it,
-    // else its planes.
-    rgb = raw_color_frame(picture);
-  } else {
-    const std::size_t row = 3u * picture.width;
-    auto frame = ob::FrameFactory::createVideoFrame(
-        OB_FRAME_COLOR, OB_FORMAT_RGB, picture.width, picture.height,
-        static_cast<std::uint32_t>(row));
-    std::uint8_t* out = frame->getData();
-    for (std::uint32_t y = 0; y < picture.height; ++y) {
-      std::memcpy(out + y * row, picture.plane[0] + y * picture.stride[0], row);
-    }
-    rgb = frame;
-  }
-  // Not on an I420 frame: the profile would restamp its format as RGB, and
-  // the raw path takes its cameras from the profiles at open instead.
-  if (options_.rgb_profile != nullptr && !options_.yuv) {
-    rgb->setStreamProfile(options_.rgb_profile);
-  }
-  sink_(rebuilt_pair(pair->getDepthFrame(), *color, std::move(rgb)));
+  // For the GPU pass: the picture on the device where the hardware left it,
+  // else its planes.
+  sink_(rebuilt_pair(pair->getDepthFrame(), *pair->getColorFrame(),
+                     raw_color_frame(picture)));
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec
