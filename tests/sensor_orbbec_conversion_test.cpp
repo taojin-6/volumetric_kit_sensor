@@ -273,6 +273,15 @@ int test_validate() {
   const auto opened = sensor::OrbbecCapture::open(o);
   CHECK(!opened.ok());
   CHECK(invalid(opened.status()));
+#if !VR_TEST_HEVC
+  // Without the decoders, H.265 colour is refused before discovery, which
+  // would otherwise wait for a camera that is not there.
+  o = Options{};
+  o.serial = "not-a-camera";
+  o.color_codec = sensor::OrbbecColorCodec::Hevc;
+  CHECK(sensor::OrbbecCapture::open(o).status().domain() ==
+        vkc::Status::Code::Unsupported);
+#endif
   return 0;
 }
 
