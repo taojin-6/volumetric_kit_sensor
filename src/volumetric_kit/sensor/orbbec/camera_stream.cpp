@@ -241,7 +241,7 @@ void Mailbox::on_devices_changed(const std::string& serial,
 
 core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
-    const OrbbecStreamOptions& streams, const Mat4f& cam_to_world,
+    const OrbbecStreamOptions& streams, const camera::Mat4d& cam_to_world,
     bool configure_logging, const std::string& who) {
   std::unique_ptr<CameraStream> s(new CameraStream());
   s->fps_ = streams.fps;
@@ -354,7 +354,8 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     // the first pair of every start.
     const OBCameraIntrinsic intrinsic =
         s->color_profile_->as<ob::VideoStreamProfile>()->getIntrinsic();
-    VKC_ASSIGN(s->color_camera_, color_camera_from(intrinsic, cam_to_world));
+    VKC_ASSIGN(s->color_camera_,
+               color_camera_from(intrinsic, Mat4f(cam_to_world)));
     if (s->color_camera_.width != streams.color_width ||
         s->color_camera_.height != streams.color_height) {
       return core::Status::io_error(
@@ -401,22 +402,22 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
       const auto depth_video = s->depth_profile_->as<ob::VideoStreamProfile>();
       const auto color_video = s->color_profile_->as<ob::VideoStreamProfile>();
       VKC_ASSIGN(s->raw_depth_camera_,
-                 lens_camera_from(depth_video->getIntrinsic(),
-                                  depth_video->getDistortion(), "depth"));
+                 camera_model_from(depth_video->getIntrinsic(),
+                                   depth_video->getDistortion(), "depth"));
       VKC_ASSIGN(s->raw_color_camera_,
-                 lens_camera_from(color_video->getIntrinsic(),
-                                  color_video->getDistortion(), "colour"));
-      if (s->raw_depth_camera_.width != streams.depth_width ||
-          s->raw_depth_camera_.height != streams.depth_height) {
+                 camera_model_from(color_video->getIntrinsic(),
+                                   color_video->getDistortion(), "colour"));
+      if (s->raw_depth_camera_.size.width != streams.depth_width ||
+          s->raw_depth_camera_.size.height != streams.depth_height) {
         return core::Status::io_error(
             s->who_ +
             " reports depth intrinsics for another size "
             "than the mode it opened");
       }
-      s->raw_color_pose_ = cam_to_world;
-      s->raw_depth_pose_ =
-          cam_to_world *
-          transform_from(s->depth_profile_->getExtrinsicTo(s->color_profile_));
+      s->raw_color_to_world_ = cam_to_world;
+      VKC_ASSIGN(
+          s->raw_depth_to_color_,
+          transform_from(s->depth_profile_->getExtrinsicTo(s->color_profile_)));
       s->min_depth_ = streams.min_depth;
       s->max_depth_ = streams.max_depth;
       s->raw_ = true;
@@ -594,7 +595,6 @@ void CameraStream::stop() noexcept {
   }
   depth_metres_.clear();
   color_packed_.clear();
-  held_.reset();
 }
 
 void CameraStream::set_queue_depth(std::size_t depth) {
@@ -790,7 +790,7 @@ core::Result<std::optional<CapturedFrame>> CameraStream::process(
   return ICameraCapture::some_frame(frame);
 }
 
-core::Result<std::optional<RawFrame>> CameraStream::process_raw(
+core::Result<std::optional<RgbdFrame>> CameraStream::process_raw(
     const std::shared_ptr<ob::FrameSet>& pair) {
 #if !VR_ORBBEC_WITH_VIDEO
   // open refuses raw frames without the decoder whose planes they carry.
@@ -806,10 +806,10 @@ core::Result<std::optional<RawFrame>> CameraStream::process_raw(
     return why;
   };
   const auto skip =
-      [this](const std::string& why) -> core::Result<std::optional<RawFrame>> {
+      [this](const std::string& why) -> core::Result<std::optional<RgbdFrame>> {
     ++failed_;
     if (++failed_in_a_row_ < kMaxFailedPairsInARow) {
-      return std::optional<RawFrame>();
+      return std::optional<RgbdFrame>();
     }
     return core::Status::io_error(who_ + ": " +
                                   std::to_string(failed_in_a_row_) +
@@ -817,8 +817,7 @@ core::Result<std::optional<RawFrame>> CameraStream::process_raw(
                                   "last: " +
                                   why);
   };
-  held_.reset();
-  RawFrame frame;
+  RgbdFrame frame;
   bool host_color = false;  // colour on the host, not left on the device
   try {
     const auto depth = pair->getDepthFrame();
@@ -826,8 +825,8 @@ core::Result<std::optional<RawFrame>> CameraStream::process_raw(
     if (depth == nullptr || color == nullptr) {
       return skip("a pair is missing its depth or colour frame");
     }
-    const LensCamera& d = raw_depth_camera_;
-    const LensCamera& c = raw_color_camera_;
+    const camera::ImageSize& d = raw_depth_camera_.size;
+    const camera::ImageSize& c = raw_color_camera_.size;
     const auto dv = depth->as<ob::VideoFrame>();
     // A picture left on the device has a size of its own; other colour is a
     // video frame of it.
@@ -867,8 +866,7 @@ core::Result<std::optional<RawFrame>> CameraStream::process_raw(
     }
     frame.depth = reinterpret_cast<const std::uint16_t*>(depth->getData());
     frame.metres_per_unit = value_scale / 1000.0f;  // mm per unit
-    frame.depth_camera = d;
-    frame.depth_cam_to_world = raw_depth_pose_;
+    frame.depth_camera = raw_depth_camera_;
     frame.min_depth = min_depth_;
     frame.max_depth = max_depth_;
     // The matrix, range and encoding the decoder resolved: the stream's own
@@ -926,18 +924,26 @@ core::Result<std::optional<RawFrame>> CameraStream::process_raw(
                            ? std::optional<ColorEncoding>(described->encoding)
                            : std::nullopt));
     }
-    frame.color_camera = c;
-    frame.color_cam_to_world = raw_color_pose_;
+    frame.color_camera = raw_color_camera_;
+    frame.color_to_world = raw_color_to_world_;
+    frame.depth_to_color = raw_depth_to_color_;
     frame.timestamp_ns = depth->getTimeStampUs() * 1000;
+    frame.sequence = depth->getIndex();
   } catch (const std::exception& e) {  // ob::Error is one
     return skip(std::string("the SDK failed on it: ") + e.what());
   }
-  held_ = pair;
+  // Depth and host planes point into the pair. The context comes too, so a
+  // frame kept past the stream releases its pair before the SDK goes.
+  struct Held {
+    std::shared_ptr<ob::Context> context;
+    std::shared_ptr<ob::FrameSet> pair;  // destroyed first
+  };
+  frame.pixels = std::make_shared<Held>(Held{context_, pair});
   failed_in_a_row_ = 0;
   ++delivered_;
   host_picture_delivered_ = vulkan_device_ != nullptr && host_color;
   if (host_picture_delivered_) ++host_pictures_;
-  return std::optional<RawFrame>(frame);
+  return std::optional<RgbdFrame>(std::move(frame));
 #endif
 }
 

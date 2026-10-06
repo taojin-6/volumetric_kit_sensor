@@ -175,10 +175,9 @@ int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
   CHECK(planes.plane[1].size() ==
         std::size_t{(p.width + 1) / 2} * ((p.height + 1) / 2));
   CHECK(planes.plane[2].size() == planes.plane[1].size());
-  sensor::RawFrame raw;
-  raw.depth_camera.width = p.width;
-  raw.depth_camera.height = p.height;
-  raw.depth_camera.fx = raw.depth_camera.fy = 256.0f;
+  sensor::RgbdFrame raw;
+  raw.depth_camera.size = {p.width, p.height};
+  raw.depth_camera.intrinsics.fx = raw.depth_camera.intrinsics.fy = 256.0;
   raw.color_camera = raw.depth_camera;
   std::vector<std::uint16_t> depth(std::size_t{p.width} * p.height, 1000);
   raw.depth = depth.data();

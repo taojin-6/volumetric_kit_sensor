@@ -84,6 +84,19 @@ int test_rodrigues() {
   return 0;
 }
 
+int test_nearest_rotation() {
+  const camera::Mat3d r = camera::rotation_from_rodrigues({0.11, -0.02, 0.03});
+  CHECK(near(camera::nearest_rotation(r), r, 1e-15));
+  // A rotation with a row scaled, as an SDK's factory extrinsic arrives:
+  // the nearest rotation is the rotation itself.
+  camera::Mat3d scaled = r;
+  for (int c = 0; c < 3; ++c) scaled[c][0] *= 0.9939;
+  CHECK(near(camera::nearest_rotation(scaled), r, 1e-12));
+  camera::Mat4d m(camera::nearest_rotation(scaled));
+  CHECK(camera::check_rigid(m).ok());
+  return 0;
+}
+
 int test_extrinsic_is_world_to_camera() {
   // OpenCV's extrinsic of a camera turned 90 degrees about +Y, tvec (0, 0, 2):
   // x_camera = R x_world + t, so the camera sits at -R^T t = (2, 0, 0), and a
@@ -107,6 +120,7 @@ int main() {
   if (test_check_rigid() != 0) return 1;
   if (test_rigid_inverse() != 0) return 1;
   if (test_rodrigues() != 0) return 1;
+  if (test_nearest_rotation() != 0) return 1;
   if (test_extrinsic_is_world_to_camera() != 0) return 1;
   std::printf("camera geometry tests passed\n");
   return 0;

@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// The device mirror of sensor/lens.hpp: a camera before undistortion, and the
-// forward lens model both undistortion passes sample through. Keep in
-// lockstep with sensor::distort_normalized; tests/sensor_gpu_frame_prep_test
-// holds the passes to a host reference built on it.
+// The device mirror of camera/projection.hpp: a camera before undistortion,
+// narrowed to float, and the forward lens model both undistortion passes
+// sample through. Keep in lockstep with camera::distort_rational;
+// tests/sensor_gpu_frame_prep_test holds the passes to a host reference built
+// on it.
 
 #ifndef VR_SENSOR_LENS_GLSL
 #define VR_SENSOR_LENS_GLSL
 
 #extension GL_EXT_scalar_block_layout : require
 
-// sensor::LensCamera, under scalar layout: 14 four-byte fields, 56 bytes.
+// A camera::CameraModel narrowed to float (gpu_frame_prep.cpp's LensParams),
+// under scalar layout: 14 four-byte fields, 56 bytes.
 struct LensCamera {
   float fx;
   float fy;

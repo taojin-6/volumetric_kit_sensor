@@ -22,12 +22,14 @@
 #include <libobsensor/ObSensor.hpp>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/recon/camera/camera_model.hpp"
+#include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/camera_params.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/camera_capture.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
-#include "volumetric_kit/recon/sensor/raw_frame.hpp"
+#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
 
@@ -95,7 +97,7 @@ class CameraStream {
   // the first start, for a stream decoded here (H.265, or raw).
   static core::Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
-      const OrbbecStreamOptions& streams, const Mat4f& cam_to_world,
+      const OrbbecStreamOptions& streams, const camera::Mat4d& cam_to_world,
       bool configure_logging, const std::string& who);
 
   CameraStream(const CameraStream&) = delete;
@@ -152,11 +154,11 @@ class CameraStream {
   core::Result<std::optional<CapturedFrame>> process(
       const std::shared_ptr<ob::FrameSet>& pair);
   // A pair as the cameras captured it, for a stream opened raw: raw depth and
-  // the decoded colour, each camera's lens and pose. The colour is the
-  // picture the hardware left on the device, which the frame holds itself,
-  // or I420 host planes. Depth and host planes point into the pair, which is
-  // held until the next call or stop().
-  core::Result<std::optional<RawFrame>> process_raw(
+  // the decoded colour, each camera's model and the colour camera's pose. The
+  // colour is the picture the hardware left on the device, or I420 host
+  // planes. Depth and host planes point into the pair, which the frame holds
+  // with the SDK context, so it may outlive the stream.
+  core::Result<std::optional<RgbdFrame>> process_raw(
       const std::shared_ptr<ob::FrameSet>& pair);
   bool raw() const noexcept { return raw_; }
 
@@ -219,16 +221,14 @@ class CameraStream {
   std::vector<float> depth_metres_;
   std::vector<std::uint32_t> color_packed_;
 
-  // A raw stream's cameras (OrbbecStreamOptions::raw), and the pair the last
-  // raw frame points into.
+  // A raw stream's cameras (OrbbecStreamOptions::raw) and poses.
   bool raw_ = false;
-  LensCamera raw_depth_camera_{};
-  LensCamera raw_color_camera_{};
-  Mat4f raw_depth_pose_ = Mat4f(1.0f);
-  Mat4f raw_color_pose_ = Mat4f(1.0f);
+  camera::CameraModel raw_depth_camera_;
+  camera::CameraModel raw_color_camera_;
+  camera::Mat4d raw_color_to_world_ = camera::Mat4d(1.0);
+  camera::Mat4d raw_depth_to_color_ = camera::Mat4d(1.0);
   float min_depth_ = 0.0f;
   float max_depth_ = 0.0f;
-  std::shared_ptr<ob::FrameSet> held_;
 };
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

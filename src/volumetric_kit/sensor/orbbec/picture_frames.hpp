@@ -17,7 +17,7 @@
 #include <libobsensor/ObSensor.hpp>
 
 #include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/sensor/raw_frame.hpp"
+#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {

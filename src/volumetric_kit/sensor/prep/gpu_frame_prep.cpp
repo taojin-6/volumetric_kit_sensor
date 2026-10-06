@@ -56,20 +56,6 @@ static_assert(sizeof(OverlapParams) == 56 + 64, "OverlapParams layout drift");
 static_assert(offsetof(OverlapParams, depth_to_color) == 56,
               "OverlapParams layout drift");
 
-// The rigid inverse of `m`: its rotation transposed, its translation turned
-// back through it.
-Mat4f rigid_inverse(const Mat4f& m) {
-  Mat4f inv(1.0f);
-  for (int c = 0; c < 3; ++c) {
-    for (int r = 0; r < 3; ++r) inv[c][r] = m[r][c];
-  }
-  for (int r = 0; r < 3; ++r) {
-    inv[3][r] =
-        -(inv[0][r] * m[3][0] + inv[1][r] * m[3][1] + inv[2][r] * m[3][2]);
-  }
-  return inv;
-}
-
 struct ColorParams {
   LensParams cam;
   std::uint32_t y_offset;
@@ -89,41 +75,59 @@ static_assert(sizeof(ColorParams) == 104, "ColorParams layout drift");
 static_assert(offsetof(ColorParams, chroma_x) == 96,
               "ColorParams layout drift");
 
-// raw_frame.hpp spells Vulkan's special queue families without Vulkan.
+// rgbd_frame.hpp spells Vulkan's special queue families without Vulkan.
 static_assert(kQueueFamilyIgnored == VK_QUEUE_FAMILY_IGNORED,
               "kQueueFamilyIgnored must be VK_QUEUE_FAMILY_IGNORED");
 static_assert(kQueueFamilyExternal == VK_QUEUE_FAMILY_EXTERNAL,
               "kQueueFamilyExternal must be VK_QUEUE_FAMILY_EXTERNAL");
 
-LensParams lens_params(const LensCamera& c) noexcept {
-  const LensDistortion& d = c.lens;
-  return LensParams{c.fx, c.fy, c.cx, c.cy, c.width, c.height, d.k1,
-                    d.k2, d.p1, d.p2, d.k3, d.k4,    d.k5,     d.k6};
+// The model as the shaders read it: narrowed to float once, here.
+LensParams lens_params(const camera::CameraModel& c) noexcept {
+  const camera::PinholeIntrinsics& k = c.intrinsics;
+  const camera::RationalDistortion& d = c.distortion;
+  const auto f = [](double v) { return static_cast<float>(v); };
+  return LensParams{f(k.fx),       f(k.fy), f(k.cx), f(k.cy), c.size.width,
+                    c.size.height, f(d.k1), f(d.k2), f(d.p1), f(d.p2),
+                    f(d.k3),       f(d.k4), f(d.k5), f(d.k6)};
 }
 
 bool finite(float v) noexcept { return std::isfinite(v); }
 
-// A camera the pass can undistort: a non-empty image, positive finite focal
-// lengths, and a finite principal point and lens.
-core::Status check_camera(const char* what, const LensCamera& c) {
-  const LensDistortion& d = c.lens;
-  if (c.width == 0 || c.height == 0) {
+// A camera the pass can undistort: camera::check_camera_model's checks, and
+// every value within float's range, as the shaders read it -- compared before
+// narrowing, which past that range is undefined -- with focal lengths that
+// stay positive once narrowed.
+core::Status check_camera(const char* what, const camera::CameraModel& c) {
+  const core::Status valid = camera::check_camera_model(c);
+  if (!valid.ok()) {
     return core::Status::invalid_argument(std::string("GpuFramePrep: the ") +
-                                          what + " camera has an empty image");
+                                          what + " " + valid.message());
   }
-  if (!(finite(c.fx) && c.fx > 0.0f && finite(c.fy) && c.fy > 0.0f &&
-        finite(c.cx) && finite(c.cy))) {
-    return core::Status::invalid_argument(
-        std::string("GpuFramePrep: the ") + what +
-        " camera's intrinsics are not finite and "
-        "positive");
-  }
-  for (const float k : {d.k1, d.k2, d.p1, d.p2, d.k3, d.k4, d.k5, d.k6}) {
-    if (!finite(k)) {
+  const camera::PinholeIntrinsics& k = c.intrinsics;
+  const camera::RationalDistortion& d = c.distortion;
+  for (const double v : {k.fx, k.fy, k.cx, k.cy, d.k1, d.k2, d.p1, d.p2, d.k3,
+                         d.k4, d.k5, d.k6}) {
+    if (std::fabs(v) > std::numeric_limits<float>::max()) {
       return core::Status::invalid_argument(std::string("GpuFramePrep: the ") +
                                             what +
-                                            " camera's lens is not finite");
+                                            " camera is past float's range");
     }
+  }
+  const LensParams p = lens_params(c);
+  if (!(p.fx > 0.0f && p.fy > 0.0f)) {
+    return core::Status::invalid_argument(
+        std::string("GpuFramePrep: the ") + what +
+        " camera's focal lengths narrow to 0 in float");
+  }
+  return {};
+}
+
+// A pose the pass can apply; `what` names it in the error.
+core::Status check_pose(const char* what, const camera::Mat4d& pose) {
+  const core::Status rigid = camera::check_rigid(pose);
+  if (!rigid.ok()) {
+    return core::Status::invalid_argument(std::string("GpuFramePrep: ") + what +
+                                          ": " + rigid.message());
   }
   return {};
 }
@@ -190,10 +194,10 @@ bool plane_fits(std::uint64_t offset, std::uint64_t stride, std::uint64_t rows,
   return rows <= 1 || rows - 1 <= (size - offset - row_bytes) / stride;
 }
 
-core::Result<DepthLayout> check_depth(const RawFrame& frame,
+core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
                                       std::uint64_t max_pixels,
                                       VkDeviceSize max_range) {
-  const LensCamera& cam = frame.depth_camera;
+  const camera::CameraModel& cam = frame.depth_camera;
   if (frame.depth == nullptr) {
     return core::Status::invalid_argument(
         "GpuFramePrep: the frame has no depth");
@@ -205,7 +209,7 @@ core::Result<DepthLayout> check_depth(const RawFrame& frame,
   }
   // 0 is the pass's "no return", where the sensor had none and where the lens
   // maps outside the image, so a range reaching it would fuse those pixels
-  // as a surface at the camera; and a range left at RawFrame's zeros would
+  // as a surface at the camera; and a range left at RgbdFrame's zeros would
   // quietly fuse nothing.
   if (!(finite(frame.min_depth) && finite(frame.max_depth) &&
         frame.min_depth > 0.0f && frame.min_depth < frame.max_depth)) {
@@ -214,7 +218,9 @@ core::Result<DepthLayout> check_depth(const RawFrame& frame,
         ", " + std::to_string(frame.max_depth) +
         "] m must be finite, with 0 < min_depth < max_depth");
   }
-  const std::uint64_t pixels = std::uint64_t{cam.width} * cam.height;
+  VKC_TRY(check_pose("color_to_world", frame.color_to_world));
+  VKC_TRY(check_pose("depth_to_color", frame.depth_to_color));
+  const std::uint64_t pixels = std::uint64_t{cam.size.width} * cam.size.height;
   if (pixels > max_pixels) {
     return core::Status::invalid_argument(
         "GpuFramePrep: the depth image is past a single dispatch");
@@ -263,11 +269,11 @@ core::Status check_images(const YuvImage& image) {
   return {};
 }
 
-core::Result<ColorLayout> check_color(const RawFrame& frame,
+core::Result<ColorLayout> check_color(const RgbdFrame& frame,
                                       std::uint64_t max_pixels,
                                       VkDeviceSize max_range,
                                       VkDeviceSize offset_alignment) {
-  const LensCamera& cam = frame.color_camera;
+  const camera::ImageSize& cam = frame.color_camera.size;
   const YuvImage& image = frame.color;
   if (static_cast<unsigned>(image.chroma_location) >
       static_cast<unsigned>(ChromaLocation::Bottom)) {
@@ -281,7 +287,7 @@ core::Result<ColorLayout> check_color(const RawFrame& frame,
         "GpuFramePrep: converts colour from the canonical encoding only (sRGB "
         "or BT.709 transfer, BT.709 primaries)");
   }
-  VKC_TRY(check_camera("colour", cam));
+  VKC_TRY(check_camera("colour", frame.color_camera));
   if (image.width != cam.width || image.height != cam.height) {
     return core::Status::invalid_argument(
         "GpuFramePrep: the colour picture is " + std::to_string(image.width) +
@@ -454,7 +460,7 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
   return prep;
 }
 
-core::Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
+core::Result<DeviceFrame> GpuFramePrep::prepare(const RgbdFrame& frame,
                                                 core::StageMetrics* metrics) {
   core::GpuStageScope stage(metrics, gpu_timer_, "frame prep");
   if (!valid()) {
@@ -556,9 +562,8 @@ core::Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
   // colour camera and the depth-to-colour transform, written inline.
   const bool within_color = config_.depth_within_color && frame.has_color();
   if (within_color) {
-    const OverlapParams overlap{
-        lens_params(frame.color_camera),
-        rigid_inverse(frame.color_cam_to_world) * frame.depth_cam_to_world};
+    const OverlapParams overlap{lens_params(frame.color_camera),
+                                Mat4f(frame.depth_to_color)};
     VKC_TRY(batch.upload(overlap_, 0, &overlap, sizeof(overlap)));
   }
   const DepthParams depth_params{lens_params(frame.depth_camera),
@@ -610,7 +615,9 @@ core::Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
     return submitted;
   }
 
-  const LensCamera& d = frame.depth_camera;
+  // The pinhole cameras of the undistorted images, narrowed as the passes
+  // read them, each posed: the depth camera through the sensor's extrinsic.
+  const LensParams d = lens_params(frame.depth_camera);
   DeviceFrame out;
   out.depth = depth_out_;
   out.depth_camera.fx = d.fx;
@@ -621,12 +628,13 @@ core::Result<DeviceFrame> GpuFramePrep::prepare(const RawFrame& frame,
   out.depth_camera.max_depth = frame.max_depth;
   out.depth_camera.width = d.width;
   out.depth_camera.height = d.height;
-  out.depth_camera.cam_to_world = frame.depth_cam_to_world;
+  out.depth_camera.cam_to_world =
+      Mat4f(frame.color_to_world * frame.depth_to_color);
   if (frame.has_color()) {
-    const LensCamera& c = frame.color_camera;
+    const LensParams c = lens_params(frame.color_camera);
     out.color = color_out_;
     out.color_camera = ColorCameraParams{
-        c.fx, c.fy, c.cx, c.cy, c.width, c.height, frame.color_cam_to_world};
+        c.fx, c.fy, c.cx, c.cy, c.width, c.height, Mat4f(frame.color_to_world)};
     out.color_encoding = frame.color_encoding;
   }
   out.timestamp_ns = frame.timestamp_ns;
@@ -663,7 +671,7 @@ core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
 
 core::Result<std::vector<std::optional<DeviceFrame>>> prepare_set(
     std::vector<GpuFramePrep>& preps,
-    const std::vector<std::optional<RawFrame>>& frames) {
+    const std::vector<std::optional<RgbdFrame>>& frames) {
   if (preps.size() < frames.size()) {
     return core::Status::invalid_argument(
         "prepare_set: " + std::to_string(frames.size()) + " frames for " +

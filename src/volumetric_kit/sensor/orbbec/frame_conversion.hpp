@@ -15,9 +15,10 @@
 #include <libobsensor/h/ObTypes.h>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/recon/camera/camera_model.hpp"
+#include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/camera_params.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
-#include "volumetric_kit/recon/sensor/lens.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_rig.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
@@ -39,14 +40,16 @@ core::Result<ColorCameraParams> color_camera_from(
 /// them; its modified, inverse and Kannala-Brandt models are refused as
 /// `Unsupported`, since the pass samples through that one model. @p what names
 /// the stream, in the errors too.
-core::Result<LensCamera> lens_camera_from(const OBCameraIntrinsic& intrinsic,
-                                          const OBCameraDistortion& distortion,
-                                          const std::string& what);
+core::Result<camera::CameraModel> camera_model_from(
+    const OBCameraIntrinsic& intrinsic, const OBCameraDistortion& distortion,
+    const std::string& what);
 
 /// The SDK's extrinsic from one stream to another (`p_to = R p_from + t`,
 /// `rot` row-major, `trans` in millimetres) as the transform that takes a point
-/// in the first camera's frame to the second's, in metres.
-Mat4f transform_from(const OBExtrinsic& extrinsic) noexcept;
+/// in the first camera's frame to the second's, in metres, its rotation made
+/// one (`camera::nearest_rotation`): the SDK's need not be. Refused when it
+/// does not come out rigid, as from a zeroed or reflected matrix.
+core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic);
 
 /// Whether @p intrinsic is the pinhole camera @p cam: fx, fy, cx and cy each
 /// within @p tol pixels. Tested for agreement rather than for a difference, so
@@ -84,8 +87,8 @@ std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
                                           const OrbbecSyncSettings& actual);
 
 /// Everything about @p options that can be refused without a camera: sizes and
-/// rate, the depth range, the pose. The first check @ref OrbbecCapture::open
-/// makes, before it touches the SDK.
+/// rate, the depth range, a pose that is not rigid. The first check
+/// @ref OrbbecCapture::open makes, before it touches the SDK.
 core::Status validate(const OrbbecCapture::Options& options);
 
 /// The same for a rig, plus what only a rig has: at least two cameras, a
