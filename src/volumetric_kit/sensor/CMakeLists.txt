@@ -24,8 +24,9 @@ set(_vr_sensor_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 add_library(recon_sensor)
 add_library(volumetric_kit::recon_sensor ALIAS recon_sensor)
 
-target_sources(recon_sensor PRIVATE camera_conventions.cpp
-                                    color_conventions.cpp rgbd_sensor.cpp)
+target_sources(
+  recon_sensor PRIVATE camera_conventions.cpp color_conventions.cpp
+                       rgbd_sensor.cpp trigger_grouper.cpp)
 
 # Per-tier export header (VR_SENSOR_API / VR_SENSOR_STATIC_DEFINE), isolated so
 # the macros never collide with another tier's on one include path.
@@ -74,12 +75,13 @@ if(VR_INSTALL)
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  # orbbec/, utils/ and video/ are installed by their own targets.
+  # array/, orbbec/, utils/ and video/ are installed by their own targets.
   install(
     DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/sensor"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon"
     FILES_MATCHING
     PATTERN "*.hpp"
+    PATTERN "array" EXCLUDE
     PATTERN "orbbec" EXCLUDE
     PATTERN "utils" EXCLUDE
     PATTERN "video" EXCLUDE)
@@ -93,6 +95,9 @@ endif()
 # The GPU pre-processing (Vulkan and shaders, so a target of its own); see
 # utils/CMakeLists.txt.
 add_subdirectory(utils)
+
+# Several sensors read as one, above every driver; see array/CMakeLists.txt.
+add_subdirectory(array)
 
 # The FFmpeg-backed video decoder; see video/CMakeLists.txt. Ahead of the Orbbec
 # driver, which decodes its H.265 colour with it when it is built.
