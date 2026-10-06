@@ -399,6 +399,18 @@ int test_validate_rig() {
   return 0;
 }
 
+// A rig whose cameras do not answer is refused, not aborted: open builds its
+// state before it looks for the cameras. It queries the SDK once and opens
+// no camera, so it passes whatever is attached.
+int test_rig_open() {
+  sensor::OrbbecRig::Options r;
+  r.sync.devices = {{"VR-TEST-ABSENT-A", {}}, {"VR-TEST-ABSENT-B", {}}};
+  r.discovery_timeout_ms = 1;
+  CHECK(sensor::OrbbecRig::open(r).status().domain() ==
+        vkc::Status::Code::NotFound);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -412,6 +424,7 @@ int main() {
   if (test_validate() != 0) return 1;
   if (test_validate_rig() != 0) return 1;
   if (test_sensor_open() != 0) return 1;
+  if (test_rig_open() != 0) return 1;
   std::printf("orbbec conversion tests passed\n");
   return 0;
 }
