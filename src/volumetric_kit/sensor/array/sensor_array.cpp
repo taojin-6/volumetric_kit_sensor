@@ -63,7 +63,8 @@ struct SensorArray::Impl {
   std::vector<std::deque<RgbdFrame>> queues;
   std::optional<std::uint64_t> last_sequence;
 
-  std::vector<RgbdFrame> drained;  // reused per sensor per poll
+  std::vector<GpuFramePrep> preps;  // one per sensor, with a device
+  std::vector<RgbdFrame> drained;   // reused per sensor per poll
   std::uint64_t sets = 0;
   std::uint64_t incomplete = 0;
   std::uint64_t unmatched = 0;
@@ -144,6 +145,11 @@ core::Result<SensorArray> SensorArray::open(
   }
   if (options.queue_depth == 0) {
     return bad("a queue holds at least one frame");
+  }
+  if ((options.device == nullptr) != (options.allocator == nullptr)) {
+    return bad(
+        "a device and the allocator its passes' buffers come from are "
+        "given together");
   }
 
   auto impl = std::make_unique<Impl>();
@@ -241,6 +247,14 @@ core::Result<SensorArray> SensorArray::open(
     impl->grouper.emplace(grouping);
   } else {
     impl->queues.resize(sensors.size());
+  }
+  if (options.device != nullptr) {
+    for (std::size_t i = 0; i < sensors.size(); ++i) {
+      VKC_ASSIGN(GpuFramePrep prep,
+                 GpuFramePrep::create(*options.device, *options.allocator,
+                                      options.prep));
+      impl->preps.push_back(std::move(prep));
+    }
   }
   impl->sensors = std::move(sensors);
   return SensorArray(std::move(impl));
@@ -395,6 +409,25 @@ core::Result<std::optional<FrameSet>> SensorArray::Impl::take_sequence() {
   }
   last_sequence = *next;
   return std::optional<FrameSet>{finish(std::move(set))};
+}
+
+core::Result<DeviceFrameSet> SensorArray::process(const FrameSet& set,
+                                                  core::StageMetrics* metrics) {
+  if (impl_ == nullptr) return bad("process on a moved-from array");
+  if (impl_->preps.empty()) {
+    return bad("process needs an array opened with a device");
+  }
+  if (set.frames.size() != impl_->sensors.size()) {
+    return bad("a set of " + std::to_string(set.frames.size()) +
+               " frames for an array of " +
+               std::to_string(impl_->sensors.size()));
+  }
+  DeviceFrameSet out;
+  out.timestamp_ns = set.timestamp_ns;
+  out.sequence = set.sequence;
+  VKC_ASSIGN(out.frames,
+             GpuFramePrep::prepare_batch(impl_->preps, set.frames, metrics));
+  return out;
 }
 
 bool SensorArray::exhausted() const noexcept {

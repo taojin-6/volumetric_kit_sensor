@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -265,6 +266,38 @@ std::vector<float> depth_of(const sensor::DeviceFrame& f) {
 std::vector<std::uint32_t> color_of(const sensor::DeviceFrame& f) {
   return read<std::uint32_t>(
       *f.color, std::size_t{f.color_camera.width} * f.color_camera.height);
+}
+
+// `bytes` in a device storage buffer, as a decoder leaves its picture; null
+// if it cannot be made.
+std::shared_ptr<const vkc::Buffer> on_device(
+    const std::vector<std::uint8_t>& bytes) {
+  auto made = vkc::device_storage_buffer(*g_allocator, bytes.size());
+  if (!made.ok() ||
+      !vr_test::write_back(*g_device, *g_allocator, made.value(), bytes).ok()) {
+    return nullptr;
+  }
+  return std::make_shared<const vkc::Buffer>(std::move(made).value());
+}
+
+// An iw x ih image of `format`, `texel` bytes a texel: `count` rows of
+// `row_bytes` from `rows` in its corner, junk elsewhere; null if it cannot be
+// made.
+std::shared_ptr<const vkc::Image> image_of(VkFormat format, std::uint32_t texel,
+                                           std::uint32_t iw, std::uint32_t ih,
+                                           const std::uint8_t* rows,
+                                           std::uint32_t row_bytes,
+                                           std::uint32_t count,
+                                           VkImageUsageFlags usage) {
+  std::vector<std::uint8_t> texels(std::size_t{iw} * ih * texel, 0xEE);
+  for (std::uint32_t r = 0; r < count; ++r) {
+    std::memcpy(&texels[std::size_t{r} * iw * texel],
+                rows + std::size_t{r} * row_bytes, row_bytes);
+  }
+  auto made =
+      test_image::make(*g_device, *g_allocator, format, iw, ih, texels, usage);
+  return made.ok() ? std::make_shared<const vkc::Image>(std::move(made).value())
+                   : nullptr;
 }
 
 // Pinhole: depth is raw * scale exactly, and a colour survives the forward
@@ -612,16 +645,6 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   const std::uint64_t i420_b = place(p.cb.data(), c_i420, p.ch, p.cw, p.cw);
   const std::uint64_t i420_r = place(p.cr.data(), cr_i420, p.ch, p.cw, p.cw);
   blob.resize((blob.size() + 3) & ~std::size_t{3}, 0xEE);
-  const auto on_device = [](const std::vector<std::uint8_t>& bytes)
-      -> std::shared_ptr<const vkc::Buffer> {
-    auto made = vkc::device_storage_buffer(*g_allocator, bytes.size());
-    if (!made.ok() ||
-        !vr_test::write_back(*g_device, *g_allocator, made.value(), bytes)
-             .ok()) {
-      return nullptr;
-    }
-    return std::make_shared<const vkc::Buffer>(std::move(made).value());
-  };
   const auto planes = on_device(blob);
   CHECK(planes != nullptr);
 
@@ -673,21 +696,6 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
 
   // Images, each wider and taller than its plane, the rest of it junk: the
   // pass copies the picture from their corner.
-  const auto image_of = [](VkFormat format, std::uint32_t texel,
-                           std::uint32_t iw, std::uint32_t ih,
-                           const std::uint8_t* rows, std::uint32_t row_bytes,
-                           std::uint32_t count, VkImageUsageFlags usage) {
-    std::vector<std::uint8_t> texels(std::size_t{iw} * ih * texel, 0xEE);
-    for (std::uint32_t r = 0; r < count; ++r) {
-      std::memcpy(&texels[std::size_t{r} * iw * texel],
-                  rows + std::size_t{r} * row_bytes, row_bytes);
-    }
-    auto made = test_image::make(*g_device, *g_allocator, format, iw, ih,
-                                 texels, usage);
-    return made.ok()
-               ? std::make_shared<const vkc::Image>(std::move(made).value())
-               : nullptr;
-  };
   const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   const auto luma =
       image_of(VK_FORMAT_R8_UNORM, 1, w + 3, h + 2, p.y.data(), w, h, src);
@@ -793,20 +801,27 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   return 0;
 }
 
-// prepare_set runs each camera's pass on its own thread. Each frame comes out
-// as a pass of its own alone makes it, an empty slot stays empty, a refused
-// frame fails the set, and too few passes are refused.
-int test_prepare_set(vkc::Device& device, vkc::Allocator& allocator) {
+// prepare_batch prepares every camera's frame in one batch, each as a pass of
+// its own makes it alone, whichever way its colour arrives -- host planes,
+// device planes taken over from outside Vulkan, or NV12's planes as images --
+// with depth kept within colour; an empty slot stays empty. A set with a
+// refused frame is refused before any work, with that frame's refusal, and
+// too few passes are refused.
+int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   constexpr std::size_t kCams = 4;
+  sensor::GpuFramePrepConfig masked;
+  masked.depth_within_color = true;
   std::vector<sensor::GpuFramePrep> preps;
   for (std::size_t c = 0; c < kCams; ++c) {
-    auto made = sensor::GpuFramePrep::create(device, allocator);
+    auto made = sensor::GpuFramePrep::create(device, allocator, masked);
     CHECK(made.ok());
     preps.push_back(std::move(made).value());
   }
-  auto alone = sensor::GpuFramePrep::create(device, allocator);
+  auto alone = sensor::GpuFramePrep::create(device, allocator, masked);
   CHECK(alone.ok());
-  const camera::CameraModel cam = lensed();
+  // A pincushion colour lens misses the corners, which the mask zeroes.
+  camera::CameraModel pincushion = pinhole();
+  pincushion.distortion.k1 = 0.3f;
   std::vector<std::vector<std::uint16_t>> raws(kCams);
   std::vector<Planes> planes(kCams);
   std::vector<std::optional<sensor::RgbdFrame>> frames(kCams);
@@ -823,14 +838,47 @@ int test_prepare_set(vkc::Device& device, vkc::Allocator& allocator) {
               static_cast<std::uint8_t>(100 + 10 * c));
     std::fill(planes[c].cr.begin(), planes[c].cr.end(),
               static_cast<std::uint8_t>(150 - 10 * c));
-    frames[c] = frame_of(raws[c], cam);
+    frames[c] = frame_of(raws[c], lensed());
     frames[c]->color = planes[c].image(0.2126f, 0.0722f, false);
-    frames[c]->color_camera = cam;
+    frames[c]->color_camera = pincushion;
   }
   frames[2].reset();  // a camera whose frame never arrived
 
-  for (int round = 0; round < 10; ++round) {
-    auto set = sensor::prepare_set(preps, frames);
+  // Camera 1's I420 planes in one device buffer, written by CUDA.
+  const Planes& p1 = planes[1];
+  std::vector<std::uint8_t> blob(p1.y);
+  blob.insert(blob.end(), p1.cb.begin(), p1.cb.end());
+  blob.insert(blob.end(), p1.cr.begin(), p1.cr.end());
+  blob.resize((blob.size() + 3) & ~std::size_t{3});  // whole words
+  sensor::YuvImage& dev = frames[1]->color;
+  dev.plane[0] = dev.plane[1] = dev.plane[2] = nullptr;
+  dev.device = on_device(blob);
+  CHECK(dev.device != nullptr);
+  dev.offset[0] = 0;
+  dev.offset[1] = p1.y.size();
+  dev.offset[2] = p1.y.size() + p1.cb.size();
+  dev.queue_family = sensor::kQueueFamilyExternal;
+  // Camera 3's as NV12 plane images, as VideoToolbox hands them out.
+  const Planes& p3 = planes[3];
+  std::vector<std::uint8_t> cbcr(2 * p3.cb.size());
+  for (std::size_t i = 0; i < p3.cb.size(); ++i) {
+    cbcr[2 * i] = p3.cb[i];
+    cbcr[2 * i + 1] = p3.cr[i];
+  }
+  const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  sensor::YuvImage& images = frames[3]->color;
+  images.plane[0] = images.plane[1] = images.plane[2] = nullptr;
+  images.stride[0] = images.stride[1] = images.stride[2] = 0;
+  images.layout = sensor::YuvLayout::Nv12;
+  images.image[0] =
+      image_of(VK_FORMAT_R8_UNORM, 1, p3.w, p3.h, p3.y.data(), p3.w, p3.h, src);
+  images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p3.cw, p3.ch, cbcr.data(),
+                             2 * p3.cw, p3.ch, src);
+  CHECK(images.image[0] != nullptr && images.image[1] != nullptr);
+
+  for (int round = 0; round < 3; ++round) {
+    auto set = sensor::GpuFramePrep::prepare_batch(preps, frames);
+    if (!set) std::fprintf(stderr, "%s\n", set.status().message().c_str());
     CHECK(set.ok());
     CHECK(set.value().size() == kCams && !set.value()[2]);
     for (std::size_t c = 0; c < kCams; ++c) {
@@ -838,19 +886,63 @@ int test_prepare_set(vkc::Device& device, vkc::Allocator& allocator) {
       CHECK(set.value()[c].has_value());
       auto one = alone.value().prepare(*frames[c]);
       CHECK(one.ok());
-      CHECK(depth_of(*set.value()[c]) == depth_of(one.value()));
-      CHECK(color_of(*set.value()[c]) == color_of(one.value()));
+      const std::vector<float> depth = depth_of(*set.value()[c]);
+      const std::vector<std::uint32_t> color = color_of(*set.value()[c]);
+      CHECK(depth.size() == raws[c].size() && depth == depth_of(one.value()));
+      CHECK(color.size() == raws[c].size() && color == color_of(one.value()));
+      CHECK(std::count(depth.begin(), depth.end(), 0.0f) > 0);  // masked
     }
   }
+  // A set with no frame is nothing to do.
+  std::vector<std::optional<sensor::RgbdFrame>> empty(kCams);
+  auto none = sensor::GpuFramePrep::prepare_batch(preps, empty);
+  CHECK(none.ok() && none.value().size() == kCams && !none.value()[0]);
 
+  // Refused before any work: no row is timed, though one is asked for.
   std::vector<std::optional<sensor::RgbdFrame>> refused = frames;
-  refused[1]->depth = nullptr;
-  CHECK(sensor::prepare_set(preps, refused).status().domain() ==
-        vkc::Status::Code::InvalidArgument);
+  refused[3]->depth = nullptr;
+  vkc::StageMetrics metrics;
+  CHECK(sensor::GpuFramePrep::prepare_batch(preps, refused, &metrics)
+            .status()
+            .domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(metrics.rows().empty());
+  refused = frames;
+  refused[3]->color_encoding.transfer = vr::ColorEncoding::Transfer::Bt2020Pq;
+  CHECK(sensor::GpuFramePrep::prepare_batch(preps, refused).status().domain() ==
+        vkc::Status::Code::Unsupported);
   std::vector<sensor::GpuFramePrep> too_few;
   too_few.push_back(std::move(alone).value());
-  CHECK(sensor::prepare_set(too_few, frames).status().domain() ==
-        vkc::Status::Code::InvalidArgument);
+  CHECK(
+      sensor::GpuFramePrep::prepare_batch(too_few, frames).status().domain() ==
+      vkc::Status::Code::InvalidArgument);
+  return 0;
+}
+
+// A set's timed commands share one window, grown with the array: a dozen
+// cameras, four commands each, still report the set's device time.
+int test_batch_timing(vkc::Device& device, vkc::Allocator& allocator) {
+  constexpr std::size_t kCams = 12;
+  std::vector<sensor::GpuFramePrep> preps;
+  for (std::size_t c = 0; c < kCams; ++c) {
+    auto made = sensor::GpuFramePrep::create(device, allocator);
+    CHECK(made.ok());
+    preps.push_back(std::move(made).value());
+  }
+  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
+  Planes planes = make_planes();
+  sensor::RgbdFrame frame = frame_of(raw, pinhole());
+  frame.color = planes.image(0.2126f, 0.0722f, false);
+  frame.color_camera = pinhole();
+  const std::vector<std::optional<sensor::RgbdFrame>> frames(kCams, frame);
+  vkc::StageMetrics one;
+  CHECK(preps[0].prepare(frame, &one).ok());
+  if (one.rows().size() != 1 || !one.rows()[0].has_gpu) {
+    std::printf("  batch timing: skipped, the device times nothing\n");
+    return 0;
+  }
+  vkc::StageMetrics metrics;
+  CHECK(sensor::GpuFramePrep::prepare_batch(preps, frames, &metrics).ok());
+  CHECK(metrics.rows().size() == 1 && metrics.rows()[0].has_gpu);
   return 0;
 }
 
@@ -1292,7 +1384,8 @@ int main() {
   if (test_fuses(device.value(), allocator.value(), prep.value()) != 0) {
     return 1;
   }
-  if (test_prepare_set(device.value(), allocator.value()) != 0) return 1;
+  if (test_prepare_batch(device.value(), allocator.value()) != 0) return 1;
+  if (test_batch_timing(device.value(), allocator.value()) != 0) return 1;
   if (test_queue_families(device.value(), allocator.value()) != 0) return 1;
   if (test_depth_within_color(device.value(), allocator.value()) != 0) return 1;
 

@@ -4,8 +4,9 @@
 # --- recon_sensor_array: several sensors read as one -------------------------
 # The vendor-neutral array of IRgbdSensors: start order from their rig roles,
 # frames grouped into one set per trigger (or per sequence number), each posed
-# by the array's calibration (the 2026-10-06 decision). A target of its own
-# above the drivers, which never link it.
+# by the array's calibration, and each set prepared on the GPU in one batch (the
+# 2026-10-06 decisions). A target of its own above the drivers, which never link
+# it.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -41,8 +42,10 @@ endif()
 
 target_compile_features(recon_sensor_array PUBLIC cxx_std_17)
 
-# PUBLIC: its header takes IRgbdSensors and the camera tier's calibration.
-target_link_libraries(recon_sensor_array PUBLIC recon_sensor recon_camera)
+# PUBLIC: its header takes IRgbdSensors and the camera tier's calibration, and
+# hands out the GPU pass's DeviceFrames.
+target_link_libraries(recon_sensor_array PUBLIC recon_sensor recon_camera
+                                                recon_sensor_utils)
 
 target_include_directories(
   recon_sensor_array

@@ -24,6 +24,7 @@
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -185,11 +186,55 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   core::Result<DeviceFrame> prepare(const RgbdFrame& frame,
                                     core::StageMetrics* metrics = nullptr);
 
+  /// @brief @ref prepare several cameras' frames in one batch: every frame's
+  ///        uploads and passes recorded into one command buffer, submitted
+  ///        once and waited on once.
+  ///
+  /// The array's way (`SensorArray::process`): one submit and one wait for
+  /// the set rather than one a camera, each camera's host data staged on a
+  /// thread of its own first. Every frame is checked before any is recorded,
+  /// so a refused set leaves every pass as it was.
+  /// @param preps    One pass per camera, all made with one `Device`;
+  ///                 `preps[i]` prepares `frames[i]`.
+  /// @param frames   One entry per camera, an empty one skipped.
+  /// @param metrics  Optional: one `"frame prep"` row for the whole batch,
+  ///                 timed by the first pass used.
+  /// @return One `DeviceFrame` per present frame, empty where the frame was;
+  ///         `Status::Code::InvalidArgument` for fewer passes than frames or
+  ///         passes made with different `Device`s; what @ref prepare returns
+  ///         for a frame it refuses; otherwise a buffer or submit failure.
+  static core::Result<std::vector<std::optional<DeviceFrame>>> prepare_batch(
+      std::vector<GpuFramePrep>& preps,
+      const std::vector<std::optional<RgbdFrame>>& frames,
+      core::StageMetrics* metrics = nullptr);
+
   /// @return `true` if this owns its pipelines (`false` when moved-from).
   bool valid() const noexcept { return depth_kernel_.valid(); }
 
  private:
   GpuFramePrep() = default;
+
+  // A checked frame's layout (gpu_frame_prep.cpp).
+  struct Layout;
+  // The whole frame checked, before anything is uploaded.
+  core::Result<Layout> check(const RgbdFrame& frame) const;
+  // Device planes taken over from their writer's family, into `batch`.
+  core::Status acquire(core::CommandBatch& batch, const RgbdFrame& frame,
+                       const Layout& layout);
+  // The buffers made big enough, and the host data staged; touches only this
+  // pass, so passes stage on threads of their own.
+  core::Status stage_host(const RgbdFrame& frame, const Layout& layout);
+  // The copies up and the overlap mask's parameters, recorded into `batch`.
+  core::Status record_uploads(core::CommandBatch& batch, const RgbdFrame& frame,
+                              const Layout& layout, core::GpuStageScope* stage);
+  // Both passes, recorded into `batch` after the uploads; the outputs hold
+  // the result once the batch is submitted.
+  core::Status record_passes(core::CommandBatch& batch, const RgbdFrame& frame,
+                             const Layout& layout, core::GpuStageScope* stage);
+  // After a submit that failed: let go of what the GPU may still read.
+  void abandon(const RgbdFrame& frame, const Layout& layout);
+  // The frame handed out after a submit that succeeded.
+  DeviceFrame finish(const RgbdFrame& frame) const;
 
   // An output of at least `bytes`: the one held, when no DeviceFrame still
   // holds it too and it is big enough, else a new one, shared with the
@@ -229,21 +274,5 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   std::shared_ptr<core::Buffer> depth_out_;
   std::shared_ptr<core::Buffer> color_out_;
 };
-
-/// @brief Prepare several cameras' frames at once, each on its own thread
-///        with its own pass: they do not depend on one another, so their
-///        uploads, submits and waits overlap. The `Device` must be shared
-///        by the passes, and may be.
-/// @param preps   One pass per camera; `preps[i]` prepares `frames[i]`, and
-///                each is used by one thread only for the call.
-/// @param frames  One entry per camera, an empty one skipped -- a rig's set
-///                (`OrbbecRig::poll_raw_set`).
-/// @return One `Device`Frame per present frame, empty where the frame
-///         was; `Status::Code::InvalidArgument` for fewer passes than
-///         frames; otherwise the lowest camera's failure, once every thread
-///         has finished.
-VR_SENSOR_UTILS_API core::Result<std::vector<std::optional<DeviceFrame>>>
-prepare_set(std::vector<GpuFramePrep>& preps,
-            const std::vector<std::optional<RgbdFrame>>& frames);
 
 }  // namespace volumetric_kit::recon::sensor
