@@ -3,8 +3,9 @@
 
 // A sensor array's sets prepared on the GPU in one batch: each frame comes
 // out as GpuFramePrep::prepare makes it alone, posed by the array's
-// calibration, and an empty slot stays empty; an array without a device and
-// a set of another size are refused. Skips where no device is.
+// calibration, and an empty slot stays empty; a device or an allocator given
+// without the other, an array without a device and a set of another size are
+// refused. Skips where no device is.
 
 #include <cstdint>
 #include <cstdio>
@@ -121,6 +122,7 @@ camera::ArrayCalibration posed(const std::vector<std::string>& ids) {
   return c;
 }
 
+// A buffer's `count` values read back; empty if the copy failed.
 template <typename T>
 std::vector<T> read(vkc::Device& device, vkc::Allocator& allocator,
                     const vkc::Buffer& buffer, std::size_t count) {
@@ -178,10 +180,15 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
       // As GpuFramePrep makes it alone.
       auto one = alone.value().prepare(*frame);
       CHECK(one.ok());
-      CHECK(read<float>(device, allocator, *device_frame->depth, n) ==
-            read<float>(device, allocator, *one.value().depth, n));
-      CHECK(read<std::uint32_t>(device, allocator, *device_frame->color, n) ==
-            read<std::uint32_t>(device, allocator, *one.value().color, n));
+      const auto depth =
+          read<float>(device, allocator, *device_frame->depth, n);
+      const auto color =
+          read<std::uint32_t>(device, allocator, *device_frame->color, n);
+      CHECK(depth.size() == n &&
+            depth == read<float>(device, allocator, *one.value().depth, n));
+      CHECK(color.size() == n &&
+            color ==
+                read<std::uint32_t>(device, allocator, *one.value().color, n));
     }
   }
   CHECK(array.exhausted());
@@ -191,13 +198,18 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   wrong.frames.resize(2);
   CHECK(array.process(wrong).status().domain() ==
         vkc::Status::Code::InvalidArgument);
-  // So is a device without its allocator, and processing without a device.
-  {
+  // So is a device or an allocator without the other, and processing
+  // without a device.
+  for (const bool device_only : {true, false}) {
     std::vector<std::unique_ptr<sensor::IRgbdSensor>> one;
     one.push_back(std::make_unique<Recording>("A", 0));
     sensor::SensorArray::Options bad = o;
     bad.calibration = {};
-    bad.allocator = nullptr;
+    if (device_only) {
+      bad.allocator = nullptr;
+    } else {
+      bad.device = nullptr;
+    }
     CHECK(sensor::SensorArray::open(std::move(one), bad).status().domain() ==
           vkc::Status::Code::InvalidArgument);
   }

@@ -146,8 +146,10 @@ core::Result<SensorArray> SensorArray::open(
   if (options.queue_depth == 0) {
     return bad("a queue holds at least one frame");
   }
-  if (options.device != nullptr && options.allocator == nullptr) {
-    return bad("a device needs the allocator its passes' buffers come from");
+  if ((options.device == nullptr) != (options.allocator == nullptr)) {
+    return bad(
+        "a device and the allocator its passes' buffers come from are "
+        "given together");
   }
 
   auto impl = std::make_unique<Impl>();

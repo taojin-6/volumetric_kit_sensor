@@ -150,10 +150,12 @@ class VR_SENSOR_ARRAY_API SensorArray {
     /// null for an array whose sets are not prepared here. Borrowed: it must
     /// outlive the array and every set it prepares.
     core::Device* device = nullptr;
-    /// The allocator the passes' buffers come from; needed with @ref device.
-    /// Borrowed, as @ref device is.
+    /// The allocator the passes' buffers come from; given with @ref device
+    /// and only with it. Borrowed, as @ref device is.
     core::Allocator* allocator = nullptr;
-    /// How the passes share their colour (`GpuFramePrepConfig`).
+    /// The passes' options: the queue families sharing their colour, and
+    /// whether depth is kept only where colour was recorded
+    /// (`GpuFramePrepConfig`).
     GpuFramePrepConfig prep{};
   };
 
@@ -169,8 +171,8 @@ class VR_SENSOR_ARRAY_API SensorArray {
   /// @return The array; `Status::Code::InvalidArgument` for no sensors, a
   ///         null one, an empty or repeated id, a queue depth of 0, a
   ///         calibration that is invalid or does not pose a sensor, a device
-  ///         without an allocator, or, under `SyncMode::Trigger`, a tolerance
-  ///         of 0 or of half a frame period or more; what
+  ///         or an allocator without the other, or, under `SyncMode::Trigger`,
+  ///         a tolerance of 0 or of half a frame period or more; what
   ///         `GpuFramePrep::create` returns for a device the passes cannot be
   ///         built on; or `Status::Code::Unsupported` for a tracked sensor,
   ///         or, under `SyncMode::Trigger`, no primary or more than one, a
@@ -224,9 +226,9 @@ class VR_SENSOR_ARRAY_API SensorArray {
   /// @param set      A set this array handed out.
   /// @param metrics  Optional: one `"frame prep"` row for the set.
   /// @return The prepared set; `Status::Code::InvalidArgument` on a
-  ///         moved-from array, one opened without a device, a set of
-  ///         another size, or a frame the passes refuse; otherwise a buffer
-  ///         or submit failure.
+  ///         moved-from array, one opened without a device, or a set of
+  ///         another size; what `GpuFramePrep::prepare` returns for a frame
+  ///         it refuses; otherwise a buffer or submit failure.
   core::Result<DeviceFrameSet> process(const FrameSet& set,
                                        core::StageMetrics* metrics = nullptr);
 
