@@ -97,7 +97,7 @@ class CameraStream {
   // the first start, for a stream decoded here (H.265, or raw).
   static core::Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
-      const OrbbecStreamOptions& streams, const Mat4f& cam_to_world,
+      const OrbbecStreamOptions& streams, const camera::Mat4d& cam_to_world,
       bool configure_logging, const std::string& who);
 
   CameraStream(const CameraStream&) = delete;
@@ -156,7 +156,8 @@ class CameraStream {
   // A pair as the cameras captured it, for a stream opened raw: raw depth and
   // the decoded colour, each camera's model and the colour camera's pose. The
   // colour is the picture the hardware left on the device, or I420 host
-  // planes. Depth and host planes point into the pair, which the frame holds.
+  // planes. Depth and host planes point into the pair, which the frame holds
+  // with the SDK context, so it may outlive the stream.
   core::Result<std::optional<RgbdFrame>> process_raw(
       const std::shared_ptr<ob::FrameSet>& pair);
   bool raw() const noexcept { return raw_; }

@@ -5,7 +5,7 @@
 # A captured frame undistorted and converted by compute kernels, left on the
 # device for fusion. A target of its own because it carries Vulkan and shaders,
 # which recon_sensor -- what an out-of-tree driver compiles against -- does not
-# (the 2026-09-26 decision). Driver-neutral: it takes a sensor::RawFrame.
+# (the 2026-09-26 decision). Driver-neutral: it takes a sensor::RgbdFrame.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -41,7 +41,8 @@ endif()
 
 target_compile_features(recon_sensor_utils PUBLIC cxx_std_17)
 
-# PUBLIC: its header takes a RawFrame (recon_sensor) and hands out core Buffers.
+# PUBLIC: its header takes an RgbdFrame (recon_sensor) and hands out core
+# Buffers.
 target_link_libraries(recon_sensor_utils PUBLIC recon_sensor recon_core)
 
 target_include_directories(

@@ -165,7 +165,8 @@ struct RgbdFrame {
   /// Zero when the device reports none.
   std::uint64_t timestamp_ns = 0;
   /// The sensor's own count of its frames: a gap is a lost frame, which a
-  /// timestamp cannot tell from a late one.
+  /// timestamp cannot tell from a late one. Like @ref timestamp_ns, it
+  /// counts within one capture session; it may begin again at a restart.
   std::uint64_t sequence = 0;
 
   /// What @ref depth and the host colour planes point into, held for as long

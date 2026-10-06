@@ -93,28 +93,41 @@ LensParams lens_params(const camera::CameraModel& c) noexcept {
 
 bool finite(float v) noexcept { return std::isfinite(v); }
 
-// A camera the pass can undistort: a non-empty image, positive finite focal
-// lengths, and a finite principal point and lens -- in float, as the shaders
-// read them, so a double past float's range is refused too.
+// A camera the pass can undistort: camera::check_camera_model's checks, and
+// every value within float's range, as the shaders read it -- compared before
+// narrowing, which past that range is undefined -- with focal lengths that
+// stay positive once narrowed.
 core::Status check_camera(const char* what, const camera::CameraModel& c) {
-  const LensParams p = lens_params(c);
-  if (p.width == 0 || p.height == 0) {
+  const core::Status valid = camera::check_camera_model(c);
+  if (!valid.ok()) {
     return core::Status::invalid_argument(std::string("GpuFramePrep: the ") +
-                                          what + " camera has an empty image");
+                                          what + " " + valid.message());
   }
-  if (!(finite(p.fx) && p.fx > 0.0f && finite(p.fy) && p.fy > 0.0f &&
-        finite(p.cx) && finite(p.cy))) {
-    return core::Status::invalid_argument(
-        std::string("GpuFramePrep: the ") + what +
-        " camera's intrinsics are not finite and "
-        "positive");
-  }
-  for (const float k : {p.k1, p.k2, p.p1, p.p2, p.k3, p.k4, p.k5, p.k6}) {
-    if (!finite(k)) {
+  const camera::PinholeIntrinsics& k = c.intrinsics;
+  const camera::RationalDistortion& d = c.distortion;
+  for (const double v : {k.fx, k.fy, k.cx, k.cy, d.k1, d.k2, d.p1, d.p2, d.k3,
+                         d.k4, d.k5, d.k6}) {
+    if (std::fabs(v) > std::numeric_limits<float>::max()) {
       return core::Status::invalid_argument(std::string("GpuFramePrep: the ") +
                                             what +
-                                            " camera's lens is not finite");
+                                            " camera is past float's range");
     }
+  }
+  const LensParams p = lens_params(c);
+  if (!(p.fx > 0.0f && p.fy > 0.0f)) {
+    return core::Status::invalid_argument(
+        std::string("GpuFramePrep: the ") + what +
+        " camera's focal lengths narrow to 0 in float");
+  }
+  return {};
+}
+
+// A pose the pass can apply; `what` names it in the error.
+core::Status check_pose(const char* what, const camera::Mat4d& pose) {
+  const core::Status rigid = camera::check_rigid(pose);
+  if (!rigid.ok()) {
+    return core::Status::invalid_argument(std::string("GpuFramePrep: ") + what +
+                                          ": " + rigid.message());
   }
   return {};
 }
@@ -205,11 +218,8 @@ core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
         ", " + std::to_string(frame.max_depth) +
         "] m must be finite, with 0 < min_depth < max_depth");
   }
-  if (!camera::check_rigid(frame.color_to_world).ok() ||
-      !camera::check_rigid(frame.depth_to_color).ok()) {
-    return core::Status::invalid_argument(
-        "GpuFramePrep: color_to_world and depth_to_color must be rigid");
-  }
+  VKC_TRY(check_pose("color_to_world", frame.color_to_world));
+  VKC_TRY(check_pose("depth_to_color", frame.depth_to_color));
   const std::uint64_t pixels = std::uint64_t{cam.size.width} * cam.size.height;
   if (pixels > max_pixels) {
     return core::Status::invalid_argument(

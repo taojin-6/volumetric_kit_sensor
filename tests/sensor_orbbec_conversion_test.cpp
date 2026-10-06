@@ -221,7 +221,9 @@ int test_transform_from() {
   e.trans[0] = 32.0f;
   e.trans[1] = -1.5f;
   e.trans[2] = 4.0f;
-  const vr::Mat4f m(orbbec::transform_from(e));
+  const auto quarter = orbbec::transform_from(e);
+  CHECK(quarter.ok());
+  const vr::Mat4f m(quarter.value());
   const vr::Vec4f p = m * vr::Vec4f(1.0f, 2.0f, 3.0f, 1.0f);
   // R (1, 2, 3) = (-2, 1, 3), plus t.
   CHECK(std::fabs(p.x - (-2.0f + 0.032f)) < 1e-6f);
@@ -237,13 +239,23 @@ int test_transform_from() {
                           -0.006363322f, 0.993843257f,  0.110612832f,
                           -0.002609496f, -0.110631190f, 0.993858099f};
   for (int i = 0; i < 9; ++i) e.rot[i] = femto[i];
-  const camera::Mat4d rigid = orbbec::transform_from(e);
+  const auto made = orbbec::transform_from(e);
+  CHECK(made.ok());
+  const camera::Mat4d& rigid = made.value();
   CHECK(camera::check_rigid(rigid).ok());
   for (int row = 1; row < 3; ++row) {
     for (int col = 0; col < 3; ++col) {
       CHECK(std::fabs(rigid[col][row] - femto[3 * row + col]) < 1e-4);
     }
   }
+
+  // A zeroed rotation, as from an uncalibrated unit, and a reflected one are
+  // not a tilt: refused, rather than handed to every frame.
+  for (int i = 0; i < 9; ++i) e.rot[i] = 0.0f;
+  CHECK(invalid(orbbec::transform_from(e).status()));
+  for (int i = 0; i < 9; ++i) e.rot[i] = femto[i];
+  for (int col = 0; col < 3; ++col) e.rot[col] = -femto[col];
+  CHECK(invalid(orbbec::transform_from(e).status()));
   return 0;
 }
 
@@ -274,7 +286,11 @@ int test_validate() {
   o.max_depth = std::numeric_limits<float>::infinity();
   CHECK(invalid(orbbec::validate(o)));
   o = Options{};
-  o.cam_to_world[3][1] = std::numeric_limits<float>::quiet_NaN();
+  o.cam_to_world[3][1] = std::numeric_limits<double>::quiet_NaN();
+  CHECK(invalid(orbbec::validate(o)));
+  // Not rigid: refused at open, not at every frame the GPU pass prepares.
+  o = Options{};
+  o.cam_to_world = camera::Mat4d(2.0);
   CHECK(invalid(orbbec::validate(o)));
 
   // Raw frames take either codec, each decoded for the GPU pass.

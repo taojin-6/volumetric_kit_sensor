@@ -84,14 +84,15 @@ core::Result<camera::CameraModel> camera_model_from(
     lens.k5 = distortion.k5;
     lens.k6 = distortion.k6;
   }
-  if (!camera::check_camera_model(cam).ok()) {
+  const core::Status valid = camera::check_camera_model(cam);
+  if (!valid.ok()) {
     return core::Status::invalid_argument("Orbbec " + what +
-                                          " stream reports a non-finite lens");
+                                          " stream: " + valid.message());
   }
   return cam;
 }
 
-camera::Mat4d transform_from(const OBExtrinsic& extrinsic) noexcept {
+core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic) {
   camera::Mat3d rotation(1.0);  // column-major: rotation[column][row]
   for (int r = 0; r < 3; ++r) {
     for (int c = 0; c < 3; ++c) rotation[c][r] = extrinsic.rot[3 * r + c];
@@ -99,8 +100,18 @@ camera::Mat4d transform_from(const OBExtrinsic& extrinsic) noexcept {
   // A Femto Mega's factory depth-to-colour rotation has its first row 0.6%
   // short of unit length (measured 2026-10-06); its nearest rotation is the
   // tilt the rest of the matrix describes.
+  // TODO(calib): measure against the colour board whether this rotation or
+  // the SDK's own matrix, which its host alignment (process()) still uses,
+  // puts depth closer to the scene.
   camera::Mat4d m(camera::nearest_rotation(rotation));
   for (int r = 0; r < 3; ++r) m[3][r] = extrinsic.trans[r] / 1000.0;
+  // A zeroed or reflected matrix, as an uncalibrated unit can report, comes
+  // out NaN or a reflection: refused here rather than at every frame.
+  const core::Status rigid = camera::check_rigid(m);
+  if (!rigid.ok()) {
+    return core::Status::invalid_argument("Orbbec extrinsic: " +
+                                          rigid.message());
+  }
   return m;
 }
 
@@ -174,14 +185,12 @@ core::Status validate_streams(const OrbbecStreamOptions& streams,
   return {};
 }
 
-core::Status validate_pose(const Mat4f& cam_to_world, const std::string& who) {
-  for (int c = 0; c < 4; ++c) {
-    for (int r = 0; r < 4; ++r) {
-      if (!std::isfinite(cam_to_world[c][r])) {
-        return core::Status::invalid_argument(who +
-                                              ": cam_to_world must be finite");
-      }
-    }
+core::Status validate_pose(const camera::Mat4d& cam_to_world,
+                           const std::string& who) {
+  const core::Status rigid = camera::check_rigid(cam_to_world);
+  if (!rigid.ok()) {
+    return core::Status::invalid_argument(who +
+                                          ": cam_to_world: " + rigid.message());
   }
   return {};
 }

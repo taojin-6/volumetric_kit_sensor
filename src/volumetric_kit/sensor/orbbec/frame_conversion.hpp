@@ -47,8 +47,9 @@ core::Result<camera::CameraModel> camera_model_from(
 /// The SDK's extrinsic from one stream to another (`p_to = R p_from + t`,
 /// `rot` row-major, `trans` in millimetres) as the transform that takes a point
 /// in the first camera's frame to the second's, in metres, its rotation made
-/// one (`camera::nearest_rotation`): the SDK's need not be.
-camera::Mat4d transform_from(const OBExtrinsic& extrinsic) noexcept;
+/// one (`camera::nearest_rotation`): the SDK's need not be. Refused when it
+/// does not come out rigid, as from a zeroed or reflected matrix.
+core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic);
 
 /// Whether @p intrinsic is the pinhole camera @p cam: fx, fy, cx and cy each
 /// within @p tol pixels. Tested for agreement rather than for a difference, so
@@ -86,8 +87,8 @@ std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
                                           const OrbbecSyncSettings& actual);
 
 /// Everything about @p options that can be refused without a camera: sizes and
-/// rate, the depth range, the pose. The first check @ref OrbbecCapture::open
-/// makes, before it touches the SDK.
+/// rate, the depth range, a pose that is not rigid. The first check
+/// @ref OrbbecCapture::open makes, before it touches the SDK.
 core::Status validate(const OrbbecCapture::Options& options);
 
 /// The same for a rig, plus what only a rig has: at least two cameras, a
