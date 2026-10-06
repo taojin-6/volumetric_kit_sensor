@@ -55,6 +55,22 @@ Mat4d rigid_inverse(const Mat4d& transform) noexcept {
   return inverse;
 }
 
+Mat3d nearest_rotation(const Mat3d& m) noexcept {
+  Mat3d r = m;
+  for (int i = 0; i < 30; ++i) {
+    const Mat3d next = 0.5 * (r + glm::transpose(glm::inverse(r)));
+    double change = 0.0;
+    for (int c = 0; c < 3; ++c) {
+      for (int k = 0; k < 3; ++k) {
+        change = std::max(change, std::fabs(next[c][k] - r[c][k]));
+      }
+    }
+    r = next;
+    if (change < 1e-15) break;
+  }
+  return r;
+}
+
 Mat3d rotation_from_rodrigues(const Vec3d& rvec) noexcept {
   const double theta = glm::length(rvec);
   Mat3d r(1.0);

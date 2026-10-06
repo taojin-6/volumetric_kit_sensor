@@ -53,6 +53,20 @@ VR_CAMERA_API core::Status check_rigid(const Mat4d& transform);
 /// @return The transform that undoes @p transform.
 VR_CAMERA_API Mat4d rigid_inverse(const Mat4d& transform) noexcept;
 
+/// @brief The rotation nearest @p m: the orthogonal factor of its polar
+///        decomposition.
+///
+/// For a matrix that is a rotation with its rows scaled -- as an SDK's
+/// factory extrinsic can arrive (the 2026-10-06 sensor-frame decision) -- it
+/// is that rotation exactly. Newton's iteration `R <- (R + R^-T) / 2`, which
+/// converges quadratically from a matrix near a rotation.
+/// @pre @p m is invertible with a positive determinant; far from a rotation
+///      the result is the nearest one still, but says nothing about where
+///      @p m came from.
+/// @param m  A matrix near a rotation.
+/// @return The rotation.
+VR_CAMERA_API Mat3d nearest_rotation(const Mat3d& m) noexcept;
+
 /// @brief The rotation a Rodrigues vector describes: about its direction, by
 ///        its length in radians.
 ///

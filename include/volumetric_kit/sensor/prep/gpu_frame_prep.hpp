@@ -12,7 +12,7 @@
 /// with the picture: at 4K it is most of a frame's ~55 ms of CPU. This does
 /// the same on the device and hands the fusion tiers buffers they read in
 /// place (`VoxelHashMap::allocate_from_depth` and `TsdfIntegrator::integrate`
-/// take a `Buffer`). Driver-neutral: it takes a @ref RawFrame, whoever made
+/// take a `Buffer`). Driver-neutral: it takes a @ref RgbdFrame, whoever made
 /// it.
 
 #include <cstdint>
@@ -30,7 +30,7 @@
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/recon/core/camera_params.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/sensor/raw_frame.hpp"
+#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/export.hpp"
 
 namespace volumetric_kit::recon::sensor {
@@ -108,13 +108,13 @@ struct GpuFramePrepConfig {
   bool depth_within_color = false;
 };
 
-/// @brief Undistorts a @ref RawFrame's depth and colour, and converts its
+/// @brief Undistorts a @ref RgbdFrame's depth and colour, and converts its
 ///        colour to R'G'B', in two compute passes.
 ///
 /// Undistorting keeps each camera's intrinsics and drops its lens: every pixel
-/// of the pinhole image is sampled from where @ref distort_normalized puts it
-/// in the captured one. Colour is sampled bilinearly, luma and chroma each at
-/// its own siting (@ref YuvImage::chroma_location), and converted by the
+/// of the pinhole image is sampled from where `camera::distort_rational` puts
+/// it in the captured one. Colour is sampled bilinearly, luma and chroma each
+/// at its own siting (@ref YuvImage::chroma_location), and converted by the
 /// picture's matrix and range; depth is
 /// sampled at the nearest pixel, so an edge never blends a foreground and a
 /// background depth into a point between them.
@@ -167,7 +167,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   /// @return The frame, which holds its buffers; @ref
   ///         Status::Code::InvalidArgument for a moved-from pass, a frame
   ///         without depth, a depth range that is not finite with
-  ///         `0 < min_depth < max_depth` (0 being the pass's "no return"), a
+  ///         `0 < min_depth < max_depth` (0 being the pass's "no return"),
+  ///         a `color_to_world` or `depth_to_color` that is not rigid, a
   ///         camera or picture that is empty, not finite or disagrees with
   ///         its image, an unknown chroma location, colour planes in more
   ///         than one place, an NV12
@@ -181,7 +182,7 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         `Status::Code::Unsupported` for a colour encoding
   ///         @ref is_canonical refuses; otherwise a buffer or dispatch
   ///         failure.
-  core::Result<DeviceFrame> prepare(const RawFrame& frame,
+  core::Result<DeviceFrame> prepare(const RgbdFrame& frame,
                                     core::StageMetrics* metrics = nullptr);
 
   /// @return `true` if this owns its pipelines (`false` when moved-from).
@@ -243,6 +244,6 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
 ///         has finished.
 VR_SENSOR_UTILS_API core::Result<std::vector<std::optional<DeviceFrame>>>
 prepare_set(std::vector<GpuFramePrep>& preps,
-            const std::vector<std::optional<RawFrame>>& frames);
+            const std::vector<std::optional<RgbdFrame>>& frames);
 
 }  // namespace volumetric_kit::recon::sensor

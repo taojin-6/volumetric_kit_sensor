@@ -12,6 +12,7 @@
 #include <string>
 
 #include "frame_conversion.hpp"
+#include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
 
@@ -158,9 +159,9 @@ int test_sync_mode() {
   return 0;
 }
 
-// The SDK's lens models to the pass's one: Brown-Conrady's coefficients in
-// OpenCV's order, the others refused.
-int test_lens_camera() {
+// The SDK's lens models to the camera tier's one: Brown-Conrady's
+// coefficients in OpenCV's order, the others refused.
+int test_camera_model() {
   OBCameraDistortion d{};
   d.k1 = 0.1f;
   d.k2 = -0.2f;
@@ -171,39 +172,40 @@ int test_lens_camera() {
   d.p1 = 0.001f;
   d.p2 = -0.002f;
   d.model = OB_DISTORTION_BROWN_CONRADY_K6;
-  auto lens = orbbec::lens_camera_from(femto_color_720p(), d, "colour");
+  auto lens = orbbec::camera_model_from(femto_color_720p(), d, "colour");
   CHECK(lens.ok());
-  CHECK(lens->fx == 746.494f && lens->cy == 345.615f);
-  CHECK(lens->width == 1280 && lens->height == 720);
-  CHECK(lens->lens.k1 == 0.1f && lens->lens.k2 == -0.2f &&
-        lens->lens.k3 == 0.03f && lens->lens.k4 == 0.4f &&
-        lens->lens.k5 == -0.05f && lens->lens.k6 == 0.06f &&
-        lens->lens.p1 == 0.001f && lens->lens.p2 == -0.002f);
+  CHECK(lens->intrinsics.fx == 746.494f && lens->intrinsics.cy == 345.615f);
+  CHECK(lens->size.width == 1280 && lens->size.height == 720);
+  CHECK(lens->distortion.k1 == 0.1f && lens->distortion.k2 == -0.2f &&
+        lens->distortion.k3 == 0.03f && lens->distortion.k4 == 0.4f &&
+        lens->distortion.k5 == -0.05f && lens->distortion.k6 == 0.06f &&
+        lens->distortion.p1 == 0.001f && lens->distortion.p2 == -0.002f);
   d.model = OB_DISTORTION_NONE;  // coefficients ignored
-  lens = orbbec::lens_camera_from(femto_color_720p(), d, "colour");
-  CHECK(lens.ok() && lens->lens.k1 == 0.0f && lens->lens.p2 == 0.0f);
+  lens = orbbec::camera_model_from(femto_color_720p(), d, "colour");
+  CHECK(lens.ok() && lens->distortion.k1 == 0.0f &&
+        lens->distortion.p2 == 0.0f);
   d.model = OB_DISTORTION_KANNALA_BRANDT4;
-  CHECK(orbbec::lens_camera_from(femto_color_720p(), d, "colour")
+  CHECK(orbbec::camera_model_from(femto_color_720p(), d, "colour")
             .status()
             .domain() == vkc::Status::Code::Unsupported);
   // The plain model is the polynomial k1..k3: whatever the SDK leaves in
   // k4..k6 is not a term of it, and would divide the radial term if read.
   d.model = OB_DISTORTION_BROWN_CONRADY;
-  lens = orbbec::lens_camera_from(femto_color_720p(), d, "colour");
+  lens = orbbec::camera_model_from(femto_color_720p(), d, "colour");
   CHECK(lens.ok());
-  CHECK(lens->lens.k1 == 0.1f && lens->lens.k2 == -0.2f &&
-        lens->lens.k3 == 0.03f && lens->lens.p1 == 0.001f &&
-        lens->lens.p2 == -0.002f);
-  CHECK(lens->lens.k4 == 0.0f && lens->lens.k5 == 0.0f &&
-        lens->lens.k6 == 0.0f);
+  CHECK(lens->distortion.k1 == 0.1f && lens->distortion.k2 == -0.2f &&
+        lens->distortion.k3 == 0.03f && lens->distortion.p1 == 0.001f &&
+        lens->distortion.p2 == -0.002f);
+  CHECK(lens->distortion.k4 == 0.0f && lens->distortion.k5 == 0.0f &&
+        lens->distortion.k6 == 0.0f);
   d.k2 = std::numeric_limits<float>::quiet_NaN();
   CHECK(invalid(
-      orbbec::lens_camera_from(femto_color_720p(), d, "colour").status()));
+      orbbec::camera_model_from(femto_color_720p(), d, "colour").status()));
   // The stream is named in the error, the depth one included.
   OBCameraIntrinsic k = femto_color_720p();
   k.fx = 0.0f;
   d.k2 = 0.0f;
-  const vkc::Status bad = orbbec::lens_camera_from(k, d, "depth").status();
+  const vkc::Status bad = orbbec::camera_model_from(k, d, "depth").status();
   CHECK(invalid(bad));
   CHECK(bad.message().find("depth") != std::string::npos);
   CHECK(bad.message().find("colour") == std::string::npos);
@@ -219,13 +221,29 @@ int test_transform_from() {
   e.trans[0] = 32.0f;
   e.trans[1] = -1.5f;
   e.trans[2] = 4.0f;
-  const vr::Mat4f m = orbbec::transform_from(e);
+  const vr::Mat4f m(orbbec::transform_from(e));
   const vr::Vec4f p = m * vr::Vec4f(1.0f, 2.0f, 3.0f, 1.0f);
   // R (1, 2, 3) = (-2, 1, 3), plus t.
   CHECK(std::fabs(p.x - (-2.0f + 0.032f)) < 1e-6f);
   CHECK(std::fabs(p.y - (1.0f - 0.0015f)) < 1e-6f);
   CHECK(std::fabs(p.z - (3.0f + 0.004f)) < 1e-6f);
   CHECK(p.w == 1.0f);
+
+  // CL2A141000N's factory depth-to-colour rotation, as the SDK reported it
+  // (2026-10-06): the depth camera's 6.35 degree tilt, but with its first row
+  // 0.6% short of unit length. What comes out is a rotation, and the two
+  // unit rows stay where they were.
+  const float femto[9] = {0.993856311f,  0.006035595f,  0.003297412f,
+                          -0.006363322f, 0.993843257f,  0.110612832f,
+                          -0.002609496f, -0.110631190f, 0.993858099f};
+  for (int i = 0; i < 9; ++i) e.rot[i] = femto[i];
+  const camera::Mat4d rigid = orbbec::transform_from(e);
+  CHECK(camera::check_rigid(rigid).ok());
+  for (int row = 1; row < 3; ++row) {
+    for (int col = 0; col < 3; ++col) {
+      CHECK(std::fabs(rigid[col][row] - femto[3 * row + col]) < 1e-4);
+    }
+  }
   return 0;
 }
 
@@ -338,7 +356,7 @@ int test_validate_rig() {
 
 int main() {
   if (test_color_camera() != 0) return 1;
-  if (test_lens_camera() != 0) return 1;
+  if (test_camera_model() != 0) return 1;
   if (test_transform_from() != 0) return 1;
   if (test_same_pinhole() != 0) return 1;
   if (test_depth_to_metres() != 0) return 1;

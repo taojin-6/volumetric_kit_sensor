@@ -12,12 +12,9 @@
 #include "volumetric_kit/recon/camera/camera_model.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/camera/projection.hpp"
-#include "volumetric_kit/recon/sensor/lens.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace vr = volumetric_kit::recon;
 namespace camera = volumetric_kit::recon::camera;
-namespace sensor = volumetric_kit::recon::sensor;
 
 #define CHECK(cond)                                                        \
   do {                                                                     \
@@ -96,19 +93,27 @@ int test_lens_matches_opencv() {
 }
 
 int test_float_lens_is_the_template() {
-  // The sensor tier's float lens, which its GLSL mirrors, is the same
-  // expressions: it agrees with the double model to float precision.
-  const sensor::LensDistortion f{0.42f,  -0.31f, 0.0013f, -0.0021f,
-                                 0.087f, 0.39f,  -0.12f,  0.051f};
-  const camera::RationalDistortion d{double{f.k1}, double{f.k2}, double{f.p1},
-                                     double{f.p2}, double{f.k3}, double{f.k4},
-                                     double{f.k5}, double{f.k6}};
-  for (const vr::Vec2f p : {vr::Vec2f(0.3f, -0.2f), vr::Vec2f(-0.55f, 0.4f),
-                            vr::Vec2f(0.7f, 0.55f)}) {
-    const vr::Vec2f got = sensor::distort_normalized(f, p);
-    const camera::Vec2d want = distort(d, {p.x, p.y});
-    CHECK(std::fabs(got.x - want.x) < 1e-6);
-    CHECK(std::fabs(got.y - want.y) < 1e-6);
+  // In float, as the GPU pass's lens.glsl evaluates it, the template agrees
+  // with the double model to float precision.
+  const float f[8] = {0.42f,  -0.31f, 0.0013f, -0.0021f,
+                      0.087f, 0.39f,  -0.12f,  0.051f};
+  camera::RationalDistortion d;
+  d.k1 = f[0];
+  d.k2 = f[1];
+  d.p1 = f[2];
+  d.p2 = f[3];
+  d.k3 = f[4];
+  d.k4 = f[5];
+  d.k5 = f[6];
+  d.k6 = f[7];
+  const float points[3][2] = {{0.3f, -0.2f}, {-0.55f, 0.4f}, {0.7f, 0.55f}};
+  for (const auto& p : points) {
+    float x = 0.0f;
+    float y = 0.0f;
+    camera::distort_rational(f, p[0], p[1], &x, &y);
+    const camera::Vec2d want = distort(d, {p[0], p[1]});
+    CHECK(std::fabs(x - want.x) < 1e-6);
+    CHECK(std::fabs(y - want.y) < 1e-6);
   }
   return 0;
 }
