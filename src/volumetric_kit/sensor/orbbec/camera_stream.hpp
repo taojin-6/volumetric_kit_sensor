@@ -97,7 +97,7 @@ class CameraStream {
   // the first start, for a stream decoded here (H.265, or raw).
   static core::Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
-      const OrbbecStreamOptions& streams, const camera::Mat4d& cam_to_world,
+      const OrbbecStreamOptions& streams, const camera::Mat4d& color_to_world,
       bool configure_logging, const std::string& who);
 
   CameraStream(const CameraStream&) = delete;
@@ -115,6 +115,11 @@ class CameraStream {
   }
   // Write sync settings to the camera, where they persist. Not while running.
   core::Status apply_sync(const OrbbecSyncSettings& settings);
+  // Set this camera's clock to the host's, once: unlike the context's
+  // enableDeviceClockSync, which re-syncs every camera the process opened.
+  // IoError if the camera cannot. Before start, so no frame's timestamp
+  // steps.
+  core::Status sync_clock_to_host();
   bool disconnected() const noexcept {
     return mailbox_->disconnected.load(std::memory_order_acquire);
   }
@@ -161,6 +166,18 @@ class CameraStream {
   core::Result<std::optional<RgbdFrame>> process_raw(
       const std::shared_ptr<ob::FrameSet>& pair);
   bool raw() const noexcept { return raw_; }
+  // A raw stream's cameras as they capture, and the depth camera's extrinsic
+  // to the colour one; identity and empty models for a stream not raw.
+  const camera::CameraModel& raw_depth_camera() const noexcept {
+    return raw_depth_camera_;
+  }
+  const camera::CameraModel& raw_color_camera() const noexcept {
+    return raw_color_camera_;
+  }
+  const camera::Mat4d& raw_depth_to_color() const noexcept {
+    return raw_depth_to_color_;
+  }
+  std::uint32_t fps() const noexcept { return fps_; }
 
  private:
   CameraStream() = default;
@@ -230,5 +247,12 @@ class CameraStream {
   float min_depth_ = 0.0f;
   float max_depth_ = 0.0f;
 };
+
+// One camera -- `serial`, or the only one that answers -- found and created
+// in a context of its own, which the stream holds: a single camera's open.
+core::Result<std::unique_ptr<CameraStream>> open_camera(
+    const std::string& serial, std::uint32_t discovery_timeout_ms,
+    bool configure_logging, const OrbbecStreamOptions& streams,
+    const camera::Mat4d& color_to_world, const std::string& who);
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

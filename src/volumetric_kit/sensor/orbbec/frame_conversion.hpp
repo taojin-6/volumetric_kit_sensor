@@ -86,8 +86,14 @@ OBMultiDeviceSyncConfig sdk_sync_config(const OrbbecSyncSettings& settings);
 std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
                                           const OrbbecSyncSettings& actual);
 
-/// Everything about @p options that can be refused without a camera: sizes and
-/// rate, the depth range, a pose that is not rigid. The first check
+/// The streams' checks, refused naming @p who: sizes and rate, and a depth
+/// range that is finite, non-negative and non-empty -- and, for raw frames,
+/// starts above 0, as the GPU pass requires.
+core::Status validate_streams(const OrbbecStreamOptions& streams,
+                              const std::string& who);
+
+/// Everything about @p options that can be refused without a camera: the
+/// streams, a pose that is not rigid. The first check
 /// @ref OrbbecCapture::open makes, before it touches the SDK.
 core::Status validate(const OrbbecCapture::Options& options);
 

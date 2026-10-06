@@ -18,8 +18,13 @@ add_library(volumetric_kit::recon_sensor_orbbec ALIAS recon_sensor_orbbec)
 
 target_sources(
   recon_sensor_orbbec
-  PRIVATE orbbec_capture.cpp orbbec_rig.cpp orbbec_sync_config.cpp
-          camera_stream.cpp frame_conversion.cpp trigger_grouping.cpp)
+  PRIVATE orbbec_capture.cpp
+          orbbec_rig.cpp
+          orbbec_sensor.cpp
+          orbbec_sync_config.cpp
+          camera_stream.cpp
+          frame_conversion.cpp
+          trigger_grouping.cpp)
 
 generate_export_header(
   recon_sensor_orbbec

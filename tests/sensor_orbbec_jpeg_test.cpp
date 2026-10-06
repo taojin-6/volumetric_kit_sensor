@@ -241,7 +241,7 @@ int test_losses() {
 
 // A decoder slower than the camera skips pairs rather than falling behind:
 // held in the sink with the queue one deep, each pair that arrives replaces
-// the one waiting, counted lost, and the newest is decoded next.
+// the one waiting, counted dropped, not lost, and the newest is decoded next.
 int test_skips_when_behind() {
   const std::vector<std::uint8_t> jpeg = read_file(kJpeg);
   struct Gate {
@@ -283,7 +283,8 @@ int test_skips_when_behind() {
                                  [&] { return gate->held; }));
   }
   for (int f = 1; f < 5; ++f) decoder.value()->push(pair(jpeg, f));
-  CHECK(decoder.value()->lost() == 3);  // 1, 2 and 3, each replaced
+  CHECK(decoder.value()->dropped() == 3);  // 1, 2 and 3, each replaced
+  CHECK(decoder.value()->lost() == 0);
   open();
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -296,7 +297,7 @@ int test_skips_when_behind() {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   decoder.value()->stop();
-  CHECK(decoder.value()->lost() == 3);
+  CHECK(decoder.value()->dropped() == 3 && decoder.value()->lost() == 0);
   CHECK(gate->sets.size() == 2);
   CHECK(gate->sets[1]->getColorFrame()->getTimeStampUs() ==
         kStartUs + 4 * kPeriodUs);
