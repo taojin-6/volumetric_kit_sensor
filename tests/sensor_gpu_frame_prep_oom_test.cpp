@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <memory>
 #include <new>
 #include <optional>
@@ -16,6 +15,7 @@
 
 #include "buffer_readback.hpp"
 #include "no_device.hpp"
+#include "test_allocation_failure.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
@@ -31,40 +31,6 @@ namespace sensor = vr::sensor;
       return 1;                                                            \
     }                                                                      \
   } while (0)
-
-namespace {
-
-// Limit injection to the calling thread, so a driver's worker cannot consume
-// it. Measure the allocation for a shared Buffer instead of assuming a
-// standard library's control-block size. This reaches output staging after
-// prepare_batch has allocated its bookkeeping vectors.
-thread_local bool measure_allocation = false;
-thread_local std::size_t owner_bytes = 0;
-thread_local bool fail_owner = false;
-thread_local bool injected = false;
-
-}  // namespace
-
-void* operator new(std::size_t bytes) {
-  if (measure_allocation) owner_bytes = bytes;
-  if (fail_owner && bytes == owner_bytes) {
-    fail_owner = false;  // The error Status can allocate its message.
-    injected = true;
-    throw std::bad_alloc();
-  }
-  if (void* p = std::malloc(bytes == 0 ? 1 : bytes)) return p;
-  throw std::bad_alloc();
-}
-
-void operator delete(void* p) noexcept { std::free(p); }
-void* operator new[](std::size_t bytes) { return ::operator new(bytes); }
-void operator delete[](void* p) noexcept { ::operator delete(p); }
-#if defined(__cpp_sized_deallocation)
-void operator delete(void* p, std::size_t) noexcept { ::operator delete(p); }
-void operator delete[](void* p, std::size_t) noexcept {
-  ::operator delete[](p);
-}
-#endif
 
 int main() {
   auto instance = vkc::Instance::create({});
@@ -96,23 +62,27 @@ int main() {
   CHECK(held.ok());
   CHECK(held->size() == 1 && (*held)[0].has_value());
 
-  measure_allocation = true;
+  // Measure the allocation for a shared Buffer instead of assuming a standard
+  // library's control-block size. This reaches output staging after
+  // prepare_batch has allocated its bookkeeping vectors.
+  auto& failure = vr_test::allocation_failure;
+  failure.measure = true;
   auto owner = std::make_shared<vkc::Buffer>();
-  measure_allocation = false;
-  CHECK(owner_bytes != 0 && !owner->valid());
+  failure.measure = false;
+  CHECK(failure.bytes != 0 && !owner->valid());
   owner.reset();
 
   // Keeping the previous output forces a new one for this frame.
   for (auto& sample : depth) sample = 2000;
-  fail_owner = true;
+  failure.armed = true;
   try {
     auto refused = sensor::GpuFramePrep::prepare_batch(preps, frames);
-    fail_owner = false;
-    CHECK(injected);
+    failure.armed = false;
+    CHECK(failure.injected);
     CHECK(!refused.ok());
     CHECK(refused.status().domain() == vkc::Status::Code::OutOfMemory);
   } catch (const std::bad_alloc&) {
-    fail_owner = false;
+    failure.armed = false;
     std::fprintf(stderr, "FAIL: bad_alloc escaped prepare_batch\n");
     return 1;
   }
