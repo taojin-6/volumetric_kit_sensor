@@ -67,7 +67,8 @@ struct CudaDriver {
 // entry point.
 const CudaDriver* cuda_driver();
 
-// An IoError naming @p who, @p what it was doing and CUDA's name for @p result.
+// A Backend error naming @p who, @p what it was doing and CUDA's name for
+// @p result, which is not CUDA_SUCCESS.
 core::Status cuda_error(const char* who, CUresult result, const char* what);
 
 // A CUDA context made current for a scope, and the one before put back.
@@ -75,22 +76,23 @@ core::Status cuda_error(const char* who, CUresult result, const char* what);
 class CudaContextScope {
  public:
   explicit CudaContextScope(CUcontext context)
-      : pushed_(cuda_driver()->cuCtxPushCurrent(context) == CUDA_SUCCESS) {}
+      : result_(cuda_driver()->cuCtxPushCurrent(context)) {}
   ~CudaContextScope() {
     CUcontext popped = nullptr;
-    if (pushed_) cuda_driver()->cuCtxPopCurrent(&popped);
+    if (ok()) cuda_driver()->cuCtxPopCurrent(&popped);
   }
   CudaContextScope(const CudaContextScope&) = delete;
   CudaContextScope& operator=(const CudaContextScope&) = delete;
-  bool ok() const noexcept { return pushed_; }
+  bool ok() const noexcept { return result_ == CUDA_SUCCESS; }
+  CUresult result() const noexcept { return result_; }
 
  private:
-  bool pushed_;
+  CUresult result_;
 };
 
 // The CUDA device that is @p device's GPU: Vulkan's deviceUUID matched
-// against each CUDA device's. NotFound when no CUDA device is; Unsupported
-// where libcuda does not load. @p who names the decoder in errors.
+// against each CUDA device's. Unsupported where libcuda does not load or
+// start, or no CUDA device is. @p who names the decoder in errors.
 core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who);
 
 // A ring of exported Vulkan buffers on one device, each imported into CUDA

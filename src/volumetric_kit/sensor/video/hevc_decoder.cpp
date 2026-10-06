@@ -5,25 +5,22 @@
 
 #include <climits>
 #include <cstring>
-#include <map>
-#include <mutex>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "ffmpeg.hpp"
-#include "hw_backend.hpp"
-#include "picture_converter.hpp"
+#include "frame_color.hpp"
 #if VR_SENSOR_VIDEO_WITH_CUDA
 #include "cuda_pictures.hpp"
-#include "volumetric_kit/core/vulkan/device.hpp"
 extern "C" {
 #include <libavutil/hwcontext_cuda.h>
 }
-#endif
-#if defined(__APPLE__)
-#include "volumetric_kit/core/vulkan/device.hpp"
+#elif defined(__APPLE__)
+#include <vector>
+
 #include "vt_pictures.hpp"
+#else
+#error "HevcDecoder decodes on NVDEC (VR_WITH_CUDA) or VideoToolbox only"
 #endif
 
 namespace volumetric_kit::recon::sensor {
@@ -31,18 +28,14 @@ namespace {
 
 constexpr const char* kWho = "HevcDecoder";
 
-constexpr std::uint8_t kProbeClip[] = {
-#include "probe_clip.inc"
-};
-
-std::string backend_list(const std::vector<VideoDecodeBackend>& backends) {
-  std::string list = "software";
-  for (const VideoDecodeBackend b : backends) {
-    list += ", ";
-    list += to_string(b);
-  }
-  return list;
-}
+#if VR_SENSOR_VIDEO_WITH_CUDA
+constexpr AVHWDeviceType kDeviceType = AV_HWDEVICE_TYPE_CUDA;
+constexpr AVPixelFormat kDeviceFormat = AV_PIX_FMT_CUDA;
+constexpr const char* kPath = "NVDEC";
+#else
+constexpr AVHWDeviceType kDeviceType = AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
+constexpr AVPixelFormat kDeviceFormat = AV_PIX_FMT_VIDEOTOOLBOX;
+constexpr const char* kPath = "VideoToolbox";
 
 // A NAL unit's payload bits, emulation prevention removed, read MSB first. A
 // read past the end reads zeros and sets overrun().
@@ -93,8 +86,7 @@ class BitReader {
 
 // Whether an SPS (the NAL unit, header included) has a conformance window
 // with a left or top offset (H.265 7.3.2.2). One that cannot be read counts
-// as having one, so hardware that cannot crop stays off a stream nothing
-// vouches for.
+// as having none: FFmpeg rejects it too.
 bool sps_crops_left_or_top(const std::uint8_t* nal, std::size_t size) {
   BitReader r(nal + 2, size - 2);
   r.skip(4);  // sps_video_parameter_set_id
@@ -112,15 +104,15 @@ bool sps_crops_left_or_top(const std::uint8_t* nal, std::size_t size) {
     if (profile[i]) r.skip(88);
     if (level[i]) r.skip(8);
   }
-  r.ue();                      // sps_seq_parameter_set_id
-  if (r.ue() == 3) r.skip(1);  // chroma_format_idc; separate_colour_plane
-  r.ue();                      // pic_width_in_luma_samples
-  r.ue();                      // pic_height_in_luma_samples
-  if (r.bits(1) == 0) return r.overrun();  // conformance_window_flag
+  r.ue();                            // sps_seq_parameter_set_id
+  if (r.ue() == 3) r.skip(1);        // chroma_format_idc; separate_colour_plane
+  r.ue();                            // pic_width_in_luma_samples
+  r.ue();                            // pic_height_in_luma_samples
+  if (r.bits(1) == 0) return false;  // conformance_window_flag
   const std::uint32_t left = r.ue();
   r.ue();  // right
   const std::uint32_t top = r.ue();
-  return r.overrun() || left != 0 || top != 0;
+  return !r.overrun() && (left != 0 || top != 0);
 }
 
 bool is_cropping_sps(const std::uint8_t* data, std::size_t begin,
@@ -129,379 +121,208 @@ bool is_cropping_sps(const std::uint8_t* data, std::size_t begin,
          sps_crops_left_or_top(data + begin, end - begin);
 }
 
-// Whether an Annex B access unit carries an SPS that crops the left or top.
-// Only the NAL units ahead of its first slice are read: an SPS is sent before
-// the slices that activate it, and the slices are nearly all of the bytes.
-bool crops_left_or_top(const std::uint8_t* data, std::size_t size) {
+// The end of the first SPS whose prefix says it crops the left or top, or 0.
+// FFmpeg must still validate the whole SPS before the stream is refused.
+// Only NAL units ahead of the first slice are read: a cropping SPS must not
+// reach VideoToolbox, which would decode the wrong region of the picture.
+std::size_t cropping_sps_end(const std::uint8_t* data, std::size_t size) {
   std::size_t nal = size;  // where the NAL unit being scanned starts
   for (std::size_t i = 0; i + 3 <= size; ++i) {
     if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1) continue;
-    if (is_cropping_sps(data, nal, i)) return true;
+    if (is_cropping_sps(data, nal, i)) return i;
     nal = i + 3;
-    if (nal < size && ((data[nal] >> 1) & 0x3f) < 32) return false;  // VCL
+    if (nal < size && ((data[nal] >> 1) & 0x3f) < 32) return 0;  // VCL
     i += 2;
   }
-  return is_cropping_sps(data, nal, size);
+  return is_cropping_sps(data, nal, size) ? size : 0;
+}
+#endif
+
+// Whether this FFmpeg decodes HEVC on the build's hardware path.
+bool has_device_path(const AVCodec* codec) {
+  for (int i = 0;; ++i) {
+    const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
+    if (config == nullptr) return false;
+    if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0 &&
+        config->device_type == kDeviceType &&
+        config->pix_fmt == kDeviceFormat) {
+      return true;
+    }
+  }
+}
+
+core::Status unsupported(const std::string& why) {
+  return core::Status::unsupported(std::string(kWho) + ": " + why);
 }
 
 }  // namespace
 
 struct HevcDecoder::Impl {
-  VideoDecodeBackend backend = VideoDecodeBackend::Software;
-  bool may_fall_back = false;  // Auto: software if the hardware refuses
-  AVPixelFormat hw_format = AV_PIX_FMT_NONE;
-  VideoPixelLayout layout = VideoPixelLayout::Rgb24;
   std::optional<VideoColorDescription> unlabelled_color;  // as in Options
   bool ended = false;
-  bool left_top_crop = false;  // an SPS so far crops the left or top
-  std::string refusal;         // why the named back end gave up, if it did
-  std::string label;           // as in Options
-  // Why a device path tried at open did not open, if one was.
-  std::string device_path_error;
-  video::BufferRef device;
+  std::string refusal;  // why the hardware gave up on the stream, if it did
+  video::BufferRef hw_device;
   video::CodecContextPtr codec;
   video::PacketPtr packet;
-  video::FramePtr decoded;      // as the codec hands it out, maybe on a GPU
-  video::FramePtr transferred;  // a hardware frame copied to the host
-  video::PictureConverter converter{kWho};
+  video::FramePtr decoded;
 #if VR_SENSOR_VIDEO_WITH_CUDA
-  // Where NVDEC's pictures go when a device was given on the GPU it decodes
-  // on; null otherwise, and every picture comes to the host.
   std::unique_ptr<video::CudaPictures> pictures;
-
-  // @p frame on the device, in a buffer Vulkan reads; empty for a picture the
-  // device path does not take -- not 8-bit 4:2:0, or cropped by an odd count
-  // of columns or rows at the left or top -- which goes to the host instead.
-  // FFmpeg has already taken the right and bottom crop off a hardware
-  // picture's size, and left the left and top to whoever reads it.
-  core::Result<std::optional<DecodedPicture>> device_picture(
-      const AVFrame& frame) {
-    const auto* frames =
-        reinterpret_cast<const AVHWFramesContext*>(frame.hw_frames_ctx->data);
-    if (frame.format != AV_PIX_FMT_CUDA ||
-        frames->sw_format != AV_PIX_FMT_NV12 || (frame.crop_left & 1) != 0 ||
-        (frame.crop_top & 1) != 0) {
-      return std::optional<DecodedPicture>();
-    }
-    const std::size_t left = frame.crop_left;
-    const std::size_t top = frame.crop_top;
-    const auto width = static_cast<std::uint32_t>(
-        frame.width - static_cast<int>(frame.crop_left + frame.crop_right));
-    const auto height = static_cast<std::uint32_t>(
-        frame.height - static_cast<int>(frame.crop_top + frame.crop_bottom));
-    const auto luma_pitch = static_cast<std::size_t>(frame.linesize[0]);
-    const auto chroma_pitch = static_cast<std::size_t>(frame.linesize[1]);
-    const CUdeviceptr luma =
-        reinterpret_cast<CUdeviceptr>(frame.data[0]) + top * luma_pitch + left;
-    const CUdeviceptr chroma = reinterpret_cast<CUdeviceptr>(frame.data[1]) +
-                               top / 2 * chroma_pitch + left;
-    DecodedPicture picture;
-    VKC_TRY(pictures->copy(luma, luma_pitch, chroma, chroma_pitch, width,
-                           height, picture));
-    video::describe_color(frame, unlabelled_color, picture);
-    return std::optional<DecodedPicture>(std::move(picture));
-  }
+#else
+  std::unique_ptr<video::VtPictures> pictures;
 #endif
 
-#if defined(__APPLE__)
-  // Where VideoToolbox's pictures go when a device was given that imports
-  // Metal textures; null otherwise, and every picture comes to the host.
-  std::unique_ptr<video::VtPictures> vt_pictures;
+  // @p frame handed over on the device; Unsupported for one the device path
+  // cannot take.
+  core::Result<DecodedPicture> picture(const AVFrame& frame);
 
-  // @p frame's planes as images on the device; empty for a picture the
-  // device path does not take, which goes to the host instead. VideoToolbox
-  // has cropped the right and bottom, and a stream cropped at the left or
-  // top does not reach it.
-  core::Result<std::optional<DecodedPicture>> vt_picture(const AVFrame& frame) {
-    if (frame.format != AV_PIX_FMT_VIDEOTOOLBOX || frame.crop_left != 0 ||
-        frame.crop_top != 0) {
-      return std::optional<DecodedPicture>();
-    }
-    DecodedPicture picture;
-    VKC_ASSIGN(const bool taken,
-               vt_pictures->import(
-                   reinterpret_cast<CVPixelBufferRef>(frame.data[3]),
-                   static_cast<std::uint32_t>(
-                       frame.width - static_cast<int>(frame.crop_right)),
-                   static_cast<std::uint32_t>(
-                       frame.height - static_cast<int>(frame.crop_bottom)),
-                   picture));
-    if (!taken) return std::optional<DecodedPicture>();
-    video::describe_color(frame, unlabelled_color, picture);
-    return std::optional<DecodedPicture>(std::move(picture));
-  }
-#endif
-
-  // Whether pictures decoded on the GPU can stay there.
-  bool device_path() const noexcept {
-#if VR_SENSOR_VIDEO_WITH_CUDA
-    if (pictures != nullptr) return true;
-#endif
-#if defined(__APPLE__)
-    if (vt_pictures != nullptr) return true;
-#endif
-    return false;
-  }
-
-  static core::Result<std::unique_ptr<Impl>> open(
-      VideoDecodeBackend backend, bool may_fall_back, VideoPixelLayout layout,
-      int threads, const core::Device* device = nullptr,
-      core::Allocator* allocator = nullptr);
-
-  // Whether @p backend decodes HEVC here, found once per process: asked of
-  // the platform where it can be, else by decoding the probe clip.
-  static bool decodes(VideoDecodeBackend backend);
-
-  core::Status copy_to_host(const AVFrame& picture);
-
-  // FFmpeg's get_format, asked at each new SPS: the hardware format while it
-  // is offered and the stream is one the hardware can crop. When not, a named
-  // back end fails and Auto moves to software.
+  // FFmpeg's get_format, asked at each new SPS, and again without the
+  // hardware format if the hardware fails to start: the hardware format, or
+  // the refusal, for a stream it cannot decode or hand out.
   static AVPixelFormat pick_format(AVCodecContext* context,
                                    const AVPixelFormat* formats) {
     auto* impl = static_cast<Impl*>(context->opaque);
-    const bool crops =
-        !impl->left_top_crop || video::crops_left_and_top(impl->backend);
-    for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; ++f) {
-      if (crops && *f == impl->hw_format) return *f;
-    }
-    if (!impl->may_fall_back) {
-      impl->refusal = std::string(kWho) + ": " + to_string(impl->backend) +
-                      (crops ? " cannot decode this stream"
-                             : " cannot crop the left or top of a picture");
+    // A stream whose VUI says full range is YUVJ420P.
+    if (context->sw_pix_fmt != AV_PIX_FMT_YUV420P &&
+        context->sw_pix_fmt != AV_PIX_FMT_YUVJ420P) {
+      const char* name = av_get_pix_fmt_name(context->sw_pix_fmt);
+      impl->refusal = std::string(kWho) +
+                      ": the device path takes 8-bit 4:2:0 only, not " +
+                      (name != nullptr ? name : "this stream's format");
       return AV_PIX_FMT_NONE;
     }
     for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; ++f) {
-      const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(*f);
-      if (desc != nullptr && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL) == 0) {
-        if (impl->backend != VideoDecodeBackend::Software &&
-            impl->device_path()) {
-          video::warn_host_pictures(kWho, impl->label,
-                                    std::string(to_string(impl->backend)) +
-                                        " refused the stream, so software "
-                                        "decodes it");
-        }
-        impl->backend = VideoDecodeBackend::Software;
-        impl->hw_format = AV_PIX_FMT_NONE;
-        return *f;
-      }
+      if (*f == kDeviceFormat) return *f;
     }
+    impl->refusal =
+        std::string(kWho) + ": " + kPath + " cannot decode this stream";
     return AV_PIX_FMT_NONE;
   }
 };
 
-core::Result<std::unique_ptr<HevcDecoder::Impl>> HevcDecoder::Impl::open(
-    VideoDecodeBackend backend, bool may_fall_back, VideoPixelLayout layout,
-    int threads, const core::Device* device, core::Allocator* allocator) {
+#if VR_SENSOR_VIDEO_WITH_CUDA
+// Copied device to device into a buffer Vulkan reads. FFmpeg has taken the
+// right and bottom crop off a hardware picture's size, and left the left and
+// top to whoever reads it.
+core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
+  const auto* frames = frame.hw_frames_ctx != nullptr
+                           ? reinterpret_cast<const AVHWFramesContext*>(
+                                 frame.hw_frames_ctx->data)
+                           : nullptr;
+  if (frame.format != AV_PIX_FMT_CUDA || frames == nullptr ||
+      frames->sw_format != AV_PIX_FMT_NV12) {
+    return unsupported(
+        "NVDEC handed out a picture that is not NV12 on the GPU");
+  }
+  if ((frame.crop_left & 1) != 0 || (frame.crop_top & 1) != 0) {
+    return unsupported(
+        "a picture cropped by an odd count of columns or rows at the left or "
+        "top cannot be handed out as NV12");
+  }
+  const std::size_t left = frame.crop_left;
+  const std::size_t top = frame.crop_top;
+  const auto width = static_cast<std::uint32_t>(
+      frame.width - static_cast<int>(frame.crop_left + frame.crop_right));
+  const auto height = static_cast<std::uint32_t>(
+      frame.height - static_cast<int>(frame.crop_top + frame.crop_bottom));
+  const auto luma_pitch = static_cast<std::size_t>(frame.linesize[0]);
+  const auto chroma_pitch = static_cast<std::size_t>(frame.linesize[1]);
+  const CUdeviceptr luma =
+      reinterpret_cast<CUdeviceptr>(frame.data[0]) + top * luma_pitch + left;
+  const CUdeviceptr chroma = reinterpret_cast<CUdeviceptr>(frame.data[1]) +
+                             top / 2 * chroma_pitch + left;
+  DecodedPicture out;
+  VKC_TRY(pictures->copy(luma, luma_pitch, chroma, chroma_pitch, width, height,
+                         out));
+  video::describe_color(frame, unlabelled_color, out);
+  return out;
+}
+#else
+// Its planes as images. VideoToolbox has cropped the right and bottom, and a
+// stream cropped at the left or top is refused before it reaches it.
+core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
+  if (frame.format != AV_PIX_FMT_VIDEOTOOLBOX) {
+    return unsupported("VideoToolbox handed out a picture not on the GPU");
+  }
+  if (frame.crop_left != 0 || frame.crop_top != 0) {
+    return unsupported("VideoToolbox cannot crop the left or top of a picture");
+  }
+  DecodedPicture out;
+  VKC_TRY(pictures->import(
+      reinterpret_cast<CVPixelBufferRef>(frame.data[3]),
+      static_cast<std::uint32_t>(frame.width -
+                                 static_cast<int>(frame.crop_right)),
+      static_cast<std::uint32_t>(frame.height -
+                                 static_cast<int>(frame.crop_bottom)),
+      out));
+  video::describe_color(frame, unlabelled_color, out);
+  return out;
+}
+#endif
+
+core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
+  if (options.device == nullptr) {
+    return unsupported("no device to decode onto (Options::device)");
+  }
+#if VR_SENSOR_VIDEO_WITH_CUDA
+  if (options.allocator == nullptr) {
+    return unsupported(
+        "no allocator to make NVDEC's picture buffers through "
+        "(Options::allocator)");
+  }
+#endif
+  if (options.configure_ffmpeg_logging) av_log_set_level(AV_LOG_ERROR);
   const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
-  if (codec == nullptr) {
-    return core::Status::unsupported(std::string(kWho) +
-                                     ": this FFmpeg has no HEVC decoder");
+  if (codec == nullptr || !has_device_path(codec)) {
+    return unsupported(std::string("this FFmpeg has no ") + kPath +
+                       " HEVC decoder");
   }
   auto impl = std::make_unique<Impl>();
-  impl->backend = backend;
-  impl->may_fall_back = may_fall_back;
-  impl->layout = layout;
+  impl->unlabelled_color = options.unlabelled_color;
   impl->codec.reset(avcodec_alloc_context3(codec));
   impl->packet.reset(av_packet_alloc());
   impl->decoded.reset(av_frame_alloc());
-  impl->transferred.reset(av_frame_alloc());
   if (impl->codec == nullptr || impl->packet == nullptr ||
-      impl->decoded == nullptr || impl->transferred == nullptr) {
+      impl->decoded == nullptr) {
     return video::ffmpeg_alloc_error(kWho, "opening the decoder");
   }
 
-  AVCodecContext* context = impl->codec.get();
-  // Crop the left edge exactly: FFmpeg otherwise keeps up to 64 columns of
-  // it to keep the planes aligned.
-  context->flags |= AV_CODEC_FLAG_UNALIGNED;
-  context->thread_count = threads;
-  if (backend != VideoDecodeBackend::Software) {
-    impl->hw_format =
-        video::hardware_pixel_format(codec, video::device_type(backend));
-    if (impl->hw_format == AV_PIX_FMT_NONE) {
-      return core::Status::unsupported(std::string(kWho) +
-                                       ": this FFmpeg has no " +
-                                       to_string(backend) + " HEVC decoder");
-    }
-    // FFmpeg's own choice of device, unless pictures are to stay on a
-    // Vulkan device's GPU: then the CUDA device that is that GPU. A device
-    // path that cannot be set up leaves the pictures to the host.
-    std::string name;
+  // The hardware device: on CUDA, the CUDA device that is the Vulkan
+  // device's GPU.
+  AVBufferRef* hw = nullptr;
 #if VR_SENSOR_VIDEO_WITH_CUDA
-    if (backend == VideoDecodeBackend::Cuda && device != nullptr &&
-        device->exports_memory()) {
-      if (allocator == nullptr) {
-        impl->device_path_error =
-            "no allocator to make its picture buffers through "
-            "(HevcDecoder::Options::allocator)";
-      } else if (const auto ordinal = video::cuda_ordinal_of(*device, kWho)) {
-        name = std::to_string(ordinal.value());
-      } else {
-        impl->device_path_error = ordinal.status().message();
-      }
-    }
+  VKC_ASSIGN(const int ordinal, video::cuda_ordinal_of(*options.device, kWho));
+  const std::string name = std::to_string(ordinal);
+  int err = av_hwdevice_ctx_create(&hw, kDeviceType, name.c_str(), nullptr, 0);
+#else
+  VKC_ASSIGN(impl->pictures, video::VtPictures::create(*options.device, kWho));
+  int err = av_hwdevice_ctx_create(&hw, kDeviceType, nullptr, nullptr, 0);
 #endif
-#if defined(__APPLE__)
-    if (backend == VideoDecodeBackend::VideoToolbox && device != nullptr &&
-        device->imports_metal_textures()) {
-      auto pictures = video::VtPictures::create(*device, kWho);
-      if (pictures) {
-        impl->vt_pictures = std::move(pictures).value();
-      } else {
-        impl->device_path_error = pictures.status().message();
-      }
-    }
-#endif
-#if !VR_SENSOR_VIDEO_WITH_CUDA
-    static_cast<void>(allocator);
-#endif
-#if !VR_SENSOR_VIDEO_WITH_CUDA && !defined(__APPLE__)
-    static_cast<void>(device);
-#endif
-    VKC_ASSIGN(impl->device,
-               video::open_hardware_device(
-                   backend, name.empty() ? nullptr : name.c_str()));
-#if VR_SENSOR_VIDEO_WITH_CUDA
-    if (!name.empty()) {
-      const auto* hw =
-          reinterpret_cast<const AVHWDeviceContext*>(impl->device->data);
-      const auto* cuda = static_cast<const AVCUDADeviceContext*>(hw->hwctx);
-      auto pictures = video::CudaPictures::create(
-          *device, *allocator, cuda->cuda_ctx, cuda->stream, kWho);
-      if (pictures) {
-        impl->pictures = std::move(pictures).value();
-      } else {
-        impl->device_path_error = pictures.status().message();
-      }
-    }
-#endif
-    context->hw_device_ctx = av_buffer_ref(impl->device.get());
-    if (context->hw_device_ctx == nullptr) {
-      return video::ffmpeg_alloc_error(kWho, "sharing the device");
-    }
-    context->opaque = impl.get();
-    context->get_format = &Impl::pick_format;
-    // Slice threads only: frame threads would hold pictures back on the
-    // hardware too. The hardware ignores them; they are for a stream Auto
-    // moves to software.
-    context->thread_type = FF_THREAD_SLICE;
-  }
-  const int err = avcodec_open2(context, codec, nullptr);
-  if (err < 0) return video::ffmpeg_error(kWho, "opening the decoder", err);
-  return impl;
-}
-
-bool HevcDecoder::Impl::decodes(VideoDecodeBackend backend) {
-  static std::mutex mutex;
-  static std::map<VideoDecodeBackend, bool> known;
-  const std::lock_guard<std::mutex> lock(mutex);
-  const auto found = known.find(backend);
-  if (found != known.end()) return found->second;
-
-  // A back end that is not there says so at ERROR ("Cannot load
-  // libcuda.so.1"); here that is the answer, not a fault.
-  const int level = av_log_get_level();
-  av_log_set_level(AV_LOG_QUIET);
-  bool answer = false;
-  auto opened =
-      open(backend, /*may_fall_back=*/false, VideoPixelLayout::Yuv420, 1);
-  if (opened) {
-    // Opening answers for this FFmpeg. Where the platform can be asked, it
-    // answers for the hardware; elsewhere only decoding the clip can.
-    if (const auto asked = video::hardware_decodes(backend, AV_CODEC_ID_HEVC)) {
-      answer = *asked;
-    } else {
-      HevcDecoder decoder(std::move(opened).value());
-      bool decoded = decoder.send(kProbeClip, sizeof(kProbeClip), 0).ok() &&
-                     decoder.send(nullptr, 0, 0).ok();
-      bool pictured = false;
-      while (decoded) {
-        auto picture = decoder.receive();
-        if (!picture)
-          decoded = false;
-        else if (!picture.value())
-          break;
-        else
-          pictured = true;
-      }
-      answer = pictured && decoded;
-    }
-  }
-  av_log_set_level(level);
-  known.emplace(backend, answer);
-  return answer;
-}
-
-// FFmpeg crops a hardware picture at the right and bottom only, so the copy
-// is cropped here. It is allocated afresh each time, since keeping one buffer
-// measured no faster (the 2026-09-27 decoder decision).
-core::Status HevcDecoder::Impl::copy_to_host(const AVFrame& picture) {
-  AVFrame* copy = transferred.get();
-  int err = av_hwframe_transfer_data(copy, &picture, 0);
-  if (err >= 0) err = av_frame_copy_props(copy, &picture);
-  if (err >= 0) err = av_frame_apply_cropping(copy, AV_FRAME_CROP_UNALIGNED);
   if (err < 0) {
-    return video::ffmpeg_error(kWho, "copying the picture to the host", err);
+    return unsupported(std::string(kPath) +
+                       ": no device opens: " + video::ffmpeg_message(err));
   }
-  return {};
-}
+  impl->hw_device.reset(hw);
+#if VR_SENSOR_VIDEO_WITH_CUDA
+  const auto* hw_context = reinterpret_cast<const AVHWDeviceContext*>(hw->data);
+  const auto* cuda = static_cast<const AVCUDADeviceContext*>(hw_context->hwctx);
+  VKC_ASSIGN(impl->pictures,
+             video::CudaPictures::create(*options.device, *options.allocator,
+                                         cuda->cuda_ctx, cuda->stream, kWho));
+#endif
 
-std::vector<VideoDecodeBackend> HevcDecoder::hardware_backends() {
-  std::vector<VideoDecodeBackend> found;
-  for (const VideoDecodeBackend backend : video::platform_hardware_order()) {
-    if (Impl::decodes(backend)) found.push_back(backend);
+  AVCodecContext* context = impl->codec.get();
+  context->hw_device_ctx = av_buffer_ref(hw);
+  if (context->hw_device_ctx == nullptr) {
+    return video::ffmpeg_alloc_error(kWho, "sharing the device");
   }
-  return found;
-}
-
-core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
-  if (options.threads < 0) {
-    return core::Status::invalid_argument(std::string(kWho) +
-                                          ": threads must be 0 or more");
-  }
-  if (options.layout == VideoPixelLayout::Nv12) {
-    return core::Status::invalid_argument(
-        std::string(kWho) +
-        ": Nv12 is what a device picture comes as; ask for Rgb24 or Yuv420");
-  }
-  if (options.configure_ffmpeg_logging) av_log_set_level(AV_LOG_ERROR);
-
-  const auto made = [&options](std::unique_ptr<Impl> impl) {
-    impl->unlabelled_color = options.unlabelled_color;
-    impl->label = options.label;
-    if (options.device != nullptr && !impl->device_path()) {
-      const std::string& error = impl->device_path_error;
-      video::warn_host_pictures(
-          kWho, impl->label,
-          std::string("no device path on ") + to_string(impl->backend) +
-              (error.empty() ? std::string() : " (" + error + ")"));
-    }
-    return HevcDecoder(std::move(impl));
-  };
-  VideoDecodeBackend backend = options.backend;
-  if (backend == VideoDecodeBackend::Auto) {
-    // In order, stopping at the first that decodes and opens, so the back
-    // ends behind it are never probed.
-    for (const VideoDecodeBackend b : video::platform_hardware_order()) {
-      if (!Impl::decodes(b)) continue;
-      auto opened =
-          Impl::open(b, /*may_fall_back=*/true, options.layout, options.threads,
-                     options.device, options.allocator);
-      if (opened) return made(std::move(opened).value());
-    }
-    backend = VideoDecodeBackend::Software;
-  } else if (backend != VideoDecodeBackend::Software &&
-             !Impl::decodes(backend)) {
-    return core::Status::unsupported(std::string(kWho) + ": " +
-                                     to_string(backend) +
-                                     " does not decode HEVC here; available: " +
-                                     backend_list(hardware_backends()));
-  }
-  VKC_ASSIGN(auto impl,
-             Impl::open(backend, /*may_fall_back=*/false, options.layout,
-                        options.threads, options.device, options.allocator));
-  return made(std::move(impl));
+  context->opaque = impl.get();
+  context->get_format = &Impl::pick_format;
+  // Parameter-only packets are parsed by send(), before it returns. Hardware
+  // decoding needs no frame threads holding those packets for a later call.
+  context->thread_count = 1;
+  err = avcodec_open2(context, codec, nullptr);
+  if (err < 0) return video::ffmpeg_error(kWho, "opening the decoder", err);
+  return HevcDecoder(std::move(impl));
 }
 
 HevcDecoder::HevcDecoder(std::unique_ptr<Impl> impl) noexcept
@@ -509,10 +330,6 @@ HevcDecoder::HevcDecoder(std::unique_ptr<Impl> impl) noexcept
 HevcDecoder::HevcDecoder(HevcDecoder&& other) noexcept = default;
 HevcDecoder& HevcDecoder::operator=(HevcDecoder&& other) noexcept = default;
 HevcDecoder::~HevcDecoder() = default;
-
-VideoDecodeBackend HevcDecoder::backend() const noexcept {
-  return impl_ != nullptr ? impl_->backend : VideoDecodeBackend::Auto;
-}
 
 core::Status HevcDecoder::send(const std::uint8_t* data, std::size_t size,
                                std::int64_t pts) {
@@ -535,24 +352,37 @@ core::Status HevcDecoder::send(const std::uint8_t* data, std::size_t size,
     return core::Status::invalid_argument(
         std::string(kWho) + ": an access unit needs data and under 2 GiB");
   }
-  // Read before FFmpeg activates the SPS, which is when pick_format asks.
-  if (impl_->backend != VideoDecodeBackend::Software &&
-      !video::crops_left_and_top(impl_->backend) && !impl_->left_top_crop) {
-    impl_->left_top_crop = crops_left_or_top(data, size);
-  }
+  std::size_t crop_end = 0;
+#if !VR_SENSOR_VIDEO_WITH_CUDA
+  crop_end = cropping_sps_end(data, size);
+#endif
+  // Submit only through the suspect SPS: no slices can reach VideoToolbox
+  // before the crop is refused, and no later NAL can obscure whether this
+  // SPS parsed. Its preceding VPS is needed for that validation.
+  const std::size_t submitted = crop_end != 0 ? crop_end : size;
   AVPacket* packet = impl_->packet.get();
   av_packet_unref(packet);
-  int err = av_new_packet(packet, static_cast<int>(size));
+  int err = av_new_packet(packet, static_cast<int>(submitted));
   if (err < 0) return video::ffmpeg_error(kWho, "allocating a packet", err);
-  std::memcpy(packet->data, data, size);
+  std::memcpy(packet->data, data, submitted);
   packet->pts = pts;
+  // FFmpeg normally logs and skips a malformed parameter set. Require its
+  // error here so a truncated SPS cannot become a permanent crop refusal.
+  const int recognition = context->err_recognition;
+  if (crop_end != 0) context->err_recognition |= AV_EF_EXPLODE;
   err = avcodec_send_packet(context, packet);
+  context->err_recognition = recognition;
   if (!impl_->refusal.empty()) return core::Status::unsupported(impl_->refusal);
   if (err == AVERROR(EAGAIN)) {
     return core::Status::invalid_argument(
         std::string(kWho) + ": take the pictures waiting before sending more");
   }
   if (err < 0) return video::ffmpeg_error(kWho, "decoding", err);
+  if (crop_end != 0) {
+    impl_->refusal = std::string(kWho) +
+                     ": VideoToolbox cannot crop the left or top of a picture";
+    return core::Status::unsupported(impl_->refusal);
+  }
   return {};
 }
 
@@ -562,7 +392,6 @@ core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
   }
   AVFrame* decoded = impl_->decoded.get();
   av_frame_unref(decoded);
-  av_frame_unref(impl_->transferred.get());
   const int err = avcodec_receive_frame(impl_->codec.get(), decoded);
   if (err < 0) {
     // Pictures decoded before a refusal still come out; then the refusal.
@@ -573,56 +402,18 @@ core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
     }
     return video::ffmpeg_error(kWho, "decoding", err);
   }
-
-  const std::int64_t pts = decoded->pts != AV_NOPTS_VALUE
-                               ? decoded->pts
-                               : decoded->best_effort_timestamp;
-  // Asked of the picture, not the back end: pictures decoded on the GPU are
-  // still waiting after Auto moves the stream to software.
-  const AVFrame* host = decoded;
-  if (decoded->hw_frames_ctx != nullptr) {
-#if VR_SENSOR_VIDEO_WITH_CUDA
-    if (impl_->pictures != nullptr) {
-      auto on_device = impl_->device_picture(*decoded);
-      if (on_device && on_device.value()) {
-        on_device.value()->pts = pts;
-        return on_device;
-      }
-      // A device path that fails, out of memory or refused by CUDA, is let
-      // go: this picture and every later one come to the host, which is said
-      // once.
-      if (!on_device) {
-        video::warn_host_pictures(
-            kWho, impl_->label,
-            "the device path failed (" + on_device.status().message() + ")");
-        impl_->pictures.reset();
-      }
+  core::Result<DecodedPicture> picture = impl_->picture(*decoded);
+  if (!picture) {
+    // A picture the device path cannot take: the next ones would be the same.
+    if (picture.status().domain() == core::Status::Code::Unsupported) {
+      impl_->refusal = picture.status().message();
     }
-#endif
-#if defined(__APPLE__)
-    if (impl_->vt_pictures != nullptr) {
-      auto on_device = impl_->vt_picture(*decoded);
-      if (on_device && on_device.value()) {
-        on_device.value()->pts = pts;
-        return on_device;
-      }
-      // As for CUDA: a failed import lets the device path go.
-      if (!on_device) {
-        video::warn_host_pictures(
-            kWho, impl_->label,
-            "the device path failed (" + on_device.status().message() + ")");
-        impl_->vt_pictures.reset();
-      }
-    }
-#endif
-    VKC_TRY(impl_->copy_to_host(*decoded));
-    host = impl_->transferred.get();
+    return picture.status();
   }
-  VKC_ASSIGN(
-      DecodedPicture picture,
-      impl_->converter.convert(*host, impl_->layout, impl_->unlabelled_color));
-  picture.pts = pts;
-  return std::optional<DecodedPicture>(picture);
+  picture.value().pts = decoded->pts != AV_NOPTS_VALUE
+                            ? decoded->pts
+                            : decoded->best_effort_timestamp;
+  return std::optional<DecodedPicture>(std::move(picture).value());
 }
 
 core::Status HevcDecoder::reset() {

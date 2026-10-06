@@ -4,7 +4,7 @@
 #pragma once
 
 // The YCbCr-to-RGB conversion written out from the standards' constants, the
-// reference the video tests hold swscale's output to.
+// reference the video tests hold the GPU pass's conversion to.
 
 #include <algorithm>
 #include <array>

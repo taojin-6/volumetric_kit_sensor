@@ -1,25 +1,23 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// The JPEG decoder on committed JPEGs (tools/make_jpeg_fixtures.sh): software
-// against the pattern they were made from, 4:2:2 converted to 4:2:0, nvJPEG's
-// device pictures against software and the buffers they hold, one past the
-// hardware engine's size on the GPU's cores, VideoToolbox's images against
-// software, the refusals, and moves.
+// The JPEG decoder on committed JPEGs (tools/make_jpeg_fixtures.sh), decoded
+// on this machine's hardware onto the device and read back: the pattern they
+// were made from, at an odd size too, prepared on the GPU with centred chroma;
+// the buffers nvJPEG's pictures hold; the JPEGs the hardware does not take
+// (4:2:2, and one past its size); corrupt bytes, which cost only themselves;
+// the decoders create refuses; and moves.
 //
-// VR_TEST_HEVC_BACKEND=cuda, the NVIDIA legs' promise, also requires nvJPEG in
-// a VR_WITH_CUDA build, and =videotoolbox requires VideoToolbox, so a runner
-// that silently decodes on the host fails.
+// Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
+// sets on the legs that promise one (nvJPEG on the NVIDIA containers,
+// VideoToolbox on macOS), makes it fail instead.
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <fstream>
 #include <iterator>
-#include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -32,7 +30,6 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/core/log.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 #include "yuv_reference.hpp"
@@ -40,7 +37,6 @@
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
-using sensor::JpegDecodeBackend;
 using sensor::JpegDecoder;
 using sensor::VideoPixelLayout;
 
@@ -59,20 +55,26 @@ constexpr const char* kOdd = VR_JPEG_DATA "/patches_255x143.jpg";
 constexpr const char* k422 = VR_JPEG_DATA "/patches_422_256x144.jpg";
 constexpr const char* kWide = VR_JPEG_DATA "/patches_16400x72.jpg";
 
-// The 4:2:0 JPEGs and their sizes.
-struct Fixture {
-  const char* path;
-  std::uint32_t width;
-  std::uint32_t height;
-};
-constexpr Fixture k420s[] = {
-    {k420, 256, 144}, {kOdd, 255, 143}, {kWide, 16400, 72}};
-
 // The pattern: patch p = (column + 3 * row) mod 8 over 32x72 luma patches;
 // Y = 40 + 24p, U = 64 + 16 (3p mod 8), V = 64 + 16 (5p mod 8).
 int patch_y(int p) { return 40 + 24 * p; }
 int patch_u(int p) { return 64 + 16 * ((3 * p) % 8); }
 int patch_v(int p) { return 64 + 16 * ((5 * p) % 8); }
+
+// The device and allocator the decoders hand their pictures out on.
+struct Gpu {
+  vkc::Instance& instance;
+  vkc::Device& device;
+  vkc::Allocator& allocator;
+  std::uint32_t extent;  // maxImageDimension2D
+
+  JpegDecoder::Options options() const {
+    JpegDecoder::Options o;
+    o.device = &device;
+    o.allocator = &allocator;
+    return o;
+  }
+};
 
 std::vector<std::uint8_t> read_file(const char* path) {
   std::ifstream in(path, std::ios::binary);
@@ -90,19 +92,6 @@ struct Planes {
   std::uint32_t height = 0;
   std::vector<std::uint8_t> plane[3];
 };
-
-Planes from_host(const sensor::DecodedPicture& p) {
-  Planes out{p.width, p.height, {}};
-  for (int i = 0; i < 3; ++i) {
-    const std::uint32_t w = i == 0 ? p.width : (p.width + 1) / 2;
-    const std::uint32_t h = i == 0 ? p.height : (p.height + 1) / 2;
-    for (std::uint32_t r = 0; r < h; ++r) {
-      const std::uint8_t* row = p.plane[i] + r * p.stride[i];
-      out.plane[i].insert(out.plane[i].end(), row, row + w);
-    }
-  }
-  return out;
-}
 
 // nvJPEG's buffer or VideoToolbox's images, read back.
 Planes from_device(const sensor::DecodedPicture& p, vkc::Device& device,
@@ -164,10 +153,9 @@ double chroma_at(const Planes& p, int plane, int x, int y, bool centred) {
          0.25 * ((1 - wx) * bytes[ny * w + cx] + wx * bytes[ny * w + nx]);
 }
 
-// Decode-to-preparation, including the actual device planes where available.
-// The reference uses the sampling weights and colour-matrix constants, not
-// swscale: old packed-RGB converters round vertical chroma weights wrongly.
-// The committed patch edges distinguish centred from left-aligned chroma.
+// Decode-to-preparation on the device planes. The reference uses the sampling
+// weights and colour-matrix constants; the committed patch edges distinguish
+// centred from left-aligned chroma.
 int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
                         vkc::Device& device, vkc::Allocator& allocator,
                         sensor::GpuFramePrep& prep) {
@@ -195,7 +183,6 @@ int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
   raw.color.queue_family = sensor::kQueueFamilyIgnored;
   for (int i = 0; i < 2; ++i) raw.color.image[i] = p.image[i];
   for (int i = 0; i < 3; ++i) {
-    raw.color.plane[i] = p.plane[i];
     raw.color.stride[i] = p.stride[i];
     raw.color.offset[i] = p.offset[i];
   }
@@ -223,228 +210,121 @@ int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
   return 0;
 }
 
-int test_names() {
-  CHECK(std::strcmp(sensor::to_string(JpegDecodeBackend::Software),
-                    "software") == 0);
-  CHECK(std::strcmp(sensor::to_string(JpegDecodeBackend::NvjpegHardware),
-                    "nvjpeg-hardware") == 0);
-  CHECK(std::strcmp(sensor::to_string(JpegDecodeBackend::NvjpegGpu),
-                    "nvjpeg-gpu") == 0);
-  CHECK(std::strcmp(sensor::to_string(JpegDecodeBackend::VideoToolbox),
-                    "videotoolbox") == 0);
+// On the device, where this platform's hardware leaves it.
+int check_on_device(const sensor::DecodedPicture& p) {
+#if defined(__APPLE__)
+  CHECK(p.image[0] != nullptr && p.image[1] != nullptr && p.device == nullptr);
+#else
+  CHECK(p.device != nullptr && p.image[0] == nullptr);
+#endif
   return 0;
 }
 
-// Without a device, in software to host planes: the pattern, at an odd size,
-// and 4:2:2 converted to 4:2:0.
-int test_software() {
-  auto decoder = JpegDecoder::create({});
+// A 4:2:0 JPEG decodes onto the device, the pattern at any size, and the
+// preparation centres its chroma. On Apple the wide one decodes too where the
+// device's images reach it (an M5's 32768, not an M4's 16384); nvJPEG's
+// hardware engine stops at 16384. 4:2:2 is refused. A buffer is reused only
+// once no picture holds it.
+int test_device(const Gpu& gpu) {
+  auto decoder = JpegDecoder::create(gpu.options());
   CHECK(decoder.ok());
-  CHECK(decoder->backend() == JpegDecodeBackend::Software);
-  const Fixture files[] = {k420s[0], k420s[1], k420s[2], {k422, 256, 144}};
-  for (const Fixture& f : files) {
+  auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
+  CHECK(prep.ok());
+  const struct {
+    const char* path;
+    std::uint32_t width;
+    std::uint32_t height;
+  } fixtures[] = {{k420, 256, 144}, {kOdd, 255, 143}};
+  for (const auto& f : fixtures) {
     auto p = decode(decoder.value(), read_file(f.path));
     CHECK(p.ok());
+    if (check_on_device(p.value()) != 0) return 1;
     CHECK(check_meta(p.value(), f.width, f.height) == 0);
-    CHECK(p->device == nullptr && p->plane[0] != nullptr);
-    CHECK(check_pattern(from_host(p.value())) == 0);
-  }
-  return 0;
-}
-
-// Given a device on an NVIDIA GPU, a 4:2:0 JPEG decodes into a buffer the
-// picture holds, as software decodes it: the wide one on the GPU's cores, as
-// the hardware engine refuses it. On Apple, into images the picture holds,
-// the wide one too where the device's extent takes it, and on the host,
-// keeping VideoToolbox, where it does not. 4:2:2 still comes to the host. A
-// buffer is reused only once no picture holds it.
-int test_device() {
-  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
-      instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) {
-    return vr_test::no_device("no compute-capable device",
-                              gpu.status().message());
-  }
-  vkc::Result<vkc::Device> device = vkc::Device::create(
-      instance.value(), gpu.value(), vr::device_requirements());
-  CHECK(device.ok());
-  vkc::Result<vkc::Allocator> allocator =
-      vkc::Allocator::create(instance.value().handle(), device.value());
-  CHECK(allocator.ok());
-
-  JpegDecoder::Options options;
-  options.device = &device.value();
-  options.allocator = &allocator.value();
-  auto decoder = JpegDecoder::create(options);
-  CHECK(decoder.ok());
-  const bool on_device = decoder->backend() != JpegDecodeBackend::Software;
-  const bool vt = decoder->backend() == JpegDecodeBackend::VideoToolbox;
-#if defined(__APPLE__)
-  CHECK(!on_device || vt);
-#else
-  CHECK(VR_TEST_WITH_CUDA || !on_device);
-#endif
-  const char* required = std::getenv("VR_TEST_HEVC_BACKEND");
-  if (VR_TEST_WITH_CUDA && required != nullptr &&
-      std::string(required) == "cuda") {
-    CHECK(on_device);  // a CUDA leg must decode on the GPU
-  }
-  if (required != nullptr && std::string(required) == "videotoolbox") {
-    CHECK(vt);  // and so must a VideoToolbox one
-  }
-  auto software = JpegDecoder::create({});
-  CHECK(software.ok());
-  auto prep = sensor::GpuFramePrep::create(device.value(), allocator.value());
-  CHECK(prep.ok());
-  auto host_picture = decode(software.value(), read_file(k420));
-  CHECK(host_picture.ok());
-  CHECK(check_preprocessing(host_picture.value(),
-                            from_host(host_picture.value()), device.value(),
-                            allocator.value(), prep.value()) == 0);
-  const VkPhysicalDeviceProperties& props = gpu.value().properties();
-  const std::uint32_t extent = props.limits.maxImageDimension2D;
-
-  for (const Fixture& f : k420s) {
-    const std::vector<std::uint8_t> bytes = read_file(f.path);
-    auto p = decode(decoder.value(), bytes);
-    CHECK(p.ok());
-    // Images stop at the device's extent, which the wide one passes on an M4
-    // (16384) and not on an M5 (32768).
-    const bool image = vt && f.width <= extent && f.height <= extent;
-    CHECK((p->device != nullptr) == (on_device && !vt));
-    CHECK((p->image[0] != nullptr && p->image[1] != nullptr) == image);
-    if (!image && p->device == nullptr) continue;  // on the host
-    CHECK(p->plane[0] == nullptr);
-    CHECK(check_meta(p.value(), f.width, f.height) == 0);
-    const Planes got =
-        from_device(p.value(), device.value(), allocator.value());
+    const Planes got = from_device(p.value(), gpu.device, gpu.allocator);
     CHECK(check_pattern(got) == 0);
     if (f.path == k420)
-      CHECK(check_preprocessing(p.value(), got, device.value(),
-                                allocator.value(), prep.value()) == 0);
-    auto s = decode(software.value(), bytes);
-    CHECK(s.ok());
-    const Planes want = from_host(s.value());
-    CHECK(got.width == want.width && got.height == want.height);
-    // Two conformant decoders, whose inverse DCTs may round apart.
-    for (int i = 0; i < 3; ++i) {
-      CHECK(got.plane[i].size() == want.plane[i].size());
-      for (std::size_t k = 0; k < got.plane[i].size(); ++k) {
-        CHECK(std::abs(got.plane[i][k] - want.plane[i][k]) <= 2);
-      }
-    }
+      CHECK(check_preprocessing(p.value(), got, gpu.device, gpu.allocator,
+                                prep.value()) == 0);
   }
 
-  CHECK(!vt || decoder->backend() == JpegDecodeBackend::VideoToolbox);
-  auto held = decode(decoder.value(), read_file(k422));
-  CHECK(held.ok() && held->device == nullptr && held->plane[0] != nullptr);
-  CHECK(held->image[0] == nullptr);
-  CHECK(check_pattern(from_host(held.value())) == 0);
-
-  if (on_device && !vt) {
-    const std::vector<std::uint8_t> bytes = read_file(k420);
-    auto first = decode(decoder.value(), bytes);
-    auto second = decode(decoder.value(), bytes);
-    CHECK(first.ok() && second.ok());
-    CHECK(first->device != second->device);  // the first still holds its own
-    const vkc::Buffer* freed = first->device.get();
-    first.value() = {};
-    auto third = decode(decoder.value(), bytes);
-    CHECK(third.ok() && third->device.get() == freed);
+  auto wide = decode(decoder.value(), read_file(kWide));
+#if defined(__APPLE__)
+  if (16400 > gpu.extent) {
+    CHECK(wide.status().domain() == vkc::Status::Code::Unsupported);
+  } else {
+    CHECK(wide.ok());
+    CHECK(check_meta(wide.value(), 16400, 72) == 0);
+    CHECK(check_pattern(from_device(wide.value(), gpu.device, gpu.allocator)) ==
+          0);
   }
-  std::printf("  device pictures: %s\n",
-              on_device ? sensor::to_string(decoder->backend())
-                        : "not offered here; they come to the host");
+#else
+  CHECK(wide.status().domain() == vkc::Status::Code::Unsupported);
+#endif
+  CHECK(decode(decoder.value(), read_file(k422)).status().domain() ==
+        vkc::Status::Code::Unsupported);
+
+#if !defined(__APPLE__)
+  const std::vector<std::uint8_t> bytes = read_file(k420);
+  auto first = decode(decoder.value(), bytes);
+  auto second = decode(decoder.value(), bytes);
+  CHECK(first.ok() && second.ok());
+  CHECK(first->device != second->device);  // the first still holds its own
+  const vkc::Buffer* freed = first->device.get();
+  first.value() = {};
+  auto third = decode(decoder.value(), bytes);
+  CHECK(third.ok() && third->device.get() == freed);
+#endif
   return 0;
 }
 
-// A device the decoder can keep no picture on is said once, as a warning
-// naming whose decoder it is; no device says nothing.
-int test_host_warning() {
-  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
-      instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) {
-    return vr_test::no_device("no compute-capable device",
-                              gpu.status().message());
-  }
-  vkc::Result<vkc::Device> device = vkc::Device::create(
-      instance.value(), gpu.value(), vr::device_requirements());
-  CHECK(device.ok());
+// No device, a device the hardware path cannot reach, and on nvJPEG no
+// allocator: each Unsupported.
+int test_create_refusals(const Gpu& gpu) {
+  CHECK(JpegDecoder::create({}).status().domain() ==
+        vkc::Status::Code::Unsupported);
   vkc::Result<vkc::Device> bare =
-      vr_test::bare_device(instance.value(), device.value());
+      vr_test::bare_device(gpu.instance, gpu.device);
   CHECK(bare.ok());
-  std::vector<std::string> warnings;
-  vkc::set_log_handler(
-      [&warnings](vkc::LogLevel level, std::string_view, std::string_view m) {
-        if (level == vkc::LogLevel::Warning) warnings.emplace_back(m);
-      });
-  JpegDecoder::Options options;
-  options.label = "camera 7";
-  const bool quiet = JpegDecoder::create(options).ok() && warnings.empty();
+  JpegDecoder::Options options = gpu.options();
   options.device = &bare.value();
-  auto decoder = JpegDecoder::create(options);
-  vkc::set_log_handler({});
-  CHECK(quiet && decoder.ok());
-  CHECK(decoder->backend() == JpegDecodeBackend::Software);
-  CHECK(warnings.size() == 1);
-  CHECK(warnings[0].rfind("camera 7: JpegDecoder: no device path opened", 0) ==
-        0);
+  CHECK(JpegDecoder::create(options).status().domain() ==
+        vkc::Status::Code::Unsupported);
+#if !defined(__APPLE__)
+  options = gpu.options();
+  options.allocator = nullptr;
+  CHECK(JpegDecoder::create(options).status().domain() ==
+        vkc::Status::Code::Unsupported);
+#endif
   return 0;
 }
 
-int test_refusals() {
-  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
-  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
-      instance
-          ? instance.value().select_physical_device(vr::device_requirements())
-          : vkc::Result<vkc::PhysicalDeviceInfo>(instance.status());
-  vkc::Result<vkc::Device> device =
-      gpu ? vkc::Device::create(instance.value(), gpu.value(),
-                                vr::device_requirements())
-          : vkc::Result<vkc::Device>(gpu.status());
-  vkc::Result<vkc::Allocator> allocator =
-      device ? vkc::Allocator::create(instance.value().handle(), device.value())
-             : vkc::Result<vkc::Allocator>(device.status());
-  JpegDecoder::Options options;
-  options.device = device ? &device.value() : nullptr;
-  options.allocator = allocator ? &allocator.value() : nullptr;
-  auto decoder = JpegDecoder::create(options);
+// A corrupt frame is the camera's, not the GPU's: IoError for it alone, and
+// the next JPEG decodes on the device.
+int test_corrupt(const Gpu& gpu) {
+  auto decoder = JpegDecoder::create(gpu.options());
   CHECK(decoder.ok());
-
   const std::vector<std::uint8_t> good = read_file(k420);
   CHECK(decoder->decode(nullptr, 16).status().domain() ==
         vkc::Status::Code::InvalidArgument);
   CHECK(decoder->decode(good.data(), 0).status().domain() ==
         vkc::Status::Code::InvalidArgument);
-  // A corrupt frame is the camera's, not the GPU's, so neither costs the
-  // device path: nvJPEG refuses the garbage, and decodes the cut one or not.
-  const JpegDecodeBackend before = decoder->backend();
   const std::vector<std::uint8_t> garbage(64, 0x5a);
   CHECK(decode(decoder.value(), garbage).status().domain() ==
         vkc::Status::Code::IoError);
   const std::vector<std::uint8_t> cut(good.begin(),
                                       good.begin() + good.size() / 2);
-  (void)decode(decoder.value(), cut);
-  CHECK(decoder->backend() == before);
-  auto next = decode(decoder.value(), good);  // and on to the next
+  const auto partial = decode(decoder.value(), cut);  // decodes, or IoError
+  if (!partial && partial.status().domain() != vkc::Status::Code::IoError)
+    std::fprintf(stderr, "%s\n", partial.status().message().c_str());
+  CHECK(partial.ok() ||
+        partial.status().domain() == vkc::Status::Code::IoError);
+  auto next = decode(decoder.value(), good);
   CHECK(next.ok());
-  CHECK((next->device != nullptr || next->image[0] != nullptr) ==
-        (before != JpegDecodeBackend::Software));
-  return 0;
+  return check_on_device(next.value());
 }
 
-int test_moves() {
-  auto created = JpegDecoder::create({});
+int test_moves(const Gpu& gpu) {
+  auto created = JpegDecoder::create(gpu.options());
   CHECK(created.ok());
   JpegDecoder a = std::move(created).value();
 
@@ -452,9 +332,8 @@ int test_moves() {
   const std::vector<std::uint8_t> good = read_file(k420);
   CHECK(decode(a, good).status().domain() ==  // NOLINT: moved from
         vkc::Status::Code::InvalidArgument);
-  CHECK(a.backend() == JpegDecodeBackend::Software);  // NOLINT: moved from
 
-  auto other = JpegDecoder::create({});
+  auto other = JpegDecoder::create(gpu.options());
   CHECK(other.ok());
   JpegDecoder c = std::move(other).value();
   c = std::move(b);                           // over a live decoder
@@ -465,7 +344,7 @@ int test_moves() {
   c = std::move(*alias);  // self-move
   auto p = decode(c, good);
   CHECK(p.ok());
-  return check_pattern(from_host(p.value()));
+  return check_pattern(from_device(p.value(), gpu.device, gpu.allocator));
 }
 
 }  // namespace
@@ -476,12 +355,37 @@ int main() {
     std::fprintf(stderr, "FAIL: cannot read %s\n", k420);
     return 1;
   }
-  if (test_names() != 0) return 1;
-  if (test_software() != 0) return 1;
-  if (test_device() != 0) return 1;
-  if (test_host_warning() != 0) return 1;
-  if (test_refusals() != 0) return 1;
-  if (test_moves() != 0) return 1;
+  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
+  if (!instance) {
+    return vr_test::no_device("no Vulkan instance",
+                              instance.status().message());
+  }
+  vkc::Result<vkc::PhysicalDeviceInfo> physical =
+      instance.value().select_physical_device(vr::device_requirements());
+  if (!physical) {
+    return vr_test::no_device("no compute-capable device",
+                              physical.status().message());
+  }
+  vkc::Result<vkc::Device> device = vkc::Device::create(
+      instance.value(), physical.value(), vr::device_requirements());
+  CHECK(device.ok());
+  vkc::Result<vkc::Allocator> allocator =
+      vkc::Allocator::create(instance.value().handle(), device.value());
+  CHECK(allocator.ok());
+  const Gpu gpu{instance.value(), device.value(), allocator.value(),
+                physical.value().properties().limits.maxImageDimension2D};
+  if (auto probe = JpegDecoder::create(gpu.options()); !probe) {
+    if (probe.status().domain() != vkc::Status::Code::Unsupported) {
+      std::fprintf(stderr, "FAIL: %s\n", probe.status().message().c_str());
+      return 1;
+    }
+    return vr_test::no_jpeg_decoder(probe.status().message());
+  }
+
+  if (test_device(gpu) != 0) return 1;
+  if (test_create_refusals(gpu) != 0) return 1;
+  if (test_corrupt(gpu) != 0) return 1;
+  if (test_moves(gpu) != 0) return 1;
   std::puts("sensor_video_jpeg: OK");
   return 0;
 }

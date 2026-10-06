@@ -346,7 +346,6 @@ OrbbecStreamStats CameraStream::stats() const noexcept {
   s.delivered = delivered_;
   s.dropped = mailbox_->dropped.load(std::memory_order_relaxed) + discarded_;
   s.failed = failed_;
-  s.host_pictures = host_pictures_;
   if (hevc_ != nullptr) s.lost = hevc_->lost();
   if (jpeg_ != nullptr) {
     s.dropped += jpeg_->dropped();
@@ -370,8 +369,6 @@ core::Status CameraStream::start() {
   delivered_ = 0;
   failed_ = 0;
   discarded_ = 0;
-  host_pictures_ = 0;
-  host_picture_delivered_ = false;
   failed_in_a_row_ = 0;
   // The colour decoder: every pair goes through it, H.265 in order, and on to
   // the mailbox decoded.
@@ -400,8 +397,6 @@ core::Status CameraStream::start() {
     }
     decoding.device = vulkan_device_;
     decoding.allocator = vulkan_allocator_;
-    decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
-    configure_ffmpeg_logging_ = false;
     decoding.who = who_;
     VKC_ASSIGN(auto decoder, JpegColorDecoder::start(decoding, post));
     jpeg_ = std::move(decoder);
@@ -467,7 +462,14 @@ void CameraStream::set_queue_depth(std::size_t depth) {
   mailbox_->depth = depth > 0 ? depth : 1;
 }
 
+core::Status CameraStream::decoder_failure() const {
+  if (hevc_ != nullptr) return hevc_->failure();
+  if (jpeg_ != nullptr) return jpeg_->failure();
+  return {};
+}
+
 core::Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
+  VKC_TRY(decoder_failure());
   std::lock_guard<std::mutex> lock(mailbox_->mutex);
   if (!mailbox_->fault.empty()) return core::Status::io_error(mailbox_->fault);
   if (!running_ || mailbox_->pending.empty()) {
@@ -482,6 +484,7 @@ core::Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
 
 core::Status CameraStream::take_all(
     std::vector<std::shared_ptr<ob::FrameSet>>* out) {
+  VKC_TRY(decoder_failure());
   std::lock_guard<std::mutex> lock(mailbox_->mutex);
   if (!mailbox_->fault.empty()) return core::Status::io_error(mailbox_->fault);
   if (!running_) return {};
@@ -519,8 +522,6 @@ core::Status CameraStream::sync_clock_to_host() {
 void CameraStream::withdraw() noexcept {
   --delivered_;
   ++discarded_;
-  if (host_picture_delivered_) --host_pictures_;
-  host_picture_delivered_ = false;
 }
 
 std::uint64_t CameraStream::timestamp_us(const ob::FrameSet& pair) noexcept {
@@ -555,7 +556,6 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
                                   why);
   };
   RgbdFrame frame;
-  bool host_color = false;  // colour on the host, not left on the device
   try {
     const auto depth = pair->getDepthFrame();
     const auto color = pair->getColorFrame();
@@ -565,20 +565,14 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
     const camera::ImageSize& d = depth_camera_.size;
     const camera::ImageSize& c = color_camera_.size;
     const auto dv = depth->as<ob::VideoFrame>();
-    // A picture left on the device has a size of its own; other colour is a
-    // video frame of it.
+    // The colour decoders hand every picture on in a frame that carries it.
     const std::optional<DecodedPicture> picture = device_picture(*color);
-    host_color = !picture;
-    std::uint32_t color_width = 0;
-    std::uint32_t color_height = 0;
-    if (picture) {
-      color_width = picture->width;
-      color_height = picture->height;
-    } else {
-      const auto cv = color->as<ob::VideoFrame>();
-      color_width = cv->getWidth();
-      color_height = cv->getHeight();
+    if (!picture) {
+      return refuse(
+          core::Status::io_error(who_ + ": colour is not a decoded picture"));
     }
+    const std::uint32_t color_width = picture->width;
+    const std::uint32_t color_height = picture->height;
     if (dv->getWidth() != d.width || dv->getHeight() != d.height ||
         color_width != c.width || color_height != c.height) {
       return refuse(core::Status::io_error(
@@ -609,57 +603,20 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
     // The matrix, range and encoding the decoder resolved: the stream's own
     // when it names them, the Femto Mega's unlabelled BT.601 full range
     // otherwise, and the transfer and primaries it declares.
-    const auto describe = [&](VideoColorMatrix matrix, bool full_range,
-                              const std::optional<ColorEncoding>& encoding) {
-      if (!encoding) {
-        return refuse(core::Status::unsupported(
-            who_ +
-            ": the colour stream declares a transfer or primaries "
-            "ColorEncoding cannot name"));
-      }
-      const YcbcrWeights weights = ycbcr_weights(matrix);
-      frame.color.kr = weights.kr;
-      frame.color.kb = weights.kb;
-      frame.color.full_range = full_range;
-      frame.color_encoding = *encoding;
-      return core::Status{};
-    };
+    if (!picture->encoding) {
+      return refuse(core::Status::unsupported(
+          who_ +
+          ": the colour stream declares a transfer or primaries "
+          "ColorEncoding cannot name"));
+    }
+    const YcbcrWeights weights = ycbcr_weights(picture->matrix);
+    frame.color.kr = weights.kr;
+    frame.color.kb = weights.kb;
+    frame.color.full_range = picture->full_range;
+    frame.color_encoding = *picture->encoding;
     frame.color.width = c.width;
     frame.color.height = c.height;
-    if (picture) {
-      place_device_color(*picture, &frame.color);
-      VKC_TRY(
-          describe(picture->matrix, picture->full_range, picture->encoding));
-    } else {
-      const std::uint32_t cw = (c.width + 1) / 2;
-      const std::uint32_t ch = (c.height + 1) / 2;
-      const std::size_t luma = std::size_t{c.width} * c.height;
-      const std::size_t chroma = std::size_t{cw} * ch;
-      if (color->getFormat() != OB_FORMAT_I420 ||
-          color->getDataSize() < luma + 2 * chroma) {
-        return refuse(core::Status::io_error(
-            who_ + ": decoded colour is not a full I420 image (format " +
-            std::to_string(static_cast<int>(color->getFormat())) + ", " +
-            std::to_string(color->getDataSize()) + " bytes)"));
-      }
-      const std::optional<PlanesColor> described = planes_color(*color);
-      if (!described) {
-        return refuse(core::Status::io_error(
-            who_ + ": decoded colour carries no colour description"));
-      }
-      const std::uint8_t* planes = color->getData();
-      frame.color.plane[0] = planes;
-      frame.color.plane[1] = planes + luma;
-      frame.color.plane[2] = planes + luma + chroma;
-      frame.color.stride[0] = c.width;
-      frame.color.stride[1] = cw;
-      frame.color.stride[2] = cw;
-      frame.color.chroma_location = described->chroma_location;
-      VKC_TRY(describe(described->matrix, described->full_range,
-                       described->has_encoding
-                           ? std::optional<ColorEncoding>(described->encoding)
-                           : std::nullopt));
-    }
+    place_device_color(*picture, &frame.color);
     frame.color_camera = color_camera_;
     frame.color_to_world = color_to_world_;
     frame.depth_to_color = depth_to_color_;
@@ -668,8 +625,9 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
   } catch (const std::exception& e) {  // ob::Error is one
     return skip(std::string("the SDK failed on it: ") + e.what());
   }
-  // Depth and host planes point into the pair. The context comes too, so a
-  // frame kept past the stream releases its pair before the SDK goes.
+  // Depth points into the pair, and the colour picture lives as long as its
+  // frame. The context comes too, so a frame kept past the stream releases
+  // its pair before the SDK goes.
   struct Held {
     std::shared_ptr<ob::Context> context;
     std::shared_ptr<ob::FrameSet> pair;  // destroyed first
@@ -677,8 +635,6 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
   frame.pixels = std::make_shared<Held>(Held{context_, pair});
   failed_in_a_row_ = 0;
   ++delivered_;
-  host_picture_delivered_ = vulkan_device_ != nullptr && host_color;
-  if (host_picture_delivered_) ++host_pictures_;
   return std::optional<RgbdFrame>(std::move(frame));
 }
 

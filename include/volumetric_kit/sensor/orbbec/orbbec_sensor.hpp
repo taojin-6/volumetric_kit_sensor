@@ -47,6 +47,7 @@ namespace volumetric_kit::recon::sensor {
 /// options.serial = "CL2A141000N";
 /// options.color_codec = OrbbecColorCodec::Hevc;
 /// options.device = &device;  // decode onto the GPU the pass runs on
+/// options.allocator = &allocator;  // NVDEC's and nvJPEG's pictures
 /// VKC_ASSIGN(OrbbecSensor sensor, OrbbecSensor::open(options));
 /// VKC_TRY(sensor.start());
 /// @endcode
@@ -120,8 +121,7 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///         sensor.
   const OrbbecDeviceInfo& device_info() const noexcept;
   /// @return The driver's own counters, which split `SensorStats::failed`
-  ///         into failed and lost and count the pictures a device-bound
-  ///         stream handed out on the host.
+  ///         into failed and lost.
   OrbbecStreamStats orbbec_stats() const noexcept;
 
   /// @return What the sensor is: its serial, its cameras' factory models at
@@ -135,9 +135,10 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///         `Status::Code::InvalidArgument` on a moved-from sensor;
   ///         `Status::Code::IoError` if the SDK refuses, the camera has
   ///         disconnected or cannot sync its clock
-  ///         (@ref Options::sync_clock_to_host), or the colour decoder will
-  ///         not open or its thread will not start; and
-  ///         `Status::Code::Unsupported` if FFmpeg has no HEVC decoder.
+  ///         (@ref Options::sync_clock_to_host), or the colour decoder's
+  ///         thread will not start; and the decoder's error if it does not
+  ///         open: `Status::Code::Unsupported` where it has no device path
+  ///         (no `OrbbecStreamOptions::device`, say).
   core::Status start() override;
   /// @brief As `IRgbdSensor::stop`, letting go of the frames waiting for
   ///        the colour decoder too. The camera stays open, for another
@@ -146,7 +147,10 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   /// @return As `IRgbdSensor::poll`; `Status::Code::IoError` once the camera
   ///         disconnected or its frames stopped processing, or for a pair
   ///         that contradicts the stream; `Status::Code::Unsupported` for a
-  ///         stream whose transfer or primaries `ColorEncoding` cannot name.
+  ///         stream whose transfer or primaries `ColorEncoding` cannot name,
+  ///         and once the colour decoder stops for a stream the hardware
+  ///         cannot decode; `Status::Code::Backend` or
+  ///         `Status::Code::OutOfMemory` once its device path fails.
   core::Result<std::optional<RgbdFrame>> poll() override;
   /// @return As @ref poll; on a failure, the frames before it stay
   ///         appended, and those after it are counted dropped.

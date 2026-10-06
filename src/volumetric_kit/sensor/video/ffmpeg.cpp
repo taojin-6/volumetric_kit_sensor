@@ -14,13 +14,17 @@ std::string ffmpeg_message(int err) {
 }
 
 core::Status ffmpeg_error(const char* who, const std::string& what, int err) {
-  return core::Status::io_error(std::string(who) + ": " + what + ": " +
-                                ffmpeg_message(err));
+  const std::string message =
+      std::string(who) + ": " + what + ": " + ffmpeg_message(err);
+  if (err == AVERROR(ENOMEM)) return core::Status::out_of_memory(message);
+  // A hardware call failed inside FFmpeg.
+  if (err == AVERROR_EXTERNAL) return core::Status::backend_error(err, message);
+  return core::Status::io_error(message);
 }
 
 core::Status ffmpeg_alloc_error(const char* who, const std::string& what) {
-  return core::Status::io_error(std::string(who) + ": " + what +
-                                ": FFmpeg could not allocate");
+  return core::Status::out_of_memory(std::string(who) + ": " + what +
+                                     ": FFmpeg could not allocate");
 }
 
 }  // namespace volumetric_kit::recon::sensor::video

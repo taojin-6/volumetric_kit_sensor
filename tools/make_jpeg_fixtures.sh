@@ -10,10 +10,11 @@
 #   tests/data/jpeg/patches_256x144.jpg      4:2:0, what the Femto Mega sends
 #   tests/data/jpeg/patches_255x143.jpg      4:2:0 at an odd size, whose chroma
 #       planes round up
-#   tests/data/jpeg/patches_422_256x144.jpg  4:2:2, which GpuFramePrep cannot
-#       read, so a decoder converts it to 4:2:0 on the host
+#   tests/data/jpeg/patches_422_256x144.jpg  4:2:2, which the hardware
+#       decoders do not take, so JpegDecoder refuses it
 #   tests/data/jpeg/patches_16400x72.jpg     4:2:0 past the 16384 pixels a side
-#       the hardware JPEG engine takes, so nvJPEG decodes it on the GPU's cores
+#       nvJPEG's hardware engine takes, so it is refused there; VideoToolbox
+#       takes it where the device's images reach it
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"

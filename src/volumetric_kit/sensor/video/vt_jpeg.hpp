@@ -12,7 +12,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
@@ -24,25 +23,26 @@ class VtPictures;
 
 class VtJpeg {
  public:
-  // Null where VideoToolbox has no hardware JPEG decoder or @p device imports
-  // no Metal textures. @p who names the decoder in errors.
-  static std::unique_ptr<VtJpeg> open(const core::Device& device,
-                                      const char* who);
+  // Unsupported where VideoToolbox has no hardware JPEG decoder or @p device
+  // imports no Metal textures. @p who names the decoder in errors.
+  static core::Result<std::unique_ptr<VtJpeg>> open(const core::Device& device,
+                                                    const char* who);
   ~VtJpeg();
   VtJpeg(const VtJpeg&) = delete;
   VtJpeg& operator=(const VtJpeg&) = delete;
 
-  // The JPEG as NV12 images; empty for one this does not take -- not
-  // baseline 8-bit 4:2:0, past the device's image extent, or refused by the
-  // hardware -- which goes to software instead. An error means the device
-  // path failed.
-  core::Result<std::optional<DecodedPicture>> decode(const std::uint8_t* data,
-                                                     std::size_t size);
+  // The JPEG as NV12 images, with the codes JpegDecoder::decode documents:
+  // IoError for bytes that do not decode, Unsupported for a JPEG the hardware
+  // does not take -- not baseline 8-bit 4:2:0, past the device's image
+  // extent, or a size it does not support -- and OutOfMemory or Backend
+  // if the device path fails.
+  core::Result<DecodedPicture> decode(const std::uint8_t* data,
+                                      std::size_t size);
 
  private:
   VtJpeg() = default;
-  // A session for JPEGs of this size; false where the hardware takes none.
-  bool start(std::uint32_t width, std::uint32_t height);
+  // A session for JPEGs of this size, preserving the platform's failure code.
+  core::Status start(std::uint32_t width, std::uint32_t height);
   void stop() noexcept;
 
   const char* who_ = nullptr;
@@ -52,8 +52,6 @@ class VtJpeg {
   VTDecompressionSessionRef session_ = nullptr;
   std::uint32_t width_ = 0;  // the session's size
   std::uint32_t height_ = 0;
-  std::uint32_t refused_width_ = 0;  // the last size no session opened for
-  std::uint32_t refused_height_ = 0;
 };
 
 }  // namespace volumetric_kit::recon::sensor::video

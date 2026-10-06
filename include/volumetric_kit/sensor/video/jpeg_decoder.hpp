@@ -4,13 +4,12 @@
 #pragma once
 
 /// @file sensor/video/jpeg_decoder.hpp
-/// @brief A baseline JPEG decoder for MJPEG colour: on the GPU with nvJPEG,
-///        where the picture stays, else in software to host planes.
+/// @brief A baseline JPEG decoder for MJPEG colour, on the GPU's hardware,
+///        handing out pictures on the device only.
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <string>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
@@ -19,63 +18,39 @@
 
 namespace volumetric_kit::recon::sensor {
 
-/// @brief What a @ref JpegDecoder decodes on.
-enum class JpegDecodeBackend {
-  Software,  ///< FFmpeg's decoder, to host planes.
-  /// nvJPEG on the GPU's hardware JPEG engine, and on its cores for a JPEG
-  /// the engine refuses (past 16384 pixels a side).
-  NvjpegHardware,
-  NvjpegGpu,     ///< nvJPEG on the GPU's cores, Huffman decoding included.
-  VideoToolbox,  ///< VideoToolbox's hardware JPEG decoder, on Apple.
-};
-
-/// @return @p backend's name: `software`, `nvjpeg-hardware`, `nvjpeg-gpu`,
-///         `videotoolbox`.
-VR_SENSOR_VIDEO_API const char* to_string(JpegDecodeBackend backend) noexcept;
-
-/// @brief Decodes one baseline JPEG at a time, as an MJPEG camera sends them.
+/// @brief Decodes one baseline 8-bit 4:2:0 JPEG at a time, as an MJPEG camera
+///        sends them, on the hardware of the device it is given, and hands
+///        the picture out there.
 ///
-/// Given a device on an NVIDIA GPU, in a build with VR_WITH_CUDA (Linux),
-/// nvJPEG decodes a baseline 8-bit 4:2:0 JPEG straight into a Vulkan buffer
-/// CUDA has imported, and the picture stays on the GPU: its hardware JPEG
-/// engine where the GPU has one, and its cores for the rest. libcuda and
-/// libnvjpeg are loaded at run time, so without them the decoder runs in
-/// software. On Apple, given a device that imports Metal textures,
-/// VideoToolbox's hardware decoder takes the same JPEGs into NV12 on an
-/// IOSurface, whose two planes are handed out as images and never reach the
-/// host. Anything else decodes in software to host planes: another
-/// subsampling, which is converted to 4:2:0, a device on another GPU, or no
-/// device at all.
-/// The picture is BT.601 full range as JFIF defines it: I420 (`Yuv420`), or
-/// NV12 images from VideoToolbox.
+/// In a build with VR_WITH_CUDA (Linux), on an NVIDIA GPU with a hardware
+/// JPEG engine, nvJPEG decodes straight into a Vulkan buffer CUDA has
+/// imported: I420 (`Yuv420`). libcuda and libnvjpeg are loaded at run time.
+/// On Apple, VideoToolbox's hardware decoder decodes into NV12 on an
+/// IOSurface, whose two planes are handed out as images. The picture is
+/// BT.601 full range as JFIF defines it, its chroma centred.
 ///
 /// @warning Not thread-safe: use from one thread.
 class VR_SENSOR_VIDEO_API JpegDecoder {
  public:
   /// @brief How @ref create opens a decoder.
   struct Options {
-    /// The device to decode on and hand pictures out on, as @ref
-    /// JpegDecoder says; null decodes in software, and so does every JPEG
-    /// after the device path fails once. A device path that does not open
-    /// or fails is said once, as a warning through core's log handler.
-    /// Borrowed: it must outlive the decoder and every picture on it.
+    /// The device the pictures are handed out on, whose GPU decodes them: one
+    /// that imports Metal textures on Apple, one that exports memory and is a
+    /// CUDA device elsewhere. Required. Borrowed: it must outlive the decoder
+    /// and every picture on it.
     const core::Device* device = nullptr;
     /// The allocator nvJPEG's picture buffers are made through: exported
     /// device-only memory, counted against its heap's budget like any other
-    /// allocation. Needed with @ref device for nvJPEG; VideoToolbox's
-    /// pictures need none. Borrowed: it must outlive the decoder and every
-    /// picture on it.
+    /// allocation. Required with nvJPEG; VideoToolbox's pictures need none.
+    /// Borrowed: it must outlive the decoder and every picture on it.
     core::Allocator* allocator = nullptr;
-    /// Set FFmpeg's log level to ERROR. Process-wide: FFmpeg has one logger.
-    bool configure_ffmpeg_logging = true;
-    /// Whose decoder this is (a camera, say), put ahead of its warnings so a
-    /// program running several can tell them apart. Empty puts nothing.
-    std::string label;
   };
 
-  /// @return The decoder; or `Status::Code::IoError` if FFmpeg's decoder
-  ///         does not open. A device nvJPEG cannot use is not an error: the
-  ///         decoder runs in software instead, as @ref backend says.
+  /// @return The decoder; `Status::Code::Unsupported` if there is no device
+  ///         path: no @ref Options::device (or, for nvJPEG, no
+  ///         @ref Options::allocator), a device whose GPU has no hardware JPEG
+  ///         decoder this build reaches, or libcuda or libnvjpeg that do not
+  ///         load; or `Status::Code::Backend` if CUDA or nvJPEG fails.
   static core::Result<JpegDecoder> create(const Options& options);
 
   ~JpegDecoder();
@@ -87,21 +62,20 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
   /// @brief Decode one JPEG.
   /// @param data  The JPEG's bytes, SOI to EOI; read during the call only.
   /// @param size  Their count.
-  /// @return The picture. I420 on the device (@ref DecodedPicture::device),
-  ///         held by the picture and written by CUDA, so a reader takes it
-  ///         over from `VK_QUEUE_FAMILY_EXTERNAL`; NV12 as images
-  ///         (@ref DecodedPicture::image), held by the picture, from
-  ///         VideoToolbox; or I420 host planes, valid until the next call. @ref
-  ///         Status::Code::InvalidArgument for no bytes, more than 2 GiB of
-  ///         them, a JPEG in a pixel format swscale cannot read, or a
-  ///         moved-from decoder;
-  ///         `Status::Code::IoError` for bytes that do not decode.
+  /// @return The picture on the device: I420 in a buffer
+  ///         (@ref DecodedPicture::device) from nvJPEG, written by CUDA, so a
+  ///         reader takes it over from `VK_QUEUE_FAMILY_EXTERNAL`; or NV12
+  ///         images (@ref DecodedPicture::image) from VideoToolbox. Or:
+  ///         - `Status::Code::IoError` for bytes that do not decode;
+  ///         - `Status::Code::Unsupported` for a JPEG the hardware cannot
+  ///           decode: not baseline 8-bit 4:2:0 in three components (4:2:2,
+  ///           say), or larger than it takes;
+  ///         - `Status::Code::Backend` or `Status::Code::OutOfMemory` if the
+  ///           device path fails;
+  ///         - `Status::Code::InvalidArgument` for no bytes or a moved-from
+  ///           decoder.
   core::Result<DecodedPicture> decode(const std::uint8_t* data,
                                       std::size_t size);
-
-  /// @return What this decoder decodes a 4:2:0 JPEG on: Software once the
-  ///         device path has failed.
-  JpegDecodeBackend backend() const noexcept;
 
  private:
   struct Impl;

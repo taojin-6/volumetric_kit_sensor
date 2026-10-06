@@ -18,12 +18,10 @@ core::Result<std::unique_ptr<JpegColorDecoder>> JpegColorDecoder::start(
   JpegDecoder::Options decoding;
   decoding.device = options.device;
   decoding.allocator = options.allocator;
-  decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
-  decoding.label = options.who;
   auto decoder = JpegDecoder::create(decoding);
   if (!decoder) {
-    return core::Status::io_error(options.who + ": opening the JPEG decoder: " +
-                                  decoder.status().message());
+    return decoder.status().with_context(options.who +
+                                         ": opening the JPEG decoder");
   }
   d->decoder_.emplace(std::move(decoder).value());
   try {
@@ -37,13 +35,18 @@ core::Result<std::unique_ptr<JpegColorDecoder>> JpegColorDecoder::start(
 
 JpegColorDecoder::~JpegColorDecoder() { stop(); }
 
+core::Status JpegColorDecoder::failure() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return failure_;
+}
+
 void JpegColorDecoder::push(std::shared_ptr<ob::FrameSet> pair) noexcept {
   if (pair == nullptr) return;
   std::uint64_t dropped = 0;
   bool lost = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (stopping_) return;
+    if (stopping_ || !failure_.ok()) return;
     // The oldest go, a JPEG needing no other.
     while (!queue_.empty() && queue_.size() >= options_.depth) {
       queue_.pop_front();
@@ -101,11 +104,18 @@ void JpegColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
     return;
   }
   auto picture = decoder_->decode(color->getData(), color->getDataSize());
-  if (!picture) {  // a corrupt JPEG, or one the software cannot read
+  if (!picture) {
     lose();
+    // A corrupt JPEG costs itself; anything else, every JPEG after it.
+    if (picture.status().domain() != core::Status::Code::IoError) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      lose(queue_.size());
+      queue_.clear();
+      failure_ = picture.status().with_context(options_.who);
+    }
     return;
   }
-  sink_(rebuilt_pair(depth, *color, raw_color_frame(picture.value())));
+  sink_(rebuilt_pair(depth, *color, picture_frame(picture.value())));
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

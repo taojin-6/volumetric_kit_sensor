@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
@@ -36,8 +37,9 @@ Registry& registry() {
   return *r;
 }
 
-// A frame that keeps the picture until it is freed.
-std::shared_ptr<ob::Frame> carried(const DecodedPicture& picture) {
+}  // namespace
+
+std::shared_ptr<ob::Frame> picture_frame(const DecodedPicture& picture) {
   Registry& r = registry();
   std::unique_ptr<Payload> payload(new Payload{});
   std::memcpy(payload->tag, kTag, sizeof(kTag));
@@ -61,55 +63,6 @@ std::shared_ptr<ob::Frame> carried(const DecodedPicture& picture) {
   std::lock_guard<std::mutex> lock(r.mutex);
   r.live.emplace(serial, picture);
   return frame;
-}
-
-// Host planes as an I420 frame, rows packed, which owns the copy. The
-// matrix, range, encoding and chroma location travel with the planes.
-std::shared_ptr<ob::Frame> i420(const DecodedPicture& picture) {
-  const std::uint32_t w = picture.width;
-  const std::uint32_t h = picture.height;
-  const std::uint32_t widths[3] = {w, (w + 1) / 2, (w + 1) / 2};
-  const std::uint32_t heights[3] = {h, (h + 1) / 2, (h + 1) / 2};
-  const std::size_t bytes =
-      std::size_t{w} * h + 2 * std::size_t{widths[1]} * heights[1];
-  std::unique_ptr<std::uint8_t[]> buffer(new std::uint8_t[bytes]);
-  std::uint8_t* out = buffer.get();
-  for (int p = 0; p < 3; ++p) {
-    for (std::uint32_t y = 0; y < heights[p]; ++y) {
-      std::memcpy(out, picture.plane[p] + y * picture.stride[p], widths[p]);
-      out += widths[p];
-    }
-  }
-  auto frame = ob::FrameFactory::createVideoFrameFromBuffer(
-      OB_FRAME_COLOR, OB_FORMAT_I420, w, h, buffer.get(),
-      [](std::uint8_t* b) { delete[] b; }, static_cast<std::uint32_t>(bytes),
-      w);
-  buffer.release();  // the frame's now, freed by the callback
-  PlanesColor described;
-  described.matrix = picture.matrix;
-  described.full_range = picture.full_range;
-  described.chroma_location = picture.chroma_location;
-  described.has_encoding = picture.encoding.has_value();
-  if (picture.encoding) described.encoding = *picture.encoding;
-  frame->updateMetadata(reinterpret_cast<const std::uint8_t*>(&described),
-                        static_cast<std::uint32_t>(sizeof(described)));
-  return frame;
-}
-
-}  // namespace
-
-std::optional<PlanesColor> planes_color(const ob::Frame& frame) {
-  if (frame.getMetadataSize() != sizeof(PlanesColor)) return std::nullopt;
-  PlanesColor color;
-  std::memcpy(&color, frame.getMetadata(), sizeof(color));
-  return color;
-}
-
-std::shared_ptr<ob::Frame> raw_color_frame(const DecodedPicture& picture) {
-  if (picture.device != nullptr || picture.image[0] != nullptr) {
-    return carried(picture);
-  }
-  return i420(picture);
 }
 
 std::optional<DecodedPicture> device_picture(const ob::Frame& frame) {
