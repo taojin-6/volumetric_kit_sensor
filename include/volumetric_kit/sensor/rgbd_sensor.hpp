@@ -167,9 +167,10 @@ class VR_SENSOR_API IRgbdSensor {
   virtual core::Result<std::optional<RgbdFrame>> poll() = 0;
 
   /// @brief Take every frame held, oldest first.
-  /// @param out  Receives the frames, appended.
+  /// @param out  Receives the frames, appended; not null.
   /// @return OK, with none appended when none is held; or why the sensor
-  ///         failed.
+  ///         failed, the frames before the failure appended and counted
+  ///         delivered.
   virtual core::Status drain(std::vector<RgbdFrame>* out) = 0;
 
   /// @brief Whether this sensor will never hand out another frame.

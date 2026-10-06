@@ -115,6 +115,11 @@ class CameraStream {
   }
   // Write sync settings to the camera, where they persist. Not while running.
   core::Status apply_sync(const OrbbecSyncSettings& settings);
+  // Set this camera's clock to the host's, once: unlike the context's
+  // enableDeviceClockSync, which re-syncs every camera the process opened.
+  // IoError if the camera cannot. Before start, so no frame's timestamp
+  // steps.
+  core::Status sync_clock_to_host();
   bool disconnected() const noexcept {
     return mailbox_->disconnected.load(std::memory_order_acquire);
   }
@@ -242,5 +247,12 @@ class CameraStream {
   float min_depth_ = 0.0f;
   float max_depth_ = 0.0f;
 };
+
+// One camera -- `serial`, or the only one that answers -- found and created
+// in a context of its own, which the stream holds: a single camera's open.
+core::Result<std::unique_ptr<CameraStream>> open_camera(
+    const std::string& serial, std::uint32_t discovery_timeout_ms,
+    bool configure_logging, const OrbbecStreamOptions& streams,
+    const camera::Mat4d& color_to_world, const std::string& who);
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

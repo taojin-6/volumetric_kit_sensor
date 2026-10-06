@@ -69,10 +69,14 @@ class JpegColorDecoder {
   void stop() noexcept;
 
   // Pairs that will not be handed on: one missing either frame or with an
-  // empty colour frame, a JPEG that does not decode, and the queue's oldest
-  // when a pair arrives with it full.
+  // empty colour frame, and a JPEG that does not decode.
   std::uint64_t lost() const noexcept {
     return lost_.load(std::memory_order_relaxed);
+  }
+  // The queue's oldest pairs, replaced by a newer one while the decoder was
+  // busy: dropped, as the mailbox drops them, not lost.
+  std::uint64_t dropped() const noexcept {
+    return dropped_.load(std::memory_order_relaxed);
   }
 
  private:
@@ -93,6 +97,7 @@ class JpegColorDecoder {
   bool stopping_ = false;                            // guarded by mutex_
   std::thread thread_;
   std::atomic<std::uint64_t> lost_{0};
+  std::atomic<std::uint64_t> dropped_{0};
 };
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

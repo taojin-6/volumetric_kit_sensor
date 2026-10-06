@@ -239,6 +239,25 @@ void Mailbox::on_devices_changed(const std::string& serial,
   }
 }
 
+core::Result<std::unique_ptr<CameraStream>> open_camera(
+    const std::string& serial, std::uint32_t discovery_timeout_ms,
+    bool configure_logging, const OrbbecStreamOptions& streams,
+    const camera::Mat4d& color_to_world, const std::string& who) {
+  try {
+    if (configure_logging) configure_sdk_logging();
+    auto context = std::make_shared<ob::Context>();
+    context->enableNetDeviceEnumeration(true);
+    std::vector<std::string> serials;
+    if (!serial.empty()) serials.push_back(serial);
+    VKC_ASSIGN(const auto devices,
+               discover(*context, serials, discovery_timeout_ms, who));
+    return CameraStream::create(std::move(context), devices.front(), streams,
+                                color_to_world, configure_logging, who);
+  } catch (const std::exception& e) {  // ob::Error is one
+    return sdk_error(who, "opening the camera", e);
+  }
+}
+
 core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
     const OrbbecStreamOptions& streams, const camera::Mat4d& color_to_world,
@@ -463,7 +482,10 @@ OrbbecCaptureStats CameraStream::stats() const noexcept {
   s.host_pictures = host_pictures_;
 #if VR_ORBBEC_WITH_VIDEO
   if (hevc_ != nullptr) s.lost = hevc_->lost();
-  if (jpeg_ != nullptr) s.lost = jpeg_->lost();
+  if (jpeg_ != nullptr) {
+    s.dropped += jpeg_->dropped();
+    s.lost = jpeg_->lost();
+  }
 #endif
   return s;
 }
@@ -639,6 +661,15 @@ core::Status CameraStream::apply_sync(const OrbbecSyncSettings& settings) {
     return sdk_error(who_, "writing its sync settings", e);
   }
   info_.sync_mode = sync_settings_.mode;
+  return {};
+}
+
+core::Status CameraStream::sync_clock_to_host() {
+  try {
+    device_->timerSyncWithHost();
+  } catch (const std::exception& e) {  // ob::Error is one
+    return sdk_error(who_, "syncing its clock to the host's", e);
+  }
   return {};
 }
 

@@ -162,6 +162,18 @@ OrbbecSyncMode sync_mode_from(OBMultiDeviceSyncMode mode) noexcept {
 
 namespace {
 
+core::Status validate_pose(const camera::Mat4d& cam_to_world,
+                           const std::string& who) {
+  const core::Status rigid = camera::check_rigid(cam_to_world);
+  if (!rigid.ok()) {
+    return core::Status::invalid_argument(who +
+                                          ": cam_to_world: " + rigid.message());
+  }
+  return {};
+}
+
+}  // namespace
+
 core::Status validate_streams(const OrbbecStreamOptions& streams,
                               const std::string& who) {
   if (streams.depth_width == 0 || streams.depth_height == 0 ||
@@ -182,20 +194,13 @@ core::Status validate_streams(const OrbbecStreamOptions& streams,
         std::to_string(streams.max_depth) +
         "] m must be finite, non-negative and non-empty");
   }
-  return {};
-}
-
-core::Status validate_pose(const camera::Mat4d& cam_to_world,
-                           const std::string& who) {
-  const core::Status rigid = camera::check_rigid(cam_to_world);
-  if (!rigid.ok()) {
-    return core::Status::invalid_argument(who +
-                                          ": cam_to_world: " + rigid.message());
+  // The GPU pass gates depth at min_depth > 0, and would refuse every frame.
+  if (streams.raw && !(streams.min_depth > 0.0f)) {
+    return core::Status::invalid_argument(
+        who + ": raw frames need min_depth > 0, as the GPU pass does");
   }
   return {};
 }
-
-}  // namespace
 
 OBMultiDeviceSyncMode sdk_sync_mode(OrbbecSyncMode mode) noexcept {
   switch (mode) {

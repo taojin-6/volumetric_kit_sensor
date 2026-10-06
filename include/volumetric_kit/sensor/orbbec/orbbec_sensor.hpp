@@ -71,10 +71,13 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
     /// `RgbdFrame::color_to_world`; rigid. Identity places the world at the
     /// camera.
     camera::Mat4d color_to_world = camera::Mat4d(1.0);
-    /// Keep the camera's clock on the host's, re-synced this often (ms), so
-    /// its timestamps compare with other sensors' (`ClockDomain::Host`). 0
-    /// leaves it on its own clock.
-    std::uint32_t clock_sync_interval_ms = 0;
+    // TODO(sensor): measure the Femto Mega's clock drift over a session,
+    // against the sensor array's grouping tolerance.
+    /// Set the camera's clock to the host's at each @ref start, so its
+    /// timestamps compare with other sensors' (`ClockDomain::Host`). This
+    /// camera's alone, and before it streams, so no timestamp steps; its
+    /// clock drifts from the host's from then on, until the next start.
+    bool sync_clock_to_host = false;
     /// As `OrbbecCapture::Options::configure_sdk_logging`.
     bool configure_sdk_logging = true;
   };
@@ -83,8 +86,12 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///        read its factory calibration. Does not start streaming.
   /// @param options  The camera and its streams.
   /// @return The sensor; or what `OrbbecCapture::open` returns for these
-  ///         streams opened raw, and `Status::Code::InvalidArgument` also for
-  ///         a @ref Options::color_to_world that is not rigid.
+  ///         streams opened raw -- `Status::Code::InvalidArgument` for
+  ///         options refused before the camera is looked for, among them a
+  ///         `min_depth` of 0, which the GPU pass would refuse, and a
+  ///         @ref Options::color_to_world that is not rigid -- and
+  ///         `Status::Code::Unsupported` for a camera in a sync mode this
+  ///         driver does not know.
   static core::Result<OrbbecSensor> open(const Options& options);
 
   OrbbecSensor(OrbbecSensor&& other) noexcept;
@@ -109,20 +116,27 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   core::Status set_queue_depth(std::size_t frames) override;
   /// @return OK once streaming; `Status::Code::InvalidArgument` on a
   ///         moved-from sensor; or what `OrbbecCapture::start` returns, and
-  ///         `Status::Code::IoError` if the SDK will not sync the clock.
+  ///         `Status::Code::IoError` if the camera cannot sync its clock
+  ///         (@ref Options::sync_clock_to_host).
   core::Status start() override;
+  /// @brief As `IRgbdSensor::stop`, letting go of the frames waiting for
+  ///        the colour decoder too. The camera stays open, for another
+  ///        @ref start.
   void stop() noexcept override;
   /// @return As `IRgbdSensor::poll`; `Status::Code::IoError` once the camera
   ///         disconnected or its frames stopped processing, or for a pair
   ///         that contradicts the stream; `Status::Code::Unsupported` for a
   ///         stream whose transfer or primaries `ColorEncoding` cannot name.
   core::Result<std::optional<RgbdFrame>> poll() override;
-  /// @return As @ref poll; on a failure, the frames not yet handed out are
-  ///         counted dropped.
+  /// @return As @ref poll; on a failure, the frames before it stay
+  ///         appended, and those after it are counted dropped.
   core::Status drain(std::vector<RgbdFrame>* out) override;
   /// @return `true` on a moved-from sensor and once the camera has
   ///         disconnected.
   bool exhausted() const noexcept override;
+  /// @return @ref orbbec_stats, its lost frames -- colour that did not
+  ///         decode, or came without depth -- counted failed. Zero on a
+  ///         moved-from sensor.
   SensorStats stats() const noexcept override;
 
  private:

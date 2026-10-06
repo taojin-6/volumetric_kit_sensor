@@ -39,22 +39,24 @@ JpegColorDecoder::~JpegColorDecoder() { stop(); }
 
 void JpegColorDecoder::push(std::shared_ptr<ob::FrameSet> pair) noexcept {
   if (pair == nullptr) return;
-  std::uint64_t lost = 0;
+  std::uint64_t dropped = 0;
+  bool lost = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) return;
     // The oldest go, a JPEG needing no other.
     while (!queue_.empty() && queue_.size() >= options_.depth) {
       queue_.pop_front();
-      ++lost;
+      ++dropped;
     }
     try {
       queue_.push_back(std::move(pair));
     } catch (...) {  // out of memory: this pair goes
-      ++lost;
+      lost = true;
     }
   }
-  if (lost != 0) lose(lost);
+  if (dropped != 0) dropped_.fetch_add(dropped, std::memory_order_relaxed);
+  if (lost) lose();
   wake_.notify_one();
 }
 

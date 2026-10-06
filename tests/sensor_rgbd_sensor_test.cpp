@@ -33,7 +33,8 @@ namespace sensor = volumetric_kit::recon::sensor;
 namespace {
 
 // A sensor that "captures" a 2x2 depth frame each time the test calls
-// capture(), holding at most `depth` of them as a driver's mailbox does.
+// capture(), holding at most `depth` of them as a driver's mailbox does, and
+// every buffer it filled until stop(), as a driver's pool does.
 class FakeSensor final : public sensor::IRgbdSensor {
  public:
   FakeSensor() {
@@ -44,9 +45,9 @@ class FakeSensor final : public sensor::IRgbdSensor {
 
   void capture() {
     ++stats_.received;
-    // Each frame's pixels live in a buffer the frame holds, not the sensor.
     auto pixels = std::make_shared<std::vector<std::uint16_t>>(
         4, static_cast<std::uint16_t>(1000 + next_));
+    buffers_.push_back(pixels);
     sensor::RgbdFrame f;
     f.depth = pixels->data();
     f.pixels = pixels;
@@ -74,6 +75,7 @@ class FakeSensor final : public sensor::IRgbdSensor {
   void stop() noexcept override {
     running_ = false;
     held_.clear();
+    buffers_.clear();
   }
   vkc::Result<std::optional<sensor::RgbdFrame>> poll() override {
     if (held_.empty()) return no_frame();
@@ -94,6 +96,7 @@ class FakeSensor final : public sensor::IRgbdSensor {
  private:
   sensor::SensorInfo info_;
   std::vector<sensor::RgbdFrame> held_;
+  std::vector<std::shared_ptr<std::vector<std::uint16_t>>> buffers_;
   std::size_t depth_ = 1;
   bool running_ = false;
   std::uint64_t next_ = 0;
@@ -136,14 +139,20 @@ int test_poll_and_drain(FakeSensor& fake) {
 }
 
 int test_frames_hold_pixels(FakeSensor& fake) {
-  fake.capture();
-  auto polled = fake.poll();
-  CHECK(polled.ok() && polled.value());
-  sensor::RgbdFrame kept = *polled.value();
-  // The sensor lets everything go; the frame still reads its pixels.
+  sensor::RgbdFrame kept;
+  {
+    fake.capture();
+    auto polled = fake.poll();
+    CHECK(polled.ok() && polled.value());
+    kept = *polled.value();
+  }
+  const std::weak_ptr<const void> buffer = kept.pixels;
+  // The sensor lets its buffers go; the kept frame still reads its pixels,
+  // and is what held them.
   fake.stop();
-  for (int i = 0; i < 3; ++i) fake.capture();
-  CHECK(kept.pixels != nullptr && kept.depth[3] == 1000 + kept.sequence);
+  CHECK(!buffer.expired() && kept.depth[3] == 1000 + kept.sequence);
+  kept = sensor::RgbdFrame{};
+  CHECK(buffer.expired());
   return 0;
 }
 

@@ -3,7 +3,8 @@
 
 // The Orbbec driver's arithmetic, with no camera: the SDK-to-contract unit and
 // layout conversions, the sync-mode mapping, and the option checks open() makes
-// before it touches the SDK -- each a place the driver can be silently wrong.
+// before it touches the SDK, OrbbecSensor's too -- each a place the driver can
+// be silently wrong.
 
 #include <cmath>
 #include <cstdint>
@@ -15,6 +16,7 @@
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_capture.hpp"
+#include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
@@ -293,6 +295,13 @@ int test_validate() {
   o.cam_to_world = camera::Mat4d(2.0);
   CHECK(invalid(orbbec::validate(o)));
 
+  // A depth gate at 0 passes the host path, but the GPU pass refuses it.
+  o = Options{};
+  o.min_depth = 0.0f;
+  CHECK(orbbec::validate(o).ok());
+  o.raw = true;
+  CHECK(invalid(orbbec::validate(o)));
+
   // Raw frames take either codec, each decoded for the GPU pass.
   o = Options{};
   o.raw = true;
@@ -316,6 +325,28 @@ int test_validate() {
   CHECK(sensor::OrbbecCapture::open(o).status().domain() ==
         vkc::Status::Code::Unsupported);
 #endif
+  return 0;
+}
+
+// OrbbecSensor::open refuses the same before the SDK, in its own name: its
+// streams are raw whatever `raw` says, and its pose's reason is kept.
+int test_sensor_open() {
+  const auto refused = [](const sensor::OrbbecSensor::Options& o,
+                          const std::string& says) {
+    const vkc::Status s = sensor::OrbbecSensor::open(o).status();
+    return invalid(s) && s.message().rfind("OrbbecSensor: ", 0) == 0 &&
+           s.message().find(says) != std::string::npos;
+  };
+  sensor::OrbbecSensor::Options o;
+  o.depth_width = 0;
+  CHECK(refused(o, "sizes"));
+  o = {};
+  o.raw = false;
+  o.min_depth = 0.0f;
+  CHECK(refused(o, "min_depth > 0"));
+  o = {};
+  o.color_to_world[0][0] = -1.0;
+  CHECK(refused(o, "color_to_world: transform's rotation is a reflection"));
   return 0;
 }
 
@@ -380,6 +411,7 @@ int main() {
   if (test_sync_mode() != 0) return 1;
   if (test_validate() != 0) return 1;
   if (test_validate_rig() != 0) return 1;
+  if (test_sensor_open() != 0) return 1;
   std::printf("orbbec conversion tests passed\n");
   return 0;
 }
