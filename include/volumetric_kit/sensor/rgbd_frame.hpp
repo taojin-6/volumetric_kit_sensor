@@ -109,8 +109,8 @@ struct YuvImage {
 ///
 /// It holds what it points to, so a consumer may keep several -- a sensor
 /// array groups each sensor's frames by trigger before it prepares any: the
-/// depth through @ref pixels, the colour picture through `YuvImage::device` or
-/// `YuvImage::image`. A driver's buffers go back to it
+/// depth and any host colour through @ref pixels, the colour picture through
+/// `YuvImage::device` or `YuvImage::image`. A driver's buffers go back to it
 /// once every copy of the frame is gone, so a consumer that keeps frames
 /// keeps the driver's buffers from it.
 ///
@@ -140,12 +140,18 @@ struct RgbdFrame {
   float min_depth = 0.0f;
   float max_depth = 0.0f;  ///< Farther samples are dropped (metres).
 
-  /// The colour picture; with neither `color.device` nor `color.image` set,
-  /// the frame has none. Its size is @ref color_camera's.
+  /// The colour picture; with none of `color.device`, `color.image` or
+  /// @ref color_packed set, the frame has none. Its size is
+  /// @ref color_camera's.
   YuvImage color{};
+  /// Or the colour on the host, as a dataset decodes it:
+  /// `color_camera.size.width * height` row-major words, R | G << 8 | B << 16,
+  /// the high byte ignored (`io::load_color_packed`'s layout). Set this or
+  /// @ref color, not both. Held by @ref pixels.
+  const std::uint32_t* color_packed = nullptr;
   camera::CameraModel color_camera;  ///< The colour camera, lens included.
-  /// What the R'G'B' the matrix gives is encoded as; the pass converts only
-  /// from an encoding @ref is_canonical accepts.
+  /// What the R'G'B' -- the matrix's, or @ref color_packed's -- is encoded
+  /// as; the pass converts only from an encoding @ref is_canonical accepts.
   ColorEncoding color_encoding{};
 
   /// The colour camera's frame to the world's, in this repo's camera axes
@@ -164,14 +170,14 @@ struct RgbdFrame {
   /// counts within one capture session; it may begin again at a restart.
   std::uint64_t sequence = 0;
 
-  /// What @ref depth points into, held for as long as the frame is; null when
-  /// it needs no owner.
+  /// What @ref depth and @ref color_packed point into, held for as long as
+  /// the frame is; null when they need no owner.
   std::shared_ptr<const void> pixels;
 
   /// @return `true` if this frame carries colour.
   bool has_color() const noexcept {
-    return color.device != nullptr || color.image[0] != nullptr ||
-           color.image[1] != nullptr;
+    return color_packed != nullptr || color.device != nullptr ||
+           color.image[0] != nullptr || color.image[1] != nullptr;
   }
 };
 

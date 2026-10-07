@@ -9,6 +9,8 @@
 //     inversion, comes back where it was drawn;
 //   - both passes match a host reference of the same sampling, colour's
 //     coverage byte included;
+//   - packed R'G'B' words from the host come through a pinhole as they went
+//     in, and through a lens as the reference samples them;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its colour output is shared with the queue families its config names;
@@ -210,6 +212,30 @@ void forward(float r, float g, float b, float kr, float kb, bool full,
   *cr = q(128.0f + pr * (full ? 255.0f : 224.0f));
 }
 
+// Bilinear over a w x h byte plane, centres at integer coordinates, clamped
+// to the edge, as the colour pass samples a plane.
+float bilinear(const std::vector<std::uint8_t>& plane, std::uint32_t w,
+               std::uint32_t h, float x, float y) {
+  x = std::clamp(x, 0.0f, static_cast<float>(w - 1));
+  y = std::clamp(y, 0.0f, static_cast<float>(h - 1));
+  const auto x0 = static_cast<std::uint32_t>(x);
+  const auto y0 = static_cast<std::uint32_t>(y);
+  const std::uint32_t x1 = std::min(x0 + 1, w - 1);
+  const std::uint32_t y1 = std::min(y0 + 1, h - 1);
+  const float fx = x - x0, fy = y - y0;
+  const auto t = [&](std::uint32_t a, std::uint32_t b) {
+    return static_cast<float>(plane[std::size_t{b} * w + a]);
+  };
+  const float top = t(x0, y0) + (t(x1, y0) - t(x0, y0)) * fx;
+  const float bottom = t(x0, y1) + (t(x1, y1) - t(x0, y1)) * fx;
+  return top + (bottom - top) * fy;
+}
+
+// A value in [0, 1] as an 8-bit code, rounded as the colour pass rounds it.
+std::uint32_t code(float x) {
+  return static_cast<std::uint32_t>(std::clamp(x, 0.0f, 1.0f) * 255.0f + 0.5f);
+}
+
 // The pass's colour sampling, on the host: bilinear luma and chroma at their
 // sitings, the inverse matrix, round to a code; coverage 0xFF in the high
 // byte, and a 0 word where the lens maps outside the picture.
@@ -220,22 +246,6 @@ std::uint32_t reference_color(const Planes& p, const camera::CameraModel& c,
         s.y <= p.h - 0.5f)) {
     return 0;
   }
-  const auto bilinear = [](const std::vector<std::uint8_t>& plane,
-                           std::uint32_t w, std::uint32_t h, float x, float y) {
-    x = std::clamp(x, 0.0f, static_cast<float>(w - 1));
-    y = std::clamp(y, 0.0f, static_cast<float>(h - 1));
-    const auto x0 = static_cast<std::uint32_t>(x);
-    const auto y0 = static_cast<std::uint32_t>(y);
-    const std::uint32_t x1 = std::min(x0 + 1, w - 1);
-    const std::uint32_t y1 = std::min(y0 + 1, h - 1);
-    const float fx = x - x0, fy = y - y0;
-    const auto t = [&](std::uint32_t a, std::uint32_t b) {
-      return static_cast<float>(plane[std::size_t{b} * w + a]);
-    };
-    const float top = t(x0, y0) + (t(x1, y0) - t(x0, y0)) * fx;
-    const float bottom = t(x0, y1) + (t(x1, y1) - t(x0, y1)) * fx;
-    return top + (bottom - top) * fy;
-  };
   const float yv = bilinear(p.y, p.w, p.h, s.x, s.y);
   const float cbv = bilinear(p.cb, p.cw, p.ch, s.x * 0.5f, (s.y - 0.5f) * 0.5f);
   const float crv = bilinear(p.cr, p.cw, p.ch, s.x * 0.5f, (s.y - 0.5f) * 0.5f);
@@ -245,10 +255,6 @@ std::uint32_t reference_color(const Planes& p, const camera::CameraModel& c,
   const float r = luma + 2.0f * (1.0f - kr) * pr;
   const float b = luma + 2.0f * (1.0f - kb) * pb;
   const float g = (luma - kr * r - kb * b) / (1.0f - kr - kb);
-  const auto code = [](float x) {
-    return static_cast<std::uint32_t>(std::clamp(x, 0.0f, 1.0f) * 255.0f +
-                                      0.5f);
-  };
   return code(r) | (code(g) << 8) | (code(b) << 16) | 0xFF000000u;
 }
 
@@ -260,6 +266,20 @@ int channel_diff(std::uint32_t a, std::uint32_t b) {
     worst = std::max(worst, std::abs(ca - cb));
   }
   return worst;
+}
+
+// `count` packed words as a dataset decodes them, random in every byte: the
+// high one is junk the pass must ignore.
+std::vector<std::uint32_t> packed_words(std::size_t count, std::uint32_t seed) {
+  std::vector<std::uint32_t> words(count);
+  std::uint32_t x = seed;
+  for (std::uint32_t& word : words) {
+    x ^= x << 13;  // xorshift32
+    x ^= x >> 17;
+    x ^= x << 5;
+    word = x;
+  }
+  return words;
 }
 
 sensor::RgbdFrame frame_of(const std::vector<std::uint16_t>& depth,
@@ -506,6 +526,70 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
   // the other way on the device; nothing else may differ.
   CHECK(depth_off <= 20);
   CHECK(color_worst <= 1);
+  CHECK(coverage_off == 0);
+  return 0;
+}
+
+// Packed R'G'B' words on the host, as a dataset decodes them. Through a
+// pinhole each comes back as it went in, its junk high byte replaced by full
+// coverage, beside depth that is still raw * scale; through a lens, R, G and B
+// are each sampled as the host reference samples a plane.
+int test_packed(sensor::GpuFramePrep& prep) {
+  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight);
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    raw[i] = static_cast<std::uint16_t>((i * 7919u) % 6000u);
+  }
+  const std::vector<std::uint32_t> words = packed_words(raw.size(), 1);
+  sensor::RgbdFrame f = frame_of(raw, pinhole());
+  f.color_packed = words.data();
+  f.color_camera = pinhole();
+  CHECK(f.has_color());
+  auto out = prep.prepare(f);
+  if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+  CHECK(out.ok() && out->has_color());
+  const std::vector<float> d = depth_of(out.value());
+  const std::vector<std::uint32_t> c = color_of(out.value());
+  CHECK(d.size() == raw.size() && c.size() == raw.size());
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    CHECK(d[i] == static_cast<float>(raw[i]) * kScale);
+    CHECK(c[i] == ((words[i] & 0xFFFFFFu) | 0xFF000000u));
+  }
+
+  const camera::CameraModel cam = lensed();
+  f.color_camera = cam;
+  out = prep.prepare(f);
+  CHECK(out.ok());
+  const std::vector<std::uint32_t> lens = color_of(out.value());
+  CHECK(lens.size() == words.size());
+  std::vector<std::uint8_t> channel[3];
+  for (int k = 0; k < 3; ++k) {
+    channel[k].resize(words.size());
+    for (std::size_t i = 0; i < words.size(); ++i) {
+      channel[k][i] = static_cast<std::uint8_t>(words[i] >> (8 * k));
+    }
+  }
+  int worst = 0, coverage_off = 0;
+  for (std::uint32_t v = 0; v < kHeight; ++v) {
+    for (std::uint32_t u = 0; u < kWidth; ++u) {
+      const vr::Vec2f s =
+          source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
+      std::uint32_t ref = 0;
+      if (s.x >= -0.5f && s.y >= -0.5f && s.x <= kWidth - 0.5f &&
+          s.y <= kHeight - 0.5f) {
+        ref = 0xFF000000u;
+        for (int k = 0; k < 3; ++k) {
+          const float sample = bilinear(channel[k], kWidth, kHeight, s.x, s.y);
+          ref |= code(sample / 255.0f) << (8 * k);
+        }
+      }
+      const std::uint32_t got = lens[std::size_t{v} * kWidth + u];
+      if ((got >> 24) != (ref >> 24)) ++coverage_off;
+      worst = std::max(worst, channel_diff(got, ref));
+    }
+  }
+  std::printf("  packed through a lens: worst %d, %d coverage off\n", worst,
+              coverage_off);
+  CHECK(worst <= 1);
   CHECK(coverage_off == 0);
   return 0;
 }
@@ -773,12 +857,13 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
 
 // prepare_batch prepares every camera's frame in one batch, each as a pass of
 // its own makes it alone, whichever way its colour arrives -- planes in a
-// buffer, taken over from outside Vulkan or not, or NV12's planes as images --
-// with depth kept within colour; an empty slot stays empty. A set with a
+// buffer, taken over from outside Vulkan or not, NV12's planes as images, or
+// packed words on the host, staged beside the depth -- with depth kept within
+// colour; an empty slot stays empty. A set with a
 // refused frame is refused before any work, with that frame's refusal, and
 // too few passes are refused.
 int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
-  constexpr std::size_t kCams = 4;
+  constexpr std::size_t kCams = 5;
   sensor::GpuFramePrepConfig masked;
   masked.depth_within_color = true;
   std::vector<sensor::GpuFramePrep> preps;
@@ -835,6 +920,11 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p3.cw, p3.ch, cbcr.data(),
                              2 * p3.cw, p3.ch, src);
   CHECK(images.image[0] != nullptr && images.image[1] != nullptr);
+  // Camera 4's as packed words on the host, as a dataset decodes them.
+  const std::vector<std::uint32_t> words = packed_words(raws[4].size(), 3);
+  frames[4]->color = {};
+  frames[4]->color_packed = words.data();
+  CHECK(frames[4]->has_color());
 
   for (int round = 0; round < 3; ++round) {
     auto set = sensor::GpuFramePrep::prepare_batch(preps, frames);
@@ -1040,6 +1130,23 @@ int test_refusals(sensor::GpuFramePrep& prep) {
   CHECK(prep.prepare(f, &metrics).status().domain() == invalid);
   CHECK(metrics.rows().size() == 1);
   CHECK(!metrics.rows()[0].has_gpu);
+
+  // Packed words beside Y'CbCr planes, which dispatches nothing either, and
+  // in an encoding the pass does not convert.
+  const std::vector<std::uint32_t> words = packed_words(raw.size(), 2);
+  f = frame_of(raw, pinhole());
+  f.color_packed = words.data();
+  f.color_camera = pinhole();
+  CHECK(prep.prepare(f).ok());
+  f.color = p.image(0.299f, 0.114f, true);
+  vkc::StageMetrics both;
+  const vkc::Status refused = prep.prepare(f, &both).status();
+  CHECK(refused.domain() == invalid &&
+        refused.message().find("not both") != std::string::npos);
+  CHECK(both.rows().size() == 1 && !both.rows()[0].has_gpu);
+  f.color = {};
+  f.color_encoding.transfer = vr::ColorEncoding::Transfer::Bt2020Pq;
+  CHECK(prep.prepare(f).status().domain() == vkc::Status::Code::Unsupported);
   return 0;
 }
 
@@ -1332,6 +1439,7 @@ int main() {
       0) {
     return 1;
   }
+  if (test_packed(prep.value()) != 0) return 1;
   if (test_chroma_locations(prep.value()) != 0) return 1;
   for (auto location :
        {sensor::ChromaLocation::Left, sensor::ChromaLocation::Center}) {
