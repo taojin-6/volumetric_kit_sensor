@@ -14,9 +14,9 @@
 /// @ref RgbdFrame::depth_to_color from the colour camera, and `tsdf` fuses the
 /// two as they are.
 ///
-/// Like the capture contract it reaches no Vulkan, so a driver produces it
-/// without compiling against a GPU API: a picture a decoder left on the
-/// device is named by `core`'s `Buffer` or `Image`, declared here.
+/// It reaches no Vulkan, so a driver produces it without compiling against a
+/// GPU API: a picture a decoder left on the device is named by `core`'s
+/// `Buffer` or `Image`, declared here.
 
 #include <cstddef>
 #include <cstdint>

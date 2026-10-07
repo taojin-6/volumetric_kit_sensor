@@ -55,7 +55,8 @@ enum class PoseSource : std::uint8_t {
   /// The sensor sits still: a calibration poses it, and the driver stamps
   /// the pose it was given.
   Fixed,
-  /// The sensor tracks itself (ARKit): each frame carries its own estimate.
+  /// The sensor tracks itself (ARKit), or a recording carries its
+  /// trajectory: each frame carries its own pose.
   Tracked,
 };
 

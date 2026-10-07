@@ -3,7 +3,6 @@
 
 #include "volumetric_kit/recon/io/image_io.hpp"
 
-#include <cmath>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -121,26 +120,15 @@ core::Result<std::vector<std::uint32_t>> load_color_packed(
   return detail::exception_status("load_color_packed");
 }
 
-core::Result<std::vector<float>> load_depth_metres(const std::string& path,
-                                                   std::uint32_t expected_w,
-                                                   std::uint32_t expected_h,
-                                                   float depth_scale) try {
-  if (!std::isfinite(depth_scale) || !(depth_scale > 0.0f)) {
-    return core::Status::invalid_argument(
-        "load_depth_metres: invalid depth scale");
-  }
-  // The largest 16-bit sample bounds every depth, so one check covers them.
-  const float inv_scale = 1.0f / depth_scale;
-  if (!std::isfinite(65535.0f * inv_scale)) {
-    return core::Status::invalid_argument(
-        "load_depth_metres: depth scale overflows float depths");
-  }
+core::Result<std::vector<std::uint16_t>> load_depth_u16(
+    const std::string& path, std::uint32_t expected_w,
+    std::uint32_t expected_h) try {
   int channels = 0;
-  VKC_ASSIGN(const auto encoded, read_image("load_depth_metres", path,
-                                            expected_w, expected_h, channels));
+  VKC_ASSIGN(const auto encoded, read_image("load_depth_u16", path, expected_w,
+                                            expected_h, channels));
   const int size = static_cast<int>(encoded.size());
   if (channels != 1 || !stb::is_16_bit(encoded.data(), size)) {
-    return core::Status::invalid_argument("load_depth_metres: " + path +
+    return core::Status::invalid_argument("load_depth_u16: " + path +
                                           ": expected a 16-bit grayscale PNG");
   }
   int w = 0;
@@ -148,20 +136,16 @@ core::Result<std::vector<float>> load_depth_metres(const std::string& path,
   std::unique_ptr<std::uint16_t, StbiFree> raw(
       stb::load16(encoded.data(), size, &w, &h, &channels, 1));
   if (!raw) {
-    return core::Status::io_error("load_depth_metres: " + path + ": " +
+    return core::Status::io_error("load_depth_u16: " + path + ": " +
                                   stb::failure_reason());
   }
   VKC_CHECK(
       w == static_cast<int>(expected_w) && h == static_cast<int>(expected_h),
       "stb decoded other dimensions than its header reported");
   const std::size_t count = static_cast<std::size_t>(w) * h;
-  std::vector<float> metres(count);
-  for (std::size_t i = 0; i < count; ++i) {
-    metres[i] = static_cast<float>(raw.get()[i]) * inv_scale;
-  }
-  return metres;
+  return std::vector<std::uint16_t>(raw.get(), raw.get() + count);
 } catch (...) {
-  return detail::exception_status("load_depth_metres");
+  return detail::exception_status("load_depth_u16");
 }
 
 core::Status write_png_rgba8(const std::string& path,

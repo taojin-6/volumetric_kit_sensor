@@ -6,6 +6,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -93,12 +94,12 @@ int main() {
   CHECK(read_bytes(color_path) == encoded);
 
   CHECK(write_fixture(depth_path, kDepth16));
-  auto depth = vr::io::load_depth_metres(depth_path, 2, 1, 6553.5f);
-  CHECK(depth && depth.value() == std::vector<float>({0.0f, 10.0f}));
-  CHECK(!vr::io::load_depth_metres(depth_path, 2, 1, 0.0f));
+  auto depth = vr::io::load_depth_u16(depth_path, 2, 1);
+  CHECK(depth && depth.value() == std::vector<std::uint16_t>({0, 65535}));
+  CHECK(!vr::io::load_depth_u16(depth_path, 1, 1));
   // An 8-bit depth PNG would otherwise decode about 257x too far.
   CHECK(write_fixture(depth_path, kDepth8));
-  CHECK(!vr::io::load_depth_metres(depth_path, 2, 1, 1.0f));
+  CHECK(!vr::io::load_depth_u16(depth_path, 2, 1));
   std::puts("io image tests passed");
   return 0;
 }
