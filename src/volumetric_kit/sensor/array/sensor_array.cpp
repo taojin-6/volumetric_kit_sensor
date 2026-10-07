@@ -67,7 +67,7 @@ struct SensorArray::Impl {
   }
 
   void forget() {
-    if (grouper) grouper->clear(&released);
+    grouper->clear(&released);
     release();
     held.clear();
   }
