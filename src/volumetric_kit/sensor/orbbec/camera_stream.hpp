@@ -80,7 +80,8 @@ class CameraStream {
   }
   // Write sync settings to the camera, where they persist (its flash). Not
   // while running. What the SDK reads back after it is its own cache of the
-  // write, not the camera: the next open is what reads the camera again.
+  // effective settings, including its normalization, not the camera: the next
+  // open is what reads the camera again.
   core::Status apply_sync(const OrbbecSyncSettings& settings);
   // Stamp frames with the SDK's global timestamps -- the camera's clock mapped
   // onto the host's, re-fitted as the two drift -- rather than the camera's

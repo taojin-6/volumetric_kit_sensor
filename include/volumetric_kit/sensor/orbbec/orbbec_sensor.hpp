@@ -83,7 +83,9 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
     std::optional<OrbbecSyncSettings> sync;
     /// Write @ref sync to the camera where its stored settings differ, rather
     /// than refusing it. They persist in the camera's flash, so they are
-    /// written only on a difference.
+    /// written only on a difference. Refused if the SDK's effective settings
+    /// still differ after the write; this checks SDK normalization, not
+    /// persistence on the camera.
     bool apply_sync = false;
     /// Stamp each frame with the SDK's global timestamp -- the camera's clock
     /// mapped onto the host's `std::chrono::system_clock` (the SDK's default
@@ -124,8 +126,9 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///           software-triggering mode or a sync mode this driver does not
   ///           know, reports a lens model the GPU pass cannot undistort,
   ///           has sync settings that differ from @ref Options::sync (each
-  ///           field named) without @ref Options::apply_sync, or has no
-  ///           global timestamps for @ref Options::sync_clock_to_host;
+  ///           field named) without @ref Options::apply_sync or after the SDK
+  ///           applies them, or has no global timestamps for
+  ///           @ref Options::sync_clock_to_host;
   ///         - `Status::Code::IoError` for any other SDK failure, writing
   ///           the sync settings included, with the SDK's message.
   static core::Result<OrbbecSensor> open(const Options& options);

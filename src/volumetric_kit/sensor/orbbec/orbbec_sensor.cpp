@@ -58,22 +58,30 @@ core::Result<OrbbecSensor> OrbbecSensor::open(const Options& options) {
                                  options.color_to_world, "OrbbecSensor"));
   orbbec::CameraStream& stream = *impl->stream;
   const std::string who = "OrbbecSensor: camera " + stream.info().serial;
-  // Before any write to the camera's flash, so a refusal never follows one.
+  // Check host-clock support before any write to the camera's flash.
   if (options.sync_clock_to_host) VKC_TRY(stream.use_host_clock());
   if (options.sync) {
     // Written only where they differ: they persist in the camera's flash.
-    const std::vector<std::string> differences =
+    std::vector<std::string> differences =
         orbbec::sync_differences(*options.sync, stream.sync_settings());
-    if (!differences.empty() && !options.apply_sync) {
+    if (!differences.empty() && options.apply_sync) {
+      VKC_TRY(stream.apply_sync(*options.sync));
+      // The SDK's cache is not proof of a flash write, but it does expose
+      // normalization: a primary's trigger output, for example, is forced on
+      // with no delay. Refuse settings the SDK did not apply as requested.
+      differences =
+          orbbec::sync_differences(*options.sync, stream.sync_settings());
+    }
+    if (!differences.empty()) {
       std::string fields;
       for (const std::string& d : differences) {
         fields += (fields.empty() ? "" : ", ") + d;
       }
       return core::Status::unsupported(
           who + " differs from its sync configuration: " + fields +
-          "; set apply_sync to write them");
+          (options.apply_sync ? "; the SDK did not apply the requested settings"
+                              : "; set apply_sync to write them"));
     }
-    if (!differences.empty()) VKC_TRY(stream.apply_sync(*options.sync));
   }
   // The role as the camera has it now, after any write.
   if (stream.info().sync_mode == OrbbecSyncMode::SoftwareTriggering) {
