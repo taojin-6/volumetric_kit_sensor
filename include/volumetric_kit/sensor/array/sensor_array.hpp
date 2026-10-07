@@ -32,34 +32,11 @@
 
 namespace volumetric_kit::recon::sensor {
 
-/// @brief How an array groups its sensors' frames into sets.
-enum class SyncMode : std::uint8_t {
-  /// Hardware-triggered: the primary's frames name the triggers, and each
-  /// secondary's frame within @ref SensorArray::Options::tolerance_us of one
-  /// on the host's clock belongs to it. A set may miss a secondary, never the
-  /// primary; a slow consumer gets the newest set.
-  Trigger,
-  /// Frames already say which set they belong to: equal
-  /// `RgbdFrame::sequence` numbers, as a recording or a dataset gives. Every
-  /// set is handed out, in order, once each sensor has sent its frame for it
-  /// or moved past it or run out; nothing waits on a clock, so a replay is
-  /// deterministic. A frame for a set already handed out joins none, and a
-  /// sensor ahead of one that has fallen behind holds
-  /// @ref SensorArray::Options::queue_depth frames, letting its oldest go.
-  Sequence,
-};
-
-/// @return A stable lowercase name for @p mode, for logs.
-VR_SENSOR_ARRAY_API const char* to_string(SyncMode mode) noexcept;
-
 /// @brief The frames one trigger produced across the array.
 struct FrameSet {
-  /// The trigger's time (ns): the primary's frame's for `SyncMode::Trigger`;
-  /// for `SyncMode::Sequence`, the frame's of the first sensor present, in
-  /// the array's order.
+  /// The trigger's time (ns): the primary's frame's.
   std::uint64_t timestamp_ns = 0;
-  /// The set's sequence number for `SyncMode::Sequence`; the primary's
-  /// frame's for `SyncMode::Trigger`.
+  /// The primary's frame's sequence number.
   std::uint64_t sequence = 0;
   /// One per sensor, in the array's order; empty where that sensor's frame
   /// for this trigger never came. Each frame is posed by the array's
@@ -100,19 +77,24 @@ struct SensorArrayStats {
 
 /// @brief Several RGB-D sensors read as one array.
 ///
-/// @ref open checks that the sensors can form one under the chosen
-/// @ref SyncMode, and that the calibration poses each of them. @ref start
-/// starts every secondary before the primary -- the primary's first trigger
-/// is what they wait for. @ref poll_set drains every sensor's frames, groups
-/// them, and hands out a set, each frame posed by the calibration;
-/// @ref process prepares a set on the GPU, every stream in one batch.
+/// @ref open checks that the sensors can form one, and that the calibration
+/// poses each of them. @ref start starts every secondary before the primary
+/// -- the primary's first trigger is what they wait for. @ref poll_set drains
+/// every sensor's frames, groups them by trigger, and hands out a set, each
+/// frame posed by the calibration; @ref process prepares a set on the GPU,
+/// every stream in one batch.
+///
+/// The primary's frames name the triggers, and each secondary's frame within
+/// @ref Options::tolerance_us of one on the host's clock belongs to it. A set
+/// may miss a secondary, never the primary; a slow consumer gets the newest
+/// set.
 ///
 /// @code
 /// std::vector<std::unique_ptr<IRgbdSensor>> sensors;
 /// for (const std::string& serial : serials) {
 ///   OrbbecSensor::Options o;
 ///   o.serial = serial;
-///   o.sync_clock_to_host = true;  // Trigger groups on the host clock
+///   o.sync_clock_to_host = true;  // sets group on the host clock
 ///   VKC_ASSIGN(OrbbecSensor s, OrbbecSensor::open(o));
 ///   sensors.push_back(std::make_unique<OrbbecSensor>(std::move(s)));
 /// }
@@ -133,10 +115,9 @@ class VR_SENSOR_ARRAY_API SensorArray {
  public:
   /// @brief How the sensors are grouped and posed.
   struct Options {
-    SyncMode sync = SyncMode::Trigger;  ///< How frames form sets.
-    /// For `SyncMode::Trigger`: a secondary's frame within this of a primary
-    /// frame belongs to its trigger. Under half the fastest sensor's frame
-    /// period, or neighbouring triggers would share frames.
+    /// A secondary's frame within this of a primary frame belongs to its
+    /// trigger. Under half the fastest sensor's frame period, or neighbouring
+    /// triggers would share frames.
     std::uint32_t tolerance_us = 5000;
     /// Frames each sensor holds between polls (`IRgbdSensor::set_queue_depth`)
     /// and the grouping holds after; enough that every sensor still holds a
@@ -161,23 +142,21 @@ class VR_SENSOR_ARRAY_API SensorArray {
 
   /// @brief Check that @p sensors form an array, and take them.
   ///
-  /// None is started. Under `SyncMode::Trigger`, more than one sensor needs
-  /// exactly one primary, the rest secondaries, all on the host's clock;
-  /// under `SyncMode::Sequence` any sensors do.
+  /// None is started. More than one sensor needs exactly one primary, the
+  /// rest secondaries, all on the host's clock; one sensor needs neither.
   /// @param sensors  The sensors, in the order sets report them; taken only
   ///                 once the array opens, so a refusal leaves them open
   ///                 with the caller.
   /// @param options  How they are grouped and posed.
   /// @return The array; `Status::Code::InvalidArgument` for no sensors, a
   ///         null one, an empty or repeated id, a queue depth of 0, a
-  ///         calibration that is invalid or does not pose a sensor, a device
-  ///         or an allocator without the other, or, under `SyncMode::Trigger`,
-  ///         a tolerance of 0 or of half a frame period or more; what
-  ///         `GpuFramePrep::create` returns for a device the passes cannot be
-  ///         built on; or `Status::Code::Unsupported` for a tracked sensor,
-  ///         or, under `SyncMode::Trigger`, no primary or more than one, a
-  ///         free-running member, or one whose timestamps are on its own
-  ///         clock.
+  ///         tolerance of 0 or of half a frame period or more, a calibration
+  ///         that is invalid or does not pose a sensor, or a device or an
+  ///         allocator without the other; what `GpuFramePrep::create`
+  ///         returns for a device the passes cannot be built on; or
+  ///         `Status::Code::Unsupported` for a tracked sensor, or, among
+  ///         several sensors, no primary or more than one, a free-running
+  ///         member, or one whose timestamps are on its own clock.
   static core::Result<SensorArray> open(
       std::vector<std::unique_ptr<IRgbdSensor>>&& sensors,
       const Options& options);
@@ -194,7 +173,7 @@ class VR_SENSOR_ARRAY_API SensorArray {
   ///         (an `OrbbecSensor`'s device info).
   /// @pre @p i is below @ref size.
   IRgbdSensor& sensor(std::size_t i);
-  /// @return The index of the primary under `SyncMode::Trigger`; 0 otherwise.
+  /// @return The index of the primary; 0 for a single sensor.
   std::size_t primary() const noexcept;
   /// @return The counters since the last @ref start.
   SensorArrayStats stats() const;
@@ -232,10 +211,8 @@ class VR_SENSOR_ARRAY_API SensorArray {
   core::Result<DeviceFrameSet> process(const FrameSet& set,
                                        core::StageMetrics* metrics = nullptr);
 
-  /// @return `true` on a moved-from array; once a sensor of a
-  ///         `SyncMode::Trigger` array is exhausted (a disconnected camera);
-  ///         and once every sensor of a `SyncMode::Sequence` array is
-  ///         exhausted and every set handed out.
+  /// @return `true` on a moved-from array, or once a sensor is exhausted (a
+  ///         disconnected camera).
   bool exhausted() const noexcept;
 
  private:

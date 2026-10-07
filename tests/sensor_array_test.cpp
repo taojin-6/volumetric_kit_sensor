@@ -4,10 +4,9 @@
 // The sensor array over scripted fake sensors: the arrays it refuses, the
 // order it starts and stops sensors in, a failed start, a start of a running
 // array and a move over one, trigger grouping (complete sets, a silent
-// secondary, the newest set winning, frames with no clock), sequence grouping
-// (in order, a missing frame, waiting on a live sensor, the end of a
-// recording, a late frame, a sensor far ahead, a restart), a drain that fails
-// partway, poses from the calibration, and a moved-from array. Host-only.
+// secondary, the newest set winning, frames with no clock), an exhausted
+// sensor, a drain that fails partway, poses from the calibration, and a
+// moved-from array. Host-only.
 
 #include <algorithm>
 #include <chrono>
@@ -69,7 +68,7 @@ class Scripted final : public sensor::IRgbdSensor {
   }
   sensor::SensorInfo& mutable_info() { return info_; }
   bool fail_start = false;
-  bool done = false;  // a recording's end
+  bool done = false;  // no more frames will come
   std::size_t queue_depth = 0;
   // Hand out this many frames, then fail, as a driver may.
   std::optional<std::size_t> fail_drain_after;
@@ -136,7 +135,6 @@ Rig triggered_rig() {
 
 sensor::SensorArray::Options trigger_options() {
   sensor::SensorArray::Options o;
-  o.sync = sensor::SyncMode::Trigger;
   o.tolerance_us = 200;  // under half of 1 kHz's period
   return o;
 }
@@ -151,22 +149,6 @@ camera::ArrayCalibration calibration(const std::vector<std::string>& ids) {
     c.sensors.push_back(s);
   }
   return c;
-}
-
-sensor::SensorArray::Options sequence_options() {
-  sensor::SensorArray::Options o;
-  o.sync = sensor::SyncMode::Sequence;
-  return o;
-}
-
-// Two free-running sensors "A" and "B" on their own clocks.
-Rig sequence_rig() {
-  Rig r;
-  r.add(std::make_unique<Scripted>("A", sensor::SyncRole::FreeRun,
-                                   sensor::ClockDomain::Device));
-  r.add(std::make_unique<Scripted>("B", sensor::SyncRole::FreeRun,
-                                   sensor::ClockDomain::Device));
-  return r;
 }
 
 sensor::SensorArray open_array(Rig* r, const sensor::SensorArray::Options& o) {
@@ -238,14 +220,11 @@ int test_refusals() {
     // NOLINTNEXTLINE(bugprone-use-after-move): open takes them only on success
     CHECK(r.sensors.size() == 3 && r.sensors[1] != nullptr);
   }
-  // A sequence array takes any roles and clocks.
-  {
-    Rig r = triggered_rig();
-    r.fakes[0]->mutable_info().role = sensor::SyncRole::FreeRun;
-    r.fakes[1]->mutable_info().clock = sensor::ClockDomain::Device;
-    sensor::SensorArray::Options s;
-    s.sync = sensor::SyncMode::Sequence;
-    CHECK(refusal(std::move(r), s) == Code::Ok);
+  {  // One sensor needs no primary, nor the host's clock.
+    Rig r;
+    r.add(std::make_unique<Scripted>("A", sensor::SyncRole::FreeRun,
+                                     sensor::ClockDomain::Device));
+    CHECK(refusal(std::move(r), trigger_options()) == Code::Ok);
   }
   return 0;
 }
@@ -355,111 +334,33 @@ int test_trigger() {
   CHECK(st.sets == 3 && st.incomplete == 1);
   CHECK(st.unmatched == 2 * 3 + 1);
   CHECK(st.sensors.size() == 3);
+
+  // An exhausted sensor (a disconnected camera) exhausts the array.
   CHECK(!array.exhausted());
-  return 0;
-}
-
-int test_sequence() {
-  Rig r = sequence_rig();
-  Scripted& a = *r.fakes[0];
-  Scripted& b = *r.fakes[1];
-  sensor::SensorArray array = open_array(&r, sequence_options());
-  CHECK(array.start().ok());
-
-  // A has 0, 2, 1 (out of turn); B has only 0 so far and is still live.
-  a.push(1000, 0);
-  a.push(3000, 2);
-  a.push(2000, 1);
-  b.push(1100, 0);
-  auto set = array.poll_set();
-  CHECK(set.ok() && set.value() && set.value()->complete());
-  CHECK(set.value()->sequence == 0 && set.value()->timestamp_ns == 1000);
-  // B has sent nothing past 0 and has not ended: set 1 waits for it.
-  set = array.poll_set();
-  CHECK(set.ok() && !set.value());
-  // B skips 1 and ends after 2.
-  b.push(3100, 2);
-  b.done = true;
-  set = array.poll_set();
-  CHECK(set.ok() && set.value() && set.value()->sequence == 1);
-  CHECK(set.value()->frames[0] && !set.value()->frames[1]);
-  set = array.poll_set();
-  CHECK(set.ok() && set.value() && set.value()->sequence == 2 &&
-        set.value()->complete());
-  CHECK(!array.exhausted());  // A has not ended
-  a.done = true;
-  set = array.poll_set();
-  CHECK(set.ok() && !set.value());
+  f[2]->done = true;
   CHECK(array.exhausted());
-  // No calibration: frames keep their driver's pose.
-  return 0;
-}
-
-int test_sequence_bounds() {
-  Rig r = sequence_rig();
-  Scripted& a = *r.fakes[0];
-  Scripted& b = *r.fakes[1];
-  auto o = sequence_options();
-  o.queue_depth = 3;
-  sensor::SensorArray array = open_array(&r, o);
-  CHECK(array.start().ok());
-
-  // A frame for a set already handed out joins no other.
-  a.push(0, 1);
-  b.push(1000, 0);
-  b.push(1100, 1);
-  auto set = array.poll_set();
-  CHECK(set.ok() && set.value() && set.value()->sequence == 0);
-  CHECK(!set.value()->frames[0]);
-  a.push(5000, 0);  // late
-  set = array.poll_set();
-  CHECK(set.ok() && set.value() && set.value()->sequence == 1);
-  CHECK(set.value()->complete());
-  // The first present sensor's time, though it reports none.
-  CHECK(set.value()->timestamp_ns == 0);
-  set = array.poll_set();
-  CHECK(set.ok() && !set.value());
-  CHECK(array.stats().unmatched == 1);
-
-  // A sensor far ahead of a live, silent one holds only the newest frames.
-  for (std::uint64_t s = 2; s < 7; ++s) a.push(s * 1000, s);
-  set = array.poll_set();
-  CHECK(set.ok() && !set.value());  // B may still send 2
-  CHECK(array.stats().unmatched == 1 + 2);
-  b.push(4100, 4);
-  set = array.poll_set();
-  CHECK(set.ok() && set.value() && set.value()->sequence == 4);
-  CHECK(set.value()->complete());
-
-  // A restart may number its frames from 0 again.
-  array.stop();
-  CHECK(array.start().ok());
-  a.push(1000, 0);
-  b.push(1100, 0);
-  set = array.poll_set();
-  CHECK(set.ok() && set.value() && set.value()->sequence == 0);
-  CHECK(set.value()->complete());
   return 0;
 }
 
 int test_failed_drain() {
-  Rig r = sequence_rig();
-  Scripted& a = *r.fakes[0];
-  Scripted& b = *r.fakes[1];
-  sensor::SensorArray array = open_array(&r, sequence_options());
+  Rig r = triggered_rig();
+  std::vector<Scripted*> f = r.fakes;  // S1, P, S2
+  sensor::SensorArray array = open_array(&r, trigger_options());
   CHECK(array.start().ok());
 
-  // A hands out frame 0 before it fails: the failure is returned and the
-  // frame kept for its set.
-  a.push(1000, 0);
-  a.push(2000, 1);
-  a.fail_drain_after = 1;
-  b.push(1100, 0);
+  // S1 hands out its first frame before it fails: the failure is returned
+  // and the frame kept for its trigger.
+  const std::uint64_t ts = 5'000'000'000;
+  f[0]->push(ts + 80'000, 200);
+  f[0]->push(ts + 1'080'000, 201);
+  f[0]->fail_drain_after = 1;
+  f[1]->push(ts, 100);
+  f[2]->push(ts + 150'000, 300);
   CHECK(array.poll_set().status().domain() == Code::IoError);
-  a.fail_drain_after.reset();
+  f[0]->fail_drain_after.reset();
   auto set = array.poll_set();
-  CHECK(set.ok() && set.value() && set.value()->sequence == 0);
-  CHECK(set.value()->complete());
+  CHECK(set.ok() && set.value() && set.value()->sequence == 100);
+  CHECK(set.value()->complete() && set.value()->frames[0]->sequence == 200);
   return 0;
 }
 
@@ -484,8 +385,6 @@ int main() {
   if (test_refusals() != 0) return 1;
   if (test_start_order() != 0) return 1;
   if (test_trigger() != 0) return 1;
-  if (test_sequence() != 0) return 1;
-  if (test_sequence_bounds() != 0) return 1;
   if (test_failed_drain() != 0) return 1;
   if (test_moved_from() != 0) return 1;
   std::printf("sensor array tests passed\n");
