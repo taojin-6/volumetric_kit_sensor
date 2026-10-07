@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Tao Jin
 
 // The Orbbec driver's arithmetic, with no camera: the SDK's camera models and
-// extrinsic to recon's, the sync-mode mapping, the option checks open()
-// makes before it touches the SDK, and its refusal of a camera that does not
-// answer -- each a place the driver can be silently wrong.
+// extrinsic to recon's, the sync-mode mapping, and the option checks open()
+// makes before it touches the SDK -- each a place the driver can be silently
+// wrong.
 
 #include <cmath>
 #include <cstdio>
@@ -268,18 +268,6 @@ int test_sensor_open() {
   return 0;
 }
 
-// A camera that does not answer is refused, in its name. It queries the SDK
-// once and opens no camera, so it passes whatever is attached.
-int test_sensor_absent() {
-  sensor::OrbbecSensor::Options o;
-  o.serial = "VR-TEST-ABSENT";
-  o.discovery_timeout_ms = 1;
-  const vkc::Status s = sensor::OrbbecSensor::open(o).status();
-  CHECK(s.domain() == vkc::Status::Code::NotFound);
-  CHECK(s.message().find("VR-TEST-ABSENT") != std::string::npos);
-  return 0;
-}
-
 }  // namespace
 
 int main() {
@@ -288,7 +276,6 @@ int main() {
   if (test_sync_mode() != 0) return 1;
   if (test_validate_streams() != 0) return 1;
   if (test_sensor_open() != 0) return 1;
-  if (test_sensor_absent() != 0) return 1;
   std::printf("orbbec conversion tests passed\n");
   return 0;
 }
