@@ -8,11 +8,13 @@
 // refused. Skips where no device is.
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -41,13 +43,15 @@ namespace {
 
 constexpr std::uint32_t kW = 160, kH = 120;
 
-// A recording of one frame per sequence number, depth and I420 colour each
-// sensor's own pattern: the depth held by the frame, the colour in a device
-// buffer, as a decoder leaves it.
+// A recording of one frame per trigger, 100 ms apart on the host's clock,
+// depth and I420 colour each sensor's own pattern: the depth held by the
+// frame, the colour in a device buffer, as a decoder leaves it.
 class Recording final : public sensor::IRgbdSensor {
  public:
-  Recording(std::string id, int seed) : seed_(seed) {
+  Recording(std::string id, int seed, sensor::SyncRole role) : seed_(seed) {
     info_.id = std::move(id);
+    info_.role = role;
+    info_.clock = sensor::ClockDomain::Host;
   }
   vkc::Status push(std::uint64_t sequence, const vkc::Device& device,
                    vkc::Allocator& allocator) {
@@ -85,7 +89,7 @@ class Recording final : public sensor::IRgbdSensor {
                       {140.0, 140.0, 79.5, 59.5},
                       {0.08, -0.1, 0.0, 0.0, 0.04, 0.0, 0.0, 0.0}};
     f.depth_to_color[3] = glm::dvec4(-0.03, 0.0, 0.0, 1.0);
-    f.timestamp_ns = 1000 + sequence;
+    f.timestamp_ns = (1 + sequence) * 100'000'000;
     f.sequence = sequence;
     f.pixels = depth;
     frames_.push_back(std::move(f));
@@ -140,12 +144,13 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   std::vector<std::unique_ptr<sensor::IRgbdSensor>> sensors;
   std::vector<Recording*> recordings;
   for (std::size_t i = 0; i < ids.size(); ++i) {
-    auto r = std::make_unique<Recording>(ids[i], static_cast<int>(i));
+    auto r = std::make_unique<Recording>(
+        ids[i], static_cast<int>(i),
+        i == 0 ? sensor::SyncRole::Primary : sensor::SyncRole::Secondary);
     recordings.push_back(r.get());
     sensors.push_back(std::move(r));
   }
   sensor::SensorArray::Options o;
-  o.sync = sensor::SyncMode::Sequence;
   o.calibration = posed(ids);
   o.device = &device;
   o.allocator = &allocator;
@@ -162,10 +167,12 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
       if (seq == 1 && i == 2) continue;  // C's frame 1 never came
       CHECK(recordings[i]->push(seq, device, allocator).ok());
     }
-  }
-  for (Recording* r : recordings) r->done = true;
-  for (std::uint64_t seq = 0; seq < 3; ++seq) {
+    // A set missing C waits for it, then goes without it.
     auto set = array.poll_set();
+    for (int ms = 0; ms < 200 && set.ok() && !set.value(); ++ms) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      set = array.poll_set();
+    }
     CHECK(set.ok() && set.value() && set.value()->sequence == seq);
     auto prepared = array.process(*set.value());
     CHECK(prepared.ok());
@@ -196,6 +203,7 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
                 read<std::uint32_t>(device, allocator, *one.value().color, n));
     }
   }
+  for (Recording* r : recordings) r->done = true;
   CHECK(array.exhausted());
 
   // A set of another size is refused.
@@ -207,7 +215,8 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   // without a device.
   for (const bool device_only : {true, false}) {
     std::vector<std::unique_ptr<sensor::IRgbdSensor>> one;
-    one.push_back(std::make_unique<Recording>("A", 0));
+    one.push_back(
+        std::make_unique<Recording>("A", 0, sensor::SyncRole::Primary));
     sensor::SensorArray::Options bad = o;
     bad.calibration = {};
     if (device_only) {
@@ -220,9 +229,9 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   }
   {
     std::vector<std::unique_ptr<sensor::IRgbdSensor>> one;
-    one.push_back(std::make_unique<Recording>("A", 0));
+    one.push_back(
+        std::make_unique<Recording>("A", 0, sensor::SyncRole::Primary));
     sensor::SensorArray::Options plain;
-    plain.sync = sensor::SyncMode::Sequence;
     auto a = sensor::SensorArray::open(std::move(one), plain);
     CHECK(a.ok());
     sensor::FrameSet s;
