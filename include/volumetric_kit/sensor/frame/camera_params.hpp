@@ -43,9 +43,9 @@ namespace volumetric_kit::recon {
 /// @brief Pinhole depth-camera intrinsics, image size, valid range and pose.
 ///
 /// Consumed by `volume::VoxelHashMap::allocate_from_depth` (which unprojects a
-/// posed depth frame to decide which blocks to allocate) and
-/// `compact_active_blocks_in_frustum`, by `tsdf::TsdfIntegrator::integrate`,
-/// and by `texture::ProjectiveTexturer::texture`. Packs to the shader's
+/// posed depth frame to decide which blocks to allocate), by
+/// `tsdf::TsdfIntegrator::integrate`, and by
+/// `texture::ProjectiveTexturer::texture`. Packs to the shader's
 /// `CameraParams`: the scalars at their natural 4-byte offsets, the `mat4` at
 /// offset 32.
 struct DepthCameraParams {
