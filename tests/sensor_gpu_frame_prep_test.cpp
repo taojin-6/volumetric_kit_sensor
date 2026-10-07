@@ -533,7 +533,8 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
 // Packed R'G'B' words on the host, as a dataset decodes them. Through a
 // pinhole each comes back as it went in, its junk high byte replaced by full
 // coverage, beside depth that is still raw * scale; through a lens, R, G and B
-// are each sampled as the host reference samples a plane.
+// are each sampled as the host reference samples a plane, and a pixel the lens
+// maps outside the picture is a 0 word, as Y'CbCr colour's is.
 int test_packed(sensor::GpuFramePrep& prep) {
   std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight);
   for (std::size_t i = 0; i < raw.size(); ++i) {
@@ -555,7 +556,8 @@ int test_packed(sensor::GpuFramePrep& prep) {
     CHECK(c[i] == ((words[i] & 0xFFFFFFu) | 0xFF000000u));
   }
 
-  const camera::CameraModel cam = lensed();
+  camera::CameraModel cam = pinhole();
+  cam.distortion.k1 = 0.3f;  // pincushion: the corners map outside
   f.color_camera = cam;
   out = prep.prepare(f);
   CHECK(out.ok());
@@ -568,7 +570,7 @@ int test_packed(sensor::GpuFramePrep& prep) {
       channel[k][i] = static_cast<std::uint8_t>(words[i] >> (8 * k));
     }
   }
-  int worst = 0, coverage_off = 0;
+  int worst = 0, outside = 0, coverage_off = 0;
   for (std::uint32_t v = 0; v < kHeight; ++v) {
     for (std::uint32_t u = 0; u < kWidth; ++u) {
       const vr::Vec2f s =
@@ -583,14 +585,20 @@ int test_packed(sensor::GpuFramePrep& prep) {
         }
       }
       const std::uint32_t got = lens[std::size_t{v} * kWidth + u];
-      if ((got >> 24) != (ref >> 24)) ++coverage_off;
-      worst = std::max(worst, channel_diff(got, ref));
+      if (ref == 0) ++outside;
+      if (ref == 0 ? got != 0 : (got >> 24) != 0xFFu) {
+        ++coverage_off;
+      } else if (ref != 0) {
+        worst = std::max(worst, channel_diff(got, ref));
+      }
     }
   }
-  std::printf("  packed through a lens: worst %d, %d coverage off\n", worst,
-              coverage_off);
+  std::printf(
+      "  packed through a lens: %d outside, worst %d, %d coverage off\n",
+      outside, worst, coverage_off);
+  CHECK(outside > 1000);
   CHECK(worst <= 1);
-  CHECK(coverage_off == 0);
+  CHECK(coverage_off <= 20);  // within round-off of the picture's edge
   return 0;
 }
 
