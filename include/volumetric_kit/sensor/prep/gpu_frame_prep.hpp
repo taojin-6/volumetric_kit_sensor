@@ -125,7 +125,10 @@ struct GpuFramePrepConfig {
 /// where they are, after the pass takes them over from the queue family that
 /// wrote them (`YuvImage::queue_family`); NV12's planes as images, as
 /// VideoToolbox's picture arrives, are copied into the pass's input on the
-/// device in the same batch. Only depth goes up from the host.
+/// device in the same batch. A dataset decoded on the host hands its colour
+/// over as packed R'G'B' words instead (@ref RgbdFrame::color_packed), which
+/// go up with the depth: each copied into the pass's staging, and up in its
+/// batch. Nothing else goes up from the host.
 ///
 /// Every check on the frame is made before anything is uploaded, so a refused
 /// frame leaves the pass and the frames it handed out as they were.
@@ -156,13 +159,14 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   GpuFramePrep(const GpuFramePrep&) = delete;
   GpuFramePrep& operator=(const GpuFramePrep&) = delete;
 
-  /// @brief Upload @p frame's depth, undistort and convert it, and hand the
-  ///        result over as buffers on the device.
+  /// @brief Upload @p frame's depth and any host colour, undistort and
+  ///        convert the frame, and hand the result over as buffers on the
+  ///        device.
   /// @param frame    The frame; read during the call only. Device planes must
   ///                 be on this pass's device, their writer finished.
   /// @param metrics  Optional `StageMetrics` collecting a `"frame prep"`
   ///                 row: the upload and both passes on the host, and on the
-  ///                 device the frame's copy up and the two dispatches.
+  ///                 device the frame's copies up and the two dispatches.
   ///                 `nullptr` measures nothing.
   /// @return The frame, which holds its buffers; @ref
   ///         Status::Code::InvalidArgument for a moved-from pass, a frame
@@ -170,8 +174,9 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         `0 < min_depth < max_depth` (0 being the pass's "no return"),
   ///         a `color_to_world` or `depth_to_color` that is not rigid, a
   ///         camera or picture that is empty, not finite or disagrees with
-  ///         its image, an unknown chroma location, colour planes both in a
-  ///         buffer and as images, a plane stride shorter than its rows,
+  ///         its image, an unknown chroma location, colour both as packed
+  ///         words and as planes, colour planes both in a buffer and as
+  ///         images, a plane stride shorter than its rows,
   ///         planes that overlap, lie outside their buffer or are in one
   ///         that is empty or without storage usage, plane images
   ///         that are not NV12's R8 and R8G8 planes at least the picture's
@@ -216,9 +221,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   // The whole frame checked, before anything is uploaded.
   core::Result<Layout> check(const RgbdFrame& frame) const;
   // Device planes taken over from their writer's family, into `batch`.
-  core::Status acquire(core::CommandBatch& batch, const RgbdFrame& frame,
-                       const Layout& layout);
-  // The buffers made big enough, and the depth staged.
+  core::Status acquire(core::CommandBatch& batch, const RgbdFrame& frame);
+  // The buffers made big enough, and the depth and any packed colour staged.
   core::Status stage_host(const RgbdFrame& frame, const Layout& layout);
   // The copies up and the overlap mask's parameters, recorded into `batch`.
   core::Status record_uploads(core::CommandBatch& batch, const RgbdFrame& frame,
@@ -258,7 +262,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   // where it is instead.
   core::Buffer depth_in_;
   core::Buffer color_in_;
-  // The depth on the host side, host-visible and kept like the inputs.
+  // The depth and any packed colour on the host side, host-visible and kept
+  // like the inputs.
   core::Buffer staging_;
   // The colour camera and the depth-to-colour transform the depth pass masks
   // by (GpuFramePrepConfig::depth_within_color), written inline each frame

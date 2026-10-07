@@ -3,11 +3,12 @@
 // Colour undistortion and Y'CbCr to R'G'B' in one pass. One thread per pixel
 // of the pinhole image: find where the lens puts it in the captured picture,
 // sample luma and chroma there bilinearly, each at its own siting, and convert
-// by the picture's matrix and range. One pass, so no intermediate R'G'B'
-// image is written at the captured size. The high byte is the pixel's
-// coverage: 0xFF where the lens maps inside the captured picture, 0 where it
-// maps outside, which is black and which fusion then skips
-// (ColorFrame::coverage_in_alpha) rather than fusing as colour.
+// by the picture's matrix and range; or, for packed R'G'B' words, sample R, G
+// and B there bilinearly. One pass, so no intermediate R'G'B' image is written
+// at the captured size. The high byte is the pixel's coverage: 0xFF where the
+// lens maps inside the captured picture, 0 where it maps outside, which is
+// black and which fusion then skips (ColorFrame::coverage_in_alpha) rather
+// than fusing as colour.
 
 #extension GL_GOOGLE_include_directive : require
 #include "lens.glsl"
@@ -17,7 +18,8 @@ layout(local_size_x = 256) in;
 // The planes, four bytes to a word: luma rows y_stride bytes apart from
 // y_offset, Cb and Cr rows cb_stride and cr_stride bytes apart from cb_offset
 // and cr_offset, samples c_step bytes apart: 1 in I420's planes of their own,
-// 2 in NV12's interleaved one, where Cr sits a byte after Cb.
+// 2 in NV12's interleaved one, where Cr sits a byte after Cb. With packed_rgb,
+// the picture's own words instead, R | G << 8 | B << 16, from byte 0.
 // TODO(sensor): read Apple's plane images, VideoToolbox's IOSurface imported
 // through VK_EXT_metal_objects, directly rather than copied into a buffer
 // first, if measuring shows the copy (0.28-0.31 ms of GPU at 4K on an M5
@@ -40,6 +42,7 @@ layout(push_constant, scalar) uniform Params {
   uint full_range;
   float chroma_x;
   float chroma_y;
+  uint packed_rgb;  // packed R'G'B' words, not Y'CbCr planes
 } pc;
 
 float texel(uint base, uint row_bytes, uint step, uint x, uint y) {
@@ -75,6 +78,15 @@ void main() {
   if (!(s.x >= -0.5 && s.y >= -0.5 && s.x <= float(w) - 0.5 &&
         s.y <= float(h) - 0.5)) {
     color[gid] = 0u;
+    return;
+  }
+  if (pc.packed_rgb != 0u) {
+    // R, G and B as byte planes 4 apart; the high byte is never read.
+    float r = sample_plane(0u, 4u * w, 4u, w, h, s);
+    float g = sample_plane(1u, 4u * w, 4u, w, h, s);
+    float b = sample_plane(2u, 4u * w, 4u, w, h, s);
+    color[gid] = code(r / 255.0) | (code(g / 255.0) << 8) |
+                 (code(b / 255.0) << 16) | 0xFF000000u;
     return;
   }
   // The decoder's sample positions: JPEG is centred in both axes; HEVC's

@@ -53,18 +53,18 @@ namespace volumetric_kit::recon {
 /// against a known patch -- rather than a bespoke curve buried in a platform
 /// driver.
 ///
-/// It rides **beside** the camera (a field on `sensor::CapturedFrame` and
+/// It rides **beside** the camera (a field on `sensor::RgbdFrame` and
 /// `tsdf::ColorFrame`), deliberately *not* inside @ref ColorCameraParams: that
 /// struct is uploaded verbatim to the fusion kernels under scalar block layout,
 /// pinned at 88 bytes with GLSL mirrors in two tiers, so a field there would
 /// spend a cross-tier shader ABI change to carry something no kernel reads.
 ///
-/// There is no `Range` member, and the omission is deliberate: by the time a
-/// frame reaches the capture contract it is packed R'G'B', so the YCbCr matrix
-/// and any limited-range expansion have already been applied by the driver --
-/// the contract requires full-range R'G'B'. A field nothing consumes is a label
-/// free to drift, and @ref Primaries earns its place only because
-/// @ref primaries_to_working gives it a consumer.
+/// There is no `Range` member, and the omission is deliberate: a Y'CbCr
+/// picture's range rides with its matrix (`sensor::YuvImage::full_range`), and
+/// the GPU pass applies both on its way to full-range R'G'B', which is what
+/// this describes. A field nothing consumes is a label free to drift, and
+/// @ref Primaries earns its place only because @ref primaries_to_working gives
+/// it a consumer.
 struct ColorEncoding {
   /// @brief The transfer function the 8-bit values carry.
   enum class Transfer {

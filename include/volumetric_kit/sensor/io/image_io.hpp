@@ -32,22 +32,21 @@ VR_IO_API core::Result<std::vector<std::uint32_t>> load_color_packed(
     const std::string& path, std::uint32_t expected_w,
     std::uint32_t expected_h);
 
-/// @brief Decode a genuine 16-bit, single-channel grayscale PNG to metres.
+/// @brief Decode a genuine 16-bit, single-channel grayscale PNG to its
+///        samples as stored.
 ///
-/// Each raw sample is multiplied by the float reciprocal of @p depth_scale;
-/// zero stays zero. Eight-bit, color, and grayscale-plus-alpha images
-/// (including a tRNS transparency key) are rejected. No gamma conversion is
-/// applied to depth samples. Rows are top to bottom, pixels left to right.
+/// Eight-bit, color, and grayscale-plus-alpha images (including a tRNS
+/// transparency key) are rejected. No gamma conversion or scale is applied:
+/// what a sample means, such as its units per metre, is the caller's to know.
+/// Rows are top to bottom, pixels left to right.
 /// @param path Depth PNG path, without embedded NUL characters.
 /// @param expected_w Expected positive width; a mismatch is an error.
 /// @param expected_h Expected positive height; a mismatch is an error.
-/// @param depth_scale Finite, positive units-per-metre divisor that keeps the
-///                    largest sample, 65535, a finite float depth.
-/// @return Depths in metres, or non-OK Status on invalid input, decode failure,
+/// @return The raw samples, or non-OK Status on invalid input, decode failure,
 ///         or allocation failure.
-VR_IO_API core::Result<std::vector<float>> load_depth_metres(
-    const std::string& path, std::uint32_t expected_w, std::uint32_t expected_h,
-    float depth_scale);
+VR_IO_API core::Result<std::vector<std::uint16_t>> load_depth_u16(
+    const std::string& path, std::uint32_t expected_w,
+    std::uint32_t expected_h);
 
 /// @brief Write tightly packed, encoded RGBA8 rows to a PNG file.
 ///

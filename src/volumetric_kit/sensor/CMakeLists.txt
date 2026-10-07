@@ -1,21 +1,20 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 
-# --- recon_sensor: capture contract -----------------------------------------
-# The ICameraCapture interface, the CapturedFrame view the fusion tiers already
-# consume, and the camera-convention conversions. The calibration file is the
-# camera tier's (camera/array_calibration.hpp). Carries no driver itself: one
-# ships in this repo only if this repo can build *and* test it (the 2026-08-02
-# decision), and the one that does, Orbbec, is its own target (orbbec/, below).
+# --- recon_sensor: the sensor interface -------------------------------------
+# IRgbdSensor, the RgbdFrame it hands out, the trigger grouping a sensor array
+# uses, and the camera- and colour-convention conversions. The calibration file
+# is the camera tier's (camera/array_calibration.hpp). Carries no driver itself:
+# one ships in this repo only if this repo can build *and* test it (the
+# 2026-08-02 decision), and the one that does, Orbbec, is its own target
+# (orbbec/, below).
 #
-# Depends on recon_core alone -- the whole tier is host types and arithmetic
-# over the core math vocabulary, so it needs neither the volume nor the tsdf
-# tier: DepthCameraParams and ColorCameraParams live in core/camera_params.hpp
-# (they are posed pinhole cameras, not voxels or fusion). That is what makes
-# this tier's contract implementable from outside: an ARKit driver in
-# volumetric_kit_ios is Objective-C++, and it now compiles and links against
-# core alone rather than preprocessing the Vulkan surface to fill in an
-# intrinsics struct. It is also why the tests need no device.
+# Depends on recon_camera and recon_core alone -- the whole tier is host types
+# and arithmetic, so it needs neither the volume nor the tsdf tier. That is what
+# makes the interface implementable from outside: an ARKit driver in
+# volumetric_kit_ios is Objective-C++, and it compiles and links against the
+# camera and core tiers rather than preprocessing the Vulkan surface to fill in
+# an intrinsics struct. It is also why the tests need no device.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 

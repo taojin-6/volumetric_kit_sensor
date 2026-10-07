@@ -8,23 +8,17 @@
 ///        every frame-consuming tier is handed.
 ///
 /// These live in `core`, next to the GLM vocabulary they are built from, rather
-/// than in the tiers that consume them. Two reasons.
-///
-/// **They are vocabulary, not capability.** A posed pinhole camera is pure math
-/// over @ref Mat4f: no Vulkan, no voxels, no fusion. Four tiers take one
-/// (`volume` allocates blocks from a depth frame, `tsdf` fuses depth and color,
-/// `texture` projects a mesh into a camera, `sensor` reports what a device
-/// captured), so keeping the types where they are *used* meant splitting a
-/// matched pair across two tiers -- `DepthCameraParams` in `volume`, its color
-/// counterpart in `tsdf`, because that is where each was first needed.
-/// Consumers see them as one concept; `sensor::CapturedFrame` carries one of
-/// each side by side.
-///
-/// **It keeps the `sensor` contract standalone.** That tier's implementers are
-/// out of tree by design (an ARKit driver in `volumetric_kit_ios` -- the
-/// 2026-08-02 decision), and with the camera types in `core` its public headers
-/// and its link line reach `core` alone: a platform driver compiles against the
-/// math vocabulary and nothing else.
+/// than in the tiers that consume them, because **they are vocabulary, not
+/// capability.** A posed pinhole camera is pure math over @ref Mat4f: no
+/// Vulkan, no voxels, no fusion. Four tiers take one (`volume` allocates blocks
+/// from a depth frame, `tsdf` fuses depth and color, `texture` projects a mesh
+/// into a camera, `sensor`'s GPU pass hands out a prepared frame's), so keeping
+/// the types where they are *used* meant splitting a matched pair across two
+/// tiers -- `DepthCameraParams` in `volume`, its color counterpart in `tsdf`,
+/// because that is where each was first needed. Consumers see them as one
+/// concept; `sensor::DeviceFrame` carries one of each side by side. A driver
+/// describes its cameras as captured, lens included, in `camera::CameraModel`
+/// instead; these are the pinhole cameras fusion reads.
 ///
 /// Both structs are uploaded verbatim to compute kernels that read them through
 /// **scalar block layout** (the 2026-07-05 ABI), so the `static_assert`s below

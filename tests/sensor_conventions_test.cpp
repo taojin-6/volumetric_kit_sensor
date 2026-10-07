@@ -15,16 +15,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
-#include <optional>
 
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
-#include "volumetric_kit/recon/sensor/camera_capture.hpp"
 #include "volumetric_kit/recon/sensor/camera_conventions.hpp"
 #include "volumetric_kit/recon/sensor/color_conventions.hpp"
 
-// Only two namespaces: the sensor contract, and core for the camera types and
-// Status/Result. That this test never names the volume or tsdf tier is the
-// point -- it is the same surface an out-of-tree driver compiles against.
+// Only two namespaces: the sensor tier's conversions, and core for the camera
+// types and Status/Result. That this test never names the volume or tsdf tier
+// is the point -- it is the same surface an out-of-tree driver compiles
+// against.
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
@@ -60,61 +59,6 @@ vr::ColorCameraParams arkit_like_color() {
   c.cam_to_world = vr::Mat4f(1.0f);
   return c;
 }
-
-// A minimal in-tree implementation of the capture contract.
-//
-// This tier ships an interface and deliberately no driver (the 2026-08-02
-// decision), so without something like this nothing here ever compiles
-// ICameraCapture as a base class -- and the first real implementer is in
-// another repo, where a defect in the contract shows up as *their* compile
-// error. Written the way a driver is: buffer the newest frame, hand it over
-// once, and distinguish "nothing yet" from "the device broke".
-class FakeCapture final : public sensor::ICameraCapture {
- public:
-  vkc::Status start() override {
-    if (failed_) return vkc::Status::io_error("FakeCapture: device faulted");
-    running_ = true;
-    pending_ = make_frame();  // one frame waiting, as a live sensor would have
-    return {};
-  }
-
-  void stop() noexcept override {
-    running_ = false;
-    pending_.reset();
-  }
-
-  vkc::Result<std::optional<sensor::CapturedFrame>> poll() override {
-    if (failed_) return vkc::Status::io_error("FakeCapture: device faulted");
-    if (!running_ || !pending_) return no_frame();
-    sensor::CapturedFrame frame = *pending_;
-    pending_.reset();
-    return some_frame(frame);
-  }
-
-  // Make the next call report a device failure rather than an empty poll.
-  void fail() noexcept { failed_ = true; }
-
-  const float* depth_pixels() const noexcept { return depth_; }
-
- private:
-  sensor::CapturedFrame make_frame() const {
-    sensor::CapturedFrame frame{};
-    frame.depth = depth_;
-    vkc::Result<vr::DepthCameraParams> cam =
-        sensor::depth_from_registered_color(arkit_like_color(), 256, 192, 0.1f,
-                                            5.0f);
-    if (cam.ok()) frame.depth_camera = cam.value();
-    frame.timestamp_ns = 1;
-    return frame;
-  }
-
-  // Borrowed by CapturedFrame, which is a non-owning view -- so this outlives
-  // every frame it hands out, exactly as a driver's own buffer must.
-  float depth_[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  std::optional<sensor::CapturedFrame> pending_;
-  bool running_ = false;
-  bool failed_ = false;
-};
 
 }  // namespace
 
@@ -268,57 +212,6 @@ int main() {
       CHECK(!sensor::depth_from_registered_color(bad_fy, 256, 192, 0.1f, 5.0f)
                  .ok());
     }
-  }
-
-  // --- CapturedFrame: the view the fusion tiers consume --------------------
-  // Depth-only frames are ordinary (a colour camera may drop a frame), so
-  // has_color() must key on the pointer rather than on the params being set.
-  {
-    sensor::CapturedFrame frame{};
-    CHECK(!frame.has_color());
-    const std::uint32_t pixel = 0xFFFFFFFFu;
-    frame.color = &pixel;
-    CHECK(frame.has_color());
-  }
-
-  // --- ICameraCapture: the contract itself ---------------------------------
-  // FakeCapture above is the point of this block: this tier ships an interface
-  // and no driver, so unless something in-tree implements it, nothing proves
-  // the contract is implementable at all -- and the first implementer is in
-  // another repo, where a mistake here surfaces as their compile error. Drive
-  // it through the base-class pointer a consumer would hold.
-  {
-    FakeCapture capture;
-    sensor::ICameraCapture& device = capture;
-
-    CHECK(device.poll().ok());  // not running: no frame, not an error
-    CHECK(!device.poll().value().has_value());
-
-    CHECK(device.start().ok());
-    CHECK(device.start().ok());  // idempotent
-
-    vkc::Result<std::optional<sensor::CapturedFrame>> first = device.poll();
-    CHECK(first.ok() && first.value().has_value());
-    CHECK(first.value()->depth == capture.depth_pixels());
-    CHECK(first.value()->depth_camera.width == 256);
-    CHECK(!first.value()->has_color());
-
-    // Each frame is handed over once: polling faster than the sensor runs is
-    // the ordinary case, and must read as "nothing yet", never as an error.
-    vkc::Result<std::optional<sensor::CapturedFrame>> second = device.poll();
-    CHECK(second.ok() && !second.value().has_value());
-    // ...and "nothing yet" is not "nothing ever": a live device never reports
-    // itself exhausted, which is the contract's default so a driver that does
-    // not override it (this fake, the ARKit source out of tree) keeps a
-    // consumer waiting rather than ending its run on the first idle tick.
-    CHECK(!device.exhausted());
-
-    // A device failure is distinguishable from an empty poll.
-    capture.fail();
-    CHECK(!device.poll().ok());
-
-    device.stop();
-    device.stop();  // idempotent, and safe after a failure
   }
 
   // --- to_canonical: the colour half of the capture boundary ----------------
