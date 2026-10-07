@@ -15,7 +15,8 @@ set(_vr_sensor_array_generated_inc
 add_library(recon_sensor_array)
 add_library(volumetric_kit::recon_sensor_array ALIAS recon_sensor_array)
 
-target_sources(recon_sensor_array PRIVATE sensor_array.cpp)
+# The trigger grouping is internal: no export, no installed header.
+target_sources(recon_sensor_array PRIVATE sensor_array.cpp trigger_grouper.cpp)
 
 generate_export_header(
   recon_sensor_array

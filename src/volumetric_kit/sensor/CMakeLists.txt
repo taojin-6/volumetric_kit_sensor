@@ -2,12 +2,11 @@
 # Copyright (c) 2026 Tao Jin
 
 # --- recon_sensor: the sensor interface -------------------------------------
-# IRgbdSensor, the RgbdFrame it hands out, the trigger grouping a sensor array
-# uses, and the camera- and colour-convention conversions. The calibration file
-# is the camera tier's (camera/array_calibration.hpp). Carries no driver itself:
-# one ships in this repo only if this repo can build *and* test it (the
-# 2026-08-02 decision), and the one that does, Orbbec, is its own target
-# (orbbec/, below).
+# IRgbdSensor, the RgbdFrame it hands out, and the camera- and colour-convention
+# conversions. The calibration file is the camera tier's
+# (camera/array_calibration.hpp). Carries no driver itself: one ships in this
+# repo only if this repo can build *and* test it (the 2026-08-02 decision), and
+# the one that does, Orbbec, is its own target (orbbec/, below).
 #
 # Depends on recon_camera and recon_core alone -- the whole tier is host types
 # and arithmetic, so it needs neither the volume nor the tsdf tier. That is what
@@ -23,9 +22,8 @@ set(_vr_sensor_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 add_library(recon_sensor)
 add_library(volumetric_kit::recon_sensor ALIAS recon_sensor)
 
-target_sources(
-  recon_sensor PRIVATE camera_conventions.cpp color_conventions.cpp
-                       rgbd_sensor.cpp trigger_grouper.cpp)
+target_sources(recon_sensor PRIVATE camera_conventions.cpp
+                                    color_conventions.cpp rgbd_sensor.cpp)
 
 # Per-tier export header (VR_SENSOR_API / VR_SENSOR_STATIC_DEFINE), isolated so
 # the macros never collide with another tier's on one include path.

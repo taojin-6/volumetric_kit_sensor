@@ -4,10 +4,9 @@
 #pragma once
 
 /// @file sensor/orbbec/orbbec_stream.hpp
-/// @brief What an Orbbec camera streams and reports: the streams it is opened
-///        with, what it says about itself, and its counters -- the same for
-///        an @ref volumetric_kit::recon::sensor::OrbbecSensor and each camera
-///        of an @ref volumetric_kit::recon::sensor::OrbbecRig.
+/// @brief What an Orbbec camera streams and reports: the streams an
+///        @ref volumetric_kit::recon::sensor::OrbbecSensor is opened with,
+///        what the camera says about itself, and its counters.
 ///
 /// No Orbbec SDK type appears here, so a consumer includes this header
 /// without the SDK's headers. The measurements behind the frame path are in
@@ -70,8 +69,7 @@ struct OrbbecStreamStats {
   std::uint64_t lost = 0;
 };
 
-/// @brief The streams a camera is opened with -- the same for every camera of
-///        an @ref OrbbecRig.
+/// @brief The streams a camera is opened with.
 ///
 /// Frames are handed out as the camera captured them: raw depth and the
 /// decoded colour, each with its own camera's factory model, for

@@ -162,8 +162,10 @@ struct RgbdFrame {
   /// extrinsic, so the depth camera sits at `color_to_world * depth_to_color`.
   camera::Mat4d depth_to_color = camera::Mat4d(1.0);
 
-  /// Device timestamp in nanoseconds; monotonic within one capture session.
-  /// Zero when the device reports none.
+  /// Capture time in nanoseconds, on the sensor's clock (`SensorInfo::clock`):
+  /// its own, monotonic within one capture session, or the host's
+  /// `std::chrono::system_clock`, since its epoch. Zero when the sensor
+  /// reports none.
   std::uint64_t timestamp_ns = 0;
   /// The sensor's own count of its frames: a gap is a lost frame, which a
   /// timestamp cannot tell from a late one. Like @ref timestamp_ns, it

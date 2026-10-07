@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Tao Jin
 
 // The Orbbec driver's arithmetic, with no camera: the SDK's camera models and
-// extrinsic to recon's, the sync-mode mapping, and the option checks open()
-// makes before it touches the SDK -- each a place the driver can be silently
-// wrong.
+// extrinsic to recon's, the sync-mode mapping, the option checks open()
+// makes before it touches the SDK, and its refusal of a camera that does not
+// answer -- each a place the driver can be silently wrong.
 
 #include <cmath>
 #include <cstdio>
@@ -261,60 +261,22 @@ int test_sensor_open() {
   o = {};
   o.color_to_world = camera::Mat4d(2.0);
   CHECK(refused(o, "color_to_world"));
+  // Nothing to write.
+  o = {};
+  o.apply_sync = true;
+  CHECK(refused(o, "apply_sync needs sync"));
   return 0;
 }
 
-int test_validate_rig() {
-  sensor::OrbbecRig::Options r;
-  r.sync.devices = {{"A", {}}, {"B", {}}};
-  CHECK(orbbec::validate(r).ok());  // no calibration: every camera at origin
-
-  auto o = r;
-  o.sync.devices.pop_back();
-  CHECK(invalid(orbbec::validate(o)));
-  o = r;
-  o.sync.devices[1].serial = "A";
-  CHECK(invalid(orbbec::validate(o)));
-  // A calibration must pose every camera, and pass its own checks.
-  const auto posed = [](const char* id) {
-    camera::SensorCalibration s;
-    s.id = id;
-    s.color_to_world = camera::Mat4d(1.0);
-    return s;
-  };
-  o = r;
-  o.calibration.sensors = {posed("A")};
-  CHECK(invalid(orbbec::validate(o)));
-  o.calibration.sensors.push_back(posed("B"));
-  o.calibration.sensors.push_back(posed("C"));  // extra: fine
-  CHECK(orbbec::validate(o).ok());
-  o.calibration.sensors[1].color_to_world = camera::Mat4d(2.0);
-  CHECK(invalid(orbbec::validate(o)));
-
-  // The tolerance must be under half a frame period (16 666 us at 30 fps),
-  // or one secondary frame can match two neighbouring triggers.
-  o = r;
-  o.sync_tolerance_us = 0;
-  CHECK(invalid(orbbec::validate(o)));
-  o.sync_tolerance_us = 16666;
-  CHECK(invalid(orbbec::validate(o)));
-  o.sync_tolerance_us = 16665;
-  CHECK(orbbec::validate(o).ok());
-  o.fps = 15;
-  o.sync_tolerance_us = 20000;
-  CHECK(orbbec::validate(o).ok());
-  return 0;
-}
-
-// A rig whose cameras do not answer is refused, not aborted: open builds its
-// state before it looks for the cameras. It queries the SDK once and opens
-// no camera, so it passes whatever is attached.
-int test_rig_open() {
-  sensor::OrbbecRig::Options r;
-  r.sync.devices = {{"VR-TEST-ABSENT-A", {}}, {"VR-TEST-ABSENT-B", {}}};
-  r.discovery_timeout_ms = 1;
-  CHECK(sensor::OrbbecRig::open(r).status().domain() ==
-        vkc::Status::Code::NotFound);
+// A camera that does not answer is refused, in its name. It queries the SDK
+// once and opens no camera, so it passes whatever is attached.
+int test_sensor_absent() {
+  sensor::OrbbecSensor::Options o;
+  o.serial = "VR-TEST-ABSENT";
+  o.discovery_timeout_ms = 1;
+  const vkc::Status s = sensor::OrbbecSensor::open(o).status();
+  CHECK(s.domain() == vkc::Status::Code::NotFound);
+  CHECK(s.message().find("VR-TEST-ABSENT") != std::string::npos);
   return 0;
 }
 
@@ -325,9 +287,8 @@ int main() {
   if (test_transform_from() != 0) return 1;
   if (test_sync_mode() != 0) return 1;
   if (test_validate_streams() != 0) return 1;
-  if (test_validate_rig() != 0) return 1;
   if (test_sensor_open() != 0) return 1;
-  if (test_rig_open() != 0) return 1;
+  if (test_sensor_absent() != 0) return 1;
   std::printf("orbbec conversion tests passed\n");
   return 0;
 }

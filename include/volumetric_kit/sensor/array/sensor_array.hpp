@@ -85,15 +85,18 @@ struct SensorArrayStats {
 /// every stream in one batch.
 ///
 /// The primary's frames name the triggers, and each secondary's frame within
-/// @ref Options::tolerance_us of one on the host's clock belongs to it. A set
-/// may miss a secondary, never the primary; a slow consumer gets the newest
-/// set.
+/// @ref Options::tolerance_us of one on the host's clock belongs to it: a
+/// hardware trigger aligns the exposures, so the clocks need only agree well
+/// enough to tell one trigger from the next. A set may miss a secondary,
+/// never the primary; a slow consumer gets the newest set.
 ///
 /// @code
+/// VKC_ASSIGN(const OrbbecRigSyncConfig rig, read_orbbec_sync_config(file));
 /// std::vector<std::unique_ptr<IRgbdSensor>> sensors;
-/// for (const std::string& serial : serials) {
+/// for (const OrbbecSyncDevice& camera : rig.devices) {
 ///   OrbbecSensor::Options o;
-///   o.serial = serial;
+///   o.serial = camera.serial;
+///   o.sync = camera.sync;         // refused where the camera differs
 ///   o.sync_clock_to_host = true;  // sets group on the host clock
 ///   VKC_ASSIGN(OrbbecSensor s, OrbbecSensor::open(o));
 ///   sensors.push_back(std::make_unique<OrbbecSensor>(std::move(s)));
@@ -117,8 +120,9 @@ class VR_SENSOR_ARRAY_API SensorArray {
   struct Options {
     /// A secondary's frame within this of a primary frame belongs to its
     /// trigger. Under half the fastest sensor's frame period, or neighbouring
-    /// triggers would share frames.
-    std::uint32_t tolerance_us = 5000;
+    /// triggers would share frames. 0 takes 0.4 of that period (13 333 us at
+    /// 30 fps), or 5000 us when no sensor reports a rate.
+    std::uint32_t tolerance_us = 0;
     /// Frames each sensor holds between polls (`IRgbdSensor::set_queue_depth`)
     /// and the grouping holds after; enough that every sensor still holds a
     /// trigger's frame when a slow poll comes to group it.
@@ -150,7 +154,7 @@ class VR_SENSOR_ARRAY_API SensorArray {
   /// @param options  How they are grouped and posed.
   /// @return The array; `Status::Code::InvalidArgument` for no sensors, a
   ///         null one, an empty or repeated id, a queue depth of 0, a
-  ///         tolerance of 0 or of half a frame period or more, a calibration
+  ///         tolerance of half a frame period or more, a calibration
   ///         that is invalid or does not pose a sensor, or a device or an
   ///         allocator without the other; what `GpuFramePrep::create`
   ///         returns for a device the passes cannot be built on; or

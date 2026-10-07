@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <exception>
 #include <thread>
 #include <utility>
 
@@ -96,77 +97,68 @@ core::Status check_orientation(ob::Device& device, const std::string& who) {
   return {};
 }
 
-}  // namespace
-
+// The SDK reports every failure as a thrown ob::Error; this repo returns
+// Status across its API. `who` names the caller ("OrbbecSensor", ...).
 core::Status sdk_error(const std::string& who, const std::string& what,
                        const std::exception& e) {
   return core::Status::io_error(who + ": " + what + ": " + e.what());
 }
 
+// The SDK's logger is process-wide: file sink off, console at WARN. One call
+// per sink -- setLoggerSeverity sets every sink, the file one included.
 void configure_sdk_logging() {
   ob::Context::setLoggerToFile(OB_LOG_SEVERITY_OFF, "");
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
 }
 
-core::Result<std::vector<std::shared_ptr<ob::Device>>> discover(
-    ob::Context& context, const std::vector<std::string>& serials,
-    std::uint32_t timeout_ms, const std::string& who) {
+// Find the camera on the network, re-querying until it answers or the window
+// closes; one query is not proof of absence for an Ethernet camera. A named
+// camera is returned the moment it answers. An empty `serial` asks for the
+// only camera: it is opened once the whole window has passed with no other
+// answering, and refused as soon as a second does.
+core::Result<std::shared_ptr<ob::Device>> discover(ob::Context& context,
+                                                   const std::string& serial,
+                                                   std::uint32_t timeout_ms,
+                                                   const std::string& who) {
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   std::vector<std::string> answered;  // every serial any query listed
-  std::vector<std::shared_ptr<ob::Device>> found(
-      std::max<std::size_t>(serials.size(), 1));
   // Unnamed: the latest list that held the one camera, opened at the end.
   std::shared_ptr<ob::DeviceList> sole;
   for (;;) {
     const auto list = context.queryDeviceList();
     const std::uint32_t count = list->getCount();
     for (std::uint32_t i = 0; i < count; ++i) {
-      const std::string serial = or_empty(list->getSerialNumber(i));
-      if (std::find(answered.begin(), answered.end(), serial) ==
+      const std::string answer = or_empty(list->getSerialNumber(i));
+      if (!serial.empty() && answer == serial) return list->getDevice(i);
+      if (std::find(answered.begin(), answered.end(), answer) ==
           answered.end()) {
-        answered.push_back(serial);
-      }
-      for (std::size_t k = 0; k < serials.size(); ++k) {
-        if (found[k] == nullptr && serial == serials[k]) {
-          found[k] = list->getDevice(i);
-        }
+        answered.push_back(answer);
       }
     }
-    if (serials.empty()) {
+    if (serial.empty()) {
       if (answered.size() > 1) {
         return core::Status::invalid_argument(
             who + ": " + std::to_string(answered.size()) +
             " cameras answered (" + join(answered) + "); name one");
       }
       if (count == 1) sole = list;
-    } else if (std::all_of(found.begin(), found.end(),
-                           [](const auto& d) { return d != nullptr; })) {
-      return found;
     }
     if (std::chrono::steady_clock::now() >= deadline) {
-      if (sole != nullptr) {
-        found[0] = sole->getDevice(0);
-        return found;
-      }
-      std::vector<std::string> missing;
-      for (std::size_t k = 0; k < serials.size(); ++k) {
-        if (found[k] == nullptr) missing.push_back(serials[k]);
-      }
-      const std::string wanted =
-          serials.empty()
-              ? std::string("no camera")
-              : "camera" + std::string(missing.size() > 1 ? "s " : " ") +
-                    join(missing) + " not";
+      if (sole != nullptr) return sole->getDevice(0);
       return core::Status::not_found(
-          who + ": " + wanted + " found within " + std::to_string(timeout_ms) +
-          " ms" +
+          who + ": " +
+          (serial.empty() ? std::string("no camera")
+                          : "camera " + serial + " not") +
+          " found within " + std::to_string(timeout_ms) + " ms" +
           (answered.empty() ? std::string(" (none answered)")
                             : " (answered: " + join(answered) + ")"));
     }
     std::this_thread::sleep_for(kDiscoveryRetry);
   }
 }
+
+}  // namespace
 
 void Mailbox::post(std::shared_ptr<ob::FrameSet> frameset) {
   if (frameset == nullptr) return;
@@ -202,11 +194,9 @@ core::Result<std::unique_ptr<CameraStream>> open_camera(
     if (configure_logging) configure_sdk_logging();
     auto context = std::make_shared<ob::Context>();
     context->enableNetDeviceEnumeration(true);
-    std::vector<std::string> serials;
-    if (!serial.empty()) serials.push_back(serial);
-    VKC_ASSIGN(const auto devices,
-               discover(*context, serials, discovery_timeout_ms, who));
-    return CameraStream::create(std::move(context), devices.front(), streams,
+    VKC_ASSIGN(auto device,
+               discover(*context, serial, discovery_timeout_ms, who));
+    return CameraStream::create(std::move(context), std::move(device), streams,
                                 color_to_world, configure_logging, who);
   } catch (const std::exception& e) {  // ob::Error is one
     return sdk_error(who, "opening the camera", e);
@@ -238,13 +228,6 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
           sync_settings_from(s->device_->getMultiDeviceSyncConfig());
     }
     s->info_.sync_mode = s->sync_settings_.mode;
-    if (s->info_.sync_mode == OrbbecSyncMode::SoftwareTriggering) {
-      return core::Status::unsupported(
-          s->who_ +
-          " is in software-triggering mode, which captures only when the host "
-          "sends a trigger, and this driver sends none. Set another sync mode "
-          "on the camera.");
-    }
 
     VKC_TRY(check_orientation(*s->device_, s->who_));
 
@@ -414,8 +397,8 @@ core::Status CameraStream::start() {
         color_codec_ == OrbbecColorCodec::Hevc
             ? OB_FRAME_AGGREGATE_OUTPUT_COLOR_FRAME_REQUIRE
             : OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE);
-    // Pair depth with the colour frame nearest it in time.
-    pipeline_->enableFrameSync();
+    // Depth is paired with the colour frame nearest it in time: the SDK's
+    // Pipeline turns frame sync on when it is made.
     pipeline_->start(config, [mailbox = mailbox_, hevc = hevc_,
                               jpeg = jpeg_](std::shared_ptr<ob::FrameSet> fs) {
       // Runs on the SDK's thread; it must never throw back into the SDK.
@@ -510,6 +493,22 @@ core::Status CameraStream::apply_sync(const OrbbecSyncSettings& settings) {
   return {};
 }
 
+core::Status CameraStream::use_host_clock() {
+  try {
+    if (!device_->isGlobalTimestampSupported()) {
+      return core::Status::unsupported(
+          who_ +
+          " has no global timestamps, which would put its frames on the "
+          "host's clock");
+    }
+    device_->enableGlobalTimestamp(true);
+  } catch (const std::exception& e) {  // ob::Error is one
+    return sdk_error(who_, "enabling its global timestamps", e);
+  }
+  host_clock_ = true;
+  return {};
+}
+
 core::Status CameraStream::sync_clock_to_host() {
   try {
     device_->timerSyncWithHost();
@@ -517,20 +516,6 @@ core::Status CameraStream::sync_clock_to_host() {
     return sdk_error(who_, "syncing its clock to the host's", e);
   }
   return {};
-}
-
-void CameraStream::withdraw() noexcept {
-  --delivered_;
-  ++discarded_;
-}
-
-std::uint64_t CameraStream::timestamp_us(const ob::FrameSet& pair) noexcept {
-  try {
-    const auto depth = pair.getDepthFrame();
-    return depth != nullptr ? depth->getTimeStampUs() : 0;
-  } catch (...) {
-    return 0;
-  }
 }
 
 core::Result<std::optional<RgbdFrame>> CameraStream::read(
@@ -620,7 +605,11 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
     frame.color_camera = color_camera_;
     frame.color_to_world = color_to_world_;
     frame.depth_to_color = depth_to_color_;
-    frame.timestamp_ns = depth->getTimeStampUs() * 1000;
+    // With the host's clock on, the SDK's mapping of the camera's clock onto
+    // it: 0 until it has one, which a sensor array counts unmatched.
+    frame.timestamp_ns = (host_clock_ ? depth->getGlobalTimeStampUs()
+                                      : depth->getTimeStampUs()) *
+                         1000;
     frame.sequence = depth->getIndex();
   } catch (const std::exception& e) {  // ob::Error is one
     return skip(std::string("the SDK failed on it: ") + e.what());

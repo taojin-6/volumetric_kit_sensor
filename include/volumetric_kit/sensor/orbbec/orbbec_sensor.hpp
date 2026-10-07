@@ -22,6 +22,7 @@
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/export.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
+#include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
 
@@ -41,6 +42,10 @@ namespace volumetric_kit::recon::sensor {
 /// gone. A camera wired as a sync secondary starts cleanly and then delivers
 /// nothing unless its primary streams (`SensorInfo::role` says so). A camera
 /// the SDK reports removed never streams again through this object.
+///
+/// A synchronised rig is one sensor per camera in a @ref SensorArray, each
+/// opened with its entry of the rig's sync configuration (@ref Options::sync)
+/// and on the host's clock (@ref Options::sync_clock_to_host).
 ///
 /// @code
 /// OrbbecSensor::Options options;
@@ -71,12 +76,24 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
     /// `RgbdFrame::color_to_world`; rigid. Identity places the world at the
     /// camera.
     camera::Mat4d color_to_world = camera::Mat4d(1.0);
-    // TODO(sensor): measure the Femto Mega's clock drift over a session,
-    // against the sensor array's grouping tolerance.
-    /// Set the camera's clock to the host's at each @ref start, so its
-    /// timestamps compare with other sensors' (`ClockDomain::Host`). This
-    /// camera's alone, and before it streams, so no timestamp steps; its
-    /// clock drifts from the host's from then on, until the next start.
+    /// This camera's entry of its rig's sync configuration
+    /// (@ref read_orbbec_sync_config). @ref open compares it with the
+    /// settings stored on the camera, and refuses a camera that differs
+    /// unless @ref apply_sync. Empty takes the camera as it is set.
+    std::optional<OrbbecSyncSettings> sync;
+    /// Write @ref sync to the camera where its stored settings differ, rather
+    /// than refusing it. They persist in the camera's flash, so they are
+    /// written only on a difference. Refused if the SDK's effective settings
+    /// still differ after the write; this checks SDK normalization, not
+    /// persistence on the camera.
+    bool apply_sync = false;
+    /// Stamp each frame with the SDK's global timestamp -- the camera's clock
+    /// mapped onto the host's `std::chrono::system_clock` (the SDK's default
+    /// host clock, which recon never changes), the mapping re-fitted as the
+    /// two drift -- so it compares with other sensors' (`ClockDomain::Host`);
+    /// otherwise with the camera's own clock. Each @ref start also sets the
+    /// camera's clock to the host's, once, before it streams, so its first
+    /// frames are mapped.
     bool sync_clock_to_host = false;
     /// Switch off the SDK's log file (it writes `./Log/` at DEBUG by default)
     /// and route its console sink at WARN, at @ref open, and set FFmpeg's log
@@ -94,8 +111,9 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///           camera is looked for -- a zero size or rate, a depth range
   ///           that is not finite, empty or starts at 0 (which the GPU pass
   ///           would refuse), a @ref Options::color_to_world that is not
-  ///           rigid -- an empty @ref Options::serial with more than one
-  ///           camera answering within the discovery window, or a factory
+  ///           rigid, @ref Options::apply_sync without @ref Options::sync --
+  ///           an empty @ref Options::serial with more than one camera
+  ///           answering within the discovery window, or a factory
   ///           calibration that cannot be used: intrinsics zeroed, not finite
   ///           or for another size than the mode, or a depth-to-colour
   ///           extrinsic zeroed or reflected, as an uncalibrated unit reports;
@@ -106,10 +124,13 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///           colour mode matching the options (the modes it offers are
   ///           listed), reports its image mirrored, flipped or rotated, is in
   ///           software-triggering mode or a sync mode this driver does not
-  ///           know, or reports a lens model the GPU pass cannot
-  ///           undistort;
-  ///         - `Status::Code::IoError` for any other SDK failure, with the
-  ///           SDK's message.
+  ///           know, reports a lens model the GPU pass cannot undistort,
+  ///           has sync settings that differ from @ref Options::sync (each
+  ///           field named) without @ref Options::apply_sync or after the SDK
+  ///           applies them, or has no global timestamps for
+  ///           @ref Options::sync_clock_to_host;
+  ///         - `Status::Code::IoError` for any other SDK failure, writing
+  ///           the sync settings included, with the SDK's message.
   static core::Result<OrbbecSensor> open(const Options& options);
 
   OrbbecSensor(OrbbecSensor&& other) noexcept;

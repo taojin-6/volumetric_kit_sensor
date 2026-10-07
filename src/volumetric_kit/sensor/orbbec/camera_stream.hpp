@@ -3,16 +3,14 @@
 
 #pragma once
 
-// Internal (not installed): one Orbbec camera's streams and frame path, shared
-// by OrbbecSensor (one camera) and OrbbecRig (several). Taking a pair and
-// reading it into a frame are separate calls so the rig can group pairs by
-// timestamp first.
+// Internal (not installed): one Orbbec camera's streams and frame path, behind
+// OrbbecSensor. Taking pairs and reading them into frames are separate calls,
+// so a drain takes every pending pair at once.
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -33,25 +31,6 @@ namespace volumetric_kit::recon::sensor::orbbec {
 class HevcColorDecoder;
 class JpegColorDecoder;
 
-// The SDK reports every failure as a thrown ob::Error; this repo returns
-// Status across its API. `who` names the caller ("OrbbecSensor", ...).
-core::Status sdk_error(const std::string& who, const std::string& what,
-                       const std::exception& e);
-
-// The SDK's logger is process-wide: file sink off, console at WARN. One call
-// per sink -- setLoggerSeverity sets every sink, the file one included.
-void configure_sdk_logging();
-
-// Find cameras on the network, re-querying until they answer or the window
-// closes; one query is not proof of absence for an Ethernet camera. Named
-// cameras (in `serials`' order) are returned the moment all have answered.
-// An empty `serials` asks for the only camera: it is opened once the whole
-// window has passed with no other answering, and refused as soon as a second
-// does.
-core::Result<std::vector<std::shared_ptr<ob::Device>>> discover(
-    ob::Context& context, const std::vector<std::string>& serials,
-    std::uint32_t timeout_ms, const std::string& who);
-
 // What the SDK's threads write and the polling thread reads. Captured by
 // shared_ptr in both SDK callbacks, since neither is guaranteed gone when the
 // stream is: the SDK calls a *copy* of the device-changed callback after
@@ -60,8 +39,9 @@ core::Result<std::vector<std::shared_ptr<ob::Device>>> discover(
 struct Mailbox {
   std::mutex mutex;
   // The newest pairs not yet taken, oldest first, at most `depth` of them: one
-  // for a single camera (newest wins), a few for a rig, whose cameras must all
-  // still hold a trigger's frame when a slow poll comes to group them.
+  // for a camera on its own (newest wins), a few in a sensor array, whose
+  // cameras must all still hold a trigger's frame when a slow poll comes to
+  // group them.
   std::deque<std::shared_ptr<ob::FrameSet>> pending;  // guarded by mutex
   std::size_t depth = 1;                              // guarded by mutex
   std::string fault;                                  // guarded by mutex
@@ -81,8 +61,8 @@ class CameraStream {
  public:
   // Read the camera's identity and role, check its orientation, find the
   // modes, and read each camera's factory model at them. Does not start.
-  // Refuses a software-triggered camera. Messages name `who` and the serial.
-  // `configure_logging` sets FFmpeg's log level at the first start.
+  // Messages name `who` and the serial. `configure_logging` sets FFmpeg's log
+  // level at the first start.
   static core::Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
       const OrbbecStreamOptions& streams, const camera::Mat4d& color_to_world,
@@ -98,12 +78,19 @@ class CameraStream {
   const OrbbecSyncSettings& sync_settings() const noexcept {
     return sync_settings_;
   }
-  // Write sync settings to the camera, where they persist. Not while running.
+  // Write sync settings to the camera, where they persist (its flash). Not
+  // while running. What the SDK reads back after it is its own cache of the
+  // effective settings, including its normalization, not the camera: the next
+  // open is what reads the camera again.
   core::Status apply_sync(const OrbbecSyncSettings& settings);
-  // Set this camera's clock to the host's, once: unlike the context's
-  // enableDeviceClockSync, which re-syncs every camera the process opened.
-  // IoError if the camera cannot. Before start, so no frame's timestamp
-  // steps.
+  // Stamp frames with the SDK's global timestamps -- the camera's clock mapped
+  // onto the host's, re-fitted as the two drift -- rather than the camera's
+  // own. Before sync_clock_to_host, so that sync re-fits the mapping at once.
+  // Unsupported where the camera has none.
+  core::Status use_host_clock();
+  // Set this camera's clock to the host's, once, before start. Never the
+  // context's enableDeviceClockSync, which re-syncs every camera in the
+  // process on a thread of its own. IoError if the camera cannot.
   core::Status sync_clock_to_host();
   bool disconnected() const noexcept {
     return mailbox_->disconnected.load(std::memory_order_acquire);
@@ -131,11 +118,6 @@ class CameraStream {
   core::Status take_all(std::vector<std::shared_ptr<ob::FrameSet>>* out);
   // A taken pair that will never be processed, counted as dropped.
   void discard() noexcept;
-  // A pair read() delivered that the caller will not hand out after all,
-  // recounted as dropped.
-  void withdraw() noexcept;
-  // The device timestamp of a pair's depth frame (us), or 0 when it has none.
-  static std::uint64_t timestamp_us(const ob::FrameSet& pair) noexcept;
 
   // A pair as the cameras captured it: raw depth and the decoded colour, each
   // camera's model and the colour camera's pose. The colour is the picture
@@ -145,8 +127,8 @@ class CameraStream {
   // pair contradicting the negotiated stream, or a run of ~a second's skips.
   core::Result<std::optional<RgbdFrame>> read(
       const std::shared_ptr<ob::FrameSet>& pair);
-  // Each camera as it captures, the depth camera's extrinsic to the colour
-  // one, and the colour camera's pose.
+  // Each camera as it captures, and the depth camera's extrinsic to the colour
+  // one.
   const camera::CameraModel& depth_camera() const noexcept {
     return depth_camera_;
   }
@@ -156,9 +138,6 @@ class CameraStream {
   const camera::Mat4d& depth_to_color() const noexcept {
     return depth_to_color_;
   }
-  const camera::Mat4d& color_to_world() const noexcept {
-    return color_to_world_;
-  }
   std::uint32_t fps() const noexcept { return fps_; }
 
  private:
@@ -167,8 +146,9 @@ class CameraStream {
   core::Status decoder_failure() const;
 
   std::string who_;
-  // Declared first so it is destroyed last: every SDK object below belongs to
-  // this context.
+  // A handle on the SDK's process-wide runtime, which every ob::Context
+  // shares. Declared first so it is destroyed last: every SDK object below
+  // belongs to it.
   std::shared_ptr<ob::Context> context_;
   // Next, so a pending frame is released while the context lives.
   std::shared_ptr<Mailbox> mailbox_ = std::make_shared<Mailbox>();
@@ -195,6 +175,7 @@ class CameraStream {
 
   OrbbecDeviceInfo info_;
   OrbbecSyncSettings sync_settings_;
+  bool host_clock_ = false;  // global timestamps, set by use_host_clock()
 
   // The polling thread's counters; the SDK's thread counts in the mailbox.
   std::uint64_t delivered_ = 0;
@@ -212,7 +193,7 @@ class CameraStream {
 };
 
 // One camera -- `serial`, or the only one that answers -- found and created
-// in a context of its own, which the stream holds: a single camera's open.
+// through a context the stream holds.
 core::Result<std::unique_ptr<CameraStream>> open_camera(
     const std::string& serial, std::uint32_t discovery_timeout_ms,
     bool configure_logging, const OrbbecStreamOptions& streams,

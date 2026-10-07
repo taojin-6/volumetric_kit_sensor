@@ -31,9 +31,9 @@ namespace volumetric_kit::recon::sensor {
 ///        reports it.
 ///
 /// Read when a camera is opened and written only when asked
-/// (`OrbbecRig::Options::apply_sync_config`): the role persists on the
-/// camera, and changing it for a one-camera run would break the rig for the
-/// next. See @ref waits_for_primary for what it means to a caller.
+/// (`OrbbecSensor::Options::apply_sync`): the role persists on the camera,
+/// and changing it for a one-camera run would break the rig for the next.
+/// See @ref waits_for_primary for what it means to a caller.
 enum class OrbbecSyncMode {
   FreeRun,     ///< Not synchronised; streams on its own clock.
   Standalone,  ///< Not synchronised; streams on its own clock.

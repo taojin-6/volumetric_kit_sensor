@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "volumetric_kit/recon/sensor/trigger_grouper.hpp"
+#include "trigger_grouper.hpp"
 
 namespace sensor = volumetric_kit::recon::sensor;
 
