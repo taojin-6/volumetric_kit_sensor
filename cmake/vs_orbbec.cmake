@@ -24,13 +24,13 @@
 #   standard layouts search under a prefix -- hence PATH_SUFFIXES lib.
 # * The version file is named OrbbecSDKVersion.cmake, not
 #   OrbbecSDKConfigVersion.cmake, so find_package never reads it and a versioned
-#   `find_package(OrbbecSDK 2.9.3)` rejects even a matching SDK. The version is
+#   `find_package(OrbbecSDK 2.10.6)` rejects even a matching SDK. The version is
 #   read out of that file instead, and checked here.
 
 # The oldest SDK this repo builds against. Raise it with the SDK the family
 # installs, and keep it in lockstep with any sibling that finds the same copy
-# and with the SDK CI installs (.github/workflows/_build.yml).
-set(VR_ORBBEC_SDK_MIN_VERSION 2.9.3)
+# and with the SDK CI installs (.github/actions/install-orbbec-sdk).
+set(VR_ORBBEC_SDK_MIN_VERSION 2.10.6)
 
 # The driver decodes each camera's colour itself, onto the GPU, so it needs the
 # video decoders: without them it could open no camera.

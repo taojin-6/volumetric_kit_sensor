@@ -46,7 +46,8 @@ enum class SyncRole : std::uint8_t {
 enum class ClockDomain : std::uint8_t {
   /// The sensor's own: comparable only within its frames.
   Device,
-  /// The host's, kept so by the driver: comparable with every sensor on it.
+  /// The host's `std::chrono::system_clock`, kept so by the driver:
+  /// comparable with every sensor on it.
   Host,
 };
 

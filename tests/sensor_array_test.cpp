@@ -4,9 +4,9 @@
 // The sensor array over scripted fake sensors: the arrays it refuses, the
 // order it starts and stops sensors in, a failed start, a start of a running
 // array and a move over one, trigger grouping (complete sets, a silent
-// secondary, the newest set winning, frames with no clock), an exhausted
-// sensor, a drain that fails partway, poses from the calibration, and a
-// moved-from array. Host-only.
+// secondary, the newest set winning, frames with no clock), the default
+// tolerance, an exhausted sensor, a drain that fails partway, poses from the
+// calibration, and a moved-from array. Host-only.
 
 #include <algorithm>
 #include <chrono>
@@ -184,10 +184,10 @@ int test_refusals() {
   o.queue_depth = 0;
   CHECK(refusal(triggered_rig(), o) == Code::InvalidArgument);
   o = trigger_options();
-  o.tolerance_us = 0;
-  CHECK(refusal(triggered_rig(), o) == Code::InvalidArgument);
   o.tolerance_us = 500;  // half of 1 kHz's period
   CHECK(refusal(triggered_rig(), o) == Code::InvalidArgument);
+  o.tolerance_us = 499;
+  CHECK(refusal(triggered_rig(), o) == Code::Ok);
   {  // no primary
     Rig r = triggered_rig();
     r.fakes[1]->mutable_info().role = sensor::SyncRole::Secondary;
@@ -342,6 +342,33 @@ int test_trigger() {
   return 0;
 }
 
+// The default tolerance: 0.4 of the fastest sensor's frame period, 400 us at
+// 1 kHz, or 5000 us when no sensor reports a rate. A secondary just inside it
+// joins the primary's set; one just outside joins none.
+int test_default_tolerance() {
+  for (const std::uint32_t fps : {1000u, 0u}) {
+    const std::uint64_t tolerance_ns = fps > 0 ? 400'000 : 5'000'000;
+    Rig r;
+    r.add(std::make_unique<Scripted>("S1", sensor::SyncRole::Secondary,
+                                     sensor::ClockDomain::Host, fps));
+    r.add(std::make_unique<Scripted>("P", sensor::SyncRole::Primary,
+                                     sensor::ClockDomain::Host, fps));
+    r.add(std::make_unique<Scripted>("S2", sensor::SyncRole::Secondary,
+                                     sensor::ClockDomain::Host, fps));
+    std::vector<Scripted*> f = r.fakes;
+    sensor::SensorArray array = open_array(&r, {});
+    CHECK(array.start().ok());
+    const std::uint64_t ts = 5'000'000'000;
+    f[1]->push(ts, 100);
+    f[0]->push(ts + tolerance_ns - 50'000, 200);
+    f[2]->push(ts + tolerance_ns + 50'000, 300);
+    const auto set = array.poll_set();
+    CHECK(set.ok() && set.value() && set.value()->count() == 2);
+    CHECK(set.value()->frames[0]->sequence == 200 && !set.value()->frames[2]);
+  }
+  return 0;
+}
+
 int test_failed_drain() {
   Rig r = triggered_rig();
   std::vector<Scripted*> f = r.fakes;  // S1, P, S2
@@ -385,6 +412,7 @@ int main() {
   if (test_refusals() != 0) return 1;
   if (test_start_order() != 0) return 1;
   if (test_trigger() != 0) return 1;
+  if (test_default_tolerance() != 0) return 1;
   if (test_failed_drain() != 0) return 1;
   if (test_moved_from() != 0) return 1;
   std::printf("sensor array tests passed\n");

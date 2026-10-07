@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Tao Jin
 
 // The rig's sync configuration: the SDK's file layout read, its refusals, the
-// SDK struct round trip, and the comparison OrbbecRig::open makes -- which must
-// call the rig's cameras, as they read back what femto_mega_sync.json wrote,
-// in agreement with that file. No camera.
+// SDK struct round trip, and the comparison OrbbecSensor::open makes -- which
+// must call the rig's cameras, as they read back what femto_mega_sync.json
+// wrote, in agreement with that file. No camera.
 
 #include <cstdio>
 #include <string>

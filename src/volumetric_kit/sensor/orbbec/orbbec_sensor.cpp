@@ -45,17 +45,48 @@ core::Result<OrbbecSensor> OrbbecSensor::open(const Options& options) {
                                           rigid.message());
   }
 
+  if (options.apply_sync && !options.sync) {
+    return core::Status::invalid_argument(
+        "OrbbecSensor: apply_sync needs sync, the settings to write");
+  }
+
   auto impl = std::make_unique<Impl>();
   impl->sync_clock_to_host = options.sync_clock_to_host;
   VKC_ASSIGN(impl->stream,
              orbbec::open_camera(options.serial, options.discovery_timeout_ms,
                                  options.configure_sdk_logging, options,
                                  options.color_to_world, "OrbbecSensor"));
-  const orbbec::CameraStream& stream = *impl->stream;
+  orbbec::CameraStream& stream = *impl->stream;
+  const std::string who = "OrbbecSensor: camera " + stream.info().serial;
+  // Before any write to the camera's flash, so a refusal never follows one.
+  if (options.sync_clock_to_host) VKC_TRY(stream.use_host_clock());
+  if (options.sync) {
+    // Written only where they differ: they persist in the camera's flash.
+    const std::vector<std::string> differences =
+        orbbec::sync_differences(*options.sync, stream.sync_settings());
+    if (!differences.empty() && !options.apply_sync) {
+      std::string fields;
+      for (const std::string& d : differences) {
+        fields += (fields.empty() ? "" : ", ") + d;
+      }
+      return core::Status::unsupported(
+          who + " differs from its sync configuration: " + fields +
+          "; set apply_sync to write them");
+    }
+    if (!differences.empty()) VKC_TRY(stream.apply_sync(*options.sync));
+  }
+  // The role as the camera has it now, after any write.
+  if (stream.info().sync_mode == OrbbecSyncMode::SoftwareTriggering) {
+    return core::Status::unsupported(
+        who +
+        " is in software-triggering mode, which captures only when the host "
+        "sends a trigger, and this driver sends none. Set another sync mode "
+        "on the camera.");
+  }
   if (stream.info().sync_mode == OrbbecSyncMode::Other) {
     // Its role in a rig is unknown, and an array could not order its start.
     return core::Status::unsupported(
-        "OrbbecSensor: camera " + stream.info().serial +
+        who +
         " is in a sync mode this driver does not know; set it to free-run, "
         "standalone, primary or secondary");
   }
@@ -109,6 +140,8 @@ core::Status OrbbecSensor::start() {
     return core::Status::invalid_argument(
         "OrbbecSensor: start on a moved-from sensor");
   }
+  // Once, before it streams, as Orbbec's multi-camera recipe does: the SDK
+  // re-fits its global timestamps then, so the first frames are mapped.
   if (impl_->sync_clock_to_host && !impl_->stream->running()) {
     VKC_TRY(impl_->stream->sync_clock_to_host());
   }

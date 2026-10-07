@@ -13,8 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "trigger_grouper.hpp"
 #include "volumetric_kit/core/base/check.hpp"
-#include "volumetric_kit/recon/sensor/trigger_grouper.hpp"
 
 namespace volumetric_kit::recon::sensor {
 
@@ -208,15 +208,22 @@ core::Result<SensorArray> SensorArray::open(
   const std::uint64_t half_period_us =
       fastest > 0 ? 500000u / fastest
                   : std::numeric_limits<std::uint64_t>::max();
-  if (options.tolerance_us == 0 || options.tolerance_us >= half_period_us) {
-    return bad("tolerance_us is " + std::to_string(options.tolerance_us) +
+  // By default 0.4 of a period, as Orbbec matches its rigs' frames within half
+  // of one: a trigger's frames sit well inside it, the next trigger's well
+  // outside.
+  const std::uint64_t tolerance_us = options.tolerance_us != 0
+                                         ? options.tolerance_us
+                                     : fastest > 0 ? 400000u / fastest
+                                                   : 5000u;
+  if (tolerance_us == 0 || tolerance_us >= half_period_us) {
+    return bad("tolerance_us is " + std::to_string(tolerance_us) +
                "; it must be non-zero and under half a frame period (" +
                std::to_string(half_period_us) + " us)");
   }
   TriggerGrouper::Config grouping;
   grouping.cameras = sensors.size();
   grouping.anchor = impl->primary;
-  grouping.tolerance_us = options.tolerance_us;
+  grouping.tolerance_us = tolerance_us;
   // A frame and a half of the slowest sensor: long enough for a late frame
   // to arrive, short enough that a silent sensor costs one set.
   grouping.max_wait_us = fastest > 0 ? 1500000u / slowest : 50000u;
