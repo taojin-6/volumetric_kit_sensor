@@ -15,6 +15,7 @@
 /// take a `Buffer`). Driver-neutral: it takes a @ref RgbdFrame, whoever made
 /// it.
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -184,8 +185,9 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         `queue_family` the device lacks, or an image past a single
   ///         dispatch (16.7 M pixels);
   ///         `Status::Code::Unsupported` for a colour encoding
-  ///         @ref is_canonical refuses; otherwise a buffer or dispatch
-  ///         failure.
+  ///         @ref is_canonical refuses; `Status::Code::OutOfMemory` when the
+  ///         device or the host has no memory for a buffer; otherwise a
+  ///         buffer or dispatch failure.
   core::Result<DeviceFrame> prepare(const RgbdFrame& frame,
                                     core::StageMetrics* metrics = nullptr);
 
@@ -218,6 +220,15 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
 
   // A checked frame's layout (gpu_frame_prep.cpp).
   struct Layout;
+  // The one path prepare and prepare_batch take: `preps[i]` prepares
+  // `*frames[i]` into `out[i]`, a null frame skipped, with `layouts[i]` its
+  // scratch, for `count` frames.
+  static core::Status prepare_frames(GpuFramePrep* preps,
+                                     const RgbdFrame* const* frames,
+                                     Layout* layouts,
+                                     std::optional<DeviceFrame>* out,
+                                     std::size_t count,
+                                     core::StageMetrics* metrics);
   // The whole frame checked, before anything is uploaded.
   core::Result<Layout> check(const RgbdFrame& frame) const;
   // Device planes taken over from their writer's family, into `batch`.
@@ -238,7 +249,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
 
   // An output of at least `bytes`: the one held, when no DeviceFrame still
   // holds it too and it is big enough, else a new one, shared with the
-  // config's colour families when `color`.
+  // config's colour families when `color`; OutOfMemory, without throwing,
+  // when the host has no memory to hold a new one.
   core::Status ensure_output(std::shared_ptr<core::Buffer>& buffer,
                              VkDeviceSize bytes, const char* name, bool color);
 

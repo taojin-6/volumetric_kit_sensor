@@ -1136,12 +1136,11 @@ int test_refusals(sensor::GpuFramePrep& prep) {
   CHECK(prep.prepare(f).ok());
 
   // A colour half refused costs the depth half nothing either: both are
-  // checked before anything is uploaded, so no pass is dispatched.
+  // checked before anything is uploaded, so no row is timed, as for a set.
   vkc::StageMetrics metrics;
   f.color.stride[1] = 4;
   CHECK(prep.prepare(f, &metrics).status().domain() == invalid);
-  CHECK(metrics.rows().size() == 1);
-  CHECK(!metrics.rows()[0].has_gpu);
+  CHECK(metrics.rows().empty());
 
   // Packed words beside Y'CbCr planes, which dispatches nothing either, and
   // in an encoding the pass does not convert.
@@ -1155,7 +1154,7 @@ int test_refusals(sensor::GpuFramePrep& prep) {
   const vkc::Status refused = prep.prepare(f, &both).status();
   CHECK(refused.domain() == invalid &&
         refused.message().find("not both") != std::string::npos);
-  CHECK(both.rows().size() == 1 && !both.rows()[0].has_gpu);
+  CHECK(both.rows().empty());
   f.color = {};
   f.color_encoding.transfer = vr::ColorEncoding::Transfer::Bt2020Pq;
   CHECK(prep.prepare(f).status().domain() == vkc::Status::Code::Unsupported);

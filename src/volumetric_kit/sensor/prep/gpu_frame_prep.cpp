@@ -16,6 +16,7 @@
 
 #include "undistort_color_comp.spv.hpp"
 #include "undistort_depth_comp.spv.hpp"
+#include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -160,6 +161,55 @@ core::Status ensure_buffer(const core::Device& device,
   device.set_object_name(VK_OBJECT_TYPE_BUFFER,
                          core::debug_object_handle(buffer.handle()), name);
   return {};
+}
+
+// Set by HolderAllocator when the host had no memory for a holder.
+thread_local bool t_holder_refused = false;
+
+// The allocator an output's holder comes from: std::make_shared reports a
+// host out of memory by throwing, which a -fno-exceptions build cannot catch.
+// This one allocates without throwing; when that fails, it hands
+// std::allocate_shared the calling thread's spare instead and sets
+// t_holder_refused, and the caller drops that holder at once. Stateless, so
+// the holder is make_shared's size, which the OOM test fails by.
+template <class T>
+class HolderAllocator {
+ public:
+  using value_type = T;
+
+  HolderAllocator() noexcept = default;
+  // Implicit, as std::allocator's: allocate_shared rebinds through it.
+  template <class U>
+  HolderAllocator(const HolderAllocator<U>& /*other*/) noexcept {}
+
+  T* allocate(std::size_t n) noexcept {
+    VKC_CHECK(n == 1, "HolderAllocator: a holder is one control block");
+    if (void* p = ::operator new(sizeof(T), std::nothrow)) {
+      return static_cast<T*>(p);
+    }
+    t_holder_refused = true;
+    return spare();
+  }
+  void deallocate(T* p, std::size_t /*n*/) noexcept {
+    if (p != spare()) ::operator delete(p);
+  }
+
+ private:
+  static T* spare() noexcept {
+    alignas(T) static thread_local unsigned char storage[sizeof(T)];
+    return reinterpret_cast<T*>(storage);
+  }
+};
+
+template <class T, class U>
+bool operator==(const HolderAllocator<T>& /*a*/,
+                const HolderAllocator<U>& /*b*/) noexcept {
+  return true;
+}
+template <class T, class U>
+bool operator!=(const HolderAllocator<T>& /*a*/,
+                const HolderAllocator<U>& /*b*/) noexcept {
+  return false;
 }
 
 VkDeviceSize round_up4(VkDeviceSize bytes) noexcept {
@@ -664,21 +714,12 @@ DeviceFrame GpuFramePrep::finish(const RgbdFrame& frame) const {
 
 core::Result<DeviceFrame> GpuFramePrep::prepare(const RgbdFrame& frame,
                                                 core::StageMetrics* metrics) {
-  core::GpuStageScope stage(metrics, gpu_timer_, "frame prep");
-  // The whole frame checked before anything is uploaded, so a refused frame
-  // costs no work and leaves every buffer as it was.
-  VKC_ASSIGN(const Layout layout, check(frame));
-  core::CommandBatch batch(*device_, *allocator_);
-  VKC_TRY(acquire(batch, frame));
-  VKC_TRY(stage_host(frame, layout));
-  VKC_TRY(record_uploads(batch, frame, layout, &stage));
-  VKC_TRY(record_passes(batch, frame, layout, &stage));
-  const core::Status submitted = batch.submit();
-  if (!submitted.ok()) {
-    abandon(frame, layout);
-    return submitted;
-  }
-  return finish(frame);
+  // A set of one, through prepare_batch's path.
+  const RgbdFrame* const frames[] = {&frame};
+  Layout layout;
+  std::optional<DeviceFrame> out;
+  VKC_TRY(prepare_frames(this, frames, &layout, &out, 1, metrics));
+  return std::move(*out);
 }
 
 core::Result<std::vector<std::optional<DeviceFrame>>>
@@ -690,47 +731,64 @@ GpuFramePrep::prepare_batch(std::vector<GpuFramePrep>& preps,
         "GpuFramePrep::prepare_batch: " + std::to_string(frames.size()) +
         " frames for " + std::to_string(preps.size()) + " passes");
   }
-  // Every frame checked before any is recorded, so a refused set costs no
-  // work; and every pass on the first one's device, which runs the batch.
-  std::vector<std::optional<Layout>> layouts(frames.size());
-  std::vector<std::size_t> present;
+  std::vector<const RgbdFrame*> listed(frames.size(), nullptr);
   for (std::size_t i = 0; i < frames.size(); ++i) {
-    if (!frames[i]) continue;
+    if (frames[i]) listed[i] = &*frames[i];
+  }
+  std::vector<Layout> layouts(frames.size());
+  std::vector<std::optional<DeviceFrame>> out(frames.size());
+  VKC_TRY(prepare_frames(preps.data(), listed.data(), layouts.data(),
+                         out.data(), frames.size(), metrics));
+  return out;
+}
+
+core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
+                                          const RgbdFrame* const* frames,
+                                          Layout* layouts,
+                                          std::optional<DeviceFrame>* out,
+                                          std::size_t count,
+                                          core::StageMetrics* metrics) {
+  // Every frame checked before any is recorded, so a refused set costs no
+  // work and times no row; and every pass on the first one's device, which
+  // runs the batch.
+  GpuFramePrep* first = nullptr;
+  std::uint32_t present = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] == nullptr) continue;
     VKC_ASSIGN(layouts[i], preps[i].check(*frames[i]));
-    if (!present.empty() && preps[i].device_ != preps[present[0]].device_) {
+    if (first == nullptr) {
+      first = &preps[i];
+    } else if (preps[i].device_ != first->device_) {
       return core::Status::invalid_argument(
           "GpuFramePrep::prepare_batch: the passes are on different devices");
     }
-    present.push_back(i);
+    ++present;
   }
-  std::vector<std::optional<DeviceFrame>> out(frames.size());
-  if (present.empty()) return out;
-  GpuFramePrep& first = preps[present[0]];
+  if (first == nullptr) return {};
 
   // The set's timed commands all in one window, which grows with the array.
-  VKC_TRY(first.gpu_timer_.reserve(
-      *first.device_,
-      kSpansPerFrame * static_cast<std::uint32_t>(present.size())));
-  core::GpuStageScope stage(metrics, first.gpu_timer_, "frame prep");
-  core::CommandBatch batch(*first.device_, *first.allocator_);
-  for (const std::size_t i : present) {
-    VKC_TRY(preps[i].acquire(batch, *frames[i]));
+  VKC_TRY(first->gpu_timer_.reserve(*first->device_, kSpansPerFrame * present));
+  core::GpuStageScope stage(metrics, first->gpu_timer_, "frame prep");
+  core::CommandBatch batch(*first->device_, *first->allocator_);
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) VKC_TRY(preps[i].acquire(batch, *frames[i]));
   }
-  try {
-    for (const std::size_t i : present) {
-      VKC_TRY(preps[i].stage_host(*frames[i], *layouts[i]));
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) {
+      VKC_TRY(preps[i].stage_host(*frames[i], layouts[i]));
     }
-  } catch (const std::bad_alloc&) {
-    return core::Status::out_of_memory(
-        "GpuFramePrep::prepare_batch: out of host memory");
   }
   // Every camera's uploads, then every camera's passes: the uploads write
   // buffers of their own, so they run with no barrier between them.
-  for (const std::size_t i : present) {
-    VKC_TRY(preps[i].record_uploads(batch, *frames[i], *layouts[i], &stage));
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) {
+      VKC_TRY(preps[i].record_uploads(batch, *frames[i], layouts[i], &stage));
+    }
   }
-  for (const std::size_t i : present) {
-    VKC_TRY(preps[i].record_passes(batch, *frames[i], *layouts[i], &stage));
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) {
+      VKC_TRY(preps[i].record_passes(batch, *frames[i], layouts[i], &stage));
+    }
   }
   // TODO: submit through the core's submit_async once the pipelined stages
   // land (DESIGN.md's Next work, step 4): the set then waits on the previous
@@ -739,13 +797,15 @@ GpuFramePrep::prepare_batch(std::vector<GpuFramePrep>& preps,
   // run them, where every failure abandons them now.
   const core::Status submitted = batch.submit();
   if (!submitted.ok()) {
-    for (const std::size_t i : present) {
-      preps[i].abandon(*frames[i], *layouts[i]);
+    for (std::size_t i = 0; i < count; ++i) {
+      if (frames[i] != nullptr) preps[i].abandon(*frames[i], layouts[i]);
     }
     return submitted;
   }
-  for (const std::size_t i : present) out[i] = preps[i].finish(*frames[i]);
-  return out;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) out[i] = preps[i].finish(*frames[i]);
+  }
+  return {};
 }
 
 core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
@@ -772,7 +832,17 @@ core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
           color ? config_.color_queue_family_count : 0));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
                            core::debug_object_handle(created.handle()), name);
-  buffer = std::make_shared<core::Buffer>(std::move(created));
+  // Held without throwing: with no host memory for the holder, the new buffer
+  // goes, the frame is refused, and the output a frame still holds stays.
+  // The message fits a string's own buffer, so it allocates nothing either.
+  t_holder_refused = false;
+  std::shared_ptr<core::Buffer> held = std::allocate_shared<core::Buffer>(
+      HolderAllocator<core::Buffer>(), std::move(created));
+  if (t_holder_refused) {
+    held.reset();
+    return core::Status::out_of_memory("out of memory");
+  }
+  buffer = std::move(held);
   return {};
 }
 
