@@ -125,8 +125,9 @@ int gpu_main(vr_test::GpuContext& gpu) {
       // whether to stop. In particular, bad data must cost only that JPEG.
       const auto recovered = decoder->decode(jpeg.data(), jpeg.size());
       CHECK(recovered.ok());
-      CHECK(recovered->width == 256 && recovered->height == 144);
-      CHECK(recovered->image[0] != nullptr && recovered->image[1] != nullptr);
+      CHECK(recovered->yuv.width == 256 && recovered->yuv.height == 144);
+      CHECK(recovered->yuv.image[0] != nullptr &&
+            recovered->yuv.image[1] != nullptr);
     }
   }
   std::puts("sensor_video_vt_jpeg_error: OK");

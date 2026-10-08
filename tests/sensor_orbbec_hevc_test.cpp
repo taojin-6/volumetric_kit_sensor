@@ -39,6 +39,7 @@
 #include "picture_frames.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "yuv_reference.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
@@ -171,11 +172,11 @@ Out read_out(const ob::FrameSet& set) {
   o.color_us = color->getTimeStampUs();
   std::optional<sensor::DecodedPicture> p = orbbec::device_picture(*color);
   if (!p) return o;
-  vr_test::read_device_picture(*p, *g_device, *g_allocator, o.planes);
-  o.images = p->image[0] != nullptr;
-  p->device.reset();
-  p->image[0].reset();
-  p->image[1].reset();
+  vr_test::read_device_picture(p->yuv, *g_device, *g_allocator, o.planes);
+  o.images = p->yuv.image[0] != nullptr;
+  p->yuv.device.reset();
+  p->yuv.image[0].reset();
+  p->yuv.image[1].reset();
   o.meta = std::move(p);
   return o;
 }
@@ -256,15 +257,17 @@ int check_pair(
   CHECK(o.color_us == t);
   CHECK(o.meta.has_value());
   const sensor::DecodedPicture& p = *o.meta;
-  CHECK(p.width == static_cast<std::uint32_t>(kWidth));
-  CHECK(p.height == static_cast<std::uint32_t>(kHeight));
-  CHECK(p.layout == sensor::VideoPixelLayout::Nv12);
+  CHECK(p.yuv.width == static_cast<std::uint32_t>(kWidth));
+  CHECK(p.yuv.height == static_cast<std::uint32_t>(kHeight));
+  CHECK(p.yuv.layout == sensor::YuvLayout::Nv12);
 #if defined(__APPLE__)
   CHECK(o.images);
+  CHECK(p.yuv.queue_family == sensor::kQueueFamilyIgnored);
 #else
   CHECK(!o.images);
+  CHECK(p.yuv.queue_family == sensor::kQueueFamilyExternal);  // CUDA wrote it
 #endif
-  CHECK(p.matrix == matrix && p.full_range == full_range);
+  CHECK(yuv_reference::coded_in(p.yuv, matrix, full_range));
   // Neither clip declares a transfer or primaries ColorEncoding cannot name.
   CHECK(p.encoding.has_value() && is_canonical(*p.encoding));
   const int cw = kWidth / 2;
@@ -292,8 +295,9 @@ int check_pair(
 }
 
 // Each picture comes out carried in its frame, which has no pixels of its
-// own, and placed in a frame's colour as the driver places it; it lives as
-// long as its frame, which a copy of the frame does not extend.
+// own, as the frame's colour it is: its planes where the hardware left them,
+// a buffer CUDA wrote taken over from outside Vulkan. It lives as long as its
+// frame, which a copy of the frame does not extend.
 int test_hands_on_device_pictures() {
   Run r =
       run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8, true);
@@ -307,26 +311,19 @@ int test_hands_on_device_pictures() {
         orbbec::device_picture(*color);
     CHECK(p.has_value());
     CHECK(color->as<ob::VideoFrame>()->getWidth() == 0);  // no pixels
-    CHECK((p->device != nullptr) != (p->image[0] != nullptr));
-    sensor::YuvImage placed;
-    orbbec::place_device_color(*p, &placed);
-    CHECK(placed.layout == sensor::YuvLayout::Nv12);
-    if (p->device != nullptr) {
-      CHECK(placed.device == p->device && placed.image[0] == nullptr);
-      CHECK(placed.queue_family == sensor::kQueueFamilyExternal);
-      for (int i = 0; i < 2; ++i) {
-        CHECK(placed.offset[i] == p->offset[i] &&
-              placed.stride[i] == p->stride[i]);
-      }
+    const sensor::YuvImage& yuv = p->yuv;
+    CHECK((yuv.device != nullptr) != (yuv.image[0] != nullptr));
+    CHECK(yuv.layout == sensor::YuvLayout::Nv12);
+    if (yuv.device != nullptr) {
+      CHECK(yuv.queue_family == sensor::kQueueFamilyExternal);
     } else {
-      CHECK(placed.device == nullptr && placed.image[0] == p->image[0] &&
-            placed.image[1] == p->image[1]);
+      CHECK(yuv.image[1] != nullptr);
     }
     if (f == 7) {
-      if (p->device)
-        held = p->device;
+      if (yuv.device)
+        held = yuv.device;
       else
-        held = p->image[0];
+        held = yuv.image[0];
       // Its bytes, copied into a frame of their own.
       auto* bytes = new std::uint8_t[color->getDataSize()];
       std::memcpy(bytes, color->getData(), color->getDataSize());

@@ -42,7 +42,7 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// no colour description and codes BT.601 full range. The range goes with
     /// the matrix, since FFmpeg reads a stream that declares neither as
     /// limited. A stream that declares a matrix is decoded as it declares.
-    /// Empty: an unlabelled stream is guessed at (@ref DecodedPicture::matrix).
+    /// Empty: an unlabelled stream is guessed at (@ref DecodedPicture::yuv).
     std::optional<VideoColorDescription> unlabelled_color;
     /// Set FFmpeg's log level to ERROR. Process-wide: FFmpeg has one logger.
     bool configure_ffmpeg_logging = true;

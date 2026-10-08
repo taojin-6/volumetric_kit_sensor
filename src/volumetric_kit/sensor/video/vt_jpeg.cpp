@@ -241,13 +241,9 @@ core::Result<DecodedPicture> VtJpeg::decode(const std::uint8_t* data,
 
   DecodedPicture out;
   const core::Status imported =
-      pictures_->import(decoded.picture, frame->width, frame->height, out);
+      pictures_->import(decoded.picture, frame->width, frame->height, out.yuv);
   CVPixelBufferRelease(decoded.picture);  // the images hold their own
   VKC_TRY(imported);
-  // JFIF's matrix and range.
-  out.matrix = VideoColorMatrix::Bt601;
-  out.full_range = true;
-  out.chroma_location = ChromaLocation::Center;
   return out;
 }
 

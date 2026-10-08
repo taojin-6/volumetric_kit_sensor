@@ -13,11 +13,12 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
-#include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
+#include "volumetric_kit/recon/sensor/yuv_image.hpp"
 
 // A macro's expansion as a string: a cuda.h name's versioned symbol, or
 // nvjpeg.h's major version.
@@ -29,6 +30,14 @@ namespace volumetric_kit::recon::sensor::video {
 // @p v rounded up to a multiple of @p to.
 constexpr std::uint64_t round_up(std::uint64_t v, std::uint64_t to) noexcept {
   return (v + to - 1) / to * to;
+}
+
+// @p buffer, which CUDA wrote, as the buffer of @p out's planes: a reader
+// takes it over from outside Vulkan.
+inline void place_cuda_buffer(std::shared_ptr<const core::Buffer> buffer,
+                              YuvImage& out) noexcept {
+  out.device = std::move(buffer);
+  out.queue_family = kQueueFamilyExternal;
 }
 
 // The driver entry points used here. Each name goes through cuda.h's macros,
@@ -114,8 +123,7 @@ class CudaPictures {
   // finished when this returns. Fills @p out's size, layout and planes.
   core::Status copy(CUdeviceptr luma, std::size_t luma_pitch,
                     CUdeviceptr chroma, std::size_t chroma_pitch,
-                    std::uint32_t width, std::uint32_t height,
-                    DecodedPicture& out);
+                    std::uint32_t width, std::uint32_t height, YuvImage& out);
 
   // A buffer of at least @p bytes that no picture holds, and where CUDA sees
   // it, for a decoder that writes the picture itself.

@@ -69,36 +69,40 @@ void describe_color(
     const AVFrame& frame,
     const std::optional<VideoColorDescription>& unlabelled_color,
     DecodedPicture& picture) {
+  YuvImage& yuv = picture.yuv;
   // A stream that declares no matrix reads as limited range whether or not
   // it declares one, so the range is taken with the matrix.
+  VideoColorMatrix matrix = VideoColorMatrix::Bt709;
   if (unlabelled_color && frame.colorspace == AVCOL_SPC_UNSPECIFIED) {
-    picture.matrix = unlabelled_color->matrix;
-    picture.full_range = unlabelled_color->full_range;
+    matrix = unlabelled_color->matrix;
+    yuv.full_range = unlabelled_color->full_range;
   } else {
     // The displayed height: a hardware frame's still counts its top crop.
-    picture.matrix =
-        resolve_matrix(frame.colorspace, static_cast<int>(picture.height));
-    picture.full_range = frame.color_range == AVCOL_RANGE_JPEG;
+    matrix = resolve_matrix(frame.colorspace, static_cast<int>(yuv.height));
+    yuv.full_range = frame.color_range == AVCOL_RANGE_JPEG;
   }
+  const YcbcrWeights weights = ycbcr_weights(matrix);
+  yuv.kr = weights.kr;
+  yuv.kb = weights.kb;
   picture.encoding = resolve_encoding(frame.color_trc, frame.color_primaries);
   switch (frame.chroma_location) {
     case AVCHROMA_LOC_CENTER:
-      picture.chroma_location = ChromaLocation::Center;
+      yuv.chroma_location = ChromaLocation::Center;
       break;
     case AVCHROMA_LOC_TOPLEFT:
-      picture.chroma_location = ChromaLocation::TopLeft;
+      yuv.chroma_location = ChromaLocation::TopLeft;
       break;
     case AVCHROMA_LOC_TOP:
-      picture.chroma_location = ChromaLocation::Top;
+      yuv.chroma_location = ChromaLocation::Top;
       break;
     case AVCHROMA_LOC_BOTTOMLEFT:
-      picture.chroma_location = ChromaLocation::BottomLeft;
+      yuv.chroma_location = ChromaLocation::BottomLeft;
       break;
     case AVCHROMA_LOC_BOTTOM:
-      picture.chroma_location = ChromaLocation::Bottom;
+      yuv.chroma_location = ChromaLocation::Bottom;
       break;
     default:
-      picture.chroma_location = ChromaLocation::Left;
+      yuv.chroma_location = ChromaLocation::Left;
       break;
   }
 }

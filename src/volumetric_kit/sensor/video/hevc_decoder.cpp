@@ -232,7 +232,7 @@ core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
                              top / 2 * chroma_pitch + left;
   DecodedPicture out;
   VKC_TRY(pictures->copy(luma, luma_pitch, chroma, chroma_pitch, width, height,
-                         out));
+                         out.yuv));
   video::describe_color(frame, unlabelled_color, out);
   return out;
 }
@@ -253,7 +253,7 @@ core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
                                  static_cast<int>(frame.crop_right)),
       static_cast<std::uint32_t>(frame.height -
                                  static_cast<int>(frame.crop_bottom)),
-      out));
+      out.yuv));
   video::describe_color(frame, unlabelled_color, out);
   return out;
 }

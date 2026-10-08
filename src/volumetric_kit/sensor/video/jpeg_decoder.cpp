@@ -28,10 +28,17 @@ core::Status unsupported(const std::string& why) {
   return core::Status::unsupported(std::string(kWho) + ": " + why);
 }
 
-#if VR_SENSOR_VIDEO_WITH_CUDA
+// How a JPEG is coded, as JFIF defines it: BT.601 full range, its chroma
+// centred.
+void describe_jfif(YuvImage& yuv) noexcept {
+  const YcbcrWeights weights = ycbcr_weights(VideoColorMatrix::Bt601);
+  yuv.kr = weights.kr;
+  yuv.kb = weights.kb;
+  yuv.full_range = true;
+  yuv.chroma_location = ChromaLocation::Center;
+}
 
-// JFIF's matrix and range, which a JPEG that names none is coded in.
-constexpr VideoColorDescription kJfif{VideoColorMatrix::Bt601, true};
+#if VR_SENSOR_VIDEO_WITH_CUDA
 
 // The nvJPEG entry points used here, loaded at run time as libcuda is.
 #define VR_NVJPEG_FUNCTIONS(X)            \
@@ -308,17 +315,14 @@ core::Result<DecodedPicture> NvjpegDecoder::decode(const std::uint8_t* data,
   if (!decoded) return failed("decoding a JPEG");
 
   DecodedPicture picture;
-  picture.width = width;
-  picture.height = height;
-  picture.layout = VideoPixelLayout::Yuv420;
-  picture.device = std::move(target.buffer);
+  picture.yuv.width = width;
+  picture.yuv.height = height;
+  picture.yuv.layout = YuvLayout::I420;
+  video::place_cuda_buffer(std::move(target.buffer), picture.yuv);
   for (int p = 0; p < 3; ++p) {
-    picture.offset[p] = at[p];
-    picture.stride[p] = static_cast<std::size_t>(pitch[p]);
+    picture.yuv.offset[p] = at[p];
+    picture.yuv.stride[p] = static_cast<std::size_t>(pitch[p]);
   }
-  picture.matrix = kJfif.matrix;
-  picture.full_range = kJfif.full_range;
-  picture.chroma_location = ChromaLocation::Center;
   return picture;
 }
 
@@ -368,10 +372,12 @@ core::Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
     return core::Status::invalid_argument(std::string(kWho) + ": no JPEG");
   }
 #if VR_SENSOR_VIDEO_WITH_CUDA
-  return impl_->gpu->decode(data, size);
+  VKC_ASSIGN(DecodedPicture picture, impl_->gpu->decode(data, size));
 #else
-  return impl_->vt->decode(data, size);
+  VKC_ASSIGN(DecodedPicture picture, impl_->vt->decode(data, size));
 #endif
+  describe_jfif(picture.yuv);
+  return picture;
 }
 
 }  // namespace volumetric_kit::recon::sensor

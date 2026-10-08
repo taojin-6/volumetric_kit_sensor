@@ -15,7 +15,6 @@
 
 #include <libobsensor/ObSensor.hpp>
 
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
@@ -29,12 +28,6 @@ std::shared_ptr<ob::Frame> picture_frame(const DecodedPicture& picture);
 // The picture a live frame from picture_frame carries, which the copy
 // returned holds; empty for any other frame.
 std::optional<DecodedPicture> device_picture(const ob::Frame& frame);
-
-// Point @p image at @p picture's planes where the hardware left them:
-// NVDEC's or nvJPEG's buffer, taken over from kQueueFamilyExternal, or
-// VideoToolbox's images. Its size and colour description are the caller's to
-// set.
-void place_device_color(const DecodedPicture& picture, YuvImage* image);
 
 // A pair rebuilt around its decoded colour: `depth`, and `decoded` dated as
 // `source`, the colour frame it was decoded from.

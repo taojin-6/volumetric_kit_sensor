@@ -31,7 +31,8 @@ class VtJpeg {
   VtJpeg(const VtJpeg&) = delete;
   VtJpeg& operator=(const VtJpeg&) = delete;
 
-  // The JPEG as NV12 images, with the codes JpegDecoder::decode documents:
+  // The JPEG as NV12 images, its colour left to JpegDecoder::decode, with the
+  // codes it documents:
   // IoError for bytes that do not decode, Unsupported for a JPEG the hardware
   // does not take -- not baseline 8-bit 4:2:0, past the device's image
   // extent, or a size it does not support -- and OutOfMemory or Backend

@@ -27,12 +27,12 @@
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
+#include "yuv_reference.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 using sensor::HevcDecoder;
-using sensor::VideoPixelLayout;
 
 #define CHECK(cond)                                                        \
   do {                                                                     \
@@ -120,9 +120,10 @@ Decoded decode_clip(HevcDecoder& decoder, const AccessUnits& units,
       if (!picture) return {};
       Picture p;
       p.meta = *picture;
-      vr_test::read_device_picture(*picture, gpu.device, gpu.allocator,
+      vr_test::read_device_picture(picture->yuv, gpu.device, gpu.allocator,
                                    p.planes);
-      if (p.planes[0].size() != std::size_t{picture->width} * picture->height) {
+      if (p.planes[0].size() !=
+          std::size_t{picture->yuv.width} * picture->yuv.height) {
         return vkc::Status::io_error("reading a picture back");
       }
       out.pictures.push_back(std::move(p));
@@ -149,13 +150,17 @@ Decoded decode(
   return decode_clip(decoder.value(), access_units(clip), gpu);
 }
 
-// On the device, where this platform's hardware leaves it.
+// On the device, where this platform's hardware leaves it: VideoToolbox's
+// images, or a buffer CUDA wrote, taken over from outside Vulkan.
 int check_on_device(const sensor::DecodedPicture& p) {
-  CHECK(p.layout == VideoPixelLayout::Nv12);
+  CHECK(p.yuv.layout == sensor::YuvLayout::Nv12);
 #if defined(__APPLE__)
-  CHECK(p.image[0] != nullptr && p.image[1] != nullptr && p.device == nullptr);
+  CHECK(p.yuv.image[0] != nullptr && p.yuv.image[1] != nullptr &&
+        p.yuv.device == nullptr);
+  CHECK(p.yuv.queue_family == sensor::kQueueFamilyIgnored);
 #else
-  CHECK(p.device != nullptr && p.image[0] == nullptr);
+  CHECK(p.yuv.device != nullptr && p.yuv.image[0] == nullptr);
+  CHECK(p.yuv.queue_family == sensor::kQueueFamilyExternal);
 #endif
   return 0;
 }
@@ -170,10 +175,11 @@ int check_clip_shape(const Decoded& decoded) {
     const Picture& pic = decoded.pictures[static_cast<std::size_t>(f)];
     const auto& meta = pic.meta;
     if (check_on_device(meta) != 0) return 1;
-    CHECK(meta.width == kWidth && meta.height == kHeight);
+    CHECK(meta.yuv.width == kWidth && meta.yuv.height == kHeight);
     CHECK(meta.pts == pts_of(f));
-    CHECK(meta.matrix == sensor::VideoColorMatrix::Bt709);
-    CHECK(!meta.full_range);
+    CHECK(yuv_reference::coded_in(meta.yuv, sensor::VideoColorMatrix::Bt709,
+                                  false));
+    CHECK(meta.yuv.chroma_location == sensor::ChromaLocation::Left);
     CHECK(meta.encoding.has_value() &&
           meta.encoding->transfer == vr::ColorEncoding::Transfer::Bt709 &&
           meta.encoding->primaries == vr::ColorEncoding::Primaries::Bt709);
@@ -229,8 +235,8 @@ int test_unlabelled_color(const Gpu& gpu) {
   CHECK(taken.pictures.size() == plain.pictures.size());
   for (std::size_t f = 0; f < taken.pictures.size(); ++f) {
     const Picture& p = taken.pictures[f];
-    CHECK(p.meta.matrix == sensor::VideoColorMatrix::Bt601);
-    CHECK(p.meta.full_range);
+    CHECK(yuv_reference::coded_in(p.meta.yuv, sensor::VideoColorMatrix::Bt601,
+                                  true));
     for (int i = 0; i < 3; ++i)
       CHECK(p.planes[i] == plain.pictures[f].planes[i]);
   }
@@ -241,8 +247,8 @@ int test_unlabelled_color(const Gpu& gpu) {
   CHECK(full.pictures.size() == patches.pictures.size());
   for (std::size_t f = 0; f < full.pictures.size(); ++f) {
     const Picture& p = full.pictures[f];
-    CHECK(p.meta.matrix == sensor::VideoColorMatrix::Bt709);
-    CHECK(p.meta.full_range);
+    CHECK(yuv_reference::coded_in(p.meta.yuv, sensor::VideoColorMatrix::Bt709,
+                                  true));
     for (int i = 0; i < 3; ++i)
       CHECK(p.planes[i] == patches.pictures[f].planes[i]);
   }
@@ -309,8 +315,8 @@ int test_cropped(const Gpu& gpu) {
     const Picture& c = cropped.pictures[f];
     const Picture& u = full.pictures[f];
     if (check_on_device(c.meta) != 0) return 1;
-    CHECK(c.meta.width == static_cast<std::uint32_t>(width));
-    CHECK(c.meta.height == static_cast<std::uint32_t>(height));
+    CHECK(c.meta.yuv.width == static_cast<std::uint32_t>(width));
+    CHECK(c.meta.yuv.height == static_cast<std::uint32_t>(height));
     CHECK(c.meta.pts == u.meta.pts);
     for (int i = 0; i < 3; ++i) {
       const int shift = i == 0 ? 0 : 1;
