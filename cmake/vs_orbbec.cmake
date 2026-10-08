@@ -4,7 +4,8 @@
 # The Orbbec SDK, for the Orbbec (Femto Mega) capture driver: a prerequisite,
 # found and never fetched (the 2026-09-24 decision). Included from the root
 # CMakeLists only when VR_WITH_ORBBEC is ON; defines ob::OrbbecSDK,
-# VR_ORBBEC_SDK_VERSION and its _MAJOR / _MINOR / _PATCH parts.
+# VR_ORBBEC_SDK_VERSION and its _MAJOR / _MINOR / _PATCH parts, and
+# vr_link_orbbec_sdk.
 #
 # The SDK is a prebuilt binary, so it is installed once and every repo in the
 # family that talks to a camera links that one copy -- by convention
@@ -95,3 +96,13 @@ if(VR_ORBBEC_SDK_VERSION VERSION_LESS VR_ORBBEC_SDK_MIN_VERSION
 endif()
 
 message(STATUS "Orbbec SDK ${VR_ORBBEC_SDK_VERSION}: ${OrbbecSDK_DIR}")
+
+# vr_link_orbbec_sdk(<target>): links the SDK, privately, and compiles the
+# target with exceptions. The SDK reports every failure by throwing ob::Error,
+# so code that calls it needs exceptions to catch one, even where
+# CMAKE_CXX_FLAGS turns them off; the driver turns each into a Status, and none
+# crosses its API.
+function(vr_link_orbbec_sdk target)
+  target_link_libraries(${target} PRIVATE ob::OrbbecSDK)
+  target_compile_options(${target} PRIVATE -fexceptions)
+endfunction()

@@ -52,13 +52,14 @@ endif()
 target_compile_features(recon_sensor_orbbec PUBLIC cxx_std_17)
 
 # PUBLIC recon_sensor: the sensor *is* an IRgbdSensor, and its header hands out
-# the sensor tier's frame. PRIVATE ob::OrbbecSDK: see above. PRIVATE
-# recon_sensor_video, which decodes the cameras' colour: no decoder type reaches
-# the public header.
+# the sensor tier's frame. PRIVATE recon_sensor_video, which decodes the
+# cameras' colour: no decoder type reaches the public header. The SDK privately
+# (see above), compiled with the exceptions it throws (vr_link_orbbec_sdk).
 target_link_libraries(
   recon_sensor_orbbec
   PUBLIC recon_sensor
-  PRIVATE ob::OrbbecSDK recon_sensor_video)
+  PRIVATE recon_sensor_video)
+vr_link_orbbec_sdk(recon_sensor_orbbec)
 
 target_include_directories(
   recon_sensor_orbbec
