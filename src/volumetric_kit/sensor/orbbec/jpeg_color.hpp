@@ -10,20 +10,16 @@
 // frame, so, unlike H.265's, a pair lost here costs only itself, and a decoder
 // slower than the camera skips pairs rather than falling behind.
 
-#include <atomic>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 
 #include <libobsensor/ObSensor.hpp>
 
+#include "decode_worker.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
@@ -67,39 +63,25 @@ class JpegColorDecoder {
 
   // Pairs that will not be handed on: one missing either frame or with an
   // empty colour frame, and a JPEG that does not decode (IoError).
-  std::uint64_t lost() const noexcept {
-    return lost_.load(std::memory_order_relaxed);
-  }
+  std::uint64_t lost() const noexcept { return worker_.lost(); }
   // The queue's oldest pairs, replaced by a newer one while the decoder was
   // busy: dropped, as the mailbox drops them, not lost.
-  std::uint64_t dropped() const noexcept {
-    return dropped_.load(std::memory_order_relaxed);
-  }
+  std::uint64_t dropped() const noexcept { return worker_.dropped(); }
   // Why decoding stopped for good -- a JPEG the hardware does not take
   // (Unsupported), or a device path that failed (Backend, OutOfMemory) --
   // after which nothing more is handed on; OK while it runs.
-  core::Status failure() const;
+  core::Status failure() const { return worker_.failure(); }
 
  private:
-  JpegColorDecoder() = default;
-  void run();
+  using Worker = DecodeWorker<std::shared_ptr<ob::FrameSet>>;
+
+  JpegColorDecoder(const Options& options, Sink sink);
   void decode(const std::shared_ptr<ob::FrameSet>& pair);
-  void lose(std::uint64_t pairs = 1) noexcept {
-    lost_.fetch_add(pairs, std::memory_order_relaxed);
-  }
 
   Options options_;
   Sink sink_;
   std::optional<JpegDecoder> decoder_;
-
-  mutable std::mutex mutex_;
-  std::condition_variable wake_;
-  std::deque<std::shared_ptr<ob::FrameSet>> queue_;  // guarded by mutex_
-  bool stopping_ = false;                            // guarded by mutex_
-  core::Status failure_;                             // guarded by mutex_
-  std::thread thread_;
-  std::atomic<std::uint64_t> lost_{0};
-  std::atomic<std::uint64_t> dropped_{0};
+  Worker worker_;  // last: its thread uses the rest
 };
 
 }  // namespace volumetric_kit::recon::sensor::orbbec
