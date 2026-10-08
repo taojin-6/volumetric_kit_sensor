@@ -203,4 +203,26 @@ SensorStats OrbbecSensor::stats() const noexcept {
   return SensorStats{s.received, s.delivered, s.dropped, s.failed + s.lost};
 }
 
+core::Result<std::vector<std::unique_ptr<IRgbdSensor>>> open_orbbec_sensors(
+    const std::string& sync_path, const OrbbecSensor::Options& options) {
+  if (!options.serial.empty() || options.sync) {
+    return core::Status::invalid_argument(
+        "open_orbbec_sensors: " + sync_path +
+        " names each camera and its sync settings; leave the options' serial "
+        "and sync empty");
+  }
+  VKC_ASSIGN(const OrbbecRigSyncConfig rig, read_orbbec_sync_config(sync_path));
+  std::vector<std::unique_ptr<IRgbdSensor>> sensors;
+  sensors.reserve(rig.devices.size());
+  for (const OrbbecSyncDevice& entry : rig.devices) {
+    OrbbecSensor::Options camera = options;
+    camera.serial = entry.serial;
+    camera.sync = entry.sync;
+    camera.sync_clock_to_host = true;
+    VKC_ASSIGN(OrbbecSensor opened, OrbbecSensor::open(camera));
+    sensors.push_back(std::make_unique<OrbbecSensor>(std::move(opened)));
+  }
+  return sensors;
+}
+
 }  // namespace volumetric_kit::recon::sensor
