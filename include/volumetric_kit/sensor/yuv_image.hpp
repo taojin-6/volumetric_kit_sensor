@@ -10,8 +10,8 @@
 /// The one description of a device picture: a decoder's picture carries it
 /// (`DecodedPicture::yuv`), and a frame takes it as its colour
 /// (`RgbdFrame::color`) as it is. It names no camera and reaches no Vulkan,
-/// so the decoders describe their pictures with it without linking the
-/// camera tier.
+/// so the decoders and the Apple importer describe their pictures with it
+/// without linking the camera tier.
 
 #include <cstddef>
 #include <cstdint>
@@ -81,12 +81,12 @@ struct YuvImage {
   /// family wrote it; another Vulkan family's is ignored too for a
   /// CONCURRENT buffer, which needs no transfer.
   std::uint32_t queue_family = kQueueFamilyIgnored;
-  /// Or NV12's planes as images on the device, as VideoToolbox's picture
-  /// arrives: `image[0]` the luma (`R8_UNORM`), `image[1]` the chroma
-  /// (`R8G8_UNORM`, Cb first), each at least the picture's size, chroma
-  /// halved and rounded up, and read from its corner. The pass copies them
-  /// into its input in its batch, so their writer must have finished, as
-  /// for @ref device, and the frame holds them as it does @ref device.
+  /// Or NV12's planes as images on the device, as Apple's pictures arrive
+  /// (`PixelBufferImporter`): `image[0]` the luma (`R8_UNORM`), `image[1]`
+  /// the chroma (`R8G8_UNORM`, Cb first), each at least the picture's size,
+  /// chroma halved and rounded up, and read from its corner. The pass copies
+  /// them into its input in its batch, so their writer must have finished,
+  /// as for @ref device, and the frame holds them as it does @ref device.
   std::shared_ptr<const core::Image> image[2];
   std::uint32_t width = 0;   ///< Luma width (pixels).
   std::uint32_t height = 0;  ///< Luma height (pixels).

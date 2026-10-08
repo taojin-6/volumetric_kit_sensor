@@ -72,12 +72,14 @@ if(VR_INSTALL)
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  # array/, orbbec/, utils/ and video/ are installed by their own targets.
+  # apple/, array/, orbbec/, utils/ and video/ are installed by their own
+  # targets.
   install(
     DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/sensor"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon"
     FILES_MATCHING
     PATTERN "*.hpp"
+    PATTERN "apple" EXCLUDE
     PATTERN "array" EXCLUDE
     PATTERN "orbbec" EXCLUDE
     PATTERN "utils" EXCLUDE
@@ -95,6 +97,12 @@ add_subdirectory(utils)
 
 # Several sensors read as one, above every driver; see array/CMakeLists.txt.
 add_subdirectory(array)
+
+# Apple's pictures on the device, with no FFmpeg; see apple/CMakeLists.txt.
+# Ahead of the video decoders, whose VideoToolbox pictures come through it.
+if(APPLE)
+  add_subdirectory(apple)
+endif()
 
 # The FFmpeg-backed video decoder; see video/CMakeLists.txt. Ahead of the Orbbec
 # driver, which decodes its cameras' colour with it.
