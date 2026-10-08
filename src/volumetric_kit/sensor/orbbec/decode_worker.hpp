@@ -40,9 +40,9 @@ class DecodeWorker {
     DropAll,
   };
 
-  // Decodes one item, on the worker's thread. `after_gap`: an item before it
-  // never reached this function -- the queue dropped it, or had no memory to
-  // hold it -- or reached it and threw.
+  // Decodes one item, on the worker's thread. `after_gap`: an item pushed
+  // since the last one handed over never reached this function -- the queue
+  // dropped it, or had no memory to hold it -- or the last one threw.
   using Decode = std::function<void(Item item, bool after_gap)>;
 
   // At most `depth` items wait (at least one: the newest always does).
@@ -85,10 +85,16 @@ class DecodeWorker {
           lost = queue_.size();
           queue_.clear();
         }
-        gap_ = true;
+        // The first item left after them follows the gap.
+        if (queue_.empty()) {
+          gap_ = true;
+        } else {
+          queue_.front().after_gap = true;
+        }
       }
       try {
-        queue_.push_back(std::move(item));
+        queue_.push_back({std::move(item), gap_});
+        gap_ = false;
       } catch (...) {  // out of memory: this item goes, as an overflow's do
         ++lost;
         gap_ = true;
@@ -146,19 +152,26 @@ class DecodeWorker {
   }
 
  private:
+  // An item waiting, and whether one pushed between the item before it and
+  // it was lost.
+  struct Waiting {
+    Item item;
+    bool after_gap;
+  };
+
   void run() {
     bool threw = false;
     for (;;) {
       std::unique_lock<std::mutex> lock(mutex_);
       wake_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
       if (stopping_) return;
-      Item item = std::move(queue_.front());
+      Waiting next = std::move(queue_.front());
       queue_.pop_front();
-      const bool after_gap = std::exchange(gap_, false) || threw;
       lock.unlock();
+      const bool after_gap = next.after_gap || threw;
       threw = false;
       try {
-        decode_(std::move(item), after_gap);
+        decode_(std::move(next.item), after_gap);
       } catch (...) {  // an SDK call that threw; never out of this thread
         lose();
         threw = true;
@@ -172,10 +185,11 @@ class DecodeWorker {
 
   mutable std::mutex mutex_;
   std::condition_variable wake_;
-  std::deque<Item> queue_;  // guarded by mutex_
-  bool stopping_ = false;   // guarded by mutex_
-  bool gap_ = false;        // guarded by mutex_: dropped since the last pop
-  core::Status failure_;    // guarded by mutex_
+  std::deque<Waiting> queue_;  // guarded by mutex_
+  bool stopping_ = false;      // guarded by mutex_
+  core::Status failure_;       // guarded by mutex_
+  // Guarded by mutex_: whether the next item queued follows a lost one.
+  bool gap_ = false;
   std::atomic<std::uint64_t> lost_{0};
   std::atomic<std::uint64_t> dropped_{0};
   std::thread thread_;

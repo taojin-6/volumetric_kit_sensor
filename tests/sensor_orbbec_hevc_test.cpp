@@ -8,8 +8,9 @@
 // frame and gone with it, an unlabelled stream's colour described as the
 // Femto Mega codes it (BT.601 full range), a labelled one's as it says. A
 // frame lost from the stream, or empty, costs the frames up to the next key
-// frame, a pause in the timestamps costs nothing, and decoding starts at the
-// first key frame; a stream the hardware refuses stops the decoder. The
+// frame, as do the pairs a decoder too far behind drops from its queue, a
+// pause in the timestamps costs nothing, and decoding starts at the first key
+// frame; a stream the hardware refuses stops the decoder. The
 // frame-index gate is tested on its own, since a test cannot set an SDK
 // frame's index.
 //
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -191,6 +193,41 @@ struct Collected {
   }
 };
 
+// A decoder on the test's device whose queue holds two seconds at `fps`,
+// reading each colour frame's number as pair() writes it, or reading every
+// frame as unnumbered (0).
+std::unique_ptr<orbbec::HevcColorDecoder> start(
+    orbbec::HevcColorDecoder::Sink sink, std::uint32_t fps = 30,
+    bool numbered = true) {
+  orbbec::HevcColorDecoder::Options options;
+  options.fps = fps;
+  options.who = "test";
+  options.frame_index = [numbered](const ob::Frame& frame) {
+    return numbered ? frame.getSystemTimeStampUs() : 0;
+  };
+  options.device = g_device;
+  options.allocator = g_allocator;
+  auto decoder = orbbec::HevcColorDecoder::start(options, std::move(sink));
+  if (!decoder) {
+    std::fprintf(stderr, "%s\n", decoder.status().message().c_str());
+    std::exit(1);
+  }
+  return std::move(decoder).value();
+}
+
+// Whether `count` pairs have come out of `decoder` within ten seconds, or
+// fewer once it has failed.
+bool wait_for(Collected& collected, std::size_t count,
+              const orbbec::HevcColorDecoder& decoder) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (collected.size() < count && decoder.failure().ok() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return collected.size() >= count;
+}
+
 // Push `in`, wait for `expect` pairs out, and stop.
 struct Run {
   std::vector<Out> out;
@@ -200,38 +237,21 @@ struct Run {
 };
 Run run(const Pairs& in, std::size_t expect, bool keep_frames = false) {
   auto collected = std::make_shared<Collected>();
-  orbbec::HevcColorDecoder::Options options;
-  options.fps = 30;
-  options.who = "test";
-  options.frame_index = [](const ob::Frame& frame) {
-    return frame.getSystemTimeStampUs();
-  };
-  options.device = g_device;
-  options.allocator = g_allocator;
-  auto decoder = orbbec::HevcColorDecoder::start(
-      options, [collected, keep_frames](std::shared_ptr<ob::FrameSet> set) {
+  auto decoder =
+      start([collected, keep_frames](std::shared_ptr<ob::FrameSet> set) {
         Out o = read_out(*set);
         std::lock_guard<std::mutex> lock(collected->mutex);
         collected->out.push_back(std::move(o));
         if (keep_frames) collected->frames.push_back(std::move(set));
       });
-  if (!decoder) {
-    std::fprintf(stderr, "%s\n", decoder.status().message().c_str());
-    std::exit(1);
-  }
-  for (const auto& p : in) decoder.value()->push(p);
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  while (collected->size() < expect && decoder.value()->failure().ok() &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
+  for (const auto& p : in) decoder->push(p);
+  wait_for(*collected, expect, *decoder);
   // Let anything that should not come out have its chance to.
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   Run r;
-  r.failure = decoder.value()->failure();
-  decoder.value()->stop();
-  r.lost = decoder.value()->lost();
+  r.failure = decoder->failure();
+  decoder->stop();
+  r.lost = decoder->lost();
   std::lock_guard<std::mutex> lock(collected->mutex);
   r.out = std::move(collected->out);
   r.frames = std::move(collected->frames);
@@ -430,6 +450,90 @@ int test_gate() {
   CHECK(unnumbered.admit(0, true) == A::Restart);
   CHECK(unnumbered.admit(0, false) == A::Decode);
   CHECK(unnumbered.admit(0, false) == A::Decode);
+  return 0;
+}
+
+// Holds the decode thread in the sink at the first pair handed on, until
+// released.
+struct Hold {
+  std::mutex mutex;
+  std::condition_variable changed;
+  bool holding = false;
+  bool released = false;
+
+  void at_first_pair() {
+    std::unique_lock<std::mutex> lock(mutex);
+    holding = true;
+    changed.notify_all();
+    changed.wait(lock, [this] { return released; });
+  }
+  bool wait_for_hold() {
+    std::unique_lock<std::mutex> lock(mutex);
+    return changed.wait_for(lock, std::chrono::seconds(10),
+                            [this] { return holding; });
+  }
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      released = true;
+    }
+    changed.notify_all();
+  }
+};
+
+// Releases the hold on the way out, so that a failed check does not leave
+// the decoder's stop waiting on it. Declared after the decoder.
+struct Releaser {
+  Hold& hold;
+  ~Releaser() { hold.release(); }
+};
+
+// A decoder too far behind: two pairs wait at most (1 fps), and the frames
+// are unnumbered, so only the queue can say that pairs went missing. The
+// sink holds frame 0's pair while frames 1 and 2 wait, and the pair after
+// them overflows the queue, which drops them both. That pair is clip frame 1
+// again, which the decoder has the reference for and would decode as if
+// nothing were missing; it goes too, and decoding picks up at the key frame,
+// 4. Lost: the two dropped and the one after them.
+int test_overflow_waits_for_key_frame() {
+  const Pairs in = pairs(access_units(kUnlabelled), {0, 1, 2, 1, 4, 5, 6, 7},
+                         {0, 1, 2, 3, 4, 5, 6, 7});
+  auto collected = std::make_shared<Collected>();
+  auto hold = std::make_shared<Hold>();
+  auto decoder = start(
+      [collected, hold](std::shared_ptr<ob::FrameSet> set) {
+        Out o = read_out(*set);
+        {
+          std::lock_guard<std::mutex> lock(collected->mutex);
+          collected->out.push_back(std::move(o));
+        }
+        hold->at_first_pair();
+      },
+      1, false);
+  Releaser releaser{*hold};
+  decoder->push(in[0]);
+  CHECK(hold->wait_for_hold());
+  for (std::size_t k = 1; k <= 4; ++k) decoder->push(in[k]);
+  hold->release();
+  // The rest one at a time, each once the pair before it is out, so that the
+  // queue never overflows again.
+  for (std::size_t k = 5; k < in.size(); ++k) {
+    CHECK(wait_for(*collected, k - 3, *decoder));
+    decoder->push(in[k]);
+  }
+  CHECK(wait_for(*collected, 5, *decoder));
+  // Let anything that should not come out have its chance to.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(decoder->failure().ok());
+  decoder->stop();
+  CHECK(decoder->lost() == 3);
+  std::lock_guard<std::mutex> lock(collected->mutex);
+  CHECK(collected->out.size() == 5);
+  const int want[] = {0, 4, 5, 6, 7};
+  for (std::size_t i = 0; i < collected->out.size(); ++i) {
+    CHECK(slot_of(collected->out[i]) == want[i]);
+    if (check_pair(collected->out[i], want[i], want[i]) != 0) return 1;
+  }
   return 0;
 }
 
@@ -686,6 +790,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
   if (test_hands_on_device_pictures() != 0) return 1;
   if (test_refused_stream() != 0) return 1;
   if (test_gap_waits_for_key_frame() != 0) return 1;
+  if (test_overflow_waits_for_key_frame() != 0) return 1;
   if (test_pause_costs_nothing() != 0) return 1;
   if (test_start_waits_for_key_frame() != 0) return 1;
   if (test_color_without_depth() != 0) return 1;

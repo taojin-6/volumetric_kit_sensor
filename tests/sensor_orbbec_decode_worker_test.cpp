@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// The thread the Orbbec driver's colour decoders decode on, driven by a fake
-// decode. Items are decoded one at a time, in order. A full queue drops its
-// oldest (counted dropped) or all of it (counted lost), and the next item is
-// told it follows a gap. A decode that throws costs only its item. fail()
-// ends decoding, the waiting items lost with it, and the first failure
+// The worker each of the Orbbec driver's colour decoders decodes on, driven
+// by a fake decode. Items are decoded one at a time, in order. A full queue
+// drops its oldest (counted dropped) or all of it (counted lost), and the
+// first item after them is told it follows a gap; so is the item after one
+// the queue has no memory to hold. A decode that throws costs only its item.
+// fail() ends decoding, the waiting items lost with it, and the first failure
 // stands. stop() and destruction wait for the decode in hand and drop what
 // waits, uncounted. No push waits for a wake-up that never comes.
 
@@ -15,6 +16,7 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -62,18 +64,32 @@ bool eventually(Done done) {
   return true;
 }
 
-// The fake decode: it records what it sees, holds at item `hold` until
-// released, and throws at item `fault`.
+// An item that cannot be queued when `poisoned`: its move throws, as a push
+// with no memory to hold it does.
+struct Fragile {
+  int value;
+  bool poisoned;
+  explicit Fragile(int v, bool p = false) : value(v), poisoned(p) {}
+  Fragile(Fragile&& other) : value(other.value), poisoned(other.poisoned) {
+    if (poisoned) throw std::bad_alloc();
+  }
+  Fragile& operator=(Fragile&&) = delete;
+  int operator*() const { return value; }
+};
+
+// The fake decode, of any item whose value `*item` reads: it records what it
+// sees, holds at item `hold` until released, and throws at item `fault`.
 class Recorder {
  public:
   int hold = -1;
   int fault = -1;
 
-  Worker::Decode decoder() {
-    return [this](Item i, bool after_gap) { decode(std::move(i), after_gap); };
+  auto decoder() {
+    return [this](auto i, bool after_gap) { decode(std::move(i), after_gap); };
   }
 
-  void decode(Item i, bool after_gap) {
+  template <typename T>
+  void decode(T i, bool after_gap) {
     std::unique_lock<std::mutex> lock(mutex_);
     seen_.emplace_back(*i, after_gap);
     if (*i == hold) {
@@ -213,6 +229,35 @@ int test_throw_costs_its_item() {
   return 0;
 }
 
+// The decode busy with 0, 1 and 2 wait, and 3 cannot be queued: it is lost,
+// and 4, the item after it, comes after a gap, where 1 and 2 do not. With
+// nothing waiting, 5 cannot be queued, and 6 after it comes after a gap.
+int test_unqueued_item_leaves_a_gap() {
+  using FragileWorker = orbbec::DecodeWorker<Fragile>;
+  Recorder r;
+  r.hold = 0;
+  FragileWorker worker(8, FragileWorker::Overflow::DropAll);
+  CHECK(worker.start(r.decoder()).ok());
+  Releaser releaser{r};
+  worker.push(Fragile(0));
+  CHECK(r.wait_for_hold());
+  worker.push(Fragile(1));
+  worker.push(Fragile(2));
+  worker.push(Fragile(3, true));
+  worker.push(Fragile(4));
+  CHECK(worker.lost() == 1);
+  r.release();
+  CHECK(r.wait_for_seen(4));
+  worker.push(Fragile(5, true));
+  worker.push(Fragile(6));
+  CHECK(r.wait_for_seen(5));
+  CHECK(worker.stop());
+  CHECK((r.seen() ==
+         Seen{{0, false}, {1, false}, {2, false}, {4, true}, {6, true}}));
+  CHECK(worker.lost() == 2 && worker.dropped() == 0);
+  return 0;
+}
+
 // The decode of 0 fails for good with 1 and 2 waiting: they are lost, a
 // later push is ignored, and a later failure does not replace the first.
 int test_fail_ends_decoding() {
@@ -349,6 +394,7 @@ int main() {
   if (test_drop_oldest() != 0) return 1;
   if (test_drop_all() != 0) return 1;
   if (test_throw_costs_its_item() != 0) return 1;
+  if (test_unqueued_item_leaves_a_gap() != 0) return 1;
   if (test_fail_ends_decoding() != 0) return 1;
   if (test_stop_with_work_queued() != 0) return 1;
   if (test_destroyed_while_busy() != 0) return 1;
