@@ -19,11 +19,9 @@
 #include <vector>
 
 #include "buffer_readback.hpp"
-#include "no_device.hpp"
+#include "gpu_test.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/core/vulkan/instance.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/array/sensor_array.hpp"
 
 namespace vr = volumetric_kit::recon;
@@ -242,27 +240,12 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   return 0;
 }
 
-}  // namespace
-
-int main() {
-  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
-      instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) {
-    return vr_test::no_device("no compute-capable device",
-                              gpu.status().message());
-  }
-  vkc::Result<vkc::Device> device = vkc::Device::create(
-      instance.value(), gpu.value(), vr::device_requirements());
-  CHECK(device.ok());
-  vkc::Result<vkc::Allocator> allocator =
-      vkc::Allocator::create(instance.value().handle(), device.value());
-  CHECK(allocator.ok());
-  if (run(device.value(), allocator.value()) != 0) return 1;
+int gpu_main(vr_test::GpuContext& gpu) {
+  if (run(gpu.device, gpu.allocator) != 0) return 1;
   std::printf("sensor_array_process: OK\n");
   return 0;
 }
+
+}  // namespace
+
+int main() { return vr_test::run_on_gpu(gpu_main); }

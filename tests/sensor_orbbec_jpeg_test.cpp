@@ -36,10 +36,8 @@
 #include "picture_frames.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/core/vulkan/instance.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
 
-#include "no_device.hpp"
+#include "gpu_test.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
@@ -335,33 +333,9 @@ int test_unsupported_jpeg() {
   return 0;
 }
 
-}  // namespace
-
-int main() {
-  // The SDK writes a log file into the working directory unless told not to.
-  ob::Context::setLoggerToFile(OB_LOG_SEVERITY_OFF, "");
-  ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
-  if (test_start_needs_device() != 0) return 1;
-
-  auto instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  auto physical =
-      instance.value().select_physical_device(vr::device_requirements());
-  if (!physical) {
-    return vr_test::no_device("no compute-capable device",
-                              physical.status().message());
-  }
-  auto device = vkc::Device::create(instance.value(), physical.value(),
-                                    vr::device_requirements());
-  CHECK(device.ok());
-  auto allocator =
-      vkc::Allocator::create(instance.value().handle(), device.value());
-  CHECK(allocator.ok());
-  g_device = &device.value();
-  g_allocator = &allocator.value();
+int gpu_main(vr_test::GpuContext& gpu) {
+  g_device = &gpu.device;
+  g_allocator = &gpu.allocator;
   {
     sensor::JpegDecoder::Options options;
     options.device = g_device;
@@ -382,4 +356,15 @@ int main() {
   if (test_unsupported_jpeg() != 0) return 1;
   std::puts("sensor_orbbec_jpeg: OK");
   return 0;
+}
+
+}  // namespace
+
+int main() {
+  // The SDK writes a log file into the working directory unless told not to.
+  ob::Context::setLoggerToFile(OB_LOG_SEVERITY_OFF, "");
+  ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
+  if (test_start_needs_device() != 0) return 1;
+
+  return vr_test::run_on_gpu(gpu_main);
 }

@@ -22,13 +22,10 @@
 #include <utility>
 #include <vector>
 
-#include "bare_device.hpp"
 #include "device_picture_readback.hpp"
-#include "no_device.hpp"
+#include "gpu_test.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/core/vulkan/instance.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 
 namespace vr = volumetric_kit::recon;
@@ -67,19 +64,15 @@ int patch_y(int p) { return 40 + 24 * p; }
 int patch_u(int p) { return 64 + 16 * ((3 * p) % 8); }
 int patch_v(int p) { return 64 + 16 * ((5 * p) % 8); }
 
-// The device and allocator the decoders hand their pictures out on.
-struct Gpu {
-  vkc::Instance& instance;
-  vkc::Device& device;
-  vkc::Allocator& allocator;
+using Gpu = vr_test::GpuContext;
 
-  HevcDecoder::Options options() const {
-    HevcDecoder::Options o;
-    o.device = &device;
-    o.allocator = &allocator;
-    return o;
-  }
-};
+// The device and allocator the decoders hand their pictures out on.
+HevcDecoder::Options decoder_options(const Gpu& gpu) {
+  HevcDecoder::Options o;
+  o.device = &gpu.device;
+  o.allocator = &gpu.allocator;
+  return o;
+}
 
 // A picture read back from the device, planes packed.
 struct Picture {
@@ -149,7 +142,7 @@ Decoded decode_clip(HevcDecoder& decoder, const AccessUnits& units,
 Decoded decode(
     const Gpu& gpu, const char* clip,
     std::optional<sensor::VideoColorDescription> unlabelled = std::nullopt) {
-  HevcDecoder::Options options = gpu.options();
+  HevcDecoder::Options options = decoder_options(gpu);
   options.unlabelled_color = unlabelled;
   auto decoder = HevcDecoder::create(options);
   if (!decoder) return {{}, decoder.status()};
@@ -261,7 +254,7 @@ int test_unlabelled_color(const Gpu& gpu) {
 int test_reset(const Gpu& gpu) {
   const AccessUnits b_frames = access_units(kRefused);
   const AccessUnits patches = access_units(kPatches);
-  auto decoder = HevcDecoder::create(gpu.options());
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   int out = 0;
   for (std::size_t i = 0; i < 4; ++i) {
@@ -292,7 +285,7 @@ int test_reset(const Gpu& gpu) {
 // display size, filled from the coded corner), so it refuses the stream, and
 // a reset does not undo the refusal.
 int test_cropped(const Gpu& gpu) {
-  auto decoder = HevcDecoder::create(gpu.options());
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   const Decoded cropped =
       decode_clip(decoder.value(), access_units(kCropped), gpu);
@@ -366,7 +359,7 @@ int test_malformed_cropped_sps(const Gpu& gpu) {
                        unit.begin() + static_cast<std::ptrdiff_t>(end),
                        unit.end());
       for (const bool reset : {false, true}) {
-        auto decoder = HevcDecoder::create(gpu.options());
+        auto decoder = HevcDecoder::create(decoder_options(gpu));
         CHECK(decoder.ok());
         CHECK(decoder->send(damaged.data(), damaged.size(), 0).domain() ==
               vkc::Status::Code::IoError);
@@ -380,7 +373,7 @@ int test_malformed_cropped_sps(const Gpu& gpu) {
 
   // A complete cropped SPS sent without a slice still refuses the stream;
   // resetting must not turn a genuine refusal into an accepted crop.
-  auto decoder = HevcDecoder::create(gpu.options());
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   CHECK(decoder->send(unit.data(), end, 0).domain() ==
         vkc::Status::Code::Unsupported);
@@ -398,7 +391,7 @@ int test_malformed_cropped_sps(const Gpu& gpu) {
 int test_refused(const Gpu& gpu) {
   const AccessUnits units = access_units(kRefused);
   CHECK(units.size() == static_cast<std::size_t>(kFrames + 2));
-  auto decoder = HevcDecoder::create(gpu.options());
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   const Decoded decoded = decode_clip(decoder.value(), units, gpu);
   CHECK(decoded.status.domain() == vkc::Status::Code::Unsupported);
@@ -426,15 +419,14 @@ int test_refused(const Gpu& gpu) {
 int test_create_refusals(const Gpu& gpu) {
   CHECK(HevcDecoder::create({}).status().domain() ==
         vkc::Status::Code::Unsupported);
-  vkc::Result<vkc::Device> bare =
-      vr_test::bare_device(gpu.instance, gpu.device);
+  vkc::Result<vkc::Device> bare = vr_test::bare_device(gpu);
   CHECK(bare.ok());
-  HevcDecoder::Options options = gpu.options();
+  HevcDecoder::Options options = decoder_options(gpu);
   options.device = &bare.value();
   CHECK(HevcDecoder::create(options).status().domain() ==
         vkc::Status::Code::Unsupported);
 #if !defined(__APPLE__)
-  options = gpu.options();
+  options = decoder_options(gpu);
   options.allocator = nullptr;
   CHECK(HevcDecoder::create(options).status().domain() ==
         vkc::Status::Code::Unsupported);
@@ -443,7 +435,7 @@ int test_create_refusals(const Gpu& gpu) {
 }
 
 int test_arguments(const Gpu& gpu) {
-  auto decoder = HevcDecoder::create(gpu.options());
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   auto nothing = decoder->receive();  // before any input
   CHECK(nothing.ok() && !nothing.value());
@@ -459,7 +451,7 @@ int test_arguments(const Gpu& gpu) {
 }
 
 int test_moves(const Gpu& gpu) {
-  auto created = HevcDecoder::create(gpu.options());
+  auto created = HevcDecoder::create(decoder_options(gpu));
   CHECK(created.ok());
   HevcDecoder a = std::move(created).value();
 
@@ -469,7 +461,7 @@ int test_moves(const Gpu& gpu) {
   CHECK(a.receive().status().domain() == vkc::Status::Code::InvalidArgument);
   CHECK(a.reset().domain() == vkc::Status::Code::InvalidArgument);
 
-  auto other = HevcDecoder::create(gpu.options());
+  auto other = HevcDecoder::create(decoder_options(gpu));
   CHECK(other.ok());
   HevcDecoder c = std::move(other).value();
   c = std::move(b);  // over a live decoder
@@ -481,36 +473,8 @@ int test_moves(const Gpu& gpu) {
   return check_clip_shape(decode_clip(c, access_units(kPatches), gpu));
 }
 
-}  // namespace
-
-int main() {
-  // Unbuffered, so a crash inside FFmpeg or a driver still shows which clip
-  // it was on.
-  std::setvbuf(stdout, nullptr, _IONBF, 0);
-  if (access_units(kPatches).size() != static_cast<std::size_t>(kFrames)) {
-    std::fprintf(stderr, "FAIL: cannot split %s into %d access units\n",
-                 kPatches, kFrames);
-    return 1;
-  }
-  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  vkc::Result<vkc::PhysicalDeviceInfo> physical =
-      instance.value().select_physical_device(vr::device_requirements());
-  if (!physical) {
-    return vr_test::no_device("no compute-capable device",
-                              physical.status().message());
-  }
-  vkc::Result<vkc::Device> device = vkc::Device::create(
-      instance.value(), physical.value(), vr::device_requirements());
-  CHECK(device.ok());
-  vkc::Result<vkc::Allocator> allocator =
-      vkc::Allocator::create(instance.value().handle(), device.value());
-  CHECK(allocator.ok());
-  const Gpu gpu{instance.value(), device.value(), allocator.value()};
-  if (auto probe = HevcDecoder::create(gpu.options()); !probe) {
+int gpu_main(Gpu& gpu) {
+  if (auto probe = HevcDecoder::create(decoder_options(gpu)); !probe) {
     if (probe.status().domain() != vkc::Status::Code::Unsupported) {
       std::fprintf(stderr, "FAIL: %s\n", probe.status().message().c_str());
       return 1;
@@ -531,4 +495,18 @@ int main() {
   if (test_moves(gpu) != 0) return 1;
   std::puts("sensor_video_hevc: OK");
   return 0;
+}
+
+}  // namespace
+
+int main() {
+  // Unbuffered, so a crash inside FFmpeg or a driver still shows which clip
+  // it was on.
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  if (access_units(kPatches).size() != static_cast<std::size_t>(kFrames)) {
+    std::fprintf(stderr, "FAIL: cannot split %s into %d access units\n",
+                 kPatches, kFrames);
+    return 1;
+  }
+  return vr_test::run_on_gpu(gpu_main);
 }
