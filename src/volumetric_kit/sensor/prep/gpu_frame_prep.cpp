@@ -10,13 +10,11 @@
 #include <cstring>
 #include <limits>
 #include <memory>
-#include <new>
 #include <string>
 #include <utility>
 
 #include "undistort_color_comp.spv.hpp"
 #include "undistort_depth_comp.spv.hpp"
-#include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -161,55 +159,6 @@ core::Status ensure_buffer(const core::Device& device,
   device.set_object_name(VK_OBJECT_TYPE_BUFFER,
                          core::debug_object_handle(buffer.handle()), name);
   return {};
-}
-
-// Set by HolderAllocator when the host had no memory for a holder.
-thread_local bool t_holder_refused = false;
-
-// The allocator an output's holder comes from: std::make_shared reports a
-// host out of memory by throwing, which a -fno-exceptions build cannot catch.
-// This one allocates without throwing; when that fails, it hands
-// std::allocate_shared the calling thread's spare instead and sets
-// t_holder_refused, and the caller drops that holder at once. Stateless, so
-// the holder is make_shared's size, which the OOM test fails by.
-template <class T>
-class HolderAllocator {
- public:
-  using value_type = T;
-
-  HolderAllocator() noexcept = default;
-  // Implicit, as std::allocator's: allocate_shared rebinds through it.
-  template <class U>
-  HolderAllocator(const HolderAllocator<U>& /*other*/) noexcept {}
-
-  T* allocate(std::size_t n) noexcept {
-    VKC_CHECK(n == 1, "HolderAllocator: a holder is one control block");
-    if (void* p = ::operator new(sizeof(T), std::nothrow)) {
-      return static_cast<T*>(p);
-    }
-    t_holder_refused = true;
-    return spare();
-  }
-  void deallocate(T* p, std::size_t /*n*/) noexcept {
-    if (p != spare()) ::operator delete(p);
-  }
-
- private:
-  static T* spare() noexcept {
-    alignas(T) static thread_local unsigned char storage[sizeof(T)];
-    return reinterpret_cast<T*>(storage);
-  }
-};
-
-template <class T, class U>
-bool operator==(const HolderAllocator<T>& /*a*/,
-                const HolderAllocator<U>& /*b*/) noexcept {
-  return true;
-}
-template <class T, class U>
-bool operator!=(const HolderAllocator<T>& /*a*/,
-                const HolderAllocator<U>& /*b*/) noexcept {
-  return false;
 }
 
 VkDeviceSize round_up4(VkDeviceSize bytes) noexcept {
@@ -832,17 +781,7 @@ core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
           color ? config_.color_queue_family_count : 0));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
                            core::debug_object_handle(created.handle()), name);
-  // Held without throwing: with no host memory for the holder, the new buffer
-  // goes, the frame is refused, and the output a frame still holds stays.
-  // The message fits a string's own buffer, so it allocates nothing either.
-  t_holder_refused = false;
-  std::shared_ptr<core::Buffer> held = std::allocate_shared<core::Buffer>(
-      HolderAllocator<core::Buffer>(), std::move(created));
-  if (t_holder_refused) {
-    held.reset();
-    return core::Status::out_of_memory("out of memory");
-  }
-  buffer = std::move(held);
+  buffer = std::make_shared<core::Buffer>(std::move(created));
   return {};
 }
 

@@ -185,9 +185,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         `queue_family` the device lacks, or an image past a single
   ///         dispatch (16.7 M pixels);
   ///         `Status::Code::Unsupported` for a colour encoding
-  ///         @ref is_canonical refuses; `Status::Code::OutOfMemory` when the
-  ///         device or the host has no memory for a buffer; otherwise a
-  ///         buffer or dispatch failure.
+  ///         @ref is_canonical refuses; otherwise a buffer or dispatch
+  ///         failure.
   core::Result<DeviceFrame> prepare(const RgbdFrame& frame,
                                     core::StageMetrics* metrics = nullptr);
 
@@ -249,8 +248,7 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
 
   // An output of at least `bytes`: the one held, when no DeviceFrame still
   // holds it too and it is big enough, else a new one, shared with the
-  // config's colour families when `color`; OutOfMemory, without throwing,
-  // when the host has no memory to hold a new one.
+  // config's colour families when `color`.
   core::Status ensure_output(std::shared_ptr<core::Buffer>& buffer,
                              VkDeviceSize bytes, const char* name, bool color);
 
