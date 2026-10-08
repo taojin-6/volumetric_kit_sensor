@@ -5,10 +5,10 @@
 // (orbbec_camera_stub.hpp): every camera of the file opened in its order,
 // with its entry and on the host's clock; a camera that differs from its entry
 // refused and left unwritten unless asked; a camera that does not answer
-// NotFound, the cameras before it closed again; and a file or options that
-// cannot open a rig refused before any camera is looked for. No camera or SDK
-// context; the executable compiles orbbec_sensor.cpp, as the sync-apply test
-// does.
+// NotFound, the cameras before it closed again; and a file, or options naming
+// a camera, its settings or a pose, refused before any camera is looked for.
+// No camera or SDK context; the executable compiles orbbec_sensor.cpp, as the
+// sync-apply test does.
 
 #include <cstdio>
 #include <string>
@@ -132,6 +132,14 @@ int test_refusals() {
   s = sensor::open_orbbec_sensors(kRig, synced).status();
   CHECK(s.domain() == vkc::Status::Code::InvalidArgument);
   CHECK(mentions(s, "sync"));
+  // Nor a pose: one for every camera would stack their frames, and the
+  // array's calibration poses each.
+  sensor::OrbbecSensor::Options posed;
+  posed.color_to_world[3][0] = 0.5;  // half a metre along x
+  s = sensor::open_orbbec_sensors(kRig, posed).status();
+  CHECK(s.domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(mentions(s, "color_to_world"));
+  CHECK(mentions(s, "calibration"));
 
   // A file that cannot be read, or holds no rig, named.
   const std::string missing = VR_SYNC_FIXTURES "/missing.json";

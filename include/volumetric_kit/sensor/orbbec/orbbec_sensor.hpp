@@ -201,7 +201,7 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
 /// (@ref OrbbecSensor::Options::sync_clock_to_host), on which an array
 /// groups several sensors. So a camera whose stored settings differ from its
 /// entry is refused unless @ref OrbbecSensor::Options::apply_sync writes
-/// them. The file is only read.
+/// them.
 ///
 /// @code
 /// OrbbecSensor::Options streams;
@@ -217,15 +217,18 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
 ///                   @ref read_orbbec_sync_config reads it.
 /// @param options    What every camera streams and how it is found; its
 ///                   `serial` and `sync` left empty, since the file names
-///                   them, and its `sync_clock_to_host` ignored.
+///                   them, its `color_to_world` identity, since
+///                   `SensorArray::Options::calibration` poses each camera,
+///                   and its `sync_clock_to_host` ignored.
 /// @return One @ref OrbbecSensor per camera, in the file's order; or
-///         - `Status::Code::InvalidArgument` for @p options naming a serial
-///           or sync settings, before the file is read;
+///         - `Status::Code::InvalidArgument` for @p options naming a serial,
+///           sync settings or a pose, before the file is read;
 ///         - what @ref read_orbbec_sync_config returns for a file it cannot
 ///           read or parse;
-///         - the first camera's refusal by @ref OrbbecSensor::open, which
-///           names the camera (`Status::Code::NotFound` for one that does not
-///           answer), the cameras opened before it closed again.
+///         - the first refusal by @ref OrbbecSensor::open, the cameras opened
+///           before it closed again: of the streams in @p options, before
+///           any camera is looked for, or of a camera, which it names
+///           (`Status::Code::NotFound` for one that does not answer).
 VR_SENSOR_ORBBEC_API core::Result<std::vector<std::unique_ptr<IRgbdSensor>>>
 open_orbbec_sensors(const std::string& sync_path,
                     const OrbbecSensor::Options& options);

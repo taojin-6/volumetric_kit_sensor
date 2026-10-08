@@ -199,7 +199,10 @@ core::Result<std::unique_ptr<CameraStream>> open_camera(
     return CameraStream::create(std::move(context), std::move(device), streams,
                                 color_to_world, configure_logging, who);
   } catch (const std::exception& e) {  // ob::Error is one
-    return sdk_error(who, "opening the camera", e);
+    // Named when asked for by serial: the SDK can throw before the camera
+    // reports it, and a rig's camera is one of several.
+    return sdk_error(serial.empty() ? who : who + ": camera " + serial,
+                     "opening the camera", e);
   }
 }
 
@@ -279,12 +282,12 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     // undistorts or registers.
     const auto depth_video = s->depth_profile_->as<ob::VideoStreamProfile>();
     const auto color_video = s->color_profile_->as<ob::VideoStreamProfile>();
-    VKC_ASSIGN(s->depth_camera_,
-               camera_model_from(depth_video->getIntrinsic(),
-                                 depth_video->getDistortion(), "depth"));
-    VKC_ASSIGN(s->color_camera_,
-               camera_model_from(color_video->getIntrinsic(),
-                                 color_video->getDistortion(), "colour"));
+    VKC_ASSIGN(s->depth_camera_, camera_model_from(depth_video->getIntrinsic(),
+                                                   depth_video->getDistortion(),
+                                                   "depth", s->who_));
+    VKC_ASSIGN(s->color_camera_, camera_model_from(color_video->getIntrinsic(),
+                                                   color_video->getDistortion(),
+                                                   "colour", s->who_));
     if (s->depth_camera_.size.width != streams.depth_width ||
         s->depth_camera_.size.height != streams.depth_height ||
         s->color_camera_.size.width != streams.color_width ||
@@ -295,7 +298,8 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     s->color_to_world_ = color_to_world;
     VKC_ASSIGN(
         s->depth_to_color_,
-        transform_from(s->depth_profile_->getExtrinsicTo(s->color_profile_)));
+        transform_from(s->depth_profile_->getExtrinsicTo(s->color_profile_),
+                       s->who_));
     s->min_depth_ = streams.min_depth;
     s->max_depth_ = streams.max_depth;
 

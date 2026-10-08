@@ -11,23 +11,23 @@ namespace volumetric_kit::recon::sensor::orbbec {
 
 core::Result<camera::CameraModel> camera_model_from(
     const OBCameraIntrinsic& intrinsic, const OBCameraDistortion& distortion,
-    const std::string& what) {
+    const std::string& what, const std::string& who) {
   if (intrinsic.width <= 0 || intrinsic.height <= 0) {
     return core::Status::invalid_argument(
-        "Orbbec " + what + " intrinsics report a " +
+        who + ": " + what + " intrinsics report a " +
         std::to_string(intrinsic.width) + "x" +
         std::to_string(intrinsic.height) + " image");
   }
   for (const float f : {intrinsic.fx, intrinsic.fy}) {
     if (!std::isfinite(f) || !(f > 0.0f)) {
       return core::Status::invalid_argument(
-          "Orbbec " + what +
+          who + ": " + what +
           " intrinsics report a focal length that is not finite and positive");
     }
   }
   if (!std::isfinite(intrinsic.cx) || !std::isfinite(intrinsic.cy)) {
     return core::Status::invalid_argument(
-        "Orbbec " + what + " intrinsics report a non-finite principal point");
+        who + ": " + what + " intrinsics report a non-finite principal point");
   }
   switch (distortion.model) {
     case OB_DISTORTION_NONE:
@@ -36,7 +36,7 @@ core::Result<camera::CameraModel> camera_model_from(
       break;
     default:
       return core::Status::unsupported(
-          "Orbbec " + what + " stream reports lens model " +
+          who + ": " + what + " stream reports lens model " +
           std::to_string(static_cast<int>(distortion.model)) +
           ", which the GPU pass cannot undistort (it takes Brown-Conrady)");
   }
@@ -62,13 +62,14 @@ core::Result<camera::CameraModel> camera_model_from(
   }
   const core::Status valid = camera::check_camera_model(cam);
   if (!valid.ok()) {
-    return core::Status::invalid_argument("Orbbec " + what +
+    return core::Status::invalid_argument(who + ": " + what +
                                           " stream: " + valid.message());
   }
   return cam;
 }
 
-core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic) {
+core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic,
+                                           const std::string& who) {
   camera::Mat3d rotation(1.0);  // column-major: rotation[column][row]
   for (int r = 0; r < 3; ++r) {
     for (int c = 0; c < 3; ++c) rotation[c][r] = extrinsic.rot[3 * r + c];
@@ -82,8 +83,8 @@ core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic) {
   // out NaN or a reflection: refused here rather than at every frame.
   const core::Status rigid = camera::check_rigid(m);
   if (!rigid.ok()) {
-    return core::Status::invalid_argument("Orbbec extrinsic: " +
-                                          rigid.message());
+    return core::Status::invalid_argument(who +
+                                          ": extrinsic: " + rigid.message());
   }
   return m;
 }

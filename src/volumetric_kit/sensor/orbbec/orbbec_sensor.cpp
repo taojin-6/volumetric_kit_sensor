@@ -211,6 +211,13 @@ core::Result<std::vector<std::unique_ptr<IRgbdSensor>>> open_orbbec_sensors(
         " names each camera and its sync settings; leave the options' serial "
         "and sync empty");
   }
+  // One pose for every camera would stack the rig's frames on each other.
+  if (options.color_to_world != camera::Mat4d(1.0)) {
+    return core::Status::invalid_argument(
+        "open_orbbec_sensors: a rig's cameras are posed by "
+        "SensorArray::Options::calibration; leave the options' color_to_world "
+        "identity");
+  }
   VKC_ASSIGN(const OrbbecRigSyncConfig rig, read_orbbec_sync_config(sync_path));
   std::vector<std::unique_ptr<IRgbdSensor>> sensors;
   sensors.reserve(rig.devices.size());

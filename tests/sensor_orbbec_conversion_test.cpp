@@ -49,6 +49,13 @@ bool invalid(const vkc::Status& s) {
   return s.domain() == vkc::Status::Code::InvalidArgument;
 }
 
+// The camera a refusal names, as the driver names one of a rig's.
+constexpr const char* kWho = "OrbbecSensor: camera CL2A141000G";
+
+bool names_camera(const vkc::Status& s) {
+  return s.message().find(kWho) != std::string::npos;
+}
+
 int test_sync_mode() {
   CHECK(orbbec::sync_mode_from(OB_MULTI_DEVICE_SYNC_MODE_PRIMARY) ==
         sensor::OrbbecSyncMode::Primary);
@@ -89,7 +96,7 @@ int test_camera_model() {
   d.p1 = 0.001f;
   d.p2 = -0.002f;
   d.model = OB_DISTORTION_BROWN_CONRADY_K6;
-  auto lens = orbbec::camera_model_from(femto_color_720p(), d, "colour");
+  auto lens = orbbec::camera_model_from(femto_color_720p(), d, "colour", kWho);
   CHECK(lens.ok());
   CHECK(lens->intrinsics.fx == 746.494f && lens->intrinsics.cy == 345.615f);
   CHECK(lens->size.width == 1280 && lens->size.height == 720);
@@ -98,17 +105,17 @@ int test_camera_model() {
         lens->distortion.k5 == -0.05f && lens->distortion.k6 == 0.06f &&
         lens->distortion.p1 == 0.001f && lens->distortion.p2 == -0.002f);
   d.model = OB_DISTORTION_NONE;  // coefficients ignored
-  lens = orbbec::camera_model_from(femto_color_720p(), d, "colour");
+  lens = orbbec::camera_model_from(femto_color_720p(), d, "colour", kWho);
   CHECK(lens.ok() && lens->distortion.k1 == 0.0f &&
         lens->distortion.p2 == 0.0f);
   d.model = OB_DISTORTION_KANNALA_BRANDT4;
-  CHECK(orbbec::camera_model_from(femto_color_720p(), d, "colour")
+  CHECK(orbbec::camera_model_from(femto_color_720p(), d, "colour", kWho)
             .status()
             .domain() == vkc::Status::Code::Unsupported);
   // The plain model is the polynomial k1..k3: whatever the SDK leaves in
   // k4..k6 is not a term of it, and would divide the radial term if read.
   d.model = OB_DISTORTION_BROWN_CONRADY;
-  lens = orbbec::camera_model_from(femto_color_720p(), d, "colour");
+  lens = orbbec::camera_model_from(femto_color_720p(), d, "colour", kWho);
   CHECK(lens.ok());
   CHECK(lens->distortion.k1 == 0.1f && lens->distortion.k2 == -0.2f &&
         lens->distortion.k3 == 0.03f && lens->distortion.p1 == 0.001f &&
@@ -116,21 +123,29 @@ int test_camera_model() {
   CHECK(lens->distortion.k4 == 0.0f && lens->distortion.k5 == 0.0f &&
         lens->distortion.k6 == 0.0f);
   d.k2 = std::numeric_limits<float>::quiet_NaN();
-  CHECK(invalid(
-      orbbec::camera_model_from(femto_color_720p(), d, "colour").status()));
-  // The stream is named in the error, the depth one included.
+  CHECK(invalid(orbbec::camera_model_from(femto_color_720p(), d, "colour", kWho)
+                    .status()));
+  // The camera and the stream are named in the error, the depth one included.
   OBCameraIntrinsic k = femto_color_720p();
   k.fx = 0.0f;
   d.k2 = 0.0f;
-  const vkc::Status bad = orbbec::camera_model_from(k, d, "depth").status();
+  const vkc::Status bad =
+      orbbec::camera_model_from(k, d, "depth", kWho).status();
   CHECK(invalid(bad));
+  CHECK(names_camera(bad));
   CHECK(bad.message().find("depth") != std::string::npos);
   CHECK(bad.message().find("colour") == std::string::npos);
+  d.model = OB_DISTORTION_KANNALA_BRANDT4;
+  CHECK(names_camera(
+      orbbec::camera_model_from(femto_color_720p(), d, "colour", kWho)
+          .status()));
+  d.model = OB_DISTORTION_BROWN_CONRADY;
 
   // The SDK sizes images in int16_t. A negative one must be refused, not
   // wrapped into a four-billion-pixel uint32_t.
   const auto refused = [&d](const OBCameraIntrinsic& bad_k) {
-    return invalid(orbbec::camera_model_from(bad_k, d, "colour").status());
+    return invalid(
+        orbbec::camera_model_from(bad_k, d, "colour", kWho).status());
   };
   k = femto_color_720p();
   k.width = -1280;
@@ -161,7 +176,7 @@ int test_transform_from() {
   e.trans[0] = 32.0f;
   e.trans[1] = -1.5f;
   e.trans[2] = 4.0f;
-  const auto quarter = orbbec::transform_from(e);
+  const auto quarter = orbbec::transform_from(e, kWho);
   CHECK(quarter.ok());
   const vr::Mat4f m(quarter.value());
   const vr::Vec4f p = m * vr::Vec4f(1.0f, 2.0f, 3.0f, 1.0f);
@@ -179,7 +194,7 @@ int test_transform_from() {
                           -0.006363322f, 0.993843257f,  0.110612832f,
                           -0.002609496f, -0.110631190f, 0.993858099f};
   for (int i = 0; i < 9; ++i) e.rot[i] = femto[i];
-  const auto made = orbbec::transform_from(e);
+  const auto made = orbbec::transform_from(e, kWho);
   CHECK(made.ok());
   const camera::Mat4d& rigid = made.value();
   CHECK(camera::check_rigid(rigid).ok());
@@ -192,10 +207,12 @@ int test_transform_from() {
   // A zeroed rotation, as from an uncalibrated unit, and a reflected one are
   // not a tilt: refused, rather than handed to every frame.
   for (int i = 0; i < 9; ++i) e.rot[i] = 0.0f;
-  CHECK(invalid(orbbec::transform_from(e).status()));
+  const vkc::Status zeroed = orbbec::transform_from(e, kWho).status();
+  CHECK(invalid(zeroed));
+  CHECK(names_camera(zeroed));
   for (int i = 0; i < 9; ++i) e.rot[i] = femto[i];
   for (int col = 0; col < 3; ++col) e.rot[col] = -femto[col];
-  CHECK(invalid(orbbec::transform_from(e).status()));
+  CHECK(invalid(orbbec::transform_from(e, kWho).status()));
   return 0;
 }
 
