@@ -5,9 +5,9 @@
 # HEVC and JPEG decoders on the GPU's hardware, handing out pictures on the
 # device only, built only with VR_WITH_FFMPEG (see cmake/vr_ffmpeg.cmake):
 # VideoToolbox on Apple, NVDEC and nvJPEG through CUDA elsewhere.
-# Camera-neutral, so it links recon_core alone and a capture driver links it.
-# FFmpeg is PRIVATE and no FFmpeg type reaches the public headers; ffmpeg.hpp is
-# the one include.
+# Camera-neutral: it links recon_core and, on Apple, recon_sensor_apple, and no
+# camera tier, so a capture driver links it. FFmpeg is PRIVATE and no FFmpeg
+# type reaches the public headers; ffmpeg.hpp is the one include.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 

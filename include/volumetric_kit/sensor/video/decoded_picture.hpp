@@ -14,39 +14,6 @@
 
 namespace volumetric_kit::recon::sensor {
 
-/// @brief The YCbCr-to-RGB matrix of a coded picture.
-enum class VideoColorMatrix {
-  Bt601,      ///< BT.601 (SMPTE 170M, BT.470 B/G): SD.
-  Bt709,      ///< BT.709: HD.
-  Bt2020,     ///< BT.2020 non-constant luminance: UHD.
-  Smpte240m,  ///< SMPTE 240M, the interim HD matrix.
-  Fcc,        ///< FCC 73.682, the 1953 NTSC matrix.
-};
-
-/// @brief A matrix's red and blue luma weights; green's is the rest.
-struct YcbcrWeights {
-  float kr = 0.0f;  ///< Red's weight in luma.
-  float kb = 0.0f;  ///< Blue's weight in luma.
-};
-
-/// @return @p matrix's weights, as the standards give them: what the GPU pass
-///         converts by.
-constexpr YcbcrWeights ycbcr_weights(VideoColorMatrix matrix) noexcept {
-  switch (matrix) {
-    case VideoColorMatrix::Bt601:
-      return {0.299f, 0.114f};
-    case VideoColorMatrix::Bt709:
-      return {0.2126f, 0.0722f};
-    case VideoColorMatrix::Bt2020:
-      return {0.2627f, 0.0593f};
-    case VideoColorMatrix::Smpte240m:
-      return {0.212f, 0.087f};
-    case VideoColorMatrix::Fcc:
-      return {0.30f, 0.11f};
-  }
-  return {0.2126f, 0.0722f};
-}
-
 /// @brief A stream's YCbCr matrix and range.
 struct VideoColorDescription {
   VideoColorMatrix matrix = VideoColorMatrix::Bt709;

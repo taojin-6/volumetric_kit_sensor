@@ -37,6 +37,39 @@ inline constexpr std::uint32_t kQueueFamilyIgnored = ~std::uint32_t{0};
 ///        `VK_QUEUE_FAMILY_EXTERNAL`.
 inline constexpr std::uint32_t kQueueFamilyExternal = ~std::uint32_t{0} - 1;
 
+/// @brief The YCbCr-to-RGB matrix of a coded picture.
+enum class VideoColorMatrix {
+  Bt601,      ///< BT.601 (SMPTE 170M, BT.470 B/G): SD.
+  Bt709,      ///< BT.709: HD.
+  Bt2020,     ///< BT.2020 non-constant luminance: UHD.
+  Smpte240m,  ///< SMPTE 240M, the interim HD matrix.
+  Fcc,        ///< FCC 73.682, the 1953 NTSC matrix.
+};
+
+/// @brief A matrix's red and blue luma weights; green's is the rest.
+struct YcbcrWeights {
+  float kr = 0.0f;  ///< Red's weight in luma.
+  float kb = 0.0f;  ///< Blue's weight in luma.
+};
+
+/// @return @p matrix's weights, as the standards give them: what the GPU pass
+///         converts by.
+constexpr YcbcrWeights ycbcr_weights(VideoColorMatrix matrix) noexcept {
+  switch (matrix) {
+    case VideoColorMatrix::Bt601:
+      return {0.299f, 0.114f};
+    case VideoColorMatrix::Bt709:
+      return {0.2126f, 0.0722f};
+    case VideoColorMatrix::Bt2020:
+      return {0.2627f, 0.0593f};
+    case VideoColorMatrix::Smpte240m:
+      return {0.212f, 0.087f};
+    case VideoColorMatrix::Fcc:
+      return {0.30f, 0.11f};
+  }
+  return {0.2126f, 0.0722f};
+}
+
 /// @brief An 8-bit Y'CbCr 4:2:0 picture on the device, as a hardware decoder
 ///        or a platform's capture left it, and the matrix and range it was
 ///        coded with.
@@ -90,8 +123,8 @@ struct YuvImage {
   std::shared_ptr<const core::Image> image[2];
   std::uint32_t width = 0;   ///< Luma width (pixels).
   std::uint32_t height = 0;  ///< Luma height (pixels).
-  /// The matrix's red and blue weights: BT.601 is 0.299 and 0.114, BT.709
-  /// 0.2126 and 0.0722.
+  /// The matrix's red and blue weights, which @ref ycbcr_weights gives for a
+  /// matrix @ref VideoColorMatrix names.
   float kr = 0.299f;
   float kb = 0.114f;       ///< See @ref kr.
   bool full_range = true;  ///< Y in 0..255 rather than 16..235.

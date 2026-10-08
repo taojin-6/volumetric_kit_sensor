@@ -4,14 +4,13 @@
 #pragma once
 
 // The YCbCr-to-RGB conversion written out from the standards' constants, the
-// reference the video tests hold the GPU pass's conversion, and the weights a
+// reference the picture tests hold the GPU pass's conversion, and the weights a
 // picture is described with, to.
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 
-#include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 #include "volumetric_kit/recon/sensor/yuv_image.hpp"
 
 namespace yuv_reference {

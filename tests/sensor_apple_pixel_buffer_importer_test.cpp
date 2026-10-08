@@ -239,8 +239,9 @@ int test_holds_the_buffer(const Gpu& gpu) {
 }
 
 // The imported picture is a frame's colour as it is, with the matrix and range
-// its caller describes: one colour throughout, prepared on the GPU, comes out
-// as the standards convert it, for full and video range.
+// its caller describes, taking a named matrix's weights from yuv_image.hpp, as
+// a camera's caller does with no decoder: one colour throughout, prepared on
+// the GPU, comes out as the standards convert it, for full and video range.
 int test_prepares(const Gpu& gpu) {
   auto importer = PixelBufferImporter::create(gpu.device, "test");
   CHECK(importer.ok());
@@ -272,10 +273,11 @@ int test_prepares(const Gpu& gpu) {
     raw.min_depth = 0.1f;
     raw.max_depth = 5.0f;
     CHECK(importer->import(pixels.ref, kW, kH, raw.color).ok());
-    const std::array<double, 2> k = yuv_reference::weights(c.matrix);
-    raw.color.kr = static_cast<float>(k[0]);
-    raw.color.kb = static_cast<float>(k[1]);
+    const sensor::YcbcrWeights weights = sensor::ycbcr_weights(c.matrix);
+    raw.color.kr = weights.kr;
+    raw.color.kb = weights.kb;
     raw.color.full_range = c.full_range;
+    CHECK(yuv_reference::coded_in(raw.color, c.matrix, c.full_range));
     auto frame = prep->prepare(raw);
     CHECK(frame.ok());
     auto got = vr_test::read_back<std::uint32_t>(gpu.device, gpu.allocator,

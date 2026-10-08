@@ -41,7 +41,9 @@ namespace volumetric_kit::recon::sensor {
 /// auto importer = PixelBufferImporter::create(device, "ARKitCapture");
 /// RgbdFrame frame;
 /// VKC_TRY(importer->import(captured_image, width, height, frame.color));
-/// frame.color.kr = weights.kr;  // the colour description is the caller's
+/// // the colour description is the caller's
+/// const YcbcrWeights weights = ycbcr_weights(VideoColorMatrix::Bt601);
+/// frame.color.kr = weights.kr;
 /// frame.color.kb = weights.kb;
 /// frame.color.full_range = true;
 /// frame.color.chroma_location = ChromaLocation::Left;

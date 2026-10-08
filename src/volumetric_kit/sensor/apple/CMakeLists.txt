@@ -6,8 +6,8 @@
 # Vulkan images through Metal textures (Objective-C++, with ARC). Built on every
 # Apple platform and with no FFmpeg, since it uses none: the video decoders'
 # VideoToolbox pictures come through it, and so can a camera's on iOS, such as
-# ARKit's. Links recon_core alone, as the decoders do; the YuvImage it fills is
-# a header of recon_sensor's (sensor/yuv_image.hpp) that names no camera.
+# ARKit's. Links recon_core alone; the YuvImage it fills is a header of
+# recon_sensor's (sensor/yuv_image.hpp) that names no camera.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
