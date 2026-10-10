@@ -30,17 +30,19 @@ namespace volumetric_kit::recon::sensor::orbbec {
 /// the plain model, whatever it reports there, since only the K6 one has
 /// them; its modified, inverse and Kannala-Brandt models are refused as
 /// `Unsupported`, since the pass samples through that one model. @p what names
-/// the stream, in the errors too.
+/// the stream and @p who the camera, in the errors too.
 core::Result<camera::CameraModel> camera_model_from(
     const OBCameraIntrinsic& intrinsic, const OBCameraDistortion& distortion,
-    const std::string& what);
+    const std::string& what, const std::string& who);
 
 /// The SDK's extrinsic from one stream to another (`p_to = R p_from + t`,
 /// `rot` row-major, `trans` in millimetres) as the transform that takes a point
 /// in the first camera's frame to the second's, in metres, its rotation made
-/// one (`camera::nearest_rotation`): the SDK's need not be. Refused when it
-/// does not come out rigid, as from a zeroed or reflected matrix.
-core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic);
+/// one (`camera::nearest_rotation`): the SDK's need not be. Refused, naming
+/// @p who, when it does not come out rigid, as from a zeroed or reflected
+/// matrix.
+core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic,
+                                           const std::string& who);
 
 /// The SDK's sync-mode bit to the driver's name for it, and back.
 OrbbecSyncMode sync_mode_from(OBMultiDeviceSyncMode mode) noexcept;

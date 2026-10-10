@@ -91,16 +91,8 @@ struct SensorArrayStats {
 /// never the primary; a slow consumer gets the newest set.
 ///
 /// @code
-/// VKC_ASSIGN(const OrbbecRigSyncConfig rig, read_orbbec_sync_config(file));
-/// std::vector<std::unique_ptr<IRgbdSensor>> sensors;
-/// for (const OrbbecSyncDevice& camera : rig.devices) {
-///   OrbbecSensor::Options o;
-///   o.serial = camera.serial;
-///   o.sync = camera.sync;         // refused where the camera differs
-///   o.sync_clock_to_host = true;  // sets group on the host clock
-///   VKC_ASSIGN(OrbbecSensor s, OrbbecSensor::open(o));
-///   sensors.push_back(std::make_unique<OrbbecSensor>(std::move(s)));
-/// }
+/// // A rig's cameras, each checked against its sync file, on the host clock.
+/// VKC_ASSIGN(auto sensors, open_orbbec_sensors(sync_file, {}));
 /// SensorArray::Options options;
 /// VKC_ASSIGN(options.calibration, camera::read_array_calibration(path));
 /// VKC_ASSIGN(SensorArray array, SensorArray::open(std::move(sensors),

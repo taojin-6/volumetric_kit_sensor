@@ -45,7 +45,8 @@ namespace volumetric_kit::recon::sensor {
 ///
 /// A synchronised rig is one sensor per camera in a @ref SensorArray, each
 /// opened with its entry of the rig's sync configuration (@ref Options::sync)
-/// and on the host's clock (@ref Options::sync_clock_to_host).
+/// and on the host's clock (@ref Options::sync_clock_to_host):
+/// @ref open_orbbec_sensors opens them so.
 ///
 /// @code
 /// OrbbecSensor::Options options;
@@ -190,5 +191,46 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   // Behind a pointer so no SDK type reaches this header.
   std::unique_ptr<Impl> impl_;
 };
+
+/// @brief Open every camera of a rig's sync configuration file, in the
+///        file's order, as the sensors a @ref SensorArray takes.
+///
+/// Each camera is opened by @ref OrbbecSensor::open with @p options, its
+/// @ref OrbbecSensor::Options::serial and @ref OrbbecSensor::Options::sync
+/// taken from its entry of the file, and on the host's clock
+/// (@ref OrbbecSensor::Options::sync_clock_to_host), on which an array
+/// groups several sensors. So a camera whose stored settings differ from its
+/// entry is refused unless @ref OrbbecSensor::Options::apply_sync writes
+/// them.
+///
+/// @code
+/// OrbbecSensor::Options streams;
+/// streams.color_codec = OrbbecColorCodec::Hevc;
+/// streams.device = &device;
+/// streams.allocator = &allocator;
+/// VKC_ASSIGN(auto sensors, open_orbbec_sensors(sync_path, streams));
+/// VKC_ASSIGN(SensorArray array, SensorArray::open(std::move(sensors),
+///                                                 array_options));
+/// @endcode
+///
+/// @param sync_path  The rig's sync configuration, as
+///                   @ref read_orbbec_sync_config reads it.
+/// @param options    What every camera streams and how it is found; its
+///                   `serial` and `sync` left empty, since the file names
+///                   them, its `color_to_world` identity, since
+///                   `SensorArray::Options::calibration` poses each camera,
+///                   and its `sync_clock_to_host` ignored.
+/// @return One @ref OrbbecSensor per camera, in the file's order; or
+///         - `Status::Code::InvalidArgument` for @p options naming a serial,
+///           sync settings or a pose, before the file is read;
+///         - what @ref read_orbbec_sync_config returns for a file it cannot
+///           read or parse;
+///         - the first refusal by @ref OrbbecSensor::open, the cameras opened
+///           before it closed again: of the streams in @p options, before
+///           any camera is looked for, or of a camera, which it names
+///           (`Status::Code::NotFound` for one that does not answer).
+VR_SENSOR_ORBBEC_API core::Result<std::vector<std::unique_ptr<IRgbdSensor>>>
+open_orbbec_sensors(const std::string& sync_path,
+                    const OrbbecSensor::Options& options);
 
 }  // namespace volumetric_kit::recon::sensor
