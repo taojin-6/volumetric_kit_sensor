@@ -1337,9 +1337,9 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   return 0;
 }
 
-// Allocate `depth`'s band, retrying rounds that only lost bucket-lock races,
-// as examples/common/fuse_frame.hpp does: adjacent pixels dilate into one
-// block, and a round can hand back such failures over a map far from full.
+// Allocate `depth`'s band, retrying rounds that only lost bucket-lock races:
+// adjacent pixels dilate into one block, and a round can hand back such
+// failures over a map far from full.
 int allocate(vol::VoxelBlockGrid& grid, const vkc::Buffer& depth,
              const vr::DepthCameraParams& camera) {
   for (int round = 0; round < 5; ++round) {
