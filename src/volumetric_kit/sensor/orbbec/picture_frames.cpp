@@ -79,23 +79,6 @@ std::optional<DecodedPicture> device_picture(const ob::Frame& frame) {
   return found->second;
 }
 
-void place_device_color(const DecodedPicture& picture, YuvImage* image) {
-  image->chroma_location = picture.chroma_location;
-  image->layout = picture.layout == VideoPixelLayout::Nv12 ? YuvLayout::Nv12
-                                                           : YuvLayout::I420;
-  if (picture.device != nullptr) {
-    image->device = picture.device;
-    for (int p = 0; p < 3; ++p) {
-      image->offset[p] = picture.offset[p];
-      image->stride[p] = picture.stride[p];
-    }
-    image->queue_family = kQueueFamilyExternal;  // CUDA wrote it
-  } else {
-    image->image[0] = picture.image[0];
-    image->image[1] = picture.image[1];
-  }
-}
-
 std::shared_ptr<ob::FrameSet> rebuilt_pair(std::shared_ptr<ob::Frame> depth,
                                            const ob::Frame& source,
                                            std::shared_ptr<ob::Frame> decoded) {

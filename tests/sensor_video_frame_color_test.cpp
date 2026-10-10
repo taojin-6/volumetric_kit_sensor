@@ -2,15 +2,16 @@
 // Copyright (c) 2026 Tao Jin
 
 // The colour a decoded frame declares, read off frames built by hand, no codec
-// and no GPU: the matrix and encoding a stream's tags resolve to, the range,
-// the chroma siting, and the unlabelled colour standing in for a frame that
-// declares no matrix.
+// and no GPU: the matrix and encoding a stream's tags resolve to, the weights
+// and range a picture is described with, the chroma siting, and the unlabelled
+// colour standing in for a frame that declares no matrix.
 
 #include <cstdio>
 #include <optional>
 
 #include "ffmpeg.hpp"
 #include "frame_color.hpp"
+#include "yuv_reference.hpp"
 
 namespace sensor = volumetric_kit::recon::sensor;
 namespace video = volumetric_kit::recon::sensor::video;
@@ -33,7 +34,7 @@ sensor::DecodedPicture described(
     const std::optional<sensor::VideoColorDescription>& unlabelled =
         std::nullopt) {
   sensor::DecodedPicture picture;
-  picture.height = static_cast<std::uint32_t>(height);
+  picture.yuv.height = static_cast<std::uint32_t>(height);
   video::describe_color(frame, unlabelled, picture);
   return picture;
 }
@@ -91,19 +92,31 @@ int test_resolve_encoding() {
   return 0;
 }
 
-// The matrix by the frame's tag or its height, and the range by its tag.
+// The matrix by the frame's tag or its height, described by its weights, and
+// the range by its tag.
 int test_matrix_and_range() {
   video::FramePtr frame(av_frame_alloc());
-  frame->colorspace = AVCOL_SPC_BT709;
   frame->color_range = AVCOL_RANGE_MPEG;
-  sensor::DecodedPicture p = described(*frame, 144);
-  CHECK(p.matrix == VideoColorMatrix::Bt709 && !p.full_range);
+  const struct {
+    AVColorSpace tag;
+    VideoColorMatrix want;
+  } cases[] = {
+      {AVCOL_SPC_BT709, VideoColorMatrix::Bt709},
+      {AVCOL_SPC_SMPTE170M, VideoColorMatrix::Bt601},
+      {AVCOL_SPC_BT2020_NCL, VideoColorMatrix::Bt2020},
+      {AVCOL_SPC_SMPTE240M, VideoColorMatrix::Smpte240m},
+      {AVCOL_SPC_FCC, VideoColorMatrix::Fcc},
+  };
+  for (const auto& c : cases) {
+    frame->colorspace = c.tag;
+    CHECK(yuv_reference::coded_in(described(*frame, 144).yuv, c.want, false));
+  }
   frame->colorspace = AVCOL_SPC_UNSPECIFIED;
   frame->color_range = AVCOL_RANGE_JPEG;
-  p = described(*frame, 576);
-  CHECK(p.matrix == VideoColorMatrix::Bt601 && p.full_range);
-  p = described(*frame, 720);
-  CHECK(p.matrix == VideoColorMatrix::Bt709 && p.full_range);
+  CHECK(yuv_reference::coded_in(described(*frame, 576).yuv,
+                                VideoColorMatrix::Bt601, true));
+  CHECK(yuv_reference::coded_in(described(*frame, 720).yuv,
+                                VideoColorMatrix::Bt709, true));
   return 0;
 }
 
@@ -115,11 +128,11 @@ int test_unlabelled_color() {
   video::FramePtr frame(av_frame_alloc());
   frame->colorspace = AVCOL_SPC_UNSPECIFIED;
   frame->color_range = AVCOL_RANGE_MPEG;
-  sensor::DecodedPicture p = described(*frame, 720, femto);
-  CHECK(p.matrix == VideoColorMatrix::Bt601 && p.full_range);
+  CHECK(yuv_reference::coded_in(described(*frame, 720, femto).yuv,
+                                VideoColorMatrix::Bt601, true));
   frame->colorspace = AVCOL_SPC_BT709;
-  p = described(*frame, 720, femto);
-  CHECK(p.matrix == VideoColorMatrix::Bt709 && !p.full_range);
+  CHECK(yuv_reference::coded_in(described(*frame, 720, femto).yuv,
+                                VideoColorMatrix::Bt709, false));
   return 0;
 }
 
@@ -140,7 +153,7 @@ int test_chroma_locations() {
   video::FramePtr frame(av_frame_alloc());
   for (const auto& c : cases) {
     frame->chroma_location = c.tag;
-    CHECK(described(*frame, 720).chroma_location == c.want);
+    CHECK(described(*frame, 720).yuv.chroma_location == c.want);
   }
   return 0;
 }

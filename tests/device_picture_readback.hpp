@@ -3,9 +3,9 @@
 
 #pragma once
 
-// A decoder's picture on the device, read back for a test as its Y, U and V
-// planes, rows packed: a buffer, NV12 or I420 at the picture's offsets and
-// strides, taken over from CUDA, which wrote it; or NV12 plane images, copied
+// A picture on the device, read back for a test as its Y, U and V planes, rows
+// packed: a buffer, NV12 or I420 at the picture's offsets and strides, taken
+// over from the queue family the picture names; or NV12 plane images, copied
 // into a buffer first.
 
 #include <cstddef>
@@ -20,7 +20,7 @@
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
-#include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
+#include "volumetric_kit/recon/sensor/yuv_image.hpp"
 
 namespace vr_test {
 
@@ -28,7 +28,7 @@ namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 
 // Fills `planes`, or leaves them empty if a step fails.
-inline void read_device_picture(const vr::sensor::DecodedPicture& p,
+inline void read_device_picture(const vr::sensor::YuvImage& p,
                                 vkc::Device& device, vkc::Allocator& allocator,
                                 std::vector<std::uint8_t> (&planes)[3]) {
   const std::uint32_t cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
@@ -48,7 +48,7 @@ inline void read_device_picture(const vr::sensor::DecodedPicture& p,
   const bool recorded =
       images ? batch.copy(*p.image[0], p.width, p.height, *source, 0).ok() &&
                    batch.copy(*p.image[1], cw, ch, *source, chroma_at).ok()
-             : batch.acquire(*source, VK_QUEUE_FAMILY_EXTERNAL).ok();
+             : batch.acquire(*source, p.queue_family).ok();
   if (!recorded || !batch.readback(*source, 0, b.size(), b.data()).ok() ||
       !batch.submit().ok()) {
     return;
@@ -58,7 +58,7 @@ inline void read_device_picture(const vr::sensor::DecodedPicture& p,
   const std::size_t row[3] = {images ? p.width : p.stride[0],
                               images ? 2 * std::size_t{cw} : p.stride[1],
                               p.stride[2]};
-  const bool nv12 = images || p.layout == vr::sensor::VideoPixelLayout::Nv12;
+  const bool nv12 = images || p.layout == vr::sensor::YuvLayout::Nv12;
   for (std::uint32_t r = 0; r < p.height; ++r) {
     const std::uint8_t* line = b.data() + at[0] + r * row[0];
     planes[0].insert(planes[0].end(), line, line + p.width);

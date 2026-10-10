@@ -36,6 +36,7 @@
 #include "picture_frames.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "yuv_reference.hpp"
 
 #include "gpu_test.hpp"
 
@@ -164,7 +165,7 @@ struct Planes {
 Planes from_device(const sensor::DecodedPicture& p, vkc::Device& device,
                    vkc::Allocator& allocator) {
   std::vector<std::uint8_t> planes[3];
-  vr_test::read_device_picture(p, device, allocator, planes);
+  vr_test::read_device_picture(p.yuv, device, allocator, planes);
   return {std::move(planes[0]), std::move(planes[1]), std::move(planes[2])};
 }
 
@@ -293,17 +294,15 @@ int test_device() {
     const std::optional<sensor::DecodedPicture> p =
         orbbec::device_picture(*color);
     CHECK(p.has_value());
-    CHECK(p->width == kWidth && p->height == kHeight);
-    CHECK(p->matrix == sensor::VideoColorMatrix::Bt601 && p->full_range);
-    CHECK(p->chroma_location == sensor::ChromaLocation::Center);
-    sensor::YuvImage image;
-    orbbec::place_device_color(*p, &image);
-    CHECK(image.chroma_location == sensor::ChromaLocation::Center);
+    CHECK(p->yuv.width == kWidth && p->yuv.height == kHeight);
+    CHECK(
+        yuv_reference::coded_in(p->yuv, sensor::VideoColorMatrix::Bt601, true));
+    CHECK(p->yuv.chroma_location == sensor::ChromaLocation::Center);
     CHECK(check_pattern(from_device(*p, *g_device, *g_allocator)) == 0);
-    if (p->device) {
-      held = p->device;
+    if (p->yuv.device) {
+      held = p->yuv.device;
     } else {
-      held = p->image[0];
+      held = p->yuv.image[0];
     }
   }
   CHECK(held.use_count() > 1);  // the frame still holds it

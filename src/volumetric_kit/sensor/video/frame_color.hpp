@@ -16,7 +16,7 @@
 namespace volumetric_kit::recon::sensor::video {
 
 /// @return The matrix @p space names; an unspecified one by @p height, as
-///         @ref DecodedPicture::matrix describes.
+///         @ref DecodedPicture::yuv describes.
 VideoColorMatrix resolve_matrix(AVColorSpace space, int height) noexcept;
 
 /// @return The encoding @p transfer and @p primaries name, as
@@ -25,9 +25,9 @@ std::optional<ColorEncoding> resolve_encoding(
     AVColorTransferCharacteristic transfer,
     AVColorPrimaries primaries) noexcept;
 
-// The matrix, range, encoding and chroma siting @p frame declares, set on
-// @p picture, whose height is already set: @p unlabelled_color stands in for a
-// frame that declares no matrix.
+// The matrix's weights, range, encoding and chroma siting @p frame declares,
+// set on @p picture, whose height is already set: @p unlabelled_color stands
+// in for a frame that declares no matrix.
 void describe_color(
     const AVFrame& frame,
     const std::optional<VideoColorDescription>& unlabelled_color,

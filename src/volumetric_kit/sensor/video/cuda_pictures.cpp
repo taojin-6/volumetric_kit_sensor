@@ -170,7 +170,7 @@ core::Result<CudaPictures::Target> CudaPictures::take(std::uint64_t bytes) {
 core::Status CudaPictures::copy(CUdeviceptr luma, std::size_t luma_pitch,
                                 CUdeviceptr chroma, std::size_t chroma_pitch,
                                 std::uint32_t width, std::uint32_t height,
-                                DecodedPicture& out) {
+                                YuvImage& out) {
   const CudaContextScope scope(context_);
   if (!scope.ok()) {
     return cuda_error(who_, scope.result(), "making the CUDA context current");
@@ -209,10 +209,10 @@ core::Status CudaPictures::copy(CUdeviceptr luma, std::size_t luma_pitch,
 
   out.width = width;
   out.height = height;
-  out.layout = VideoPixelLayout::Nv12;
+  out.layout = YuvLayout::Nv12;
   out.stride[0] = width;
   out.stride[1] = chroma_row;
-  out.device = s->buffer;
+  place_cuda_buffer(s->buffer, out);
   out.offset[0] = 0;
   out.offset[1] = chroma_at;
   return {};

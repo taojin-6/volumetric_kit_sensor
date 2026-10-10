@@ -9,7 +9,6 @@
 
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
-#include "vt_pictures.hpp"
 
 namespace volumetric_kit::recon::sensor::video {
 namespace {
@@ -115,8 +114,9 @@ core::Result<std::unique_ptr<VtJpeg>> VtJpeg::open(const core::Device& device,
     return core::Status::unsupported(
         std::string(who) + ": VideoToolbox has no hardware JPEG decoder");
   }
-  std::unique_ptr<VtJpeg> vt(new VtJpeg());
-  VKC_ASSIGN(vt->pictures_, VtPictures::create(device, who));
+  VKC_ASSIGN(PixelBufferImporter pictures,
+             PixelBufferImporter::create(device, who));
+  std::unique_ptr<VtJpeg> vt(new VtJpeg(std::move(pictures)));
   vt->who_ = who;
   VkPhysicalDeviceProperties props{};
   vkGetPhysicalDeviceProperties(device.physical_device(), &props);
@@ -241,13 +241,9 @@ core::Result<DecodedPicture> VtJpeg::decode(const std::uint8_t* data,
 
   DecodedPicture out;
   const core::Status imported =
-      pictures_->import(decoded.picture, frame->width, frame->height, out);
+      pictures_.import(decoded.picture, frame->width, frame->height, out.yuv);
   CVPixelBufferRelease(decoded.picture);  // the images hold their own
   VKC_TRY(imported);
-  // JFIF's matrix and range.
-  out.matrix = VideoColorMatrix::Bt601;
-  out.full_range = true;
-  out.chroma_location = ChromaLocation::Center;
   return out;
 }
 

@@ -62,10 +62,10 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
   /// @brief Decode one JPEG.
   /// @param data  The JPEG's bytes, SOI to EOI; read during the call only.
   /// @param size  Their count.
-  /// @return The picture on the device: I420 in a buffer
-  ///         (@ref DecodedPicture::device) from nvJPEG, written by CUDA, so a
-  ///         reader takes it over from `VK_QUEUE_FAMILY_EXTERNAL`; or NV12
-  ///         images (@ref DecodedPicture::image) from VideoToolbox. Or:
+  /// @return The picture on the device (@ref DecodedPicture::yuv): I420 in a
+  ///         buffer from nvJPEG, written by CUDA, so a reader takes it over
+  ///         from @ref kQueueFamilyExternal; or NV12 images from
+  ///         VideoToolbox. Or:
   ///         - `Status::Code::IoError` for bytes that do not decode;
   ///         - `Status::Code::Unsupported` for a JPEG the hardware cannot
   ///           decode: not baseline 8-bit 4:2:0 in three components (4:2:2,

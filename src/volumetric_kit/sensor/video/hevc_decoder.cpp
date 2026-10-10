@@ -18,7 +18,7 @@ extern "C" {
 #elif defined(__APPLE__)
 #include <vector>
 
-#include "vt_pictures.hpp"
+#include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
 #else
 #error "HevcDecoder decodes on NVDEC (VR_WITH_CUDA) or VideoToolbox only"
 #endif
@@ -168,7 +168,7 @@ struct HevcDecoder::Impl {
 #if VR_SENSOR_VIDEO_WITH_CUDA
   std::unique_ptr<video::CudaPictures> pictures;
 #else
-  std::unique_ptr<video::VtPictures> pictures;
+  std::optional<PixelBufferImporter> pictures;
 #endif
 
   // @p frame handed over on the device; Unsupported for one the device path
@@ -232,7 +232,7 @@ core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
                              top / 2 * chroma_pitch + left;
   DecodedPicture out;
   VKC_TRY(pictures->copy(luma, luma_pitch, chroma, chroma_pitch, width, height,
-                         out));
+                         out.yuv));
   video::describe_color(frame, unlabelled_color, out);
   return out;
 }
@@ -253,7 +253,7 @@ core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
                                  static_cast<int>(frame.crop_right)),
       static_cast<std::uint32_t>(frame.height -
                                  static_cast<int>(frame.crop_bottom)),
-      out));
+      out.yuv));
   video::describe_color(frame, unlabelled_color, out);
   return out;
 }
@@ -294,7 +294,8 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   const std::string name = std::to_string(ordinal);
   int err = av_hwdevice_ctx_create(&hw, kDeviceType, name.c_str(), nullptr, 0);
 #else
-  VKC_ASSIGN(impl->pictures, video::VtPictures::create(*options.device, kWho));
+  VKC_ASSIGN(impl->pictures,
+             PixelBufferImporter::create(*options.device, kWho));
   int err = av_hwdevice_ctx_create(&hw, kDeviceType, nullptr, nullptr, 0);
 #endif
   if (err < 0) {

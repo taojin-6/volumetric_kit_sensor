@@ -35,7 +35,7 @@ namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 using sensor::JpegDecoder;
-using sensor::VideoPixelLayout;
+using sensor::YuvLayout;
 
 #define CHECK(cond)                                                        \
   do {                                                                     \
@@ -88,8 +88,8 @@ struct Planes {
 // nvJPEG's buffer or VideoToolbox's images, read back.
 Planes from_device(const sensor::DecodedPicture& p, vkc::Device& device,
                    vkc::Allocator& allocator) {
-  Planes out{p.width, p.height, {}};
-  vr_test::read_device_picture(p, device, allocator, out.plane);
+  Planes out{p.yuv.width, p.yuv.height, {}};
+  vr_test::read_device_picture(p.yuv, device, allocator, out.plane);
   return out;
 }
 
@@ -119,13 +119,14 @@ int check_pattern(const Planes& p) {
   return 0;
 }
 
+// Described as JFIF codes a JPEG: BT.601 full range, its chroma centred.
 int check_meta(const sensor::DecodedPicture& p, std::uint32_t w,
                std::uint32_t h) {
-  CHECK(p.width == w && p.height == h);
-  CHECK(p.layout == (p.image[0] != nullptr ? VideoPixelLayout::Nv12
-                                           : VideoPixelLayout::Yuv420));
-  CHECK(p.matrix == sensor::VideoColorMatrix::Bt601 && p.full_range);
-  CHECK(p.chroma_location == sensor::ChromaLocation::Center);
+  CHECK(p.yuv.width == w && p.yuv.height == h);
+  CHECK(p.yuv.layout ==
+        (p.yuv.image[0] != nullptr ? YuvLayout::Nv12 : YuvLayout::I420));
+  CHECK(yuv_reference::coded_in(p.yuv, sensor::VideoColorMatrix::Bt601, true));
+  CHECK(p.yuv.chroma_location == sensor::ChromaLocation::Center);
   return 0;
 }
 
@@ -145,39 +146,31 @@ double chroma_at(const Planes& p, int plane, int x, int y, bool centred) {
          0.25 * ((1 - wx) * bytes[ny * w + cx] + wx * bytes[ny * w + nx]);
 }
 
-// Decode-to-preparation on the device planes. The reference uses the sampling
-// weights and colour-matrix constants; the committed patch edges distinguish
-// centred from left-aligned chroma.
+// Decode-to-preparation on the device planes, the picture taken as the frame's
+// colour as it is. The reference uses the sampling weights and JFIF's matrix
+// constants; the committed patch edges distinguish centred from left-aligned
+// chroma.
 int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
                         vkc::Device& device, vkc::Allocator& allocator,
                         sensor::GpuFramePrep& prep) {
-  CHECK(planes.plane[0].size() == std::size_t{p.width} * p.height);
+  const std::uint32_t width = p.yuv.width;
+  const std::uint32_t height = p.yuv.height;
+  CHECK(planes.plane[0].size() == std::size_t{width} * height);
   CHECK(planes.plane[1].size() ==
-        std::size_t{(p.width + 1) / 2} * ((p.height + 1) / 2));
+        std::size_t{(width + 1) / 2} * ((height + 1) / 2));
   CHECK(planes.plane[2].size() == planes.plane[1].size());
   sensor::RgbdFrame raw;
-  raw.depth_camera.size = {p.width, p.height};
+  raw.depth_camera.size = {width, height};
   raw.depth_camera.intrinsics.fx = raw.depth_camera.intrinsics.fy = 256.0;
   raw.color_camera = raw.depth_camera;
-  std::vector<std::uint16_t> depth(std::size_t{p.width} * p.height, 1000);
+  std::vector<std::uint16_t> depth(std::size_t{width} * height, 1000);
   raw.depth = depth.data();
   raw.min_depth = 0.1f;
   raw.max_depth = 5.0f;
-  raw.color.width = p.width;
-  raw.color.height = p.height;
-  raw.color.layout = p.layout == VideoPixelLayout::Nv12
-                         ? sensor::YuvLayout::Nv12
-                         : sensor::YuvLayout::I420;
-  raw.color.chroma_location = p.chroma_location;
-  raw.color.device = p.device;
-  // from_device already acquired a CUDA buffer for the reference readback.
-  // Preparation now reads it on the same queue family.
+  raw.color = p.yuv;
+  // from_device already took a CUDA buffer over for the reference readback,
+  // so preparation reads it on the queue family that now holds it.
   raw.color.queue_family = sensor::kQueueFamilyIgnored;
-  for (int i = 0; i < 2; ++i) raw.color.image[i] = p.image[i];
-  for (int i = 0; i < 3; ++i) {
-    raw.color.stride[i] = p.stride[i];
-    raw.color.offset[i] = p.offset[i];
-  }
   auto frame = prep.prepare(raw);
   CHECK(frame.ok());
   auto gpu = vr_test::read_back<std::uint32_t>(device, allocator, *frame->color,
@@ -186,11 +179,12 @@ int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
   for (bool centred : {false, true}) {
     int max_error = 0;
     for (std::size_t i = 0; i < depth.size(); ++i) {
-      const int x = static_cast<int>(i % p.width);
-      const int y = static_cast<int>(i / p.width);
+      const int x = static_cast<int>(i % width);
+      const int y = static_cast<int>(i / width);
       const auto rgb = yuv_reference::rgb(
           planes.plane[0][i], chroma_at(planes, 1, x, y, centred),
-          chroma_at(planes, 2, x, y, centred), p.matrix, p.full_range);
+          chroma_at(planes, 2, x, y, centred), sensor::VideoColorMatrix::Bt601,
+          true);
       for (int k = 0; k < 3; ++k) {
         const int error = std::abs(
             static_cast<int>(gpu.value()[i] >> (8 * k) & 255) - rgb[k]);
@@ -202,12 +196,16 @@ int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
   return 0;
 }
 
-// On the device, where this platform's hardware leaves it.
+// On the device, where this platform's hardware leaves it: VideoToolbox's
+// images, or a buffer CUDA wrote, taken over from outside Vulkan.
 int check_on_device(const sensor::DecodedPicture& p) {
 #if defined(__APPLE__)
-  CHECK(p.image[0] != nullptr && p.image[1] != nullptr && p.device == nullptr);
+  CHECK(p.yuv.image[0] != nullptr && p.yuv.image[1] != nullptr &&
+        p.yuv.device == nullptr);
+  CHECK(p.yuv.queue_family == sensor::kQueueFamilyIgnored);
 #else
-  CHECK(p.device != nullptr && p.image[0] == nullptr);
+  CHECK(p.yuv.device != nullptr && p.yuv.image[0] == nullptr);
+  CHECK(p.yuv.queue_family == sensor::kQueueFamilyExternal);
 #endif
   return 0;
 }
@@ -260,11 +258,11 @@ int test_device(const Gpu& gpu) {
   auto first = decode(decoder.value(), bytes);
   auto second = decode(decoder.value(), bytes);
   CHECK(first.ok() && second.ok());
-  CHECK(first->device != second->device);  // the first still holds its own
-  const vkc::Buffer* freed = first->device.get();
+  CHECK(first->yuv.device != second->yuv.device);  // the first holds its own
+  const vkc::Buffer* freed = first->yuv.device.get();
   first.value() = {};
   auto third = decode(decoder.value(), bytes);
-  CHECK(third.ok() && third->device.get() == freed);
+  CHECK(third.ok() && third->yuv.device.get() == freed);
 #endif
   return 0;
 }

@@ -560,8 +560,8 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
       return refuse(
           core::Status::io_error(who_ + ": colour is not a decoded picture"));
     }
-    const std::uint32_t color_width = picture->width;
-    const std::uint32_t color_height = picture->height;
+    const std::uint32_t color_width = picture->yuv.width;
+    const std::uint32_t color_height = picture->yuv.height;
     if (dv->getWidth() != d.width || dv->getHeight() != d.height ||
         color_width != c.width || color_height != c.height) {
       return refuse(core::Status::io_error(
@@ -589,23 +589,17 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
     frame.depth_camera = depth_camera_;
     frame.min_depth = min_depth_;
     frame.max_depth = max_depth_;
-    // The matrix, range and encoding the decoder resolved: the stream's own
-    // when it names them, the Femto Mega's unlabelled BT.601 full range
-    // otherwise, and the transfer and primaries it declares.
+    // The picture as the decoder coded it: the stream's matrix and range when
+    // it names them, the Femto Mega's unlabelled BT.601 full range otherwise,
+    // and the transfer and primaries it declares.
     if (!picture->encoding) {
       return refuse(core::Status::unsupported(
           who_ +
           ": the colour stream declares a transfer or primaries "
           "ColorEncoding cannot name"));
     }
-    const YcbcrWeights weights = ycbcr_weights(picture->matrix);
-    frame.color.kr = weights.kr;
-    frame.color.kb = weights.kb;
-    frame.color.full_range = picture->full_range;
+    frame.color = picture->yuv;
     frame.color_encoding = *picture->encoding;
-    frame.color.width = c.width;
-    frame.color.height = c.height;
-    place_device_color(*picture, &frame.color);
     frame.color_camera = color_camera_;
     frame.color_to_world = color_to_world_;
     frame.depth_to_color = depth_to_color_;
