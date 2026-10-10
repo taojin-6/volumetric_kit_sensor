@@ -664,21 +664,12 @@ DeviceFrame GpuFramePrep::finish(const RgbdFrame& frame) const {
 
 core::Result<DeviceFrame> GpuFramePrep::prepare(const RgbdFrame& frame,
                                                 core::StageMetrics* metrics) {
-  core::GpuStageScope stage(metrics, gpu_timer_, "frame prep");
-  // The whole frame checked before anything is uploaded, so a refused frame
-  // costs no work and leaves every buffer as it was.
-  VKC_ASSIGN(const Layout layout, check(frame));
-  core::CommandBatch batch(*device_, *allocator_);
-  VKC_TRY(acquire(batch, frame));
-  VKC_TRY(stage_host(frame, layout));
-  VKC_TRY(record_uploads(batch, frame, layout, &stage));
-  VKC_TRY(record_passes(batch, frame, layout, &stage));
-  const core::Status submitted = batch.submit();
-  if (!submitted.ok()) {
-    abandon(frame, layout);
-    return submitted;
-  }
-  return finish(frame);
+  // A set of one, through prepare_batch's path.
+  const RgbdFrame* const frames[] = {&frame};
+  Layout layout;
+  std::optional<DeviceFrame> out;
+  VKC_TRY(prepare_frames(this, frames, &layout, &out, 1, metrics));
+  return std::move(*out);
 }
 
 core::Result<std::vector<std::optional<DeviceFrame>>>
@@ -690,47 +681,68 @@ GpuFramePrep::prepare_batch(std::vector<GpuFramePrep>& preps,
         "GpuFramePrep::prepare_batch: " + std::to_string(frames.size()) +
         " frames for " + std::to_string(preps.size()) + " passes");
   }
-  // Every frame checked before any is recorded, so a refused set costs no
-  // work; and every pass on the first one's device, which runs the batch.
-  std::vector<std::optional<Layout>> layouts(frames.size());
-  std::vector<std::size_t> present;
+  std::vector<const RgbdFrame*> listed(frames.size(), nullptr);
   for (std::size_t i = 0; i < frames.size(); ++i) {
-    if (!frames[i]) continue;
+    if (frames[i]) listed[i] = &*frames[i];
+  }
+  std::vector<Layout> layouts(frames.size());
+  std::vector<std::optional<DeviceFrame>> out(frames.size());
+  VKC_TRY(prepare_frames(preps.data(), listed.data(), layouts.data(),
+                         out.data(), frames.size(), metrics));
+  return out;
+}
+
+core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
+                                          const RgbdFrame* const* frames,
+                                          Layout* layouts,
+                                          std::optional<DeviceFrame>* out,
+                                          std::size_t count,
+                                          core::StageMetrics* metrics) {
+  // Every frame checked before any is recorded, so a refused set costs no
+  // work and times no row; and every pass on the first one's device, which
+  // runs the batch.
+  GpuFramePrep* first = nullptr;
+  std::uint32_t present = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] == nullptr) continue;
     VKC_ASSIGN(layouts[i], preps[i].check(*frames[i]));
-    if (!present.empty() && preps[i].device_ != preps[present[0]].device_) {
+    if (first == nullptr) {
+      first = &preps[i];
+    } else if (preps[i].device_ != first->device_) {
       return core::Status::invalid_argument(
           "GpuFramePrep::prepare_batch: the passes are on different devices");
     }
-    present.push_back(i);
+    ++present;
   }
-  std::vector<std::optional<DeviceFrame>> out(frames.size());
-  if (present.empty()) return out;
-  GpuFramePrep& first = preps[present[0]];
+  if (first == nullptr) return {};
 
   // The set's timed commands all in one window, which grows with the array.
-  VKC_TRY(first.gpu_timer_.reserve(
-      *first.device_,
-      kSpansPerFrame * static_cast<std::uint32_t>(present.size())));
-  core::GpuStageScope stage(metrics, first.gpu_timer_, "frame prep");
-  core::CommandBatch batch(*first.device_, *first.allocator_);
-  for (const std::size_t i : present) {
-    VKC_TRY(preps[i].acquire(batch, *frames[i]));
+  VKC_TRY(first->gpu_timer_.reserve(*first->device_, kSpansPerFrame * present));
+  core::GpuStageScope stage(metrics, first->gpu_timer_, "frame prep");
+  core::CommandBatch batch(*first->device_, *first->allocator_);
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) VKC_TRY(preps[i].acquire(batch, *frames[i]));
   }
   try {
-    for (const std::size_t i : present) {
-      VKC_TRY(preps[i].stage_host(*frames[i], *layouts[i]));
+    for (std::size_t i = 0; i < count; ++i) {
+      if (frames[i] != nullptr) {
+        VKC_TRY(preps[i].stage_host(*frames[i], layouts[i]));
+      }
     }
   } catch (const std::bad_alloc&) {
-    return core::Status::out_of_memory(
-        "GpuFramePrep::prepare_batch: out of host memory");
+    return core::Status::out_of_memory("GpuFramePrep: out of host memory");
   }
   // Every camera's uploads, then every camera's passes: the uploads write
   // buffers of their own, so they run with no barrier between them.
-  for (const std::size_t i : present) {
-    VKC_TRY(preps[i].record_uploads(batch, *frames[i], *layouts[i], &stage));
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) {
+      VKC_TRY(preps[i].record_uploads(batch, *frames[i], layouts[i], &stage));
+    }
   }
-  for (const std::size_t i : present) {
-    VKC_TRY(preps[i].record_passes(batch, *frames[i], *layouts[i], &stage));
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) {
+      VKC_TRY(preps[i].record_passes(batch, *frames[i], layouts[i], &stage));
+    }
   }
   // TODO: submit through the core's submit_async once the pipelined stages
   // land (DESIGN.md's Next work, step 4): the set then waits on the previous
@@ -739,13 +751,15 @@ GpuFramePrep::prepare_batch(std::vector<GpuFramePrep>& preps,
   // run them, where every failure abandons them now.
   const core::Status submitted = batch.submit();
   if (!submitted.ok()) {
-    for (const std::size_t i : present) {
-      preps[i].abandon(*frames[i], *layouts[i]);
+    for (std::size_t i = 0; i < count; ++i) {
+      if (frames[i] != nullptr) preps[i].abandon(*frames[i], layouts[i]);
     }
     return submitted;
   }
-  for (const std::size_t i : present) out[i] = preps[i].finish(*frames[i]);
-  return out;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) out[i] = preps[i].finish(*frames[i]);
+  }
+  return {};
 }
 
 core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
