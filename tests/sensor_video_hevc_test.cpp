@@ -16,14 +16,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
-#include <iterator>
 #include <optional>
 #include <utility>
 #include <vector>
 
 #include "device_picture_readback.hpp"
 #include "gpu_test.hpp"
+#include "hevc_fixture.hpp"
+#include "test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
@@ -33,14 +33,6 @@ namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 using sensor::HevcDecoder;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 
@@ -81,28 +73,6 @@ struct Picture {
 };
 
 using AccessUnits = std::vector<std::vector<std::uint8_t>>;
-
-// A clip's access units, split at each access unit delimiter (NAL type 35).
-AccessUnits access_units(const char* path) {
-  std::ifstream in(path, std::ios::binary);
-  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
-                                        std::istreambuf_iterator<char>());
-  std::vector<std::size_t> starts;
-  for (std::size_t i = 0; i + 3 < bytes.size(); ++i) {
-    if (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1 &&
-        ((bytes[i + 3] >> 1) & 0x3f) == 35) {
-      starts.push_back(i > 0 && bytes[i - 1] == 0 ? i - 1 : i);
-    }
-  }
-  AccessUnits units;
-  for (std::size_t k = 0; k < starts.size(); ++k) {
-    const std::size_t end =
-        k + 1 < starts.size() ? starts[k + 1] : bytes.size();
-    units.emplace_back(bytes.begin() + static_cast<std::ptrdiff_t>(starts[k]),
-                       bytes.begin() + static_cast<std::ptrdiff_t>(end));
-  }
-  return units;
-}
 
 // The pictures a clip decoded to, each read back as soon as it is ready, and
 // the first error, after which the pictures still waiting are taken too.
@@ -147,7 +117,7 @@ Decoded decode(
   options.unlabelled_color = unlabelled;
   auto decoder = HevcDecoder::create(options);
   if (!decoder) return {{}, decoder.status()};
-  return decode_clip(decoder.value(), access_units(clip), gpu);
+  return decode_clip(decoder.value(), vr_test::hevc_access_units(clip), gpu);
 }
 
 // On the device, where this platform's hardware leaves it: VideoToolbox's
@@ -258,8 +228,8 @@ int test_unlabelled_color(const Gpu& gpu) {
 // reset(): the pictures held for display are dropped, a stream ended with
 // size 0 takes data again, and the next key frame decodes as the first.
 int test_reset(const Gpu& gpu) {
-  const AccessUnits b_frames = access_units(kRefused);
-  const AccessUnits patches = access_units(kPatches);
+  const AccessUnits b_frames = vr_test::hevc_access_units(kRefused);
+  const AccessUnits patches = vr_test::hevc_access_units(kPatches);
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   int out = 0;
@@ -294,12 +264,12 @@ int test_cropped(const Gpu& gpu) {
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   const Decoded cropped =
-      decode_clip(decoder.value(), access_units(kCropped), gpu);
+      decode_clip(decoder.value(), vr_test::hevc_access_units(kCropped), gpu);
 #if defined(__APPLE__)
   CHECK(cropped.pictures.empty());
   CHECK(cropped.status.domain() == vkc::Status::Code::Unsupported);
   CHECK(decoder->reset().ok());
-  const AccessUnits units = access_units(kCropped);
+  const AccessUnits units = vr_test::hevc_access_units(kCropped);
   CHECK(decoder->send(units[0].data(), units[0].size(), 0).domain() ==
         vkc::Status::Code::Unsupported);
 #else
@@ -341,8 +311,8 @@ int test_cropped(const Gpu& gpu) {
 // Check recovery both with and without reset, and with the rest of the access
 // unit still present. No rejected bytes may latch a permanent refusal.
 int test_malformed_cropped_sps(const Gpu& gpu) {
-  const AccessUnits cropped = access_units(kCropped);
-  const AccessUnits patches = access_units(kPatches);
+  const AccessUnits cropped = vr_test::hevc_access_units(kCropped);
+  const AccessUnits patches = vr_test::hevc_access_units(kPatches);
   CHECK(!cropped.empty());
   const auto& unit = cropped[0];
   std::size_t sps = 0;
@@ -395,7 +365,7 @@ int test_malformed_cropped_sps(const Gpu& gpu) {
 // display order, each a distinct pts sent before it; then the refusal, which
 // stands after a reset.
 int test_refused(const Gpu& gpu) {
-  const AccessUnits units = access_units(kRefused);
+  const AccessUnits units = vr_test::hevc_access_units(kRefused);
   CHECK(units.size() == static_cast<std::size_t>(kFrames + 2));
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
@@ -476,7 +446,8 @@ int test_moves(const Gpu& gpu) {
 
   HevcDecoder* alias = &c;
   c = std::move(*alias);  // self-move
-  return check_clip_shape(decode_clip(c, access_units(kPatches), gpu));
+  return check_clip_shape(
+      decode_clip(c, vr_test::hevc_access_units(kPatches), gpu));
 }
 
 int gpu_main(Gpu& gpu) {
@@ -509,7 +480,8 @@ int main() {
   // Unbuffered, so a crash inside FFmpeg or a driver still shows which clip
   // it was on.
   std::setvbuf(stdout, nullptr, _IONBF, 0);
-  if (access_units(kPatches).size() != static_cast<std::size_t>(kFrames)) {
+  if (vr_test::hevc_access_units(kPatches).size() !=
+      static_cast<std::size_t>(kFrames)) {
     std::fprintf(stderr, "FAIL: cannot split %s into %d access units\n",
                  kPatches, kFrames);
     return 1;

@@ -34,6 +34,7 @@
 #include "device_picture_readback.hpp"
 #include "jpeg_color.hpp"
 #include "picture_frames.hpp"
+#include "test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "yuv_reference.hpp"
@@ -44,14 +45,6 @@ namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 

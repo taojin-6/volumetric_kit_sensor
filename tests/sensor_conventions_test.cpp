@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <limits>
 
+#include "test_check.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/camera_conventions.hpp"
 #include "volumetric_kit/recon/sensor/color_conventions.hpp"
@@ -27,14 +28,6 @@
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 

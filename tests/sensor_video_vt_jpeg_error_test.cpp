@@ -17,20 +17,13 @@
 #include <vector>
 
 #include "gpu_test.hpp"
+#include "test_check.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
 namespace vkc = volumetric_kit::core;
 namespace vr = volumetric_kit::recon;
 using vr::sensor::JpegDecoder;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 

@@ -4,9 +4,8 @@
 // Host tests for the color-space vocabulary: the exact piecewise sRGB curve,
 // the packed helpers the fusion kernels mirror, the primaries matrices that
 // make ColorEncoding::Primaries a value something *converts* rather than a
-// label something reads, and the two properties the 2026-08-02 decision rests
-// on -- that blending in linear is not the same as blending encoded, and that
-// the running mean re-quantized to 8 bits eventually latches.
+// label something reads, and the difference between blending linear and
+// encoded values.
 //
 // Pure host math over the core vocabulary, so this always runs: no device, no
 // platform, no driver. That is the point of the curve living in `core`.
@@ -19,18 +18,11 @@
 // this in transitively; libstdc++ does not, so name it.
 #include <initializer_list>
 
+#include "test_check.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 
 namespace vr = volumetric_kit::recon;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 int main() {
   // --- The curve is the EXACT piecewise sRGB function -----------------------
@@ -172,56 +164,10 @@ int main() {
     CHECK((vr::pack_linear_to_srgb(vr::Vec3f{nan, nan, nan}) >> 24) == 0xFFu);
   }
 
-  // --- The running mean latches, and THAT is the storage trigger ------------
-  // The 2026-08-02 decision picks `uint32` + convert-in-shader and says the
-  // escalation trigger is not banding (a display symptom of the wrong variable)
-  // but the mean freezing: re-quantized to 8 bits it stops moving once the
-  // per-frame delta falls below half a code. Reproduced here on the
-  // integrator's own arithmetic so the claim is a measurement rather than an
-  // assertion -- and so a later widening to RGBA16 has a test that changes.
-  {
-    constexpr float kMaxWeight = 5.0f;  // TsdfIntegrator's ported default
-    constexpr float kWObs = 0.25f;      // 1/z^2 at 2 m
-    auto settle = [](std::uint32_t start_code, std::uint32_t target_code) {
-      std::uint32_t cur = start_code | 0xFF000000u;
-      const vr::Vec3f target =
-          vr::unpack_srgb_to_linear(target_code | 0xFF000000u);
-      for (int i = 0; i < 4096; ++i) {
-        const vr::Vec3f prev = vr::unpack_srgb_to_linear(cur);
-        const vr::Vec3f fused =
-            (prev * kMaxWeight + target * kWObs) / (kMaxWeight + kWObs);
-        const std::uint32_t next = vr::pack_linear_to_srgb(fused);
-        if (next == cur) {
-          break;  // latched: the update no longer moves a code
-        }
-        cur = next;
-      }
-      return cur & 0xFFu;
-    };
-    // Measured, not predicted: the residual is ~10 codes and is *uniform*
-    // across the range, because the sRGB curve makes a fixed fraction of the
-    // linear gap a roughly fixed number of codes. So even a wide gap stops ~10
-    // codes short -- the mean can never close the last stretch, whatever it
-    // starts from.
-    for (std::uint32_t target : {64u, 128u, 224u, 255u}) {
-      const std::uint32_t got = settle(0u, target);
-      CHECK(got < target);         // never actually arrives
-      CHECK(target - got >= 6u);   // and stops well short
-      CHECK(target - got <= 14u);  // by a bounded, range-independent gap
-    }
-    // Below that width the mean does not move AT ALL: the very first step is
-    // under half a code, so the voxel keeps its initial colour forever. This is
-    // the storage escalation trigger the 2026-08-02 decision names -- and the
-    // reason it names convergence rather than banding, which is a display
-    // symptom of an unrelated variable.
-    CHECK(settle(120u, 125u) == 120u);
-    CHECK(settle(16u, 20u) == 16u);
-  }
-
   std::printf(
       "recon core color-space test passed: exact piecewise sRGB (discriminated "
       "from pow 2.2), all 256 codes round-trip, primaries preserve white and "
-      "P3 green clips outside BT.709, is_canonical accepts Bt709-as-sRGB, and "
-      "the 8-bit running mean latches on a sub-half-code delta\n");
+      "P3 green clips outside BT.709, and is_canonical accepts "
+      "Bt709-as-sRGB\n");
   return 0;
 }

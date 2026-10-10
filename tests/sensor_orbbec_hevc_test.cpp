@@ -24,8 +24,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -38,7 +36,9 @@
 #include "device_picture_readback.hpp"
 #include "gpu_test.hpp"
 #include "hevc_color.hpp"
+#include "hevc_fixture.hpp"
 #include "picture_frames.hpp"
+#include "test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "yuv_reference.hpp"
@@ -47,14 +47,6 @@ namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 
@@ -78,27 +70,6 @@ int patch(int column, int row, int frame) {
 }
 
 using Units = std::vector<std::vector<std::uint8_t>>;
-
-Units access_units(const char* path) {
-  std::ifstream in(path, std::ios::binary);
-  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
-                                        std::istreambuf_iterator<char>());
-  std::vector<std::size_t> starts;
-  for (std::size_t i = 0; i + 3 < bytes.size(); ++i) {
-    if (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1 &&
-        ((bytes[i + 3] >> 1) & 0x3f) == 35) {  // access unit delimiter
-      starts.push_back(i > 0 && bytes[i - 1] == 0 ? i - 1 : i);
-    }
-  }
-  Units units;
-  for (std::size_t k = 0; k < starts.size(); ++k) {
-    const std::size_t end =
-        k + 1 < starts.size() ? starts[k + 1] : bytes.size();
-    units.emplace_back(bytes.begin() + static_cast<std::ptrdiff_t>(starts[k]),
-                       bytes.begin() + static_cast<std::ptrdiff_t>(end));
-  }
-  return units;
-}
 
 // Access unit `f`'s pair, dated in `slot`, its colour numbered f + 1 -- as
 // the camera numbers its frames, in the order it sends them -- in the system
@@ -319,8 +290,9 @@ int check_pair(
 // a buffer CUDA wrote taken over from outside Vulkan. It lives as long as its
 // frame, which a copy of the frame does not extend.
 int test_hands_on_device_pictures() {
-  Run r =
-      run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8, true);
+  Run r = run(
+      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}),
+      8, true);
   CHECK(r.frames.size() == 8 && r.lost == 0);
   std::shared_ptr<const void> held;
   std::shared_ptr<ob::Frame> copied;
@@ -365,7 +337,7 @@ int test_hands_on_device_pictures() {
 }
 
 int test_key_frames() {
-  const auto units = access_units(kUnlabelled);
+  const auto units = vr_test::hevc_access_units(kUnlabelled);
   CHECK(units.size() == 8);
   for (std::size_t i = 0; i < units.size(); ++i) {
     // keyint 4: frames 0 and 4.
@@ -378,8 +350,9 @@ int test_key_frames() {
 }
 
 int test_every_pair_in_order() {
-  const Run r =
-      run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8);
+  const Run r = run(
+      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}),
+      8);
   CHECK(r.out.size() == 8);
   CHECK(r.lost == 0);
   for (int i = 0; i < 8; ++i) {
@@ -394,7 +367,8 @@ int test_every_pair_in_order() {
 // numbers is what shows it: FFmpeg 6.1 conceals the missing reference and
 // decodes frames 2 and 3 wrongly without an error, where FFmpeg 9 refuses.
 int test_gap_waits_for_key_frame() {
-  const Run r = run(pairs(access_units(kUnlabelled), {0, 2, 3, 4, 5, 6, 7}), 5);
+  const Run r = run(
+      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 2, 3, 4, 5, 6, 7}), 5);
   CHECK(r.out.size() == 5);
   CHECK(r.lost == 2);
   const int want[] = {0, 4, 5, 6, 7};
@@ -409,9 +383,10 @@ int test_gap_waits_for_key_frame() {
 // secondary's first frame comes as soon as it starts, the rest once the
 // primary triggers it. Nothing is missing from the stream, so nothing is lost.
 int test_pause_costs_nothing() {
-  const Run r = run(pairs(access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7},
-                          {0, 120, 121, 122, 123, 124, 125, 126}),
-                    8);
+  const Run r = run(
+      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7},
+            {0, 120, 121, 122, 123, 124, 125, 126}),
+      8);
   CHECK(r.out.size() == 8);
   CHECK(r.lost == 0);
   const int slots[] = {0, 120, 121, 122, 123, 124, 125, 126};
@@ -496,8 +471,8 @@ struct Releaser {
 // nothing were missing; it goes too, and decoding picks up at the key frame,
 // 4. Lost: the two dropped and the one after them.
 int test_overflow_waits_for_key_frame() {
-  const Pairs in = pairs(access_units(kUnlabelled), {0, 1, 2, 1, 4, 5, 6, 7},
-                         {0, 1, 2, 3, 4, 5, 6, 7});
+  const Pairs in = pairs(vr_test::hevc_access_units(kUnlabelled),
+                         {0, 1, 2, 1, 4, 5, 6, 7}, {0, 1, 2, 3, 4, 5, 6, 7});
   auto collected = std::make_shared<Collected>();
   auto hold = std::make_shared<Hold>();
   auto decoder = start(
@@ -539,7 +514,8 @@ int test_overflow_waits_for_key_frame() {
 
 // A stream joined mid-GOP starts at its first key frame.
 int test_start_waits_for_key_frame() {
-  const Run r = run(pairs(access_units(kUnlabelled), {2, 3, 4, 5}), 2);
+  const Run r =
+      run(pairs(vr_test::hevc_access_units(kUnlabelled), {2, 3, 4, 5}), 2);
   CHECK(r.out.size() == 2);
   CHECK(r.lost == 2);
   CHECK(slot_of(r.out[0]) == 4 && slot_of(r.out[1]) == 5);
@@ -550,8 +526,9 @@ int test_start_waits_for_key_frame() {
 // depth never came: decoded, so frame 3 still has the picture it is predicted
 // from, and dropped. Only that pair is lost.
 int test_color_without_depth() {
-  const Run r =
-      run(pairs(access_units(kUnlabelled), {0, 1, -4, 3, 4, 5, 6, 7}), 7);
+  const Run r = run(
+      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, -4, 3, 4, 5, 6, 7}),
+      7);
   CHECK(r.out.size() == 7);
   CHECK(r.lost == 1);
   const int want[] = {0, 1, 3, 4, 5, 6, 7};
@@ -563,7 +540,7 @@ int test_color_without_depth() {
 }
 
 int test_pair_without_color() {
-  const Run r = run(pairs(access_units(kUnlabelled), {0, -1}), 1);
+  const Run r = run(pairs(vr_test::hevc_access_units(kUnlabelled), {0, -1}), 1);
   CHECK(r.out.size() == 1);
   CHECK(r.lost == 1);
   return 0;
@@ -572,7 +549,7 @@ int test_pair_without_color() {
 // Frame 2 arrives empty: lost, as on the wire, and not sent, which would end
 // the stream. Frame 3 goes with it, and decoding picks up at the key frame, 4.
 int test_empty_frame() {
-  const auto units = access_units(kUnlabelled);
+  const auto units = vr_test::hevc_access_units(kUnlabelled);
   Pairs in = pairs(units, {0, 1, 2, 3, 4, 5, 6, 7});
   in[2] = pair({}, 2, 2);
   const Run r = run(in, 6);
@@ -588,8 +565,9 @@ int test_empty_frame() {
 
 // A stream that labels itself is decoded as it says: BT.709 limited range.
 int test_labelled_stream() {
-  const Run r =
-      run(pairs(access_units(kLabelled), {0, 1, 2, 3, 4, 5, 6, 7}), 8);
+  const Run r = run(
+      pairs(vr_test::hevc_access_units(kLabelled), {0, 1, 2, 3, 4, 5, 6, 7}),
+      8);
   CHECK(r.out.size() == 8);
   CHECK(r.lost == 0);
   for (int i = 0; i < 8; ++i) {
@@ -677,13 +655,13 @@ int check_run(const Run& r, const std::vector<int>& want, int labelled_below,
 // unlabelled clip after them is what lets the last of them out, as the next
 // frames of a live stream would.
 int test_b_frames() {
-  Units b_frames = access_units(kBFrames);
+  Units b_frames = vr_test::hevc_access_units(kBFrames);
   CHECK(b_frames.size() >= 8);
   b_frames.resize(8);  // the patch frames; the grey ones after are 4:0:0
   const std::vector<int> b_shows = display_order(b_frames);
   CHECK(b_shows.size() == 8);
   CHECK(!std::is_sorted(b_shows.begin(), b_shows.end()));  // out of order
-  const Units unlabelled = access_units(kUnlabelled);
+  const Units unlabelled = vr_test::hevc_access_units(kUnlabelled);
   const std::vector<int> u_shows = display_order(unlabelled);
   CHECK(u_shows.size() == 8);
 
@@ -714,13 +692,13 @@ int test_b_frames() {
 // 32 access units without a picture. Lost: frames 2 and 3, and the leading
 // two.
 int test_open_gop_restart() {
-  const Units open_gop = access_units(kOpenGop);
+  const Units open_gop = vr_test::hevc_access_units(kOpenGop);
   CHECK(open_gop.size() == 16);
   const std::vector<int> o_shows = display_order(open_gop);
   CHECK(o_shows.size() == 16);
   CHECK(o_shows[3] == 1 && o_shows[4] == 6 && o_shows[5] == 5 &&
         o_shows[6] == 4);
-  const Units unlabelled = access_units(kUnlabelled);
+  const Units unlabelled = vr_test::hevc_access_units(kUnlabelled);
   const std::vector<int> u_shows = display_order(unlabelled);
   CHECK(u_shows.size() == 8);
 
@@ -759,7 +737,7 @@ int test_start_needs_device() {
 // decoder stops for good, Unsupported, having handed on patch frames before
 // it.
 int test_refused_stream() {
-  const Units units = access_units(kBFrames);
+  const Units units = vr_test::hevc_access_units(kBFrames);
   CHECK(units.size() == 10);
   std::vector<int> frames;
   for (int i = 0; i < 10; ++i) frames.push_back(i);

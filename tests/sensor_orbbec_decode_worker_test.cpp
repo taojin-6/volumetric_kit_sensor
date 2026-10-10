@@ -23,17 +23,10 @@
 #include <vector>
 
 #include "decode_worker.hpp"
+#include "test_check.hpp"
 
 namespace vkc = volumetric_kit::core;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 

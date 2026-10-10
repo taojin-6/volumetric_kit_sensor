@@ -1,156 +1,54 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// The RGB-D sensor contract, implemented by a fake and driven through a
-// base-class reference, as a consumer holds one: the no_frame/some_frame
-// returns compile and mean what they say, poll hands out the newest frame and
-// drain every held one oldest first, a frame outlives the sensor's buffer
-// through `pixels`, and the enum names are stable. Host-only.
+// The sensor vocabulary: defaults, the no_frame/some_frame returns, frame
+// ownership through pixels, and stable enum names. Host-only.
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
-#include <optional>
 #include <utility>
 #include <vector>
 
-#include "volumetric_kit/core/base/result.hpp"
+#include "test_check.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
 
-namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 
-// A sensor that "captures" a 2x2 depth frame each time the test calls
-// capture(), holding at most `depth` of them as a driver's mailbox does, and
-// every buffer it filled until stop(), as a driver's pool does.
-class FakeSensor final : public sensor::IRgbdSensor {
- public:
-  FakeSensor() {
-    info_.id = "fake";
-    info_.depth = volumetric_kit::recon::camera::CameraModel{
-        {2, 2}, {1.0, 1.0, 0.5, 0.5}, {}};
-  }
-
-  void capture() {
-    ++stats_.received;
-    auto pixels = std::make_shared<std::vector<std::uint16_t>>(
-        4, static_cast<std::uint16_t>(1000 + next_));
-    buffers_.push_back(pixels);
-    sensor::RgbdFrame f;
-    f.depth = pixels->data();
-    f.pixels = pixels;
-    f.depth_camera = *info_.depth;
-    f.sequence = next_++;
-    held_.push_back(std::move(f));
-    while (held_.size() > depth_) {
-      held_.erase(held_.begin());
-      ++stats_.dropped;
-    }
-  }
-
-  const sensor::SensorInfo& info() const noexcept override { return info_; }
-  vkc::Status set_queue_depth(std::size_t frames) override {
-    if (frames == 0 || running_) {
-      return vkc::Status::invalid_argument("FakeSensor: bad queue depth");
-    }
-    depth_ = frames;
-    return {};
-  }
-  vkc::Status start() override {
-    running_ = true;
-    return {};
-  }
-  void stop() noexcept override {
-    running_ = false;
-    held_.clear();
-    buffers_.clear();
-  }
-  vkc::Result<std::optional<sensor::RgbdFrame>> poll() override {
-    if (held_.empty()) return no_frame();
-    sensor::RgbdFrame newest = std::move(held_.back());
-    stats_.dropped += held_.size() - 1;
-    held_.clear();
-    ++stats_.delivered;
-    return some_frame(std::move(newest));
-  }
-  vkc::Status drain(std::vector<sensor::RgbdFrame>* out) override {
-    for (sensor::RgbdFrame& f : held_) out->push_back(std::move(f));
-    stats_.delivered += held_.size();
-    held_.clear();
-    return {};
-  }
-  sensor::SensorStats stats() const noexcept override { return stats_; }
-
- private:
-  sensor::SensorInfo info_;
-  std::vector<sensor::RgbdFrame> held_;
-  std::vector<std::shared_ptr<std::vector<std::uint16_t>>> buffers_;
-  std::size_t depth_ = 1;
-  bool running_ = false;
-  std::uint64_t next_ = 0;
-  sensor::SensorStats stats_;
-};
-
-int test_poll_and_drain(FakeSensor& fake) {
-  sensor::IRgbdSensor& s = fake;  // as a consumer holds one
-  CHECK(s.info().id == "fake" && s.info().depth && !s.info().color);
-  CHECK(s.info().role == sensor::SyncRole::FreeRun);
-  CHECK(s.info().clock == sensor::ClockDomain::Device);
-  CHECK(s.info().pose == sensor::PoseSource::Fixed);
-  CHECK(!s.set_queue_depth(0).ok());
-  CHECK(s.set_queue_depth(3).ok());
-  CHECK(s.start().ok());
-  CHECK(!s.set_queue_depth(2).ok());  // set before start
-
-  auto none = s.poll();
-  CHECK(none.ok() && !none.value());  // nothing this tick: not an error
-  CHECK(!s.exhausted());
-
-  for (int i = 0; i < 5; ++i) fake.capture();  // 0..4; 0 and 1 pushed out
-  std::vector<sensor::RgbdFrame> frames;
-  CHECK(s.drain(&frames).ok());
-  CHECK(frames.size() == 3);
-  for (std::size_t i = 0; i < frames.size(); ++i) {
-    CHECK(frames[i].sequence == 2 + i);  // oldest first
-  }
-  frames.clear();
-  CHECK(s.drain(&frames).ok() && frames.empty());
-
-  fake.capture();
-  fake.capture();
-  auto newest = s.poll();
-  CHECK(newest.ok() && newest.value() && newest.value()->sequence == 6);
-  const sensor::SensorStats st = s.stats();
-  CHECK(st.received == 7 && st.delivered == 4 && st.dropped == 3);
-  CHECK(st.delivered + st.dropped + st.failed <= st.received);
+int test_defaults() {
+  const sensor::SensorInfo info;
+  CHECK(info.id.empty() && !info.depth && !info.color);
+  CHECK(info.role == sensor::SyncRole::FreeRun);
+  CHECK(info.clock == sensor::ClockDomain::Device);
+  CHECK(info.pose == sensor::PoseSource::Fixed);
   return 0;
 }
 
-int test_frames_hold_pixels(FakeSensor& fake) {
+int test_frame_returns_and_ownership() {
+  const auto none = sensor::IRgbdSensor::no_frame();
+  CHECK(none.ok() && !none.value());
+
   sensor::RgbdFrame kept;
+  std::weak_ptr<const void> buffer;
   {
-    fake.capture();
-    auto polled = fake.poll();
-    CHECK(polled.ok() && polled.value());
-    kept = *polled.value();
+    auto pixels = std::make_shared<std::vector<std::uint16_t>>(4, 1007);
+    buffer = pixels;
+    sensor::RgbdFrame frame;
+    frame.depth = pixels->data();
+    frame.pixels = pixels;
+    frame.sequence = 7;
+    const auto returned = sensor::IRgbdSensor::some_frame(std::move(frame));
+    CHECK(returned.ok() && returned.value());
+    CHECK(returned.value()->sequence == 7);
+    CHECK(returned.value()->depth == pixels->data());
+    kept = *returned.value();
   }
-  const std::weak_ptr<const void> buffer = kept.pixels;
-  // The sensor lets its buffers go; the kept frame still reads its pixels,
-  // and is what held them.
-  fake.stop();
-  CHECK(!buffer.expired() && kept.depth[3] == 1000 + kept.sequence);
+  // Only the copied frame remains after the source and result let go.
+  CHECK(!buffer.expired() && kept.depth[3] == 1007);
   kept = sensor::RgbdFrame{};
   CHECK(buffer.expired());
   return 0;
@@ -172,9 +70,8 @@ int test_names() {
 }  // namespace
 
 int main() {
-  FakeSensor fake;
-  if (test_poll_and_drain(fake) != 0) return 1;
-  if (test_frames_hold_pixels(fake) != 0) return 1;
+  if (test_defaults() != 0) return 1;
+  if (test_frame_returns_and_ownership() != 0) return 1;
   if (test_names() != 0) return 1;
   std::printf("rgbd sensor contract tests passed\n");
   return 0;

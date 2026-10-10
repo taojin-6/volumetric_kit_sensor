@@ -17,6 +17,7 @@
 #include "buffer_readback.hpp"
 #include "gpu_test.hpp"
 #include "test_allocation_failure.hpp"
+#include "test_check.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
@@ -24,14 +25,6 @@
 namespace vkc = volumetric_kit::core;
 namespace vr = volumetric_kit::recon;
 namespace sensor = vr::sensor;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 int staging_failure_case(vr_test::Gpu ctx, bool single) {
   auto prep = sensor::GpuFramePrep::create(ctx.device, ctx.allocator);

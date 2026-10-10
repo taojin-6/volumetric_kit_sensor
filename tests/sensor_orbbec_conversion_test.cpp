@@ -12,6 +12,7 @@
 #include <string>
 
 #include "frame_conversion.hpp"
+#include "test_check.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
@@ -22,14 +23,6 @@ namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;
 namespace camera = volumetric_kit::recon::camera;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 

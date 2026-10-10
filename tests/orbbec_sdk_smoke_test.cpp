@@ -15,13 +15,7 @@
 
 #include <libobsensor/ObSensor.hpp>
 
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
+#include "test_check.hpp"
 
 int main() {
   const int major = ob::Version::getMajor();

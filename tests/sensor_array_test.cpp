@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "test_check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/camera/array_calibration.hpp"
 #include "volumetric_kit/recon/sensor/array/sensor_array.hpp"
@@ -26,14 +27,6 @@
 namespace vkc = volumetric_kit::core;
 namespace camera = volumetric_kit::recon::camera;
 namespace sensor = volumetric_kit::recon::sensor;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 
@@ -232,6 +225,8 @@ int test_refusals() {
 int test_start_order() {
   Rig r = triggered_rig();
   Scripted* p = r.fakes[1];
+  // A live sensor inherits "not exhausted" unless its driver overrides it.
+  CHECK(!p->IRgbdSensor::exhausted());
   auto o = trigger_options();
   o.queue_depth = 6;
   auto opened = sensor::SensorArray::open(std::move(r.sensors), o);

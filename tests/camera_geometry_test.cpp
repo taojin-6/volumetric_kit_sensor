@@ -8,19 +8,12 @@
 #include <cmath>
 #include <cstdio>
 
+#include "test_check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 
 namespace vkc = volumetric_kit::core;
 namespace camera = volumetric_kit::recon::camera;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 

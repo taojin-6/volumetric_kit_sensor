@@ -11,20 +11,13 @@
 
 #include "ffmpeg.hpp"
 #include "frame_color.hpp"
+#include "test_check.hpp"
 #include "yuv_reference.hpp"
 
 namespace sensor = volumetric_kit::recon::sensor;
 namespace video = volumetric_kit::recon::sensor::video;
 using sensor::ChromaLocation;
 using sensor::VideoColorMatrix;
-
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
-      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-      return 1;                                                            \
-    }                                                                      \
-  } while (0)
 
 namespace {
 
