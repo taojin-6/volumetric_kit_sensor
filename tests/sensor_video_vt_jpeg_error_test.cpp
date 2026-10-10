@@ -16,10 +16,8 @@
 #include <iterator>
 #include <vector>
 
-#include "no_device.hpp"
+#include "gpu_test.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/core/vulkan/instance.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
 namespace vkc = volumetric_kit::core;
@@ -79,20 +77,11 @@ extern "C" OSStatus VTDecompressionSessionDecodeFrame(
   return real(session, sample, flags, frame, info);
 }
 
-int main() {
-  auto instance = vkc::Instance::create({});
-  if (!instance)
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  auto physical = instance->select_physical_device(vr::device_requirements());
-  if (!physical)
-    return vr_test::no_device("no compute-capable device",
-                              physical.status().message());
-  auto device =
-      vkc::Device::create(*instance, *physical, vr::device_requirements());
-  CHECK(device.ok());
+namespace {
+
+int gpu_main(vr_test::GpuContext& gpu) {
   JpegDecoder::Options options;
-  options.device = &*device;
+  options.device = &gpu.device;
   if (auto probe = JpegDecoder::create(options); !probe) {
     CHECK(probe.status().domain() == vkc::Status::Code::Unsupported);
     return vr_test::no_jpeg_decoder(probe.status().message());
@@ -143,3 +132,7 @@ int main() {
   std::puts("sensor_video_vt_jpeg_error: OK");
   return 0;
 }
+
+}  // namespace
+
+int main() { return vr_test::run_on_gpu(gpu_main); }

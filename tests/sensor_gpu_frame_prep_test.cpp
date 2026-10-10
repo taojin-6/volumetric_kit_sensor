@@ -41,18 +41,16 @@
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/camera/projection.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/tsdf/tsdf_integrator.hpp"
 #include "volumetric_kit/recon/volume/voxel_block_grid.hpp"
 #include "volumetric_kit/recon/volume/voxel_hash_map.hpp"
 
-#include "no_device.hpp"
+#include "gpu_test.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
@@ -1516,29 +1514,10 @@ int test_fuses_at_the_surface(vkc::Device& device, vkc::Allocator& allocator,
   return 0;
 }
 
-}  // namespace
-
-int main() {
-  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  vkc::Result<vkc::PhysicalDeviceInfo> gpu =
-      instance.value().select_physical_device(vr::device_requirements());
-  if (!gpu) {
-    return vr_test::no_device("no compute-capable device",
-                              gpu.status().message());
-  }
-  vkc::Result<vkc::Device> device = vkc::Device::create(
-      instance.value(), gpu.value(), vr::device_requirements());
-  CHECK(device.ok());
-  vkc::Result<vkc::Allocator> allocator =
-      vkc::Allocator::create(instance.value().handle(), device.value());
-  CHECK(allocator.ok());
-  g_device = &device.value();
-  g_allocator = &allocator.value();
-  auto prep = sensor::GpuFramePrep::create(device.value(), allocator.value());
+int gpu_main(vr_test::GpuContext& gpu) {
+  g_device = &gpu.device;
+  g_allocator = &gpu.allocator;
+  auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
   if (!prep) std::fprintf(stderr, "%s\n", prep.status().message().c_str());
   CHECK(prep.ok());
 
@@ -1562,17 +1541,16 @@ int main() {
   if (test_poses(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;
   if (test_frames_hold_buffers(prep.value()) != 0) return 1;
-  if (test_fuses(device.value(), allocator.value(), prep.value()) != 0) {
+  if (test_fuses(gpu.device, gpu.allocator, prep.value()) != 0) {
     return 1;
   }
-  if (test_fuses_at_the_surface(device.value(), allocator.value(),
-                                prep.value()) != 0) {
+  if (test_fuses_at_the_surface(gpu.device, gpu.allocator, prep.value()) != 0) {
     return 1;
   }
-  if (test_prepare_batch(device.value(), allocator.value()) != 0) return 1;
-  if (test_batch_timing(device.value(), allocator.value()) != 0) return 1;
-  if (test_queue_families(device.value(), allocator.value()) != 0) return 1;
-  if (test_depth_within_color(device.value(), allocator.value()) != 0) return 1;
+  if (test_prepare_batch(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_batch_timing(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_queue_families(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_depth_within_color(gpu.device, gpu.allocator) != 0) return 1;
 
   sensor::GpuFramePrep moved = std::move(prep).value();
   CHECK(moved.valid());
@@ -1586,7 +1564,7 @@ int main() {
   other = std::move(*alias);  // self-move
   CHECK(other.valid());
   // Move-assigned over a live pass, one that has buffers and a frame out.
-  auto live = sensor::GpuFramePrep::create(device.value(), allocator.value());
+  auto live = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
   CHECK(live.ok());
   auto kept = live->prepare(frame_of(raw, pinhole()));
   CHECK(kept.ok());
@@ -1598,3 +1576,7 @@ int main() {
   std::puts("sensor_gpu_frame_prep: OK");
   return 0;
 }
+
+}  // namespace
+
+int main() { return vr_test::run_on_gpu(gpu_main); }

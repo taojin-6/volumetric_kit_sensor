@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "buffer_readback.hpp"
-#include "no_device.hpp"
+#include "gpu_test.hpp"
 #include "test_allocation_failure.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
@@ -101,23 +101,10 @@ int staging_failure_case(vr_test::Gpu ctx, bool single) {
   return 0;
 }
 
-int main() {
-  auto instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  auto gpu = instance->select_physical_device(vr::device_requirements());
-  if (!gpu) {
-    return vr_test::no_device("no compute-capable device",
-                              gpu.status().message());
-  }
-  auto device = vkc::Device::create(*instance, *gpu, vr::device_requirements());
-  CHECK(device.ok());
-  auto allocator = vkc::Allocator::create(instance->handle(), *device);
-  CHECK(allocator.ok());
-  const vr_test::Gpu ctx{*device, *allocator};
-  CHECK(staging_failure_case(ctx, false) == 0);
-  CHECK(staging_failure_case(ctx, true) == 0);
+int gpu_main(vr_test::GpuContext& gpu) {
+  CHECK(staging_failure_case(gpu, false) == 0);
+  CHECK(staging_failure_case(gpu, true) == 0);
   return 0;
 }
+
+int main() { return vr_test::run_on_gpu(gpu_main); }

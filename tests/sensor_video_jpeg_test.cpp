@@ -21,15 +21,12 @@
 #include <utility>
 #include <vector>
 
-#include "bare_device.hpp"
 #include "buffer_readback.hpp"
 #include "device_picture_readback.hpp"
-#include "no_device.hpp"
+#include "gpu_test.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/core/vulkan/instance.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 #include "yuv_reference.hpp"
@@ -61,20 +58,15 @@ int patch_y(int p) { return 40 + 24 * p; }
 int patch_u(int p) { return 64 + 16 * ((3 * p) % 8); }
 int patch_v(int p) { return 64 + 16 * ((5 * p) % 8); }
 
-// The device and allocator the decoders hand their pictures out on.
-struct Gpu {
-  vkc::Instance& instance;
-  vkc::Device& device;
-  vkc::Allocator& allocator;
-  std::uint32_t extent;  // maxImageDimension2D
+using Gpu = vr_test::GpuContext;
 
-  JpegDecoder::Options options() const {
-    JpegDecoder::Options o;
-    o.device = &device;
-    o.allocator = &allocator;
-    return o;
-  }
-};
+// The device and allocator the decoders hand their pictures out on.
+JpegDecoder::Options decoder_options(const Gpu& gpu) {
+  JpegDecoder::Options o;
+  o.device = &gpu.device;
+  o.allocator = &gpu.allocator;
+  return o;
+}
 
 std::vector<std::uint8_t> read_file(const char* path) {
   std::ifstream in(path, std::ios::binary);
@@ -226,7 +218,7 @@ int check_on_device(const sensor::DecodedPicture& p) {
 // hardware engine stops at 16384. 4:2:2 is refused. A buffer is reused only
 // once no picture holds it.
 int test_device(const Gpu& gpu) {
-  auto decoder = JpegDecoder::create(gpu.options());
+  auto decoder = JpegDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
   CHECK(prep.ok());
@@ -249,7 +241,7 @@ int test_device(const Gpu& gpu) {
 
   auto wide = decode(decoder.value(), read_file(kWide));
 #if defined(__APPLE__)
-  if (16400 > gpu.extent) {
+  if (16400 > gpu.physical.properties().limits.maxImageDimension2D) {
     CHECK(wide.status().domain() == vkc::Status::Code::Unsupported);
   } else {
     CHECK(wide.ok());
@@ -282,15 +274,14 @@ int test_device(const Gpu& gpu) {
 int test_create_refusals(const Gpu& gpu) {
   CHECK(JpegDecoder::create({}).status().domain() ==
         vkc::Status::Code::Unsupported);
-  vkc::Result<vkc::Device> bare =
-      vr_test::bare_device(gpu.instance, gpu.device);
+  vkc::Result<vkc::Device> bare = vr_test::bare_device(gpu);
   CHECK(bare.ok());
-  JpegDecoder::Options options = gpu.options();
+  JpegDecoder::Options options = decoder_options(gpu);
   options.device = &bare.value();
   CHECK(JpegDecoder::create(options).status().domain() ==
         vkc::Status::Code::Unsupported);
 #if !defined(__APPLE__)
-  options = gpu.options();
+  options = decoder_options(gpu);
   options.allocator = nullptr;
   CHECK(JpegDecoder::create(options).status().domain() ==
         vkc::Status::Code::Unsupported);
@@ -301,7 +292,7 @@ int test_create_refusals(const Gpu& gpu) {
 // A corrupt frame is the camera's, not the GPU's: IoError for it alone, and
 // the next JPEG decodes on the device.
 int test_corrupt(const Gpu& gpu) {
-  auto decoder = JpegDecoder::create(gpu.options());
+  auto decoder = JpegDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   const std::vector<std::uint8_t> good = read_file(k420);
   CHECK(decoder->decode(nullptr, 16).status().domain() ==
@@ -324,7 +315,7 @@ int test_corrupt(const Gpu& gpu) {
 }
 
 int test_moves(const Gpu& gpu) {
-  auto created = JpegDecoder::create(gpu.options());
+  auto created = JpegDecoder::create(decoder_options(gpu));
   CHECK(created.ok());
   JpegDecoder a = std::move(created).value();
 
@@ -333,7 +324,7 @@ int test_moves(const Gpu& gpu) {
   CHECK(decode(a, good).status().domain() ==  // NOLINT: moved from
         vkc::Status::Code::InvalidArgument);
 
-  auto other = JpegDecoder::create(gpu.options());
+  auto other = JpegDecoder::create(decoder_options(gpu));
   CHECK(other.ok());
   JpegDecoder c = std::move(other).value();
   c = std::move(b);                           // over a live decoder
@@ -347,34 +338,8 @@ int test_moves(const Gpu& gpu) {
   return check_pattern(from_device(p.value(), gpu.device, gpu.allocator));
 }
 
-}  // namespace
-
-int main() {
-  std::setvbuf(stdout, nullptr, _IONBF, 0);
-  if (read_file(k420).empty()) {
-    std::fprintf(stderr, "FAIL: cannot read %s\n", k420);
-    return 1;
-  }
-  vkc::Result<vkc::Instance> instance = vkc::Instance::create({});
-  if (!instance) {
-    return vr_test::no_device("no Vulkan instance",
-                              instance.status().message());
-  }
-  vkc::Result<vkc::PhysicalDeviceInfo> physical =
-      instance.value().select_physical_device(vr::device_requirements());
-  if (!physical) {
-    return vr_test::no_device("no compute-capable device",
-                              physical.status().message());
-  }
-  vkc::Result<vkc::Device> device = vkc::Device::create(
-      instance.value(), physical.value(), vr::device_requirements());
-  CHECK(device.ok());
-  vkc::Result<vkc::Allocator> allocator =
-      vkc::Allocator::create(instance.value().handle(), device.value());
-  CHECK(allocator.ok());
-  const Gpu gpu{instance.value(), device.value(), allocator.value(),
-                physical.value().properties().limits.maxImageDimension2D};
-  if (auto probe = JpegDecoder::create(gpu.options()); !probe) {
+int gpu_main(Gpu& gpu) {
+  if (auto probe = JpegDecoder::create(decoder_options(gpu)); !probe) {
     if (probe.status().domain() != vkc::Status::Code::Unsupported) {
       std::fprintf(stderr, "FAIL: %s\n", probe.status().message().c_str());
       return 1;
@@ -388,4 +353,15 @@ int main() {
   if (test_moves(gpu) != 0) return 1;
   std::puts("sensor_video_jpeg: OK");
   return 0;
+}
+
+}  // namespace
+
+int main() {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  if (read_file(k420).empty()) {
+    std::fprintf(stderr, "FAIL: cannot read %s\n", k420);
+    return 1;
+  }
+  return vr_test::run_on_gpu(gpu_main);
 }
