@@ -317,9 +317,11 @@ core::Result<std::optional<FrameSet>> SensorArray::Impl::take_trigger() {
       grouper->add(c, ts, id, now, &released);
     }
     drained.clear();  // and with it the frames not held
+    // add() can evict queued frames even when a later drain reports failure.
+    // Release those owners before returning, retaining only matchable frames.
+    release();
     VKC_TRY(status);
   }
-  release();
   const std::optional<TriggerGrouper::Group> group =
       grouper->take(now, &released);
   release();
