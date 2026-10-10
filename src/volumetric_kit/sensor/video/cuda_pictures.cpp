@@ -99,13 +99,9 @@ core::Result<std::unique_ptr<CudaPictures>> CudaPictures::create(
 
 CudaPictures::~CudaPictures() {
   const CudaContextScope scope(context_);
-  for (Slot& s : slots_) release(s);
-}
-
-// CUDA's view goes; the buffer stays with any picture still holding it.
-void CudaPictures::release(Slot& s) {
-  cuda_driver()->cuMemFree(s.pointer);
-  cuda_driver()->cuDestroyExternalMemory(s.memory);
+  // Release the slots before the scope restores the previous CUDA context.
+  // A picture can keep the Vulkan buffer alive after its CUDA view is gone.
+  slots_.clear();
 }
 
 core::Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
@@ -119,7 +115,6 @@ core::Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   }
   for (auto it = slots_.begin(); it != slots_.end();) {
     if (it->buffer.use_count() == 1) {
-      release(*it);
       it = slots_.erase(it);
     } else {
       ++it;
@@ -150,7 +145,6 @@ core::Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   mapped.size = bytes;
   r = cu->cuExternalMemoryGetMappedBuffer(&s.pointer, s.memory, &mapped);
   if (r != CUDA_SUCCESS) {
-    cu->cuDestroyExternalMemory(s.memory);
     return cuda_error(who_, r, "mapping a Vulkan buffer");
   }
   s.buffer = std::make_shared<core::Buffer>(std::move(exported.buffer));

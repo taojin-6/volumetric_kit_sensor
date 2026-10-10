@@ -104,6 +104,44 @@ class CudaContextScope {
 // start, or no CUDA device is. @p who names the decoder in errors.
 core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who);
 
+// One exported buffer and CUDA's view of it. Its CUDA context is current
+// while it is acquired, moved, or released. Own each handle immediately, so
+// failed mapping or host allocation unwinds CUDA before the Vulkan buffer.
+struct CudaPictureSlot {
+  CudaPictureSlot() = default;
+  ~CudaPictureSlot() { reset(); }
+  CudaPictureSlot(const CudaPictureSlot&) = delete;
+  CudaPictureSlot& operator=(const CudaPictureSlot&) = delete;
+  CudaPictureSlot(CudaPictureSlot&& other) noexcept {
+    *this = std::move(other);
+  }
+  CudaPictureSlot& operator=(CudaPictureSlot&& other) noexcept {
+    if (this != &other) {
+      reset();
+      buffer = std::move(other.buffer);
+      memory = std::exchange(other.memory, nullptr);
+      pointer = std::exchange(other.pointer, 0);
+      bytes = std::exchange(other.bytes, 0);
+    }
+    return *this;
+  }
+
+  std::shared_ptr<core::Buffer> buffer;
+  CUexternalMemory memory = nullptr;
+  CUdeviceptr pointer = 0;
+  std::uint64_t bytes = 0;
+
+ private:
+  void reset() noexcept {
+    if (pointer != 0) cuda_driver()->cuMemFree(std::exchange(pointer, 0));
+    if (memory != nullptr) {
+      cuda_driver()->cuDestroyExternalMemory(std::exchange(memory, nullptr));
+    }
+    buffer.reset();
+    bytes = 0;
+  }
+};
+
 // A ring of exported Vulkan buffers on one device, each imported into CUDA
 // once, in the decoder's CUDA context. A picture takes one that no earlier
 // picture still holds, or a new one; a free one too small for it is let go.
@@ -134,12 +172,7 @@ class CudaPictures {
   core::Result<Target> take(std::uint64_t bytes);
 
  private:
-  struct Slot {
-    std::shared_ptr<core::Buffer> buffer;
-    CUexternalMemory memory = nullptr;
-    CUdeviceptr pointer = 0;
-    std::uint64_t bytes = 0;
-  };
+  using Slot = CudaPictureSlot;
   CudaPictures(const core::Device& device, core::Allocator& allocator,
                CUcontext context, CUstream stream, const char* who)
       : device_(&device),
@@ -148,7 +181,6 @@ class CudaPictures {
         stream_(stream),
         who_(who) {}
   core::Result<Slot*> slot(std::uint64_t bytes);
-  static void release(Slot& s);
 
   const core::Device* device_;
   core::Allocator* allocator_;
