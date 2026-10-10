@@ -10,21 +10,17 @@
 // and handed on with its colour as the picture the hardware left on the
 // device (picture_frames.hpp); everything after the mailbox is as for MJPEG.
 
-#include <atomic>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 
 #include <libobsensor/ObSensor.hpp>
 
+#include "decode_worker.hpp"
 #include "picture_frames.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
@@ -119,22 +115,18 @@ class HevcColorDecoder {
   // overflowing queue until the next key frame, and any without both frames
   // (decoded, if it has colour, and dropped after). The first key frame is
   // waited for too.
-  std::uint64_t lost() const noexcept {
-    return lost_.load(std::memory_order_relaxed);
-  }
+  std::uint64_t lost() const noexcept { return worker_.lost(); }
   // Why decoding stopped for good -- a stream the hardware refuses
   // (Unsupported), or a device path that failed (Backend, OutOfMemory) --
   // after which nothing more is handed on; OK while it runs.
-  core::Status failure() const;
+  core::Status failure() const { return worker_.failure(); }
 
  private:
-  HevcColorDecoder() = default;
-  void run();
-  void decode(const std::shared_ptr<ob::FrameSet>& pair);
+  using Worker = DecodeWorker<std::shared_ptr<ob::FrameSet>>;
+
+  HevcColorDecoder(const Options& options, Sink sink);
+  void decode(const std::shared_ptr<ob::FrameSet>& pair, bool after_gap);
   void hand_on(const DecodedPicture& picture);
-  void lose(std::uint64_t pairs = 1) noexcept {
-    lost_.fetch_add(pairs, std::memory_order_relaxed);
-  }
   // After a decoder error, whose pair the caller has counted lost: IoError
   // waits for the next key frame, any other stops decoding. Decode thread
   // only.
@@ -144,20 +136,13 @@ class HevcColorDecoder {
   Sink sink_;
   std::optional<HevcDecoder> decoder_;
 
-  mutable std::mutex mutex_;
-  std::condition_variable wake_;
-  std::deque<std::shared_ptr<ob::FrameSet>> queue_;  // guarded by mutex_
-  bool stopping_ = false;                            // guarded by mutex_
-  bool resync_ = false;   // guarded by mutex_: the queue overflowed
-  core::Status failure_;  // guarded by mutex_
-  std::thread thread_;
-  std::atomic<std::uint64_t> lost_{0};
-
   // The decode thread's alone.
   ColorStreamGate gate_;
   std::int64_t next_pts_ = 0;
   // Pairs sent and not yet decoded, by the pts they were sent with.
   std::map<std::int64_t, std::shared_ptr<ob::FrameSet>> in_flight_;
+
+  Worker worker_;  // last: its thread uses the rest
 };
 
 }  // namespace volumetric_kit::recon::sensor::orbbec
