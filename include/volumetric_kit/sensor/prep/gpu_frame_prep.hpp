@@ -185,8 +185,9 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         `queue_family` the device lacks, or an image past a single
   ///         dispatch (16.7 M pixels);
   ///         `Status::Code::Unsupported` for a colour encoding
-  ///         @ref is_canonical refuses; otherwise a buffer or dispatch
-  ///         failure.
+  ///         @ref is_canonical refuses; `Status::Code::OutOfMemory` for a
+  ///         host allocation failure while staging the frame, with previously
+  ///         returned frames intact; otherwise a buffer or dispatch failure.
   core::Result<DeviceFrame> prepare(const RgbdFrame& frame,
                                     core::StageMetrics* metrics = nullptr);
 

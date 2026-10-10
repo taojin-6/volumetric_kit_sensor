@@ -10,6 +10,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
 #include <string>
 #include <utility>
 
@@ -722,10 +723,14 @@ core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
   for (std::size_t i = 0; i < count; ++i) {
     if (frames[i] != nullptr) VKC_TRY(preps[i].acquire(batch, *frames[i]));
   }
-  for (std::size_t i = 0; i < count; ++i) {
-    if (frames[i] != nullptr) {
-      VKC_TRY(preps[i].stage_host(*frames[i], layouts[i]));
+  try {
+    for (std::size_t i = 0; i < count; ++i) {
+      if (frames[i] != nullptr) {
+        VKC_TRY(preps[i].stage_host(*frames[i], layouts[i]));
+      }
     }
+  } catch (const std::bad_alloc&) {
+    return core::Status::out_of_memory("GpuFramePrep: out of host memory");
   }
   // Every camera's uploads, then every camera's passes: the uploads write
   // buffers of their own, so they run with no barrier between them.
