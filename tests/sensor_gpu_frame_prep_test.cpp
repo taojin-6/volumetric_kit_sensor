@@ -15,15 +15,18 @@
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its colour output is shared with the queue families its config names;
 //   - with depth_within_color, depth survives only where colour recorded it;
-//   - its output fuses through the device-input overloads.
+//   - its output fuses through the device-input overloads, and a slanted
+//     plane's field crosses zero within a tenth of a voxel of the plane.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -31,6 +34,7 @@
 #include <vector>
 
 #include "buffer_readback.hpp"
+#include "grid_readback.hpp"
 #include "test_image.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
@@ -1411,6 +1415,108 @@ int test_fuses(vkc::Device& device, vkc::Allocator& allocator,
   return 0;
 }
 
+// The pass's output fuses where the surface is. A plane tilted across both
+// image axes, imaged at every pixel centre of a pinhole camera with an
+// off-centre principal point, prepared, allocated and fused: along every voxel
+// column the camera sees, the fused field crosses zero within a tenth of a
+// voxel of the plane. Sampling half a pixel off the pass's integer centres
+// moves the crossing by the plane's depth change over half a pixel, 1.5 to
+// 7 mm here.
+int test_fuses_at_the_surface(vkc::Device& device, vkc::Allocator& allocator,
+                              sensor::GpuFramePrep& prep) {
+  camera::CameraModel cam = pinhole();
+  camera::PinholeIntrinsics& k = cam.intrinsics;
+  k.fx /= 2.0;
+  k.fy /= 2.0;
+  k.cx = (k.cx + 0.5) / 2.0 - 0.5;
+  k.cy = (k.cy + 0.5) / 2.0 - 0.5;
+  cam.size = {kWidth / 2, kHeight / 2};
+  const std::uint32_t w = cam.size.width, h = cam.size.height;
+  // z = z0 + a x + b y in the camera's frame, which is the world's.
+  constexpr double kZ0 = 1.0, kA = 0.5, kB = 0.3;
+  constexpr float kUnit = 1e-4f;  // a tenth of a millimetre a unit
+  std::vector<std::uint16_t> raw(std::size_t{w} * h);
+  for (std::uint32_t v = 0; v < h; ++v) {
+    for (std::uint32_t u = 0; u < w; ++u) {
+      const double x = (u - k.cx) / k.fx, y = (v - k.cy) / k.fy;
+      const double z = kZ0 / (1.0 - kA * x - kB * y);
+      raw[std::size_t{v} * w + u] =
+          static_cast<std::uint16_t>(std::lround(z / kUnit));
+    }
+  }
+  sensor::RgbdFrame f = frame_of(raw, cam);
+  f.metres_per_unit = kUnit;
+  auto out = prep.prepare(f);
+  CHECK(out.ok());
+  const vr::DepthCameraParams& dc = out->depth_camera;
+
+  vol::VoxelGridParams grid{};
+  grid.voxel_size = 0.01f;
+  grid.block_size = 8;
+  grid.voxels_per_block = 512;
+  grid.trunc_dist = 0.04f;
+  grid.bucket_size = 8;
+  grid.num_buckets = 2048;
+  grid.num_blocks = 2048 * 8;
+  grid.max_chain = 128;
+  const vol::AttributeSpec attrs[] = {{"tsdf", sizeof(float)},
+                                      {"weight", sizeof(float)}};
+  auto vbg = vol::VoxelBlockGrid::create(device, allocator, grid, attrs, 2);
+  auto integrator = tsdf::TsdfIntegrator::create(device, allocator);
+  CHECK(vbg.ok() && integrator.ok());
+  CHECK(allocate(vbg.value(), *out->depth, dc) == 0);
+  CHECK(integrator->integrate(vbg.value(), *out->depth, dc).ok());
+
+  auto active = vbg->map().compact_active_blocks();
+  auto tsdf_values =
+      vr_test::read_attribute<float>(device, allocator, vbg.value(), "tsdf");
+  auto weights =
+      vr_test::read_attribute<float>(device, allocator, vbg.value(), "weight");
+  CHECK(active.ok() && tsdf_values.ok() && weights.ok());
+  // Every fused voxel's value, by its global coordinate.
+  std::map<std::array<int, 3>, float> fused;
+  const int bs = grid.block_size;
+  for (const vol::BlockIndex& b : active.value()) {
+    for (int i = 0; i < grid.voxels_per_block; ++i) {
+      const std::size_t at =
+          static_cast<std::size_t>(b.ptr) + static_cast<std::size_t>(i);
+      if (weights.value()[at] > 0.0f) {
+        fused[{b.coord.x * bs + i % bs, b.coord.y * bs + (i / bs) % bs,
+               b.coord.z * bs + i / (bs * bs)}] = tsdf_values.value()[at];
+      }
+    }
+  }
+  // A voxel that projects where all four bilinear taps are inside the image.
+  const auto interior = [&](int x, int y, int z) {
+    const float u =
+        dc.fx * static_cast<float>(x) / static_cast<float>(z) + dc.cx;
+    const float v =
+        dc.fy * static_cast<float>(y) / static_cast<float>(z) + dc.cy;
+    return u >= 0.0f && u < w - 1.0f && v >= 0.0f && v < h - 1.0f;
+  };
+  std::size_t columns = 0;
+  double worst = 0.0;
+  for (const auto& [voxel, front] : fused) {
+    const auto behind = fused.find({voxel[0], voxel[1], voxel[2] + 1});
+    if (behind == fused.end() || !(front > 0.0f && behind->second <= 0.0f) ||
+        !interior(voxel[0], voxel[1], voxel[2]) ||
+        !interior(voxel[0], voxel[1], voxel[2] + 1)) {
+      continue;
+    }
+    const double s = grid.voxel_size;
+    const double crossing =
+        s * (voxel[2] + front / (front - static_cast<double>(behind->second)));
+    const double plane = kZ0 + kA * s * voxel[0] + kB * s * voxel[1];
+    worst = std::max(worst, std::fabs(crossing - plane));
+    ++columns;
+  }
+  std::printf("  slanted plane: %zu columns, worst crossing %.3f mm\n", columns,
+              worst * 1e3);
+  CHECK(columns > 5000);
+  CHECK(worst <= 0.1 * grid.voxel_size);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1458,6 +1564,10 @@ int main() {
   if (test_refusals(prep.value()) != 0) return 1;
   if (test_frames_hold_buffers(prep.value()) != 0) return 1;
   if (test_fuses(device.value(), allocator.value(), prep.value()) != 0) {
+    return 1;
+  }
+  if (test_fuses_at_the_surface(device.value(), allocator.value(),
+                                prep.value()) != 0) {
     return 1;
   }
   if (test_prepare_batch(device.value(), allocator.value()) != 0) return 1;
