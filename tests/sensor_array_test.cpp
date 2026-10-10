@@ -391,6 +391,58 @@ int test_failed_drain() {
   return 0;
 }
 
+int test_failed_drain_eviction() {
+  Rig r = triggered_rig();
+  std::vector<Scripted*> f = r.fakes;  // S1, P, S2
+  auto options = trigger_options();
+  options.queue_depth = 4;
+  sensor::SensorArray array = open_array(&r, options);
+  CHECK(array.start().ok());
+
+  // The last sensor repeatedly fails while the earlier two keep delivering.
+  // Their grouping queues must still release evicted pixel owners on every
+  // failed poll, and retain only the frames a later successful poll can use.
+  f[2]->fail_drain_after = 0;
+  std::vector<std::weak_ptr<const void>> pixels[2];
+  const std::uint64_t ts = 5'000'000'000;
+  constexpr std::size_t count = 20;
+  for (std::size_t i = 0; i < count; ++i) {
+    for (std::size_t c = 0; c < f.size(); ++c) {
+      f[c]->push(ts + i * 1'000'000, i);
+      if (c < 2) pixels[c].push_back(f[c]->last_pixels);
+    }
+    CHECK(array.poll_set().status().domain() == Code::IoError);
+    const std::size_t evicted =
+        i + 1 > options.queue_depth ? i + 1 - options.queue_depth : 0;
+    for (const auto& camera : pixels) {
+      for (std::size_t j = 0; j < camera.size(); ++j) {
+        CHECK(camera[j].expired() == (j < evicted));
+      }
+    }
+    CHECK(array.stats().unmatched == 2 * evicted);
+  }
+
+  // Recovery can still complete the newest trigger from the frames retained
+  // through those errors, without redelivering either healthy camera's frame.
+  f[2]->fail_drain_after.reset();
+  f[2]->push(ts + (count - 1) * 1'000'000, count - 1);
+  {
+    auto set = array.poll_set();
+    CHECK(set.ok() && set.value() && set.value()->complete());
+    CHECK(set.value()->sequence == count - 1);
+    CHECK(array.stats().unmatched == 2 * (count - 1));
+    for (const auto& camera : pixels) {
+      for (std::size_t j = 0; j < camera.size(); ++j) {
+        CHECK(camera[j].expired() == (j + 1 < count));
+      }
+    }
+  }
+  for (const auto& camera : pixels) {
+    CHECK(camera.back().expired());
+  }
+  return 0;
+}
+
 int test_moved_from() {
   Rig r = triggered_rig();
   auto opened =
@@ -414,6 +466,7 @@ int main() {
   if (test_trigger() != 0) return 1;
   if (test_default_tolerance() != 0) return 1;
   if (test_failed_drain() != 0) return 1;
+  if (test_failed_drain_eviction() != 0) return 1;
   if (test_moved_from() != 0) return 1;
   std::printf("sensor array tests passed\n");
   return 0;
