@@ -67,7 +67,7 @@ target_include_directories(
          "$<BUILD_INTERFACE:${_vr_sensor_orbbec_generated_inc}>"
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 
-# nlohmann/json parses the sync configuration, privately (see recon_sensor).
+# nlohmann/json parses the sync configuration, privately (see recon_camera).
 target_include_directories(recon_sensor_orbbec SYSTEM
                            PRIVATE "${VR_JSON_INCLUDE_DIR}")
 
