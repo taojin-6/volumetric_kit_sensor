@@ -84,8 +84,10 @@ bool has_code(const vkc::Status& status, vkc::Status::Code code) {
   return status.domain() == code;
 }
 
-// Every 16-bit edge value first, then noise, ramps and flat runs, so stb's
-// filter choice varies from row to row.
+// Every 16-bit edge value first, then noise, ramps, flat runs and products,
+// so stb picks each of the five PNG filters on some row of the round trip's
+// files (checked by inflating them with Python's zlib). Paeth's up-left
+// neighbour is a sample's other byte two bytes back.
 std::vector<std::uint16_t> depth_pattern(std::uint32_t w, std::uint32_t h) {
   std::vector<std::uint16_t> samples(static_cast<std::size_t>(w) * h);
   std::uint32_t state = 12345;
@@ -93,15 +95,18 @@ std::vector<std::uint16_t> depth_pattern(std::uint32_t w, std::uint32_t h) {
     for (std::uint32_t x = 0; x < w; ++x) {
       state = state * 1664525u + 1013904223u;
       auto& s = samples[static_cast<std::size_t>(y) * w + x];
-      switch ((x / 7 + y / 5) % 3) {
+      switch ((x / 7 + y / 5) % 4) {
         case 0:
           s = static_cast<std::uint16_t>(state >> 16);
           break;
         case 1:
           s = static_cast<std::uint16_t>(x * 97 + y * 31);
           break;
-        default:
+        case 2:
           s = static_cast<std::uint16_t>(1000 + y);
+          break;
+        default:
+          s = static_cast<std::uint16_t>(x * y * 37);
       }
     }
   }
@@ -188,18 +193,32 @@ int u16_refusals(const fs::path& dir) {
   // nothing is read.
   constexpr auto kAll = std::numeric_limits<std::size_t>::max();
   CHECK(refused(samples.data(), kAll, 65536, 65536));
+  // Only stb's int-sized filter and compressor buffers refuse this extent.
+  CHECK(refused(samples.data(), kAll, 8192, 65535));
   // A row too long for stb's int filter score.
   const std::vector<std::uint16_t> row(std::size_t{1} << 23);
   CHECK(refused(row.data(), row.size(), 1u << 23, 1));
+  // Each refusal names what it refuses.
+  const auto message = [](const vkc::Result<std::vector<std::uint8_t>>& png) {
+    return png.status().message();
+  };
+  CHECK(message(vr::io::encode_png_u16(nullptr, 6, 3, 2)) ==
+        "encode_png_u16: null buffer");
+  CHECK(message(vr::io::encode_png_u16(samples.data(), 5, 3, 2)) ==
+        "encode_png_u16: 5 samples for 3x2");
+  CHECK(message(vr::io::encode_png_u16(row.data(), row.size(), 1u << 23, 1)) ==
+        "encode_png_u16: 8388608x1 exceeds the encoder's bounds");
 
   CHECK(has_code(vr::io::write_png_u16("", samples.data(), 6, 3, 2),
                  Code::InvalidArgument));
   CHECK(has_code(vr::io::write_png_u16(std::string("a\0b.png", 7),
                                        samples.data(), 6, 3, 2),
                  Code::InvalidArgument));
-  CHECK(has_code(vr::io::write_png_u16((dir / "missing" / "d.png").string(),
-                                       samples.data(), 6, 3, 2),
-                 Code::IoError));
+  const auto missing = (dir / "missing" / "d.png").string();
+  const auto unwritable =
+      vr::io::write_png_u16(missing, samples.data(), 6, 3, 2);
+  CHECK(has_code(unwritable, Code::IoError) &&
+        unwritable.message() == "write_png_u16: " + missing + ": cannot write");
   // A refused write leaves the existing file intact.
   const auto path = (dir / "kept.png").string();
   CHECK(vr::io::write_png_u16(path, samples.data(), 6, 3, 2));
@@ -209,21 +228,49 @@ int u16_refusals(const fs::path& dir) {
   return 0;
 }
 
-// An allocation failure while encoding is a Status, not an exception.
-int u16_out_of_memory() {
+// An allocation failure while encoding is a Status, not an exception, and a
+// write that fails so leaves the existing file intact.
+int u16_out_of_memory(const fs::path& dir) {
+  using Code = vkc::Status::Code;
   constexpr std::uint32_t kW = 37;
   constexpr std::uint32_t kH = 29;
+  constexpr std::size_t kBigEndian = std::size_t{kW} * kH * 2;
   const auto samples = depth_pattern(kW, kH);
-  auto& failure = vr_test::allocation_failure;
-  failure = {};
-  failure.bytes = std::size_t{kW} * kH * 2;  // The big-endian copy.
-  failure.armed = true;
   const auto png =
       vr::io::encode_png_u16(samples.data(), samples.size(), kW, kH);
-  const bool injected = failure.injected;
-  failure = {};
-  CHECK(injected);
-  CHECK(!png && has_code(png.status(), vkc::Status::Code::OutOfMemory));
+  CHECK(png && png.value().size() != kBigEndian);
+  const auto path = (dir / "oom.png").string();
+  CHECK(vr::io::write_png_u16(path, samples.data(), samples.size(), kW, kH));
+  const auto kept = read_bytes(path);
+  // Fail the first allocation of `bytes` in `call`. Returns the OutOfMemory
+  // message, or nothing if no such failure was injected and returned.
+  auto& failure = vr_test::allocation_failure;
+  const auto fail = [&](std::size_t bytes, const auto& call) -> std::string {
+    failure = {};
+    failure.bytes = bytes;
+    failure.armed = true;
+    const vkc::Status status = call();
+    const bool injected = failure.injected;
+    failure = {};
+    if (!injected || !has_code(status, Code::OutOfMemory)) return {};
+    return status.message();
+  };
+  const auto encode = [&] {
+    return vr::io::encode_png_u16(samples.data(), samples.size(), kW, kH)
+        .status();
+  };
+  const auto write = [&] {
+    return vr::io::write_png_u16(path, samples.data(), samples.size(), kW, kH);
+  };
+  // The big-endian copy of the samples, then the copy of stb's PNG.
+  for (const std::size_t bytes : {kBigEndian, png.value().size()}) {
+    CHECK(!fail(bytes, encode).empty());
+    CHECK(!fail(bytes, write).empty());
+    CHECK(read_bytes(path) == kept);
+  }
+  // A failed encode names the file being written.
+  CHECK(fail(png.value().size(), write) ==
+        "write_png_u16: " + path + ": cannot encode");
   return 0;
 }
 
@@ -242,6 +289,11 @@ int rgba8_and_depth_fixtures(const fs::path& dir) {
   const auto encoded = read_bytes(color_path);
   CHECK(
       !vr::io::write_png_rgba8(color_path, rgba.data(), rgba.size() - 1, 2, 2));
+  // A row too long for stb's int filter score, in a real buffer, so accepting
+  // it would encode rather than read out of bounds.
+  const std::vector<std::uint8_t> row(std::size_t{4} << 22);
+  CHECK(!vr::io::write_png_rgba8(color_path, row.data(), row.size(), 1u << 22,
+                                 1));
   CHECK(read_bytes(color_path) == encoded);
 
   CHECK(write_fixture(depth_path, kDepth16));
@@ -263,7 +315,7 @@ int main() {
   CHECK(u16_big_endian(scratch.path) == 0);
   CHECK(u16_header() == 0);
   CHECK(u16_refusals(scratch.path) == 0);
-  CHECK(u16_out_of_memory() == 0);
+  CHECK(u16_out_of_memory(scratch.path) == 0);
   std::puts("io image tests passed");
   return 0;
 }

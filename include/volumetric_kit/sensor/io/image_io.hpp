@@ -5,6 +5,9 @@
 
 /// @file io/image_io.hpp
 /// @brief Host image decoding and PNG encoding, without backend types.
+///
+/// PNG encoding returns an allocation failure as a non-OK Status, except one
+/// while its compressor grows its output, which aborts the process.
 
 #include <cstddef>
 #include <cstdint>
@@ -57,7 +60,7 @@ VR_IO_API core::Result<std::vector<std::uint16_t>> load_depth_u16(
 /// succeeds, so invalid input or an encoder allocation failure leaves an
 /// existing file intact; an I/O failure can leave a partial file.
 /// @param path Output path, without embedded NUL characters; replaced on
-/// success.
+///        success.
 /// @param pixels Pointer to top-left-origin RGBA bytes, valid for this call.
 /// @param byte_count Available bytes; must cover `width * height * 4`.
 /// @param width Positive width supported by the encoder's integer bounds.
@@ -93,7 +96,7 @@ VR_IO_API core::Result<std::vector<std::uint8_t>> encode_png_u16(
 /// encoding succeeds, so invalid input or an allocation failure leaves an
 /// existing file intact; an I/O failure can leave a partial file.
 /// @param path Output path, without embedded NUL characters; replaced on
-/// success.
+///        success.
 /// @param samples Pointer to top-left-origin row-major samples, valid for
 ///        this call.
 /// @param sample_count Available samples; must cover `width * height`.
