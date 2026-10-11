@@ -26,5 +26,7 @@ void free_image(void* pixels) noexcept;
 using WriteCallback = void (*)(void* context, void* data, int size);
 bool write_png(WriteCallback callback, void* context, int width, int height,
                int channels, const void* pixels, int stride_bytes);
+// The CRC-32 that a PNG chunk ends with, over its type and data.
+std::uint32_t png_crc(const std::uint8_t* data, int size);
 
 }  // namespace volumetric_kit::recon::io::detail::stb
