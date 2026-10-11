@@ -183,8 +183,8 @@ std::unique_ptr<orbbec::HevcColorDecoder> start(
   };
   options.device = g_device;
   options.allocator = g_allocator;
-  std::copy(families.begin(), families.end(), options.queue_families);
-  options.queue_family_count = static_cast<std::uint32_t>(families.size());
+  std::copy(families.begin(), families.end(), options.queue_families.families);
+  options.queue_families.count = static_cast<std::uint32_t>(families.size());
   auto decoder = orbbec::HevcColorDecoder::start(options, std::move(sink));
   if (!decoder) {
     std::fprintf(stderr, "%s\n", decoder.status().message().c_str());

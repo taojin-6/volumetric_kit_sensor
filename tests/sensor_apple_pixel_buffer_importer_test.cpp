@@ -347,16 +347,16 @@ int test_refusals(const Gpu& gpu) {
 }
 
 // The images are EXCLUSIVE unless the importer is given two or more distinct
-// queue families, and CONCURRENT across those; duplicates count once, so a
-// list longer than kMaxQueueFamilies with two distinct is taken. Refused,
-// InvalidArgument: a count with no list, more than kMaxQueueFamilies
-// distinct, a family the device does not have, and a list without the
-// device's own family, on which the importer readies the images.
+// queue families, and CONCURRENT across those, up to kMaxQueueFamilies of
+// them; duplicates count once, so a list longer than kMaxQueueFamilies with
+// two distinct is taken. Refused, InvalidArgument: a count with no list, more
+// than kMaxQueueFamilies distinct, a family the device does not have, and a
+// list without the device's own family, on which the importer readies the
+// images.
 int test_sharing(const Gpu& gpu) {
   const std::uint32_t own = gpu.device.queue_family();
-  std::uint32_t family_count = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(gpu.device.physical_device(),
-                                           &family_count, nullptr);
+  const auto family_count =
+      static_cast<std::uint32_t>(gpu.device.caps().queue_families().size());
   const Pixels pixels(make_pixels(32, 32, kFull));
   CHECK(pixels.ref != nullptr && fill(pixels.ref, 6));
   const auto imported = [&](const std::uint32_t* families, std::uint32_t count,
@@ -404,14 +404,32 @@ int test_sharing(const Gpu& gpu) {
   YuvImage shared;
   CHECK(imported(both, 5, shared));
   CHECK(sharing(shared) == VK_SHARING_MODE_CONCURRENT);
-  return check_holds(shared, gpu, 6);
+  CHECK(check_holds(shared, gpu, 6) == 0);
+
+  // As many as kMaxQueueFamilies: the device's own and the first others.
+  if (family_count < vkc::BufferDesc::kMaxQueueFamilies) {
+    std::printf("%u queue families: kMaxQueueFamilies of them not checked\n",
+                family_count);
+    return 0;
+  }
+  std::vector<std::uint32_t> most = {own};
+  for (std::uint32_t f = 0; most.size() < vkc::BufferDesc::kMaxQueueFamilies;
+       ++f) {
+    if (f != own) most.push_back(f);
+  }
+  YuvImage widest;
+  CHECK(imported(most.data(), vkc::BufferDesc::kMaxQueueFamilies, widest));
+  CHECK(sharing(widest) == VK_SHARING_MODE_CONCURRENT);
+  return check_holds(widest, gpu, 6);
 }
 
 // What CONCURRENT is for: on one device shared by recon and a renderer on
 // another queue family, as MoltenVK hands them, a picture imported on recon's
-// family is copied on the renderer's, byte for byte, with nothing for the
-// validation layer to report. Windowless: the renderer's queue does
-// graphics and presents nothing.
+// family is copied on the renderer's, byte for byte. Windowless: the
+// renderer's queue does graphics and presents nothing. The validation layer
+// checks the CONCURRENT create info but not which family owns an EXCLUSIVE
+// image, so the sharing mode recorded on the image, which is the one the
+// image was created with, is what shows the read is legal.
 int test_cross_family() {
   vkc::SharedDeviceConfig config;
   config.instance = vkc::test::instance_config();

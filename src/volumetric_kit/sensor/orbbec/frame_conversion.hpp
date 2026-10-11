@@ -8,6 +8,7 @@
 // option checks, kept out of the driver's .cpp so host tests pin them with no
 // camera attached.
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -67,5 +68,16 @@ std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
 /// open makes, before it touches the SDK.
 core::Status validate_streams(const OrbbecStreamOptions& streams,
                               const std::string& who);
+
+/// The queue families that read a camera's colour pictures, as one value from
+/// the options to each start's colour decoder, so no hop copies the list
+/// without its count.
+struct ColorQueueFamilies {
+  std::uint32_t families[kMaxColorQueueFamilies] = {};
+  std::uint32_t count = 0;
+};
+
+/// @p streams' `color_queue_families` and their count.
+ColorQueueFamilies color_queue_families(const OrbbecStreamOptions& streams);
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

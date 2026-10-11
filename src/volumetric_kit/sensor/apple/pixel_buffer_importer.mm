@@ -10,6 +10,7 @@
 #include <Metal/Metal.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::recon::sensor {
@@ -87,6 +89,10 @@ VkDeviceMemory bind_memory(const core::Device& device, VkImage image) {
 // The families the images are CONCURRENT across: the distinct entries of
 // @p families when two or more, as the core's allocator picks a buffer's
 // sharing; none, for EXCLUSIVE, otherwise.
+// TODO(sensor): everything but the own-family check repeats the core
+// allocator's internal sharing_for (allocator.cpp), behind its buffers and
+// images. Call it instead once the core makes it public and recon's core pin
+// reaches that.
 core::Result<std::vector<std::uint32_t>> sharing_families(
     const core::Device& device, const std::uint32_t* families,
     std::uint32_t count, const std::string& who) {
@@ -100,18 +106,19 @@ core::Result<std::vector<std::uint32_t>> sharing_families(
   distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
   if (distinct.size() > core::BufferDesc::kMaxQueueFamilies) {
     return core::Status::invalid_argument(
-        who + ": more than BufferDesc::kMaxQueueFamilies distinct queue "
-              "families");
+        who + ": " + std::to_string(distinct.size()) +
+        " distinct queue families, more than BufferDesc::kMaxQueueFamilies (" +
+        std::to_string(core::BufferDesc::kMaxQueueFamilies) + ")");
   }
   // CONCURRENT naming a family the device lacks is undefined
   // (VUID-VkImageCreateInfo-sharingMode-01420), and vkCreateImage still
   // succeeds.
-  std::uint32_t device_families = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(device.physical_device(),
-                                           &device_families, nullptr);
+  const std::size_t device_families = device.caps().queue_families().size();
   if (!distinct.empty() && distinct.back() >= device_families) {
     return core::Status::invalid_argument(
-        who + ": queue_families names a family the device does not have");
+        who + ": queue_families names family " +
+        std::to_string(distinct.back()) + ", which the device does not have (" +
+        std::to_string(device_families) + " families)");
   }
   // The images are readied on the device's own family, which must be one
   // they are shared with.

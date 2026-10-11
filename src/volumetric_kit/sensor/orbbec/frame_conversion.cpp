@@ -3,13 +3,18 @@
 
 #include "frame_conversion.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <string>
 
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
+
+static_assert(kMaxColorQueueFamilies == core::BufferDesc::kMaxQueueFamilies,
+              "kMaxColorQueueFamilies mirrors BufferDesc::kMaxQueueFamilies");
 
 core::Result<camera::CameraModel> camera_model_from(
     const OBCameraIntrinsic& intrinsic, const OBCameraDistortion& distortion,
@@ -133,8 +138,17 @@ core::Status validate_streams(const OrbbecStreamOptions& streams,
         "] m must be finite and non-empty, with min_depth > 0, as the GPU "
         "pass requires");
   }
-  return core::check_queue_family_count(streams.color_queue_family_count,
-                                        who.c_str());
+  return core::check_queue_family_count(
+      streams.color_queue_family_count,
+      (who + ": color_queue_families").c_str());
+}
+
+ColorQueueFamilies color_queue_families(const OrbbecStreamOptions& streams) {
+  ColorQueueFamilies out;
+  std::copy(std::begin(streams.color_queue_families),
+            std::end(streams.color_queue_families), out.families);
+  out.count = streams.color_queue_family_count;
+  return out;
 }
 
 OBMultiDeviceSyncMode sdk_sync_mode(OrbbecSyncMode mode) noexcept {

@@ -2,18 +2,20 @@
 // Copyright (c) 2026 Tao Jin
 
 // The Orbbec driver's arithmetic, with no camera: the SDK's camera models and
-// extrinsic to recon's, the sync-mode mapping, and the option checks open()
-// makes before it touches the SDK -- each a place the driver can be silently
-// wrong.
+// extrinsic to recon's, the sync-mode mapping, the option checks open() makes
+// before it touches the SDK, and the colour queue families taken from the
+// options -- each a place the driver can be silently wrong.
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <limits>
 #include <string>
 
 #include "frame_conversion.hpp"
 #include "test_check.hpp"
-#include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
@@ -245,10 +247,25 @@ int test_validate_streams() {
   CHECK(invalid(check(o)));
   // Colour queue families: up to the array's size, which the importer reads.
   o = Options{};
-  o.color_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies;
+  o.color_queue_family_count = sensor::kMaxColorQueueFamilies;
   CHECK(check(o).ok());
-  o.color_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies + 1;
+  o.color_queue_family_count = sensor::kMaxColorQueueFamilies + 1;
   CHECK(invalid(check(o)));
+  return 0;
+}
+
+// The colour queue families leave the options as one value, the whole list
+// with its count, which each start hands its colour decoder.
+int test_color_queue_families() {
+  sensor::OrbbecStreamOptions o;
+  const std::uint32_t families[] = {3, 1, 2, 0};
+  static_assert(std::size(families) == sensor::kMaxColorQueueFamilies);
+  std::copy(std::begin(families), std::end(families), o.color_queue_families);
+  o.color_queue_family_count = 4;
+  const orbbec::ColorQueueFamilies got = orbbec::color_queue_families(o);
+  CHECK(got.count == 4);
+  CHECK(std::equal(std::begin(families), std::end(families), got.families));
+  CHECK(orbbec::color_queue_families(sensor::OrbbecStreamOptions{}).count == 0);
   return 0;
 }
 
@@ -269,8 +286,8 @@ int test_sensor_open() {
   o.min_depth = 0.0f;
   CHECK(refused(o, "min_depth > 0"));
   o = {};
-  o.color_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies + 1;
-  CHECK(refused(o, "queue_family_count"));
+  o.color_queue_family_count = sensor::kMaxColorQueueFamilies + 1;
+  CHECK(refused(o, "color_queue_families: queue_family_count"));
   o = {};
   o.color_to_world[0][0] = -1.0;
   CHECK(refused(o, "color_to_world: transform's rotation is a reflection"));
@@ -295,6 +312,7 @@ int main() {
   if (test_transform_from() != 0) return 1;
   if (test_sync_mode() != 0) return 1;
   if (test_validate_streams() != 0) return 1;
+  if (test_color_queue_families() != 0) return 1;
   if (test_sensor_open() != 0) return 1;
   std::printf("orbbec conversion tests passed\n");
   return 0;

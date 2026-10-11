@@ -117,8 +117,8 @@ Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
   options.depth = in.size();
   options.device = g_device;
   options.allocator = g_allocator;
-  std::copy(families.begin(), families.end(), options.queue_families);
-  options.queue_family_count = static_cast<std::uint32_t>(families.size());
+  std::copy(families.begin(), families.end(), options.queue_families.families);
+  options.queue_families.count = static_cast<std::uint32_t>(families.size());
   options.who = "test";
   auto decoder = orbbec::JpegColorDecoder::start(
       options, [collected](std::shared_ptr<ob::FrameSet> set) {

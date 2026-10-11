@@ -19,8 +19,8 @@
 
 #include <libobsensor/ObSensor.hpp>
 
+#include "frame_conversion.hpp"
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
@@ -166,8 +166,7 @@ class CameraStream {
   // that read them (streams.color_queue_families).
   const core::Device* vulkan_device_ = nullptr;
   core::Allocator* vulkan_allocator_ = nullptr;
-  std::uint32_t color_queue_families_[core::BufferDesc::kMaxQueueFamilies] = {};
-  std::uint32_t color_queue_family_count_ = 0;
+  ColorQueueFamilies color_queue_families_;
   // The colour decoder between the SDK and the mailbox: hevc_ for H.265,
   // jpeg_ for MJPEG, the other null. Replaced at each start, so its counters
   // start fresh with the rest.

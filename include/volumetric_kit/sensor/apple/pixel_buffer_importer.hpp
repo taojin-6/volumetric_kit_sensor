@@ -37,11 +37,9 @@ namespace volumetric_kit::recon::sensor {
 /// surface while anything reads them. Its writer must have finished, as for
 /// any @ref YuvImage: the GPU pass waits on nothing.
 ///
-/// The images are `VK_SHARING_MODE_EXCLUSIVE` unless @ref create is given two
-/// or more distinct queue families, as when a renderer on another family
-/// draws the pictures (MoltenVK hands recon and gfx different families): then
-/// they are CONCURRENT across those families, which read them with no
-/// ownership transfer.
+/// The images are shared across the queue families @ref create is given, as
+/// when a renderer on another family draws the pictures (MoltenVK hands recon
+/// and gfx different families).
 ///
 /// @code
 /// auto importer = PixelBufferImporter::create(device, "ARKitCapture");
@@ -63,11 +61,12 @@ class VR_SENSOR_APPLE_API PixelBufferImporter {
   /// @param who Names the importer's user in errors.
   /// @param queue_families The queue families that will read the images, as
   ///        `BufferDesc::queue_families`: null for @p device's own alone.
-  ///        Two or more distinct give CONCURRENT images; duplicates count
-  ///        once, so a caller may pass its compute and render families
-  ///        unconditionally. When given, they include @p device's own family,
-  ///        on which the importer readies the images. Read during the call
-  ///        only.
+  ///        Two or more distinct give `VK_SHARING_MODE_CONCURRENT` images,
+  ///        which those families read with no ownership transfer; otherwise
+  ///        they are EXCLUSIVE. Duplicates count once, so a caller may pass
+  ///        its compute and render families unconditionally. When given, they
+  ///        include @p device's own family, on which the importer readies the
+  ///        images. Read during the call only.
   /// @param queue_family_count The entries in @p queue_families.
   /// @return The importer; `Status::Code::InvalidArgument` for a count with
   ///         no families, more than `BufferDesc::kMaxQueueFamilies` distinct,

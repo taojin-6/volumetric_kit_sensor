@@ -45,10 +45,8 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
     /// Borrowed: it must outlive the decoder and every picture on it.
     core::Allocator* allocator = nullptr;
     /// The queue families that will read the pictures, as
-    /// @ref PixelBufferImporter::create takes them: VideoToolbox's images
-    /// are CONCURRENT across two or more, so a renderer on another family
-    /// reads them in place. nvJPEG's buffers ignore them; a reader takes one
-    /// over from @ref kQueueFamilyExternal. Read by @ref create only.
+    /// @ref PixelBufferImporter::create takes them; nvJPEG ignores them. Read
+    /// by @ref create only.
     const std::uint32_t* queue_families = nullptr;
     /// The entries in @ref queue_families.
     std::uint32_t queue_family_count = 0;

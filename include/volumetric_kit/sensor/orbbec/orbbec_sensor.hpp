@@ -111,8 +111,10 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///         - `Status::Code::InvalidArgument` for options refused before the
   ///           camera is looked for -- a zero size or rate, a depth range
   ///           that is not finite, empty or starts at 0 (which the GPU pass
-  ///           would refuse), a @ref Options::color_to_world that is not
-  ///           rigid, @ref Options::apply_sync without @ref Options::sync --
+  ///           would refuse), a `color_queue_family_count` past
+  ///           @ref kMaxColorQueueFamilies, a @ref Options::color_to_world
+  ///           that is not rigid, @ref Options::apply_sync without
+  ///           @ref Options::sync --
   ///           an empty @ref Options::serial with more than one camera
   ///           answering within the discovery window, or a factory
   ///           calibration that cannot be used: intrinsics zeroed, not finite
@@ -160,7 +162,10 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///         (@ref Options::sync_clock_to_host), or the colour decoder's
   ///         thread will not start; and the decoder's error if it does not
   ///         open: `Status::Code::Unsupported` where it has no device path
-  ///         (no `OrbbecStreamOptions::device`, say).
+  ///         (no `OrbbecStreamOptions::device`, say), and
+  ///         `Status::Code::InvalidArgument` for
+  ///         `OrbbecStreamOptions::color_queue_families` VideoToolbox's
+  ///         importer refuses (@ref PixelBufferImporter::create).
   core::Status start() override;
   /// @brief As `IRgbdSensor::stop`, letting go of the frames waiting for
   ///        the colour decoder too. The camera stays open, for another

@@ -21,9 +21,9 @@
 #include <libobsensor/ObSensor.hpp>
 
 #include "decode_worker.hpp"
+#include "frame_conversion.hpp"
 #include "picture_frames.hpp"
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 
@@ -90,8 +90,7 @@ class HevcColorDecoder {
     // The allocator NVDEC's pictures are made through. Borrowed as device is.
     core::Allocator* allocator = nullptr;
     // The queue families that read the pictures, for HevcDecoder::Options.
-    std::uint32_t queue_families[core::BufferDesc::kMaxQueueFamilies] = {};
-    std::uint32_t queue_family_count = 0;
+    ColorQueueFamilies queue_families;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on
