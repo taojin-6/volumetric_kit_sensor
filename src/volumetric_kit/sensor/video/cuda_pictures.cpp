@@ -42,7 +42,7 @@ core::Status cuda_error(const char* who, CUresult result, const char* what) {
   const char* name = nullptr;
   cuda_driver()->cuGetErrorName(result, &name);
   return core::Status::backend_error(
-      static_cast<std::int64_t>(result),
+      core::Status::Backend::Cuda, static_cast<std::int64_t>(result),
       std::string(who) + ": " + what + ": " +
           (name != nullptr ? name : "CUDA error"));
 }

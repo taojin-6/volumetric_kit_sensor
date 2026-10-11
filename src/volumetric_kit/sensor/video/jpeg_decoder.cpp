@@ -106,10 +106,10 @@ bool refused(nvjpegStatus_t s) {
 }
 
 core::Status nvjpeg_error(nvjpegStatus_t s, const std::string& what) {
-  return core::Status::backend_error(static_cast<std::int64_t>(s),
-                                     std::string(kWho) + ": " + what +
-                                         ": nvJPEG status " +
-                                         std::to_string(static_cast<int>(s)));
+  return core::Status::backend_error(
+      core::Status::Backend::NvJpeg, static_cast<std::int64_t>(s),
+      std::string(kWho) + ": " + what + ": nvJPEG status " +
+          std::to_string(static_cast<int>(s)));
 }
 
 // nvJPEG on the GPU's hardware JPEG engine, in the primary context of the

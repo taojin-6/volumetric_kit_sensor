@@ -76,7 +76,7 @@ struct CudaDriver {
 // entry point.
 const CudaDriver* cuda_driver();
 
-// A Backend error naming @p who, @p what it was doing and CUDA's name for
+// A Cuda Backend error naming @p who, @p what it was doing and CUDA's name for
 // @p result, which is not CUDA_SUCCESS.
 core::Status cuda_error(const char* who, CUresult result, const char* what);
 
