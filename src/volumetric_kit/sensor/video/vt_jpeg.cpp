@@ -96,7 +96,8 @@ core::Status vt_error(const char* who, const std::string& what, OSStatus error,
     default:
       break;
   }
-  return core::Status::backend_error(error, message);
+  return core::Status::backend_error(core::Status::Backend::VideoToolbox, error,
+                                     message);
 }
 
 // A dictionary to fill, released with its values.

@@ -18,7 +18,10 @@ core::Status ffmpeg_error(const char* who, const std::string& what, int err) {
       std::string(who) + ": " + what + ": " + ffmpeg_message(err);
   if (err == AVERROR(ENOMEM)) return core::Status::out_of_memory(message);
   // A hardware call failed inside FFmpeg.
-  if (err == AVERROR_EXTERNAL) return core::Status::backend_error(err, message);
+  if (err == AVERROR_EXTERNAL) {
+    return core::Status::backend_error(core::Status::Backend::Ffmpeg, err,
+                                       message);
+  }
   return core::Status::io_error(message);
 }
 

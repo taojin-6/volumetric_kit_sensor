@@ -8,11 +8,11 @@
 
 #if VR_SENSOR_VIDEO_WITH_CUDA
 #include <dlfcn.h>
-#include <nvjpeg.h>
 
 #include <optional>
 
 #include "cuda_pictures.hpp"
+#include "nvjpeg.hpp"
 #elif defined(__APPLE__)
 #include "vt_jpeg.hpp"
 #else
@@ -105,13 +105,6 @@ bool refused(nvjpegStatus_t s) {
   return s == NVJPEG_STATUS_BAD_JPEG || s == NVJPEG_STATUS_INCOMPLETE_BITSTREAM;
 }
 
-core::Status nvjpeg_error(nvjpegStatus_t s, const std::string& what) {
-  return core::Status::backend_error(static_cast<std::int64_t>(s),
-                                     std::string(kWho) + ": " + what +
-                                         ": nvJPEG status " +
-                                         std::to_string(static_cast<int>(s)));
-}
-
 // nvJPEG on the GPU's hardware JPEG engine, in the primary context of the
 // Vulkan device's GPU, and everything it holds there, released together. Only
 // the engine: nvJPEG's other back ends decode the entropy on the host (4.2 ms
@@ -200,7 +193,7 @@ core::Result<std::unique_ptr<NvjpegDecoder>> NvjpegDecoder::open(
       !ok(s = n->nvjpegDecoderStateCreate(d->handle, d->decoder, &d->state)) ||
       !ok(s = n->nvjpegStateAttachPinnedBuffer(d->state, d->pinned)) ||
       !ok(s = n->nvjpegStateAttachDeviceBuffer(d->state, d->staging))) {
-    return nvjpeg_error(s, "opening nvJPEG");
+    return video::nvjpeg_error(kWho, s, "opening nvJPEG");
   }
   VKC_ASSIGN(d->pictures, video::CudaPictures::create(
                               device, allocator, d->context, d->stream, kWho));
@@ -250,7 +243,7 @@ core::Result<DecodedPicture> NvjpegDecoder::decode(const std::uint8_t* data,
                                     std::to_string(static_cast<int>(status)) +
                                     ")");
     }
-    return nvjpeg_error(status, what);
+    return video::nvjpeg_error(kWho, status, what);
   };
 
   // Only an 8-bit 4:2:0 JPEG the engine takes.

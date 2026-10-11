@@ -112,8 +112,10 @@ int gpu_main(vr_test::GpuContext& gpu) {
               ? Code::Backend
               : error.expected;
       CHECK(failed.status().domain() == expected);
-      if (expected == Code::Backend)
+      if (expected == Code::Backend) {
+        CHECK(failed.status().backend() == vkc::Status::Backend::VideoToolbox);
         CHECK(failed.status().detail() == error.native);
+      }
       // The public decoder does not latch failures; its consumer decides
       // whether to stop. In particular, bad data must cost only that JPEG.
       const auto recovered = decoder->decode(jpeg.data(), jpeg.size());

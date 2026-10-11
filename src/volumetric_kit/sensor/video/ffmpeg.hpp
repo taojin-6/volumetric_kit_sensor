@@ -45,8 +45,9 @@ using BufferRef = std::unique_ptr<AVBufferRef, BufferUnref>;
 std::string ffmpeg_message(int err);
 
 /// @return A status naming @p who, @p what it was doing and FFmpeg's
-///         message for @p err: OutOfMemory for `AVERROR(ENOMEM)`, Backend
-///         for `AVERROR_EXTERNAL` (a hardware call failed), else IoError.
+///         message for @p err: OutOfMemory for `AVERROR(ENOMEM)`, an
+///         `Ffmpeg` Backend for `AVERROR_EXTERNAL` (a hardware call failed),
+///         else IoError.
 core::Status ffmpeg_error(const char* who, const std::string& what, int err);
 
 /// @return An OutOfMemory for an allocation FFmpeg refused.
