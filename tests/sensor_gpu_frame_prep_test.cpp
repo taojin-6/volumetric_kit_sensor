@@ -308,24 +308,15 @@ std::vector<std::uint32_t> color_of(const sensor::DeviceFrame& f) {
       *f.color, std::size_t{f.color_camera.width} * f.color_camera.height);
 }
 
-// An iw x ih image of `format`, `texel` bytes a texel: `count` rows of
-// `row_bytes` from `rows` in its corner, junk elsewhere; null if it cannot be
-// made.
+// test_image::with_corner on the test's device.
 std::shared_ptr<const vkc::Image> image_of(VkFormat format, std::uint32_t texel,
                                            std::uint32_t iw, std::uint32_t ih,
                                            const std::uint8_t* rows,
                                            std::uint32_t row_bytes,
                                            std::uint32_t count,
                                            VkImageUsageFlags usage) {
-  std::vector<std::uint8_t> texels(std::size_t{iw} * ih * texel, 0xEE);
-  for (std::uint32_t r = 0; r < count; ++r) {
-    std::memcpy(&texels[std::size_t{r} * iw * texel],
-                rows + std::size_t{r} * row_bytes, row_bytes);
-  }
-  auto made =
-      test_image::make(*g_device, *g_allocator, format, iw, ih, texels, usage);
-  return made.ok() ? std::make_shared<const vkc::Image>(std::move(made).value())
-                   : nullptr;
+  return test_image::with_corner(*g_device, *g_allocator, format, texel, iw, ih,
+                                 rows, row_bytes, count, usage);
 }
 
 // Pinhole: depth is raw * scale exactly, and a colour survives the forward

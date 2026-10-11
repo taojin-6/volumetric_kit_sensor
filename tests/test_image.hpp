@@ -9,7 +9,9 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
@@ -105,6 +107,26 @@ inline volumetric_kit::core::Result<volumetric_kit::core::Image> make(
                          nullptr, 1, &b);
   }));
   return out;
+}
+
+// A `width` x `height` image of `format`, `texel` bytes a texel, made by
+// make(): `count` rows of `row_bytes` from `rows` in its corner, junk
+// elsewhere; null if it cannot be made.
+inline std::shared_ptr<const volumetric_kit::core::Image> with_corner(
+    const volumetric_kit::core::Device& device,
+    volumetric_kit::core::Allocator& allocator, VkFormat format,
+    std::uint32_t texel, std::uint32_t width, std::uint32_t height,
+    const std::uint8_t* rows, std::uint32_t row_bytes, std::uint32_t count,
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT) {
+  std::vector<std::uint8_t> texels(std::size_t{width} * height * texel, 0xEE);
+  for (std::uint32_t r = 0; r < count; ++r) {
+    std::memcpy(&texels[std::size_t{r} * width * texel],
+                rows + std::size_t{r} * row_bytes, row_bytes);
+  }
+  auto made = make(device, allocator, format, width, height, texels, usage);
+  return made.ok() ? std::make_shared<const volumetric_kit::core::Image>(
+                         std::move(made).value())
+                   : nullptr;
 }
 
 }  // namespace test_image
