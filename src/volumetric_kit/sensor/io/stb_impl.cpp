@@ -51,4 +51,9 @@ bool write_png(WriteCallback callback, void* context, int width, int height,
                                 pixels, stride_bytes) != 0;
 }
 
+std::uint32_t png_crc(const std::uint8_t* data, int size) {
+  // stb's chunk CRC; it only reads the bytes.
+  return stbiw__crc32(const_cast<unsigned char*>(data), size);
+}
+
 }  // namespace volumetric_kit::recon::io::detail::stb

@@ -4,6 +4,7 @@
 // Host-only image I/O contract tests. PNG fixtures below were encoded
 // independently of the production writer: one unfiltered row, zlib DEFLATE.
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -11,13 +12,17 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <vector>
 
+#include "test_allocation_failure.hpp"
 #include "test_check.hpp"
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/io/image_io.hpp"
 
+namespace vkc = volumetric_kit::core;
 namespace vr = volumetric_kit::recon;
 namespace fs = std::filesystem;
 
@@ -66,12 +71,165 @@ constexpr std::uint8_t kDepth8[] = {
     0x01, 0x02, 0x01, 0x00, 0x42, 0xbe, 0xbc, 0x68, 0x00, 0x00, 0x00, 0x00,
     0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 };
-}  // namespace
 
-int main() {
-  Scratch scratch;
-  const auto color_path = (scratch.path / "color.png").string();
-  const auto depth_path = (scratch.path / "depth.png").string();
+// IHDR of a 3x2 16-bit gray image: length, type, data, CRC. stb_image skips
+// CRCs, so this CRC was computed independently (Python's zlib.crc32).
+constexpr std::uint8_t kGray16Ihdr3x2[] = {
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x02, 0x10, 0x00,
+    0x00, 0x00, 0x00, 0xe8, 0x8f, 0xe5, 0x85,
+};
+
+bool has_code(const vkc::Status& status, vkc::Status::Code code) {
+  return status.domain() == code;
+}
+
+// Every 16-bit edge value first, then noise, ramps and flat runs, so stb's
+// filter choice varies from row to row.
+std::vector<std::uint16_t> depth_pattern(std::uint32_t w, std::uint32_t h) {
+  std::vector<std::uint16_t> samples(static_cast<std::size_t>(w) * h);
+  std::uint32_t state = 12345;
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      state = state * 1664525u + 1013904223u;
+      auto& s = samples[static_cast<std::size_t>(y) * w + x];
+      switch ((x / 7 + y / 5) % 3) {
+        case 0:
+          s = static_cast<std::uint16_t>(state >> 16);
+          break;
+        case 1:
+          s = static_cast<std::uint16_t>(x * 97 + y * 31);
+          break;
+        default:
+          s = static_cast<std::uint16_t>(1000 + y);
+      }
+    }
+  }
+  constexpr std::uint16_t kEdges[] = {0,      1,      255,    256,
+                                      0x7fff, 0x8000, 0xfffe, 0xffff};
+  std::copy_n(kEdges, std::min(std::size(kEdges), samples.size()),
+              samples.begin());
+  samples.back() = 0xffff;
+  return samples;
+}
+
+// What write_png_u16 writes, load_depth_u16 reads back exactly, and it is
+// what encode_png_u16 returns.
+int u16_round_trip(const fs::path& dir) {
+  struct Extent {
+    std::uint32_t w, h;
+  };
+  for (const Extent e : {Extent{1, 1}, Extent{3, 2}, Extent{7, 5},
+                         Extent{640, 576}, Extent{641, 577}}) {
+    const auto samples = depth_pattern(e.w, e.h);
+    const auto path =
+        (dir / ("depth_" + std::to_string(e.w) + ".png")).string();
+    CHECK(
+        vr::io::write_png_u16(path, samples.data(), samples.size(), e.w, e.h));
+    const auto decoded = vr::io::load_depth_u16(path, e.w, e.h);
+    CHECK(decoded && decoded.value() == samples);
+    const auto encoded =
+        vr::io::encode_png_u16(samples.data(), samples.size(), e.w, e.h);
+    CHECK(encoded && encoded.value() == read_bytes(path));
+  }
+  const std::uint16_t zero = 0;
+  const auto path = (dir / "zero.png").string();
+  CHECK(vr::io::write_png_u16(path, &zero, 1, 1, 1));
+  const auto decoded = vr::io::load_depth_u16(path, 1, 1);
+  CHECK(decoded && decoded.value() == std::vector<std::uint16_t>{0});
+  return 0;
+}
+
+// PNG stores a sample's most significant byte first; a writer storing the
+// low byte first would swap these. The 8-bit decode keeps the high byte.
+int u16_big_endian(const fs::path& dir) {
+  const std::uint16_t samples[] = {0x0102, 0xff00, 0x00ff};
+  const auto path = (dir / "order.png").string();
+  CHECK(vr::io::write_png_u16(path, samples, 3, 3, 1));
+  const auto depth = vr::io::load_depth_u16(path, 3, 1);
+  CHECK(depth &&
+        depth.value() == std::vector<std::uint16_t>(samples, samples + 3));
+  const auto color = vr::io::load_color_packed(path, 3, 1);
+  CHECK(color &&
+        color.value() == std::vector<std::uint32_t>({0x010101, 0xffffff, 0}));
+  return 0;
+}
+
+// The file starts with the PNG signature and a 16-bit gray IHDR whose CRC
+// matches it.
+int u16_header() {
+  constexpr std::uint8_t kSignature[] = {0x89, 0x50, 0x4e, 0x47,
+                                         0x0d, 0x0a, 0x1a, 0x0a};
+  const std::uint16_t samples[6] = {};
+  const auto png = vr::io::encode_png_u16(samples, 6, 3, 2);
+  CHECK(png && png.value().size() > 8 + std::size(kGray16Ihdr3x2));
+  const auto& bytes = png.value();
+  CHECK(
+      std::equal(std::begin(kSignature), std::end(kSignature), bytes.begin()));
+  CHECK(std::equal(std::begin(kGray16Ihdr3x2), std::end(kGray16Ihdr3x2),
+                   bytes.begin() + 8));
+  return 0;
+}
+
+// Invalid input is refused before anything is written.
+int u16_refusals(const fs::path& dir) {
+  using Code = vkc::Status::Code;
+  const std::vector<std::uint16_t> samples(6, 1000);
+  const auto refused = [&](const std::uint16_t* p, std::size_t n,
+                           std::uint32_t w, std::uint32_t h) {
+    const auto png = vr::io::encode_png_u16(p, n, w, h);
+    return !png && has_code(png.status(), Code::InvalidArgument);
+  };
+  CHECK(refused(nullptr, 6, 3, 2));
+  CHECK(refused(samples.data(), 5, 3, 2));
+  CHECK(refused(samples.data(), 6, 0, 2));
+  CHECK(refused(samples.data(), 6, 3, 0));
+  // The count claims to cover the extent, so only the extent is refused;
+  // nothing is read.
+  constexpr auto kAll = std::numeric_limits<std::size_t>::max();
+  CHECK(refused(samples.data(), kAll, 65536, 65536));
+  // A row too long for stb's int filter score.
+  const std::vector<std::uint16_t> row(std::size_t{1} << 23);
+  CHECK(refused(row.data(), row.size(), 1u << 23, 1));
+
+  CHECK(has_code(vr::io::write_png_u16("", samples.data(), 6, 3, 2),
+                 Code::InvalidArgument));
+  CHECK(has_code(vr::io::write_png_u16(std::string("a\0b.png", 7),
+                                       samples.data(), 6, 3, 2),
+                 Code::InvalidArgument));
+  CHECK(has_code(vr::io::write_png_u16((dir / "missing" / "d.png").string(),
+                                       samples.data(), 6, 3, 2),
+                 Code::IoError));
+  // A refused write leaves the existing file intact.
+  const auto path = (dir / "kept.png").string();
+  CHECK(vr::io::write_png_u16(path, samples.data(), 6, 3, 2));
+  const auto kept = read_bytes(path);
+  CHECK(!vr::io::write_png_u16(path, samples.data(), 5, 3, 2));
+  CHECK(read_bytes(path) == kept);
+  return 0;
+}
+
+// An allocation failure while encoding is a Status, not an exception.
+int u16_out_of_memory() {
+  constexpr std::uint32_t kW = 37;
+  constexpr std::uint32_t kH = 29;
+  const auto samples = depth_pattern(kW, kH);
+  auto& failure = vr_test::allocation_failure;
+  failure = {};
+  failure.bytes = std::size_t{kW} * kH * 2;  // The big-endian copy.
+  failure.armed = true;
+  const auto png =
+      vr::io::encode_png_u16(samples.data(), samples.size(), kW, kH);
+  const bool injected = failure.injected;
+  failure = {};
+  CHECK(injected);
+  CHECK(!png && has_code(png.status(), vkc::Status::Code::OutOfMemory));
+  return 0;
+}
+
+int rgba8_and_depth_fixtures(const fs::path& dir) {
+  const auto color_path = (dir / "color.png").string();
+  const auto depth_path = (dir / "depth.png").string();
   const std::array<std::uint8_t, 16> rgba{128, 19, 231, 0,   9, 241, 17, 127,
                                           255, 0,  128, 255, 1, 2,   3,  64};
   CHECK(vr::io::write_png_rgba8(color_path, rgba.data(), rgba.size(), 2, 2));
@@ -93,6 +251,19 @@ int main() {
   // An 8-bit depth PNG would otherwise decode about 257x too far.
   CHECK(write_fixture(depth_path, kDepth8));
   CHECK(!vr::io::load_depth_u16(depth_path, 2, 1));
+  return 0;
+}
+
+}  // namespace
+
+int main() {
+  Scratch scratch;
+  CHECK(rgba8_and_depth_fixtures(scratch.path) == 0);
+  CHECK(u16_round_trip(scratch.path) == 0);
+  CHECK(u16_big_endian(scratch.path) == 0);
+  CHECK(u16_header() == 0);
+  CHECK(u16_refusals(scratch.path) == 0);
+  CHECK(u16_out_of_memory() == 0);
   std::puts("io image tests passed");
   return 0;
 }

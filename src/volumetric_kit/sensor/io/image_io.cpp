@@ -3,9 +3,11 @@
 
 #include "volumetric_kit/recon/io/image_io.hpp"
 
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <utility>
 
 #include "errors.hpp"
 #include "stb_backend.hpp"
@@ -67,6 +69,17 @@ core::Result<std::vector<std::uint8_t>> read_image(const char* api,
   return bytes;
 }
 
+// Whether stb's PNG encoder can take a tightly packed image of `pixel_bytes`
+// per pixel. Its filter score sums abs(signed byte) in int. Its compressed
+// buffer grows geometrically, with signed-int length/capacity and PNG framing.
+bool fits_png_encoder(std::uint32_t width, std::uint32_t height,
+                      std::uint64_t pixel_bytes) {
+  const std::uint64_t stride = width * pixel_bytes;
+  const auto int_max =
+      static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+  return stride <= int_max / 128 && (stride + 1) * height <= int_max / 2 - 64;
+}
+
 struct PngOutput {
   const std::string* path = nullptr;
   std::ofstream stream;
@@ -86,6 +99,69 @@ void write_png_bytes(void* context, void* data, int size) noexcept {
   } catch (...) {
     out.failed = true;
   }
+}
+
+struct PngBytes {
+  std::vector<std::uint8_t> bytes;
+  bool failed = false;
+};
+
+// Never throw through stb; it calls this once with the whole file.
+void copy_png_bytes(void* context, void* data, int size) noexcept {
+  auto& out = *static_cast<PngBytes*>(context);
+  try {
+    const auto* first = static_cast<const std::uint8_t*>(data);
+    out.bytes.assign(first, first + size);
+  } catch (...) {
+    out.failed = true;
+  }
+}
+
+// stb writes 8-bit samples only. Two 8-bit channels holding each sample's
+// bytes, most significant first, filter and compress exactly as 16-bit gray
+// does: PNG filters work on bytes, two per pixel either way. Only IHDR then
+// differs: its bit depth, color type and CRC are rewritten.
+core::Result<std::vector<std::uint8_t>> encode_gray16(
+    const char* api, const std::uint16_t* samples, std::size_t sample_count,
+    std::uint32_t width, std::uint32_t height) {
+  VKC_TRY(check_dimensions(api, width, height));
+  const std::size_t count = static_cast<std::size_t>(width) * height;
+  if (samples == nullptr || sample_count < count ||
+      !fits_png_encoder(width, height, 2)) {
+    return core::Status::invalid_argument(std::string(api) +
+                                          ": invalid buffer or extent");
+  }
+  std::vector<std::uint8_t> big_endian(count * 2);
+  for (std::size_t i = 0; i < count; ++i) {
+    big_endian[i * 2] = static_cast<std::uint8_t>(samples[i] >> 8);
+    big_endian[i * 2 + 1] = static_cast<std::uint8_t>(samples[i] & 0xff);
+  }
+  PngBytes out;
+  // stb fails only when its encoding buffers cannot be allocated.
+  if (!stb::write_png(copy_png_bytes, &out, static_cast<int>(width),
+                      static_cast<int>(height), 2, big_endian.data(),
+                      static_cast<int>(width) * 2) ||
+      out.failed) {
+    return core::Status::out_of_memory(std::string(api) + ": cannot encode");
+  }
+  // The 8-byte signature, then IHDR: length, type, width, height, bit depth,
+  // color type, compression, filter, interlace, and the CRC of type and data.
+  constexpr std::size_t kType = 12;
+  constexpr std::size_t kDepth = 24;
+  constexpr std::size_t kColor = 25;
+  constexpr std::size_t kCrc = 29;
+  auto& png = out.bytes;
+  VKC_CHECK(png.size() > kCrc + 4 && std::memcmp(&png[kType], "IHDR", 4) == 0 &&
+                png[kDepth] == 8 && png[kColor] == 4,
+            "stb wrote other than an 8-bit gray-alpha IHDR first");
+  png[kDepth] = 16;
+  png[kColor] = 0;  // Gray.
+  const std::uint32_t crc =
+      stb::png_crc(&png[kType], static_cast<int>(kCrc - kType));
+  for (std::size_t i = 0; i < 4; ++i) {
+    png[kCrc + i] = static_cast<std::uint8_t>(crc >> (24 - 8 * i));
+  }
+  return std::move(png);
 }
 
 }  // namespace
@@ -154,13 +230,8 @@ core::Status write_png_rgba8(const std::string& path,
   VKC_TRY(detail::check_path("write_png_rgba8", path));
   VKC_TRY(check_dimensions("write_png_rgba8", width, height));
   const std::size_t stride = static_cast<std::size_t>(width) * 4;
-  const std::size_t bytes = stride * height;
-  const auto int_max =
-      static_cast<std::size_t>(std::numeric_limits<int>::max());
-  // stb's filter score sums abs(signed byte) in int. Its compressed buffer
-  // grows geometrically, with signed-int length/capacity and PNG framing.
-  if (pixels == nullptr || byte_count < bytes || stride > int_max / 128 ||
-      (stride + 1) * height > int_max / 2 - 64) {
+  if (pixels == nullptr || byte_count < stride * height ||
+      !fits_png_encoder(width, height, 4)) {
     return core::Status::invalid_argument(
         "write_png_rgba8: invalid buffer or extent");
   }
@@ -181,6 +252,33 @@ core::Status write_png_rgba8(const std::string& path,
   return {};
 } catch (...) {
   return detail::exception_status("write_png_rgba8");
+}
+
+core::Result<std::vector<std::uint8_t>> encode_png_u16(
+    const std::uint16_t* samples, std::size_t sample_count, std::uint32_t width,
+    std::uint32_t height) try {
+  return encode_gray16("encode_png_u16", samples, sample_count, width, height);
+} catch (...) {
+  return detail::exception_status("encode_png_u16");
+}
+
+core::Status write_png_u16(const std::string& path,
+                           const std::uint16_t* samples,
+                           std::size_t sample_count, std::uint32_t width,
+                           std::uint32_t height) try {
+  VKC_TRY(detail::check_path("write_png_u16", path));
+  VKC_ASSIGN(const auto png, encode_gray16("write_png_u16", samples,
+                                           sample_count, width, height));
+  std::ofstream out(path, std::ios::binary);
+  out.write(reinterpret_cast<const char*>(png.data()),
+            static_cast<std::streamsize>(png.size()));
+  out.close();
+  if (!out) {
+    return core::Status::io_error("write_png_u16: cannot write " + path);
+  }
+  return {};
+} catch (...) {
+  return detail::exception_status("write_png_u16");
 }
 
 }  // namespace volumetric_kit::recon::io

@@ -4,7 +4,7 @@
 #pragma once
 
 /// @file io/image_io.hpp
-/// @brief Host image decoding and PNG export, without backend types.
+/// @brief Host image decoding and PNG encoding, without backend types.
 
 #include <cstddef>
 #include <cstdint>
@@ -69,5 +69,41 @@ VR_IO_API core::Status write_png_rgba8(const std::string& path,
                                        std::size_t byte_count,
                                        std::uint32_t width,
                                        std::uint32_t height);
+
+/// @brief Encode tightly packed 16-bit samples as a 16-bit grayscale PNG in
+///        memory.
+///
+/// The samples are stored as given, big-endian as PNG requires, with no
+/// gamma, scale or color profile, so @ref load_depth_u16 returns them
+/// exactly. Calls share no state and may run concurrently.
+/// @param samples Pointer to top-left-origin row-major samples, valid for
+///        this call.
+/// @param sample_count Available samples; must cover `width * height`.
+/// @param width Positive width supported by the encoder's integer bounds.
+/// @param height Positive height supported by the encoder's integer bounds.
+/// @return The PNG file's bytes, or non-OK Status for invalid input or
+///         allocation failure.
+VR_IO_API core::Result<std::vector<std::uint8_t>> encode_png_u16(
+    const std::uint16_t* samples, std::size_t sample_count, std::uint32_t width,
+    std::uint32_t height);
+
+/// @brief Write tightly packed 16-bit samples to a 16-bit grayscale PNG file.
+///
+/// Writes the bytes of @ref encode_png_u16. The output is opened only after
+/// encoding succeeds, so invalid input or an allocation failure leaves an
+/// existing file intact; an I/O failure can leave a partial file.
+/// @param path Output path, without embedded NUL characters; replaced on
+/// success.
+/// @param samples Pointer to top-left-origin row-major samples, valid for
+///        this call.
+/// @param sample_count Available samples; must cover `width * height`.
+/// @param width Positive width supported by the encoder's integer bounds.
+/// @param height Positive height supported by the encoder's integer bounds.
+/// @return OK after closing the file, or non-OK Status for invalid input,
+///         allocation failure, or write failure.
+VR_IO_API core::Status write_png_u16(const std::string& path,
+                                     const std::uint16_t* samples,
+                                     std::size_t sample_count,
+                                     std::uint32_t width, std::uint32_t height);
 
 }  // namespace volumetric_kit::recon::io
