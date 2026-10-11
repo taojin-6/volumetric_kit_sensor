@@ -21,6 +21,7 @@
 
 #include "decode_worker.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
 namespace volumetric_kit::recon::sensor::orbbec {
@@ -39,6 +40,9 @@ class JpegColorDecoder {
     const core::Device* device = nullptr;
     // The allocator nvJPEG's pictures are made through. Borrowed as device is.
     core::Allocator* allocator = nullptr;
+    // The queue families that read the pictures, for JpegDecoder::Options.
+    std::uint32_t queue_families[core::BufferDesc::kMaxQueueFamilies] = {};
+    std::uint32_t queue_family_count = 0;
     std::string who;
   };
 

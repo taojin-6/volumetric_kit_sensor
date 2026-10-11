@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
@@ -83,12 +84,55 @@ VkDeviceMemory bind_memory(const core::Device& device, VkImage image) {
   return out;
 }
 
+// The families the images are CONCURRENT across: the distinct entries of
+// @p families when two or more, as the core's allocator picks a buffer's
+// sharing; none, for EXCLUSIVE, otherwise.
+core::Result<std::vector<std::uint32_t>> sharing_families(
+    const core::Device& device, const std::uint32_t* families,
+    std::uint32_t count, const std::string& who) {
+  if (families == nullptr && count != 0) {
+    return core::Status::invalid_argument(
+        who + ": queue_family_count is non-zero but queue_families is null");
+  }
+  std::vector<std::uint32_t> distinct;
+  if (count != 0) distinct.assign(families, families + count);
+  std::sort(distinct.begin(), distinct.end());
+  distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+  if (distinct.size() > core::BufferDesc::kMaxQueueFamilies) {
+    return core::Status::invalid_argument(
+        who + ": more than BufferDesc::kMaxQueueFamilies distinct queue "
+              "families");
+  }
+  // CONCURRENT naming a family the device lacks is undefined
+  // (VUID-VkImageCreateInfo-sharingMode-01420), and vkCreateImage still
+  // succeeds.
+  std::uint32_t device_families = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(device.physical_device(),
+                                           &device_families, nullptr);
+  if (!distinct.empty() && distinct.back() >= device_families) {
+    return core::Status::invalid_argument(
+        who + ": queue_families names a family the device does not have");
+  }
+  // The images are readied on the device's own family, which must be one
+  // they are shared with.
+  if (count != 0 && !std::binary_search(distinct.begin(), distinct.end(),
+                                        device.queue_family())) {
+    return core::Status::invalid_argument(
+        who + ": queue_families leaves out the device's own family, " +
+        std::to_string(device.queue_family()));
+  }
+  if (distinct.size() < 2) distinct.clear();
+  return distinct;
+}
+
 }  // namespace
 
 struct PixelBufferImporter::Impl {
   const core::Device* device = nullptr;
   std::string who;
   id<MTLDevice> metal = nil;  // the one MoltenVK runs the device on
+  // The families the images are CONCURRENT across; empty for EXCLUSIVE.
+  std::vector<std::uint32_t> families;
   std::vector<std::shared_ptr<Surface>> surfaces;
   std::uint64_t pictures = 0;
 
@@ -141,6 +185,11 @@ core::Result<core::Image> PixelBufferImporter::Impl::plane_image(
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
   info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  if (!families.empty()) {
+    info.sharingMode = VK_SHARING_MODE_CONCURRENT;
+    info.queueFamilyIndexCount = static_cast<std::uint32_t>(families.size());
+    info.pQueueFamilyIndices = families.data();
+  }
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   const VkDevice dev = device->handle();
   VkImage image = VK_NULL_HANDLE;
@@ -158,6 +207,7 @@ core::Result<core::Image> PixelBufferImporter::Impl::plane_image(
   adopted.extent = info.extent;
   adopted.usage = info.usage;
   adopted.layout = VK_IMAGE_LAYOUT_GENERAL;
+  adopted.sharing = info.sharingMode;
   return core::Image(adopted, [dev, image, memory_handle, texture] {
     vkDestroyImage(dev, image, nullptr);
     vkFreeMemory(dev, memory_handle, nullptr);
@@ -200,7 +250,10 @@ PixelBufferImporter::Impl::import_surface(CVPixelBufferRef pixels,
 }
 
 core::Result<PixelBufferImporter> PixelBufferImporter::create(
-    const core::Device& device, std::string who) {
+    const core::Device& device, std::string who,
+    const std::uint32_t* queue_families, std::uint32_t queue_family_count) {
+  VKC_ASSIGN(std::vector<std::uint32_t> families,
+             sharing_families(device, queue_families, queue_family_count, who));
   if (!device.imports_metal_textures()) {
     return core::Status::unsupported(who +
                                      ": the device imports no Metal textures "
@@ -253,6 +306,7 @@ core::Result<PixelBufferImporter> PixelBufferImporter::create(
   impl->device = &device;
   impl->who = std::move(who);
   impl->metal = metal;
+  impl->families = std::move(families);
   return PixelBufferImporter(std::move(impl));
 }
 

@@ -290,12 +290,15 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   // device's GPU.
   AVBufferRef* hw = nullptr;
 #if VR_SENSOR_VIDEO_WITH_CUDA
+  // TODO(sensor): Options::queue_families for NVDEC's buffers, which a reader
+  // on any family takes over from outside Vulkan for now.
   VKC_ASSIGN(const int ordinal, video::cuda_ordinal_of(*options.device, kWho));
   const std::string name = std::to_string(ordinal);
   int err = av_hwdevice_ctx_create(&hw, kDeviceType, name.c_str(), nullptr, 0);
 #else
-  VKC_ASSIGN(impl->pictures,
-             PixelBufferImporter::create(*options.device, kWho));
+  VKC_ASSIGN(impl->pictures, PixelBufferImporter::create(
+                                 *options.device, kWho, options.queue_families,
+                                 options.queue_family_count));
   int err = av_hwdevice_ctx_create(&hw, kDeviceType, nullptr, nullptr, 0);
 #endif
   if (err < 0) {

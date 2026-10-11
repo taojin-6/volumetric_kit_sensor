@@ -8,11 +8,13 @@
 // BT.601 full range, carried in its frame and released with it. A pair
 // missing a frame, an empty colour frame and a JPEG that does not decode each
 // cost only themselves; a JPEG the hardware does not take stops the decoder;
-// and a decoder slower than the camera skips pairs rather than falling behind.
+// a decoder slower than the camera skips pairs rather than falling behind;
+// and the pictures are shared with the queue families it is given.
 //
 // Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one, makes it fail instead.
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -102,9 +104,10 @@ struct Run {
 };
 
 // Push `in`, wait for `expect` pairs out or the decoder to stop, and stop it.
-// The queue holds all of `in`, so none is skipped.
+// The queue holds all of `in`, so none is skipped. The pictures are shared
+// with `families`.
 Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
-        std::size_t expect) {
+        std::size_t expect, const std::vector<std::uint32_t>& families = {}) {
   struct Collected {
     std::mutex mutex;
     std::vector<std::shared_ptr<ob::FrameSet>> sets;
@@ -114,6 +117,8 @@ Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
   options.depth = in.size();
   options.device = g_device;
   options.allocator = g_allocator;
+  std::copy(families.begin(), families.end(), options.queue_families);
+  options.queue_family_count = static_cast<std::uint32_t>(families.size());
   options.who = "test";
   auto decoder = orbbec::JpegColorDecoder::start(
       options, [collected](std::shared_ptr<ob::FrameSet> set) {
@@ -304,6 +309,25 @@ int test_device() {
   return 0;
 }
 
+#if defined(__APPLE__)
+// Options::queue_families reach the decoder: its pictures are CONCURRENT
+// across two families.
+int test_queue_families() {
+  const std::optional<std::uint32_t> other =
+      vr_test::other_queue_family(*g_device);
+  if (!other) return 0;
+  const Run r =
+      run({pair(read_file(kJpeg), 0)}, 1, {g_device->queue_family(), *other});
+  CHECK(r.out.size() == 1 && r.failure.ok());
+  const std::optional<sensor::DecodedPicture> p =
+      orbbec::device_picture(*r.out[0]->getColorFrame());
+  CHECK(p.has_value());
+  CHECK(p->yuv.image[0]->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
+  CHECK(p->yuv.image[1]->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
+  return 0;
+}
+#endif
+
 // A decoder with no device to decode onto does not start.
 int test_start_needs_device() {
   orbbec::JpegColorDecoder::Options options;
@@ -346,6 +370,9 @@ int gpu_main(vr_test::GpuContext& gpu) {
   if (test_losses() != 0) return 1;
   if (test_skips_when_behind() != 0) return 1;
   if (test_unsupported_jpeg() != 0) return 1;
+#if defined(__APPLE__)
+  if (test_queue_families() != 0) return 1;
+#endif
   std::puts("sensor_orbbec_jpeg: OK");
   return 0;
 }

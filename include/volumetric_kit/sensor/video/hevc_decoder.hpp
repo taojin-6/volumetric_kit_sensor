@@ -56,14 +56,24 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// allocation. Required with NVDEC; VideoToolbox's pictures need none.
     /// Borrowed: it must outlive the decoder and every picture on it.
     core::Allocator* allocator = nullptr;
+    /// The queue families that will read the pictures, as
+    /// @ref PixelBufferImporter::create takes them: VideoToolbox's images
+    /// are CONCURRENT across two or more, so a renderer on another family
+    /// reads them in place. NVDEC's buffers ignore them; a reader takes one
+    /// over from @ref kQueueFamilyExternal. Read by @ref create only.
+    const std::uint32_t* queue_families = nullptr;
+    /// The entries in @ref queue_families.
+    std::uint32_t queue_family_count = 0;
   };
 
   /// @return The decoder; `Status::Code::Unsupported` if there is no device
   ///         path: no @ref Options::device (or, for NVDEC, no
   ///         @ref Options::allocator), a device whose GPU this build's
-  ///         hardware path cannot reach, or an FFmpeg without that path; or
-  ///         `Status::Code::IoError`, `Status::Code::OutOfMemory` or
-  ///         `Status::Code::Backend` if FFmpeg or CUDA fails.
+  ///         hardware path cannot reach, or an FFmpeg without that path;
+  ///         `Status::Code::InvalidArgument` for queue families
+  ///         VideoToolbox's importer refuses; or `Status::Code::IoError`,
+  ///         `Status::Code::OutOfMemory` or `Status::Code::Backend` if FFmpeg
+  ///         or CUDA fails.
   static core::Result<HevcDecoder> create(const Options& options);
 
   HevcDecoder(HevcDecoder&& other) noexcept;

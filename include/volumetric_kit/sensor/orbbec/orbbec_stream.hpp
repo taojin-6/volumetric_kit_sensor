@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <string>
 
+#include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 
@@ -104,6 +105,23 @@ struct OrbbecStreamOptions {
   /// VideoToolbox's need none. Borrowed: it must outlive the camera and every
   /// frame on it.
   core::Allocator* allocator = nullptr;
+  /// @brief Queue families that will read the colour pictures themselves
+  ///        (`YuvImage::image`): @ref device's own and, say, a renderer's
+  ///        that draws them.
+  ///
+  /// The twin of `GpuFramePrepConfig::color_queue_families`, for the
+  /// pictures rather than the GPU pass's output, and passed to the decoders'
+  /// `Options::queue_families`. Left empty (the default) VideoToolbox's
+  /// images are `VK_SHARING_MODE_EXCLUSIVE`, which another family may not
+  /// read; two or more distinct families make them CONCURRENT. Duplicates
+  /// collapse, so both indices may be passed unconditionally. NVDEC's and
+  /// nvJPEG's buffers ignore this: a reader takes one over from
+  /// `kQueueFamilyExternal`. Held by value, since each start opens the
+  /// decoders afresh.
+  std::uint32_t color_queue_families[core::BufferDesc::kMaxQueueFamilies] = {};
+  /// Entries in @ref color_queue_families; more than `kMaxQueueFamilies` is
+  /// refused when the camera opens.
+  std::uint32_t color_queue_family_count = 0;
 };
 
 }  // namespace volumetric_kit::recon::sensor

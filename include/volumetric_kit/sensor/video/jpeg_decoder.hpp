@@ -44,13 +44,23 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
     /// allocation. Required with nvJPEG; VideoToolbox's pictures need none.
     /// Borrowed: it must outlive the decoder and every picture on it.
     core::Allocator* allocator = nullptr;
+    /// The queue families that will read the pictures, as
+    /// @ref PixelBufferImporter::create takes them: VideoToolbox's images
+    /// are CONCURRENT across two or more, so a renderer on another family
+    /// reads them in place. nvJPEG's buffers ignore them; a reader takes one
+    /// over from @ref kQueueFamilyExternal. Read by @ref create only.
+    const std::uint32_t* queue_families = nullptr;
+    /// The entries in @ref queue_families.
+    std::uint32_t queue_family_count = 0;
   };
 
   /// @return The decoder; `Status::Code::Unsupported` if there is no device
   ///         path: no @ref Options::device (or, for nvJPEG, no
   ///         @ref Options::allocator), a device whose GPU has no hardware JPEG
   ///         decoder this build reaches, or libcuda or libnvjpeg that do not
-  ///         load; or `Status::Code::Backend` if CUDA or nvJPEG fails.
+  ///         load; `Status::Code::InvalidArgument` for queue families
+  ///         VideoToolbox's importer refuses; or `Status::Code::Backend` if
+  ///         CUDA or nvJPEG fails.
   static core::Result<JpegDecoder> create(const Options& options);
 
   ~JpegDecoder();

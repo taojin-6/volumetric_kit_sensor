@@ -24,9 +24,12 @@ namespace volumetric_kit::recon::sensor::video {
 class VtJpeg {
  public:
   // Unsupported where VideoToolbox has no hardware JPEG decoder or @p device
-  // imports no Metal textures. @p who names the decoder in errors.
-  static core::Result<std::unique_ptr<VtJpeg>> open(const core::Device& device,
-                                                    const char* who);
+  // imports no Metal textures. @p who names the decoder in errors. The
+  // pictures are shared with @p queue_families, as PixelBufferImporter::create
+  // takes them, and InvalidArgument is its refusal of them.
+  static core::Result<std::unique_ptr<VtJpeg>> open(
+      const core::Device& device, const char* who,
+      const std::uint32_t* queue_families, std::uint32_t queue_family_count);
   ~VtJpeg();
   VtJpeg(const VtJpeg&) = delete;
   VtJpeg& operator=(const VtJpeg&) = delete;

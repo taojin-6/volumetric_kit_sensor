@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <string>
 
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+
 namespace volumetric_kit::recon::sensor::orbbec {
 
 core::Result<camera::CameraModel> camera_model_from(
@@ -131,7 +133,8 @@ core::Status validate_streams(const OrbbecStreamOptions& streams,
         "] m must be finite and non-empty, with min_depth > 0, as the GPU "
         "pass requires");
   }
-  return {};
+  return core::check_queue_family_count(streams.color_queue_family_count,
+                                        who.c_str());
 }
 
 OBMultiDeviceSyncMode sdk_sync_mode(OrbbecSyncMode mode) noexcept {

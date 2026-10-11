@@ -342,10 +342,14 @@ core::Result<JpegDecoder> JpegDecoder::create(const Options& options) {
         "no allocator to make nvJPEG's picture buffers through "
         "(Options::allocator)");
   }
+  // TODO(sensor): Options::queue_families for nvJPEG's buffers, which a
+  // reader on any family takes over from outside Vulkan for now.
   VKC_ASSIGN(impl->gpu,
              NvjpegDecoder::open(*options.device, *options.allocator));
 #else
-  VKC_ASSIGN(impl->vt, video::VtJpeg::open(*options.device, kWho));
+  VKC_ASSIGN(impl->vt,
+             video::VtJpeg::open(*options.device, kWho, options.queue_families,
+                                 options.queue_family_count));
 #endif
   return JpegDecoder(std::move(impl));
 }

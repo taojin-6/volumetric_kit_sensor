@@ -13,6 +13,7 @@
 
 #include "frame_conversion.hpp"
 #include "test_check.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
@@ -242,6 +243,12 @@ int test_validate_streams() {
   o = Options{};
   o.min_depth = 0.0f;
   CHECK(invalid(check(o)));
+  // Colour queue families: up to the array's size, which the importer reads.
+  o = Options{};
+  o.color_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies;
+  CHECK(check(o).ok());
+  o.color_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies + 1;
+  CHECK(invalid(check(o)));
   return 0;
 }
 
@@ -261,6 +268,9 @@ int test_sensor_open() {
   o = {};
   o.min_depth = 0.0f;
   CHECK(refused(o, "min_depth > 0"));
+  o = {};
+  o.color_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies + 1;
+  CHECK(refused(o, "queue_family_count"));
   o = {};
   o.color_to_world[0][0] = -1.0;
   CHECK(refused(o, "color_to_world: transform's rotation is a reflection"));

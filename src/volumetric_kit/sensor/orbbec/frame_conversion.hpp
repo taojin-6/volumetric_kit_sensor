@@ -61,9 +61,10 @@ OBMultiDeviceSyncConfig sdk_sync_config(const OrbbecSyncSettings& settings);
 std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
                                           const OrbbecSyncSettings& actual);
 
-/// The streams' checks, refused naming @p who: sizes and rate, and a depth
-/// range that is finite, non-empty and starts above 0, as the GPU pass
-/// requires. The first check a camera's open makes, before it touches the SDK.
+/// The streams' checks, refused naming @p who: sizes and rate, a depth range
+/// that is finite, non-empty and starts above 0, as the GPU pass requires, and
+/// a colour queue-family count within its array. The first check a camera's
+/// open makes, before it touches the SDK.
 core::Status validate_streams(const OrbbecStreamOptions& streams,
                               const std::string& who);
 
