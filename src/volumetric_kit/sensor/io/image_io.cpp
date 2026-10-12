@@ -9,9 +9,10 @@
 #include <memory>
 #include <utility>
 
-#include "errors.hpp"
 #include "stb_backend.hpp"
 #include "volumetric_kit/core/base/check.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
+#include "volumetric_kit/core/base/file_io.hpp"
 
 namespace volumetric_kit::recon::io {
 namespace {
@@ -42,7 +43,7 @@ core::Result<std::vector<std::uint8_t>> read_image(const char* api,
                                                    std::uint32_t expected_w,
                                                    std::uint32_t expected_h,
                                                    int& channels) {
-  VKC_TRY(detail::check_path(api, path));
+  VKC_TRY(core::check_path(api, path));
   VKC_TRY(check_dimensions(api, expected_w, expected_h));
   const std::string where = std::string(api) + ": " + path;
   std::ifstream in(path, std::ios::binary | std::ios::ate);
@@ -216,7 +217,8 @@ core::Result<std::vector<std::uint32_t>> load_color_packed(
   }
   return packed;
 } catch (...) {
-  return detail::exception_status("load_color_packed");
+  return core::exception_status("load_color_packed",
+                                core::Status::Code::IoError);
 }
 
 core::Result<std::vector<std::uint16_t>> load_depth_u16(
@@ -244,20 +246,20 @@ core::Result<std::vector<std::uint16_t>> load_depth_u16(
   const std::size_t count = static_cast<std::size_t>(w) * h;
   return std::vector<std::uint16_t>(raw.get(), raw.get() + count);
 } catch (...) {
-  return detail::exception_status("load_depth_u16");
+  return core::exception_status("load_depth_u16", core::Status::Code::IoError);
 }
 
 core::Status write_png_rgba8(const std::string& path,
                              const std::uint8_t* pixels, std::size_t byte_count,
                              std::uint32_t width, std::uint32_t height) try {
-  VKC_TRY(detail::check_path("write_png_rgba8", path));
+  VKC_TRY(core::check_path("write_png_rgba8", path));
   const std::string where = "write_png_rgba8: " + path;
   VKC_TRY(
       check_png_input(where, pixels, byte_count, "bytes", 4, width, height, 4));
   VKC_ASSIGN(const auto png, encode_png(where, pixels, width, height, 4));
   return write_bytes(where, path, png);
 } catch (...) {
-  return detail::exception_status("write_png_rgba8");
+  return core::exception_status("write_png_rgba8", core::Status::Code::IoError);
 }
 
 core::Result<std::vector<std::uint8_t>> encode_png_u16(
@@ -265,20 +267,20 @@ core::Result<std::vector<std::uint8_t>> encode_png_u16(
     std::uint32_t height) try {
   return encode_gray16("encode_png_u16", samples, sample_count, width, height);
 } catch (...) {
-  return detail::exception_status("encode_png_u16");
+  return core::exception_status("encode_png_u16", core::Status::Code::IoError);
 }
 
 core::Status write_png_u16(const std::string& path,
                            const std::uint16_t* samples,
                            std::size_t sample_count, std::uint32_t width,
                            std::uint32_t height) try {
-  VKC_TRY(detail::check_path("write_png_u16", path));
+  VKC_TRY(core::check_path("write_png_u16", path));
   const std::string where = "write_png_u16: " + path;
   VKC_ASSIGN(const auto png,
              encode_gray16(where, samples, sample_count, width, height));
   return write_bytes(where, path, png);
 } catch (...) {
-  return detail::exception_status("write_png_u16");
+  return core::exception_status("write_png_u16", core::Status::Code::IoError);
 }
 
 }  // namespace volumetric_kit::recon::io

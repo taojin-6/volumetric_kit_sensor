@@ -3,12 +3,13 @@
 
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 
-#include <cstdio>
 #include <exception>
 #include <string>
 #include <utility>
 
 #include <nlohmann/json.hpp>
+
+#include "volumetric_kit/core/base/file_io.hpp"
 
 namespace volumetric_kit::recon::sensor {
 
@@ -165,16 +166,7 @@ core::Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(
 
 core::Result<OrbbecRigSyncConfig> read_orbbec_sync_config(
     const std::string& path) {
-  std::FILE* in = std::fopen(path.c_str(), "rb");
-  if (in == nullptr)
-    return core::Status::io_error("sync config: cannot open " + path);
-  std::string text;
-  char buf[4096];
-  std::size_t n = 0;
-  while ((n = std::fread(buf, 1, sizeof(buf), in)) > 0) text.append(buf, n);
-  const bool failed = std::ferror(in) != 0;
-  std::fclose(in);
-  if (failed) return core::Status::io_error("sync config: cannot read " + path);
+  VKC_ASSIGN(const std::string text, core::read_file(path));
   auto config = parse_orbbec_sync_config(text);
   if (!config.ok()) {
     return core::Status::invalid_argument(path + ": " +

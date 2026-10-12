@@ -114,9 +114,9 @@ camera::ArrayCalibration posed(const std::vector<std::string>& ids) {
   for (std::size_t i = 0; i < ids.size(); ++i) {
     camera::SensorCalibration s;
     s.id = ids[i];
-    s.color_to_world =
-        camera::Mat4d(camera::rotation_from_rodrigues({0.0, 0.3 * i, 0.0}));
-    s.color_to_world[3] = glm::dvec4(1.5 * i, 0.0, 0.0, 1.0);
+    camera::Mat4d pose(camera::rotation_from_rodrigues({0.0, 0.3 * i, 0.0}));
+    pose[3] = glm::dvec4(1.5 * i, 0.0, 0.0, 1.0);
+    s.color_to_world = pose;
     c.sensors.push_back(s);
   }
   return c;
@@ -175,11 +175,12 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
       CHECK(frame.has_value() == device_frame.has_value());
       if (!frame) continue;
       // Posed by the calibration, depth through the sensor's extrinsic.
-      const vr::Mat4f pose(o.calibration.sensors[c].color_to_world);
-      CHECK(device_frame->color_camera.cam_to_world == pose);
+      const camera::Mat4d& color_to_world =
+          *o.calibration.sensors[c].color_to_world;
+      CHECK(device_frame->color_camera.cam_to_world ==
+            vr::Mat4f(color_to_world));
       CHECK(device_frame->depth_camera.cam_to_world ==
-            vr::Mat4f(o.calibration.sensors[c].color_to_world *
-                      frame->depth_to_color));
+            vr::Mat4f(color_to_world * frame->depth_to_color));
       // As GpuFramePrep makes it alone.
       auto one = alone.value().prepare(*frame);
       CHECK(one.ok());

@@ -120,8 +120,8 @@ class VR_SENSOR_ARRAY_API SensorArray {
     /// trigger's frame when a slow poll comes to group it.
     std::size_t queue_depth = 4;
     /// Each sensor's pose, by id, stamped on its frames. Every sensor of the
-    /// array must be posed in it; no sensors leaves each frame where its
-    /// driver put it.
+    /// array must be posed in it (`SensorCalibration::color_to_world`); no
+    /// sensors leaves each frame where its driver put it.
     camera::ArrayCalibration calibration;
     /// The device @ref process prepares sets on, with a pass per sensor;
     /// null for an array whose sets are not prepared here. Borrowed: it must
@@ -147,9 +147,10 @@ class VR_SENSOR_ARRAY_API SensorArray {
   /// @return The array; `Status::Code::InvalidArgument` for no sensors, a
   ///         null one, an empty or repeated id, a queue depth of 0, a
   ///         tolerance of half a frame period or more, a calibration
-  ///         that is invalid or does not pose a sensor, or a device or an
-  ///         allocator without the other; what `GpuFramePrep::create`
-  ///         returns for a device the passes cannot be built on; or
+  ///         that is invalid or does not pose a sensor (lists it unposed, or
+  ///         not at all), or a device or an allocator without the other;
+  ///         what `GpuFramePrep::create` returns for a device the passes
+  ///         cannot be built on; or
   ///         `Status::Code::Unsupported` for a tracked sensor, or, among
   ///         several sensors, no primary or more than one, a free-running
   ///         member, or one whose timestamps are on its own clock.

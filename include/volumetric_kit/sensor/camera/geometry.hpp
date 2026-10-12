@@ -76,10 +76,33 @@ VR_CAMERA_API Mat3d nearest_rotation(const Mat3d& m) noexcept;
 /// @return The rotation matrix.
 VR_CAMERA_API Mat3d rotation_from_rodrigues(const Vec3d& rvec) noexcept;
 
+/// @brief The Rodrigues vector of a rotation, its angle in [0, pi]; the
+///        inverse of @ref rotation_from_rodrigues.
+///
+/// Accurate to round-off at every angle, where `cv::Rodrigues` returns
+/// exactly zero below about 1e-5 rad. The angle comes from `atan2`, not
+/// `acos`, which turns round-off in the matrix into angle error near 0 and
+/// pi. Past pi/2 the axis comes from the matrix's symmetric part, since
+/// `sin(angle)` vanishes toward pi. At exactly pi the axis's sign is
+/// arbitrary, as it is for OpenCV.
+/// @pre @p rotation is a rotation (@ref check_rigid).
+/// @param rotation  The rotation.
+/// @return The rotation vector.
+VR_CAMERA_API Vec3d rodrigues_from_rotation(const Mat3d& rotation) noexcept;
+
 /// @brief The matrix of a transform OpenCV wrote: `[R(rvec) | tvec]`.
 /// @param transform  The transform.
 /// @return The same transform as a matrix.
 VR_CAMERA_API Mat4d
 matrix_from_rodrigues(const RodriguesTransform& transform) noexcept;
+
+/// @brief A rigid transform in OpenCV's form; the inverse of
+///        @ref matrix_from_rodrigues.
+/// @pre @p transform is rigid (@ref check_rigid).
+/// @param transform  The transform.
+/// @return Its rotation as a Rodrigues vector (@ref rodrigues_from_rotation)
+///         and its translation.
+VR_CAMERA_API RodriguesTransform
+rodrigues_from_matrix(const Mat4d& transform) noexcept;
 
 }  // namespace volumetric_kit::recon::camera
