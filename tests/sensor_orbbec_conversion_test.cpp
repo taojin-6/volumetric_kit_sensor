@@ -133,9 +133,11 @@ int test_camera_model() {
   CHECK(bad.message().find("depth") != std::string::npos);
   CHECK(bad.message().find("colour") == std::string::npos);
   d.model = OB_DISTORTION_KANNALA_BRANDT4;
-  CHECK(names_camera(
-      orbbec::camera_model_from(femto_color_720p(), d, "colour", kWho)
-          .status()));
+  const vkc::Status lens_refused =
+      orbbec::camera_model_from(femto_color_720p(), d, "colour", kWho).status();
+  CHECK(names_camera(lens_refused));
+  CHECK(lens_refused.message().find("lens model kannala-brandt4,") !=
+        std::string::npos);
   d.model = OB_DISTORTION_BROWN_CONRADY;
 
   // The SDK sizes images in int16_t. A negative one must be refused, not

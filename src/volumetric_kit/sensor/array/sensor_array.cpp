@@ -251,9 +251,16 @@ std::optional<std::int64_t> FrameSet::skew_ns(std::size_t i) const {
   VKC_CHECK(i < frames.size(), "FrameSet::skew_ns: index past the set");
   if (!frames[i]) return std::nullopt;
   const std::uint64_t t = frames[i]->timestamp_ns;
-  // Each way in unsigned, then signed: no wrap for a frame before the trigger.
-  return t >= timestamp_ns ? static_cast<std::int64_t>(t - timestamp_ns)
-                           : -static_cast<std::int64_t>(timestamp_ns - t);
+  // The gap each way in unsigned, then signed, saturated where it does not
+  // fit: -2^63 does, so a frame that far before the trigger is exact.
+  constexpr auto kMax =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+  if (t >= timestamp_ns) {
+    return static_cast<std::int64_t>(std::min(t - timestamp_ns, kMax));
+  }
+  const std::uint64_t before = timestamp_ns - t;
+  return before > kMax ? std::numeric_limits<std::int64_t>::min()
+                       : -static_cast<std::int64_t>(before);
 }
 
 std::uint64_t FrameSet::spread_ns() const noexcept {

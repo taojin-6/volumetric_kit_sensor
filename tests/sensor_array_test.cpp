@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -450,8 +451,8 @@ int test_failed_drain_eviction() {
   return 0;
 }
 
-// A set's skew, each frame against the trigger and signed, and its spread,
-// over the frames it holds, whichever are missing.
+// A set's skew, each frame against the trigger, signed and saturated, and its
+// spread, over the frames it holds, whichever are missing.
 int test_skew_and_spread() {
   const std::uint64_t trigger = 7'000'000'000;
   const auto frame = [](std::uint64_t timestamp_ns) {
@@ -478,6 +479,21 @@ int test_skew_and_spread() {
   set.frames[0].reset();
   CHECK(set.spread_ns() == 0 && !set.skew_ns(0));  // none
   CHECK(sensor::FrameSet{}.spread_ns() == 0);
+
+  // Gaps past int64_t's range saturate, either way; 2^63 before the
+  // trigger is exactly its least.
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
+  constexpr std::uint64_t kHalf = std::uint64_t{1} << 63;
+  set.timestamp_ns = 0;
+  set.frames = {frame(kHalf - 1), frame(kHalf), frame(~std::uint64_t{0})};
+  CHECK(set.skew_ns(0) == kMax && set.skew_ns(1) == kMax &&
+        set.skew_ns(2) == kMax);
+  set.timestamp_ns = kHalf;
+  set.frames = {frame(0), frame(1)};
+  CHECK(set.skew_ns(0) == kMin && set.skew_ns(1) == kMin + 1);
+  set.timestamp_ns = ~std::uint64_t{0};
+  CHECK(set.skew_ns(0) == kMin && set.skew_ns(1) == kMin);
   return 0;
 }
 

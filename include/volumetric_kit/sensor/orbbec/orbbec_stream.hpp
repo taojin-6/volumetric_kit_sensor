@@ -46,9 +46,10 @@ struct OrbbecDeviceInfo {
   std::string ip_address;        ///< Empty for a USB camera.
   OrbbecSyncMode sync_mode = OrbbecSyncMode::Other;  ///< Its rig role.
   /// The colour camera's lens model at the opened mode, as the SDK reports
-  /// it, by the SDK's name ("brown-conrady-k6"): the model the factory
-  /// calibration's coefficients are in, before `SensorInfo::color` holds
-  /// them as OpenCV's rational one.
+  /// it: the model the factory calibration's coefficients are in, before
+  /// `SensorInfo::color` holds them as OpenCV's rational one. Named in
+  /// recon's kebab case for the SDK's model, one of those an open accepts:
+  /// "none", "brown-conrady" or "brown-conrady-k6".
   std::string color_lens_model;
   std::string depth_lens_model;  ///< The same for the depth camera.
 };

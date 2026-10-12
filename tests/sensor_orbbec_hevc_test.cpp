@@ -6,14 +6,13 @@
 // decoded on this machine's hardware onto the device. Every pair comes out,
 // in display order, with its timestamps and depth, its picture carried in its
 // frame and gone with it, no camera bytes with it, an unlabelled stream's
-// colour described as the
-// Femto Mega codes it (BT.601 full range), a labelled one's as it says. A
-// frame lost from the stream, or empty, costs the frames up to the next key
-// frame, as do the pairs a decoder too far behind drops from its queue, a
-// pause in the timestamps costs nothing, and decoding starts at the first key
-// frame; a stream the hardware refuses stops the decoder; the pictures are
-// shared with the queue families it is given. The frame-index gate is tested
-// on its own, since a test cannot set an SDK frame's index.
+// colour described as the Femto Mega codes it (BT.601 full range), a labelled
+// one's as it says. A frame lost from the stream, or empty, costs the frames
+// up to the next key frame, as do the pairs a decoder too far behind drops
+// from its queue, a pause in the timestamps costs nothing, and decoding starts
+// at the first key frame; a stream the hardware refuses stops the decoder; the
+// pictures are shared with the queue families it is given. The frame-index
+// gate is tested on its own, since a test cannot set an SDK frame's index.
 //
 // Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one, makes it fail instead.

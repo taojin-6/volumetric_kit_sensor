@@ -53,8 +53,9 @@ struct FrameSet {
   bool complete() const noexcept { return count() == frames.size(); }
   /// @return Sensor @p i's frame's time less the trigger's
   ///         (@ref timestamp_ns), in nanoseconds: negative for a frame
-  ///         stamped before the primary's, 0 for the primary's own; empty
-  ///         where the set holds no frame from that sensor.
+  ///         stamped before the primary's, 0 for the primary's own, and
+  ///         saturated at `int64_t`'s range for a gap of 2^63 ns or more;
+  ///         empty where the set holds no frame from that sensor.
   /// @pre @p i is below `frames.size()`.
   VR_SENSOR_ARRAY_API std::optional<std::int64_t> skew_ns(std::size_t i) const;
   /// @return The latest frame's time less the earliest's, over the frames the

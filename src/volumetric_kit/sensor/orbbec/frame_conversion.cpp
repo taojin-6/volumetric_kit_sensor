@@ -44,7 +44,7 @@ core::Result<camera::CameraModel> camera_model_from(
     default:
       return core::Status::unsupported(
           who + ": " + what + " stream reports lens model " +
-          std::to_string(static_cast<int>(distortion.model)) +
+          lens_model_name(distortion.model) +
           ", which the GPU pass cannot undistort (it takes Brown-Conrady)");
   }
   camera::CameraModel cam;

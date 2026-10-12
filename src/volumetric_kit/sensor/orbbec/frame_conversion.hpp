@@ -30,13 +30,15 @@ namespace volumetric_kit::recon::sensor::orbbec {
 /// models are OpenCV's rational one with the missing terms zero -- k4..k6 for
 /// the plain model, whatever it reports there, since only the K6 one has
 /// them; its modified, inverse and Kannala-Brandt models are refused as
-/// `Unsupported`, since the pass samples through that one model. @p what names
-/// the stream and @p who the camera, in the errors too.
+/// `Unsupported`, named (@ref lens_model_name), since the pass samples through
+/// that one model. @p what names the stream and @p who the camera, in the
+/// errors too.
 core::Result<camera::CameraModel> camera_model_from(
     const OBCameraIntrinsic& intrinsic, const OBCameraDistortion& distortion,
     const std::string& what, const std::string& who);
 
-/// The SDK's lens model by its name, as `OrbbecDeviceInfo` records it:
+/// The SDK's lens model by recon's name for it, as `OrbbecDeviceInfo` records
+/// it and @ref camera_model_from's refusal names it:
 /// `OB_DISTORTION_BROWN_CONRADY_K6` is "brown-conrady-k6", and so on; a value
 /// this SDK does not name is "unknown-" and its number.
 std::string lens_model_name(OBCameraDistortionModel model);
