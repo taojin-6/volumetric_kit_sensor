@@ -265,7 +265,8 @@ int check_pair(
   CHECK(p.yuv.queue_family == sensor::kQueueFamilyIgnored);
 #else
   CHECK(!o.images);
-  CHECK(p.yuv.queue_family == sensor::kQueueFamilyExternal);  // CUDA wrote it
+  // CUDA wrote it; read_out's readback has since acquired it for Vulkan.
+  CHECK(p.yuv.queue_family == g_device->queue_family());
 #endif
   CHECK(yuv_reference::coded_in(p.yuv, matrix, full_range));
   // Neither clip declares a transfer or primaries ColorEncoding cannot name.
