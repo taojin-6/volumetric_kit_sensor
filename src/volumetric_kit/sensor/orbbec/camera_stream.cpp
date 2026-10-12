@@ -283,12 +283,16 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     // undistorts or registers.
     const auto depth_video = s->depth_profile_->as<ob::VideoStreamProfile>();
     const auto color_video = s->color_profile_->as<ob::VideoStreamProfile>();
-    VKC_ASSIGN(s->depth_camera_, camera_model_from(depth_video->getIntrinsic(),
-                                                   depth_video->getDistortion(),
-                                                   "depth", s->who_));
-    VKC_ASSIGN(s->color_camera_, camera_model_from(color_video->getIntrinsic(),
-                                                   color_video->getDistortion(),
-                                                   "colour", s->who_));
+    const OBCameraDistortion depth_lens = depth_video->getDistortion();
+    const OBCameraDistortion color_lens = color_video->getDistortion();
+    s->info_.depth_lens_model = lens_model_name(depth_lens.model);
+    s->info_.color_lens_model = lens_model_name(color_lens.model);
+    VKC_ASSIGN(s->depth_camera_,
+               camera_model_from(depth_video->getIntrinsic(), depth_lens,
+                                 "depth", s->who_));
+    VKC_ASSIGN(s->color_camera_,
+               camera_model_from(color_video->getIntrinsic(), color_lens,
+                                 "colour", s->who_));
     if (s->depth_camera_.size.width != streams.depth_width ||
         s->depth_camera_.size.height != streams.depth_height ||
         s->color_camera_.size.width != streams.color_width ||
@@ -603,6 +607,7 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
     }
     frame.color = picture->yuv;
     frame.color_encoding = *picture->encoding;
+    frame.color_bitstream = color_bitstream(*color);
     frame.color_camera = color_camera_;
     frame.color_to_world = color_to_world_;
     frame.depth_to_color = depth_to_color_;
@@ -615,9 +620,9 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
   } catch (const std::exception& e) {  // ob::Error is one
     return skip(std::string("the SDK failed on it: ") + e.what());
   }
-  // Depth points into the pair, and the colour picture lives as long as its
-  // frame. The context comes too, so a frame kept past the stream releases
-  // its pair before the SDK goes.
+  // Depth points into the pair, and the colour picture, with the camera's
+  // JPEG, lives as long as its frame. The context comes too, so a frame kept
+  // past the stream releases its pair before the SDK goes.
   struct Held {
     std::shared_ptr<ob::Context> context;
     std::shared_ptr<ob::FrameSet> pair;  // destroyed first

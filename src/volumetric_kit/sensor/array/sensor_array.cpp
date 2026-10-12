@@ -247,6 +247,26 @@ std::size_t SensorArray::size() const noexcept {
   return impl_ != nullptr ? impl_->sensors.size() : 0;
 }
 
+std::optional<std::int64_t> FrameSet::skew_ns(std::size_t i) const {
+  VKC_CHECK(i < frames.size(), "FrameSet::skew_ns: index past the set");
+  if (!frames[i]) return std::nullopt;
+  const std::uint64_t t = frames[i]->timestamp_ns;
+  // Each way in unsigned, then signed: no wrap for a frame before the trigger.
+  return t >= timestamp_ns ? static_cast<std::int64_t>(t - timestamp_ns)
+                           : -static_cast<std::int64_t>(timestamp_ns - t);
+}
+
+std::uint64_t FrameSet::spread_ns() const noexcept {
+  std::uint64_t earliest = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t latest = 0;
+  for (const std::optional<RgbdFrame>& frame : frames) {
+    if (!frame) continue;
+    earliest = std::min(earliest, frame->timestamp_ns);
+    latest = std::max(latest, frame->timestamp_ns);
+  }
+  return latest >= earliest ? latest - earliest : 0;
+}
+
 IRgbdSensor& SensorArray::sensor(std::size_t i) {
   VKC_CHECK(i < size(), "SensorArray::sensor: index past the array");
   return *impl_->sensors[i];

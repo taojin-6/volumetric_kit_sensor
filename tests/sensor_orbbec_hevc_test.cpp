@@ -5,7 +5,8 @@
 // wrapped in SDK frames, each paired with a depth frame and dated at 30 fps,
 // decoded on this machine's hardware onto the device. Every pair comes out,
 // in display order, with its timestamps and depth, its picture carried in its
-// frame and gone with it, an unlabelled stream's colour described as the
+// frame and gone with it, no camera bytes with it, an unlabelled stream's
+// colour described as the
 // Femto Mega codes it (BT.601 full range), a labelled one's as it says. A
 // frame lost from the stream, or empty, costs the frames up to the next key
 // frame, as do the pairs a decoder too far behind drops from its queue, a
@@ -298,7 +299,8 @@ int check_pair(
 // Each picture comes out carried in its frame, which has no pixels of its
 // own, as the frame's colour it is: its planes where the hardware left them,
 // a buffer CUDA wrote taken over from outside Vulkan. It lives as long as its
-// frame, which a copy of the frame does not extend.
+// frame, which a copy of the frame does not extend. No camera bytes come with
+// it: an H.265 frame decodes only after the frames before it.
 int test_hands_on_device_pictures() {
   Run r = run(
       pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}),
@@ -313,6 +315,9 @@ int test_hands_on_device_pictures() {
         orbbec::device_picture(*color);
     CHECK(p.has_value());
     CHECK(color->as<ob::VideoFrame>()->getWidth() == 0);  // no pixels
+    const sensor::ColorBitstream none = orbbec::color_bitstream(*color);
+    CHECK(none.codec == sensor::ColorBitstream::Codec::None);
+    CHECK(none.data == nullptr && none.size == 0);
     const sensor::YuvImage& yuv = p->yuv;
     CHECK((yuv.device != nullptr) != (yuv.image[0] != nullptr));
     CHECK(yuv.layout == sensor::YuvLayout::Nv12);

@@ -75,6 +75,24 @@ core::Result<camera::CameraModel> camera_model_from(
   return cam;
 }
 
+std::string lens_model_name(OBCameraDistortionModel model) {
+  switch (model) {
+    case OB_DISTORTION_NONE:
+      return "none";
+    case OB_DISTORTION_MODIFIED_BROWN_CONRADY:
+      return "modified-brown-conrady";
+    case OB_DISTORTION_INVERSE_BROWN_CONRADY:
+      return "inverse-brown-conrady";
+    case OB_DISTORTION_BROWN_CONRADY:
+      return "brown-conrady";
+    case OB_DISTORTION_BROWN_CONRADY_K6:
+      return "brown-conrady-k6";
+    case OB_DISTORTION_KANNALA_BRANDT4:
+      return "kannala-brandt4";
+  }
+  return "unknown-" + std::to_string(static_cast<int>(model));
+}
+
 core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic,
                                            const std::string& who) {
   camera::Mat3d rotation(1.0);  // column-major: rotation[column][row]

@@ -36,6 +36,11 @@ core::Result<camera::CameraModel> camera_model_from(
     const OBCameraIntrinsic& intrinsic, const OBCameraDistortion& distortion,
     const std::string& what, const std::string& who);
 
+/// The SDK's lens model by its name, as `OrbbecDeviceInfo` records it:
+/// `OB_DISTORTION_BROWN_CONRADY_K6` is "brown-conrady-k6", and so on; a value
+/// this SDK does not name is "unknown-" and its number.
+std::string lens_model_name(OBCameraDistortionModel model);
+
 /// The SDK's extrinsic from one stream to another (`p_to = R p_from + t`,
 /// `rot` row-major, `trans` in millimetres) as the transform that takes a point
 /// in the first camera's frame to the second's, in metres, its rotation made

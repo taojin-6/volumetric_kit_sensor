@@ -5,7 +5,8 @@
 // JPEGs (tools/make_jpeg_fixtures.sh) wrapped in SDK frames, each paired with
 // a depth frame, decoded on this machine's hardware onto the device. Every
 // pair comes out with its depth and timestamps, its colour the pattern,
-// BT.601 full range, carried in its frame and released with it. A pair
+// BT.601 full range, carried in its frame and released with it, and the
+// camera's JPEG with it, byte for byte, held as long as that frame. A pair
 // missing a frame, an empty colour frame and a JPEG that does not decode each
 // cost only themselves; a JPEG the hardware does not take stops the decoder;
 // a decoder slower than the camera skips pairs rather than falling behind;
@@ -15,6 +16,7 @@
 // sets on the legs that promise one, makes it fail instead.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -308,6 +310,60 @@ int test_device() {
   return 0;
 }
 
+// The camera's JPEG goes on with its picture: the decoded frame's
+// color_bitstream is the camera frame's own bytes, the fixture's exactly,
+// held by the decoded frame alone once the pair it came in is gone, and let
+// go with it. A frame keeping no MJPG frame carries none.
+int test_bitstream() {
+  const std::vector<std::uint8_t> jpeg = read_file(kJpeg);
+  CHECK(!jpeg.empty());
+  // The camera's frame over bytes the test owns, so their release shows.
+  auto freed = std::make_shared<std::atomic<bool>>(false);
+  auto* bytes = new std::vector<std::uint8_t>(jpeg);
+  std::shared_ptr<ob::Frame> color = ob::FrameFactory::createFrameFromBuffer(
+      OB_FRAME_COLOR, OB_FORMAT_MJPG, bytes->data(),
+      [bytes, freed](std::uint8_t*) {
+        delete bytes;
+        freed->store(true);
+      },
+      static_cast<std::uint32_t>(bytes->size()));
+  const std::uint8_t* camera_bytes = color->getData();
+  ob::FrameHelper::setFrameDeviceTimestampUs(color, kStartUs);
+  std::shared_ptr<ob::Frame> depth =
+      ob::FrameFactory::createVideoFrame(OB_FRAME_DEPTH, OB_FORMAT_Y16, 4, 4);
+  ob::FrameHelper::setFrameDeviceTimestampUs(depth, kStartUs);
+  std::shared_ptr<ob::FrameSet> in = ob::FrameFactory::createFrameSet();
+  in->pushFrame(std::move(depth));
+  in->pushFrame(std::move(color));
+
+  Run r = run({in}, 1);
+  in.reset();
+  CHECK(r.out.size() == 1 && r.failure.ok());
+  const sensor::ColorBitstream b =
+      orbbec::color_bitstream(*r.out[0]->getColorFrame());
+  CHECK(b.codec == sensor::ColorBitstream::Codec::Jpeg);
+  CHECK(b.data == camera_bytes && b.size == jpeg.size());  // not a copy
+  CHECK(!freed->load());  // the decoded frame holds the camera's
+  CHECK(std::equal(jpeg.begin(), jpeg.end(), b.data));
+  r.out.clear();
+  CHECK(freed->load());  // and it went with the decoded frame
+
+  // A picture's frame keeping no source, or an H.265 one, carries none; so
+  // does a frame that is no picture's.
+  const sensor::DecodedPicture picture;
+  CHECK(orbbec::color_bitstream(*orbbec::picture_frame(picture)).codec ==
+        sensor::ColorBitstream::Codec::None);
+  std::shared_ptr<ob::Frame> h265 =
+      ob::FrameFactory::createFrame(OB_FRAME_COLOR, OB_FORMAT_H265, 16);
+  CHECK(orbbec::color_bitstream(*orbbec::picture_frame(picture, h265)).codec ==
+        sensor::ColorBitstream::Codec::None);
+  std::shared_ptr<ob::Frame> plain =
+      ob::FrameFactory::createFrame(OB_FRAME_COLOR, OB_FORMAT_MJPG, 16);
+  CHECK(orbbec::color_bitstream(*plain).codec ==
+        sensor::ColorBitstream::Codec::None);
+  return 0;
+}
+
 #if defined(__APPLE__)
 // Options::queue_families reach the decoder: its pictures are CONCURRENT
 // across two families.
@@ -366,6 +422,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
   }
 
   if (test_device() != 0) return 1;
+  if (test_bitstream() != 0) return 1;
   if (test_losses() != 0) return 1;
   if (test_skips_when_behind() != 0) return 1;
   if (test_unsupported_jpeg() != 0) return 1;

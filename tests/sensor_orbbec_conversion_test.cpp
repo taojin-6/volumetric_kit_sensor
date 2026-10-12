@@ -2,9 +2,10 @@
 // Copyright (c) 2026 Tao Jin
 
 // The Orbbec driver's arithmetic, with no camera: the SDK's camera models and
-// extrinsic to recon's, the sync-mode mapping, the option checks open() makes
-// before it touches the SDK, and the colour queue families taken from the
-// options -- each a place the driver can be silently wrong.
+// extrinsic to recon's, the lens models' names, the sync-mode mapping, the
+// option checks open() makes before it touches the SDK, and the colour queue
+// families taken from the options -- each a place the driver can be silently
+// wrong.
 
 #include <algorithm>
 #include <cmath>
@@ -254,6 +255,32 @@ int test_validate_streams() {
   return 0;
 }
 
+// Each lens model the SDK names by its own name, as the camera's report
+// records it; one this SDK does not name by its number.
+int test_lens_model_name() {
+  const struct {
+    OBCameraDistortionModel model;
+    const char* name;
+  } names[] = {
+      {OB_DISTORTION_NONE, "none"},
+      {OB_DISTORTION_MODIFIED_BROWN_CONRADY, "modified-brown-conrady"},
+      {OB_DISTORTION_INVERSE_BROWN_CONRADY, "inverse-brown-conrady"},
+      {OB_DISTORTION_BROWN_CONRADY, "brown-conrady"},
+      {OB_DISTORTION_BROWN_CONRADY_K6, "brown-conrady-k6"},
+      {OB_DISTORTION_KANNALA_BRANDT4, "kannala-brandt4"},
+  };
+  for (const auto& n : names) {
+    CHECK(orbbec::lens_model_name(n.model) == n.name);
+  }
+  // The next value a later SDK could add, within the enum's range.
+  CHECK(orbbec::lens_model_name(static_cast<OBCameraDistortionModel>(6)) ==
+        "unknown-6");
+  // Empty until a camera reports them.
+  const sensor::OrbbecDeviceInfo info;
+  CHECK(info.color_lens_model.empty() && info.depth_lens_model.empty());
+  return 0;
+}
+
 // The colour queue families leave the options as one value, the whole list
 // with its count, which each start hands its colour decoder.
 int test_color_queue_families() {
@@ -311,6 +338,7 @@ int main() {
   if (test_camera_model() != 0) return 1;
   if (test_transform_from() != 0) return 1;
   if (test_sync_mode() != 0) return 1;
+  if (test_lens_model_name() != 0) return 1;
   if (test_validate_streams() != 0) return 1;
   if (test_color_queue_families() != 0) return 1;
   if (test_sensor_open() != 0) return 1;
