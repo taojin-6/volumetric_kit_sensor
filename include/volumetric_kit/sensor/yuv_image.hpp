@@ -107,12 +107,14 @@ struct YuvImage {
   std::shared_ptr<const core::Buffer> device;
   std::uint64_t offset[3] = {};  ///< Each plane's byte offset in @ref device.
   std::size_t stride[3] = {};  ///< Bytes per row of each plane in @ref device.
-  /// The queue family that wrote @ref device, which the pass takes it over
-  /// from before reading: another family of the device, whose writer
-  /// released the whole buffer to the pass's family, or
+  /// The queue family that owns @ref device, initially its writer, which
+  /// the next stage takes it over from: another family of the device, whose
+  /// writer released the whole buffer to the pass's family, or
   /// @ref kQueueFamilyExternal. @ref kQueueFamilyIgnored when the pass's own
   /// family wrote it; another Vulkan family's is ignored too for a
-  /// CONCURRENT buffer, which needs no transfer.
+  /// CONCURRENT buffer, which needs no transfer. `PictureReadback::read`
+  /// updates this field after a successful read, so subsequent stages use
+  /// the updated picture rather than a copy with stale ownership metadata.
   std::uint32_t queue_family = kQueueFamilyIgnored;
   /// Or NV12's planes as images on the device, as Apple's pictures arrive
   /// (`PixelBufferImporter`): `image[0]` the luma (`R8_UNORM`), `image[1]`

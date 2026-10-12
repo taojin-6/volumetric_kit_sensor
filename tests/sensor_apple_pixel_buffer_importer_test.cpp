@@ -134,8 +134,8 @@ bool fill(CVPixelBufferRef pixels, int seed,
 
 // The picture read back on `device`'s queue holds pattern `seed`, `width` x
 // `height` from the buffer's corner.
-int check_holds(const YuvImage& yuv, vkc::Device& device,
-                vkc::Allocator& allocator, int seed) {
+int check_holds(YuvImage& yuv, vkc::Device& device, vkc::Allocator& allocator,
+                int seed) {
   std::vector<std::uint8_t> planes[3];
   vr_test::read_device_picture(yuv, device, allocator, planes);
   const std::uint32_t cw = (yuv.width + 1) / 2;
@@ -157,7 +157,7 @@ int check_holds(const YuvImage& yuv, vkc::Device& device,
   return 0;
 }
 
-int check_holds(const YuvImage& yuv, const Gpu& gpu, int seed) {
+int check_holds(YuvImage& yuv, const Gpu& gpu, int seed) {
   return check_holds(yuv, gpu.device, gpu.allocator, seed);
 }
 

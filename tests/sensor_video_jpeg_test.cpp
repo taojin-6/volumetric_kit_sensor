@@ -81,7 +81,7 @@ struct Planes {
 };
 
 // nvJPEG's buffer or VideoToolbox's images, read back.
-Planes from_device(const sensor::DecodedPicture& p, vkc::Device& device,
+Planes from_device(sensor::DecodedPicture& p, vkc::Device& device,
                    vkc::Allocator& allocator) {
   Planes out{p.yuv.width, p.yuv.height, {}};
   vr_test::read_device_picture(p.yuv, device, allocator, out.plane);
@@ -163,9 +163,6 @@ int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
   raw.min_depth = 0.1f;
   raw.max_depth = 5.0f;
   raw.color = p.yuv;
-  // from_device already took a CUDA buffer over for the reference readback,
-  // so preparation reads it on the queue family that now holds it.
-  raw.color.queue_family = sensor::kQueueFamilyIgnored;
   auto frame = prep.prepare(raw);
   CHECK(frame.ok());
   auto gpu = vr_test::read_back<std::uint32_t>(device, allocator, *frame->color,

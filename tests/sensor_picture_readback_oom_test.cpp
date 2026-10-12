@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// A host allocation failure while a set is read back returns OutOfMemory
-// rather than throwing, and the next read succeeds. Skips without a device.
+// Host allocation failures in creation and reading return OutOfMemory
+// rather than throwing, and retries succeed. Skips without a device.
 
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +28,35 @@ using sensor::PictureReadback;
 
 namespace {
 
+int test_create(vr_test::GpuContext& gpu) {
+  // Capture a timer allocation's size and call site, so a validation-layer
+  // allocation of the same size cannot consume the injected failure.
+  auto& failure = vr_test::allocation_failure;
+  failure.measure = true;
+  auto timer = vkc::GpuTimer::create(gpu.device);
+  failure.measure = false;
+  CHECK(timer.ok() && failure.bytes != 0 && failure.measured_site != nullptr);
+  failure.site = failure.measured_site;
+  failure.injected = false;
+  failure.armed = true;
+  try {
+    auto refused = PictureReadback::create(gpu.device, gpu.allocator);
+    failure.armed = false;
+    CHECK(failure.injected);
+    CHECK(!refused.ok());
+    CHECK(refused.status().domain() == vkc::Status::Code::OutOfMemory);
+  } catch (const std::bad_alloc&) {
+    failure.armed = false;
+    std::fprintf(stderr, "FAIL: bad_alloc escaped PictureReadback::create\n");
+    return 1;
+  }
+  failure = {};
+  CHECK(PictureReadback::create(gpu.device, gpu.allocator).ok());
+  return 0;
+}
+
 int gpu_main(vr_test::GpuContext& gpu) {
+  CHECK(test_create(gpu) == 0);
   auto readback = PictureReadback::create(gpu.device, gpu.allocator);
   CHECK(readback.ok());
   // An 8x8 NV12 picture in a buffer, its luma 0..63.
