@@ -59,7 +59,11 @@ struct PictureView {
 /// NV12 plane images, as VideoToolbox's pictures arrive, are copied from
 /// their corner; planes in a buffer, as NVDEC's and nvJPEG's arrive, are
 /// copied where they sit, after the batch takes the buffer over from the
-/// queue family that wrote it (`YuvImage::queue_family`). Each read checks
+/// queue family named by `YuvImage::queue_family`. After a successful read,
+/// that field names this device's family for an EXCLUSIVE buffer, or
+/// `kQueueFamilyIgnored` for a CONCURRENT buffer. Pass the updated picture
+/// to subsequent stages, including `GpuFramePrep`; copies made before the
+/// read retain the old ownership metadata. Each read checks
 /// every picture before it records anything, records every copy into one
 /// `CommandBatch`, submits it and waits. The copies land in one host
 /// buffer the readback keeps (`MemoryUsage::Staging`, cached for reading),
@@ -93,7 +97,8 @@ class VR_SENSOR_UTILS_API PictureReadback {
   /// @param allocator  The allocator its host memory comes from (must
   ///                   outlive this).
   /// @return The readback; `Status::Code::InvalidArgument` for an empty
-  ///         device or allocator.
+  ///         device or allocator; `Status::Code::OutOfMemory` for a host
+  ///         allocation failure, including timer creation.
   static core::Result<std::unique_ptr<PictureReadback>> create(
       const core::Device& device, core::Allocator& allocator);
 
@@ -108,7 +113,9 @@ class VR_SENSOR_UTILS_API PictureReadback {
   /// The views point into this object's memory, so they are valid until
   /// the next read or this object's destruction, whatever the frames do:
   /// the frames, and their pictures, may go as soon as this returns.
-  /// @param frames   One entry per camera, as a `FrameSet` holds them.
+  /// @param[in,out] frames  One entry per camera, as a `FrameSet` holds them;
+  ///                       each buffer picture's ownership is updated on
+  ///                       success, as described above.
   /// @param planes   Luma alone, or every plane.
   /// @param metrics  Optional: a `"readback"` row, the call on the host and
   ///                 the copies on the device. `nullptr` measures nothing.
@@ -117,12 +124,13 @@ class VR_SENSOR_UTILS_API PictureReadback {
   ///         what the other overload returns for a picture it refuses; or a
   ///         buffer, submit or `Status::Code::OutOfMemory` failure.
   core::Result<std::vector<std::optional<PictureView>>> read(
-      const std::vector<std::optional<RgbdFrame>>& frames, Planes planes,
+      std::vector<std::optional<RgbdFrame>>& frames, Planes planes,
       core::StageMetrics* metrics = nullptr);
 
   /// @brief Copy one picture's @p planes to the host: a decoder's
   ///        `DecodedPicture::yuv`, say.
-  /// @param picture  On the device, its writer finished.
+  /// @param[in,out] picture  On the device, its writer finished; its buffer
+  ///                        ownership is updated on success, as above.
   /// @param planes   Luma alone, or every plane.
   /// @param metrics  As the other overload.
   /// @return The view, valid as the other overload's;
@@ -134,7 +142,7 @@ class VR_SENSOR_UTILS_API PictureReadback {
   ///         planes at least the picture's size with `TRANSFER_SRC` usage,
   ///         in a layout a copy reads, or a `queue_family` the device lacks;
   ///         or a buffer, submit or `Status::Code::OutOfMemory` failure.
-  core::Result<PictureView> read(const YuvImage& picture, Planes planes,
+  core::Result<PictureView> read(YuvImage& picture, Planes planes,
                                  core::StageMetrics* metrics = nullptr);
 
  private:
@@ -143,7 +151,7 @@ class VR_SENSOR_UTILS_API PictureReadback {
 
   // The one path both reads take: `pictures[i]` into `views[i]`, a null
   // picture skipped, for `count` pictures.
-  core::Status read_pictures(const YuvImage* const* pictures, std::size_t count,
+  core::Status read_pictures(YuvImage* const* pictures, std::size_t count,
                              Planes planes, std::optional<PictureView>* views,
                              core::StageMetrics* metrics);
 

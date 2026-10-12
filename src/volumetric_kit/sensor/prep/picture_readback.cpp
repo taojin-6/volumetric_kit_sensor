@@ -106,8 +106,8 @@ core::Result<std::unique_ptr<PictureReadback>> PictureReadback::create(
     return core::Status::invalid_argument(
         "PictureReadback::create: the device or allocator is empty");
   }
-  VKC_ASSIGN(core::GpuTimer timer, core::GpuTimer::create(device));
   try {
+    VKC_ASSIGN(core::GpuTimer timer, core::GpuTimer::create(device));
     return std::unique_ptr<PictureReadback>(
         new PictureReadback(device, allocator, std::move(timer)));
   } catch (const std::bad_alloc&) {
@@ -117,10 +117,10 @@ core::Result<std::unique_ptr<PictureReadback>> PictureReadback::create(
 }
 
 core::Result<std::vector<std::optional<PictureView>>> PictureReadback::read(
-    const std::vector<std::optional<RgbdFrame>>& frames, Planes planes,
+    std::vector<std::optional<RgbdFrame>>& frames, Planes planes,
     core::StageMetrics* metrics) {
   try {
-    std::vector<const YuvImage*> pictures(frames.size(), nullptr);
+    std::vector<YuvImage*> pictures(frames.size(), nullptr);
     for (std::size_t i = 0; i < frames.size(); ++i) {
       if (frames[i] && on_device(frames[i]->color)) {
         pictures[i] = &frames[i]->color;
@@ -135,11 +135,11 @@ core::Result<std::vector<std::optional<PictureView>>> PictureReadback::read(
   }
 }
 
-core::Result<PictureView> PictureReadback::read(const YuvImage& picture,
+core::Result<PictureView> PictureReadback::read(YuvImage& picture,
                                                 Planes planes,
                                                 core::StageMetrics* metrics) {
   try {
-    const YuvImage* const pictures[] = {&picture};
+    YuvImage* const pictures[] = {&picture};
     std::optional<PictureView> view;
     VKC_TRY(read_pictures(pictures, 1, planes, &view, metrics));
     return *view;
@@ -148,7 +148,7 @@ core::Result<PictureView> PictureReadback::read(const YuvImage& picture,
   }
 }
 
-core::Status PictureReadback::read_pictures(const YuvImage* const* pictures,
+core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
                                             std::size_t count, Planes planes,
                                             std::optional<PictureView>* views,
                                             core::StageMetrics* metrics) {
@@ -213,7 +213,15 @@ core::Status PictureReadback::read_pictures(const YuvImage* const* pictures,
   const auto* base = static_cast<const std::uint8_t*>(staging_.mapped());
   for (std::size_t i = 0; i < count; ++i) {
     if (pictures[i] == nullptr) continue;
-    const YuvImage& picture = *pictures[i];
+    YuvImage& picture = *pictures[i];
+    // Publish ownership only after the submit and wait succeed. A later
+    // read or GpuFramePrep must not repeat the writer's release/acquire.
+    if (picture.device != nullptr) {
+      picture.queue_family =
+          picture.device->sharing_mode() == VK_SHARING_MODE_CONCURRENT
+              ? kQueueFamilyIgnored
+              : device_.queue_family();
+    }
     const Plan& placed = plans[i];
     PictureView view;
     view.width = picture.width;

@@ -28,10 +28,13 @@
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/shared_device.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/utils/picture_readback.hpp"
 #include "volumetric_kit/recon/sensor/yuv_image.hpp"
 
@@ -309,6 +312,7 @@ int test_families(const vr_test::Gpu& gpu) {
     auto view = readback->read(picture, Planes::All);
     CHECK(view.ok());
     CHECK(check_view(*view, p, YuvLayout::Nv12, Planes::All) == 0);
+    CHECK(picture.queue_family == own);
   }
   if (const auto other = vr_test::other_queue_family(gpu.device)) {
     const std::uint32_t shared[2] = {own, *other};
@@ -319,6 +323,7 @@ int test_families(const vr_test::Gpu& gpu) {
     auto view = readback->read(concurrent, Planes::All);
     CHECK(view.ok());
     CHECK(check_view(*view, p, YuvLayout::I420, Planes::All) == 0);
+    CHECK(concurrent.queue_family == sensor::kQueueFamilyIgnored);
   } else {
     std::printf("  families: one queue family, no CONCURRENT buffer\n");
   }
@@ -328,6 +333,88 @@ int test_families(const vr_test::Gpu& gpu) {
   CHECK(readback->read(picture, Planes::Luma).status().domain() ==
         vkc::Status::Code::InvalidArgument);
   std::printf("  families: own, CONCURRENT and external exact\n");
+  return 0;
+}
+
+// An EXCLUSIVE buffer released by another family stays usable after either
+// read overload: preparation and a repeated read must not acquire it again.
+int test_read_then_prepare() {
+  vkc::SharedDeviceConfig config;
+  config.instance = vkc::test::instance_config();
+  config.compute = vr::device_requirements();
+  config.graphics.queue_flags = VK_QUEUE_GRAPHICS_BIT;
+  auto shared = vkc::SharedDevice::create(config);
+  CHECK(shared.ok());
+  CHECK(vkc::test::check_layer_loaded((*shared)->instance()).ok());
+  if ((*shared)->compute_family() == (*shared)->graphics_family()) {
+    std::printf("  read then prepare: cross-family case skipped (%s)\n",
+                (*shared)->summary().c_str());
+    return 0;
+  }
+  auto reader =
+      vkc::Device::adopt((*shared)->compute_payload(), config.compute);
+  auto writer =
+      vkc::Device::adopt((*shared)->graphics_payload(), config.graphics);
+  CHECK(reader.ok() && writer.ok());
+  auto allocator =
+      vkc::Allocator::create((*shared)->instance().handle(), *reader);
+  CHECK(allocator.ok());
+  auto readback = PictureReadback::create(*reader, *allocator);
+  auto prep = sensor::GpuFramePrep::create(*reader, *allocator);
+  CHECK(readback.ok() && prep.ok());
+  const std::vector<std::uint8_t> bytes(96, 128);
+  const std::vector<std::uint16_t> depth(64, 1000);
+  for (const bool single : {true, false}) {
+    auto buffer = vkc::device_storage_buffer(*allocator, bytes.size());
+    CHECK(buffer.ok());
+    CHECK(buffer->sharing_mode() == VK_SHARING_MODE_EXCLUSIVE);
+    vkc::CommandBatch upload(*writer, *allocator);
+    CHECK(upload.upload(*buffer, 0, bytes.data(), bytes.size()).ok());
+    CHECK(upload.release(*buffer, reader->queue_family()).ok());
+    CHECK(upload.submit().ok());
+
+    std::vector<std::optional<sensor::RgbdFrame>> frames(3);
+    sensor::RgbdFrame& frame = frames[1].emplace();
+    frame.depth = depth.data();
+    frame.depth_camera = {{8, 8}, {8.0, 8.0, 3.5, 3.5}, {}};
+    frame.color_camera = frame.depth_camera;
+    frame.min_depth = 0.1f;
+    frame.max_depth = 4.0f;
+    frame.color.layout = YuvLayout::Nv12;
+    frame.color.width = frame.color.height = 8;
+    frame.color.stride[0] = frame.color.stride[1] = 8;
+    frame.color.offset[1] = 64;
+    frame.color.queue_family = writer->queue_family();
+    frame.color.device =
+        std::make_shared<const vkc::Buffer>(std::move(*buffer));
+
+    // Validation failures leave ownership with the writer, so the valid
+    // picture can still consume its pending release on the next read.
+    frame.color.stride[0] = 1;
+    const auto refused =
+        single ? (*readback)->read(frame.color, Planes::Luma).status()
+               : (*readback)->read(frames, Planes::Luma).status();
+    CHECK(refused.domain() == vkc::Status::Code::InvalidArgument);
+    CHECK(frame.color.queue_family == writer->queue_family());
+    frame.color.stride[0] = 8;
+    if (single) {
+      auto view = (*readback)->read(frame.color, Planes::Luma);
+      CHECK(view.ok() && std::memcmp(view->luma, bytes.data(), 64) == 0);
+    } else {
+      auto views = (*readback)->read(frames, Planes::Luma);
+      CHECK(views.ok() && views->size() == 3);
+      CHECK(!(*views)[0] && (*views)[1] && !(*views)[2]);
+      CHECK(std::memcmp((*views)[1]->luma, bytes.data(), 64) == 0);
+    }
+    auto prepared = prep->prepare(frame);
+    CHECK(prepared.ok() && prepared->has_color());
+    auto view = (*readback)->read(frame.color, Planes::All);
+    CHECK(view.ok() && std::memcmp(view->luma, bytes.data(), 64) == 0);
+    CHECK(std::memcmp(view->chroma[0], bytes.data() + 64, 32) == 0);
+    CHECK(frame.color.queue_family == reader->queue_family());
+  }
+  std::puts(
+      "  read then prepare: both overloads, two families, repeated reads");
   return 0;
 }
 
@@ -349,7 +436,7 @@ int test_memory(const vr_test::Gpu& gpu) {
   CHECK(readback != nullptr);
   const Packed small = pattern(37, 21, 4), large = pattern(96, 64, 5);
   YuvImage s = in_buffer(gpu, small, YuvLayout::I420);
-  const YuvImage l = in_buffer(gpu, large, YuvLayout::Nv12);
+  YuvImage l = in_buffer(gpu, large, YuvLayout::Nv12);
   CHECK(made(s) && made(l));
 
   auto first = readback->read(s, Planes::All);
@@ -396,9 +483,9 @@ int test_refusals(vr_test::GpuContext& gpu) {
   CHECK(readback != nullptr);
   const Packed p = pattern(37, 21, 6);
   const YuvImage buffer = in_buffer(gpu, p, YuvLayout::I420);
-  const YuvImage images = as_images(gpu, p);
+  YuvImage images = as_images(gpu, p);
   CHECK(made(buffer) && made(images));
-  const auto refused = [&](const YuvImage& picture, const char* why) {
+  const auto refused = [&](YuvImage picture, const char* why) {
     const vkc::Status status = readback->read(picture, Planes::Luma).status();
     const bool ok = status.domain() == vkc::Status::Code::InvalidArgument &&
                     status.message().find(why) != std::string::npos;
@@ -521,6 +608,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
   CHECK(test_layouts(gpu) == 0);
   CHECK(test_set(gpu) == 0);
   CHECK(test_families(gpu) == 0);
+  CHECK(test_read_then_prepare() == 0);
   CHECK(test_memory(gpu) == 0);
   CHECK(test_refusals(gpu) == 0);
   CHECK(test_metrics(gpu) == 0);

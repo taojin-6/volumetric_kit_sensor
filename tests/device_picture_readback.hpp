@@ -20,9 +20,9 @@ namespace vr_test {
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 
-// Fills `planes`, or leaves them empty if the read fails.
-inline void read_device_picture(const vr::sensor::YuvImage& p,
-                                vkc::Device& device, vkc::Allocator& allocator,
+// Fills `planes` and updates `p`'s ownership, or leaves them empty on failure.
+inline void read_device_picture(vr::sensor::YuvImage& p, vkc::Device& device,
+                                vkc::Allocator& allocator,
                                 std::vector<std::uint8_t> (&planes)[3]) {
   using vr::sensor::PictureReadback;
   auto readback = PictureReadback::create(device, allocator);

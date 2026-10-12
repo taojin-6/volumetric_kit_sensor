@@ -160,7 +160,7 @@ struct Planes {
   std::vector<std::uint8_t> y, u, v;
 };
 
-Planes from_device(const sensor::DecodedPicture& p, vkc::Device& device,
+Planes from_device(sensor::DecodedPicture& p, vkc::Device& device,
                    vkc::Allocator& allocator) {
   std::vector<std::uint8_t> planes[3];
   vr_test::read_device_picture(p.yuv, device, allocator, planes);
@@ -289,8 +289,7 @@ int test_device() {
     const auto color = set.getColorFrame();
     CHECK(depth != nullptr && color != nullptr);
     CHECK(depth->getTimeStampUs() == t && color->getTimeStampUs() == t);
-    const std::optional<sensor::DecodedPicture> p =
-        orbbec::device_picture(*color);
+    std::optional<sensor::DecodedPicture> p = orbbec::device_picture(*color);
     CHECK(p.has_value());
     CHECK(p->yuv.width == kWidth && p->yuv.height == kHeight);
     CHECK(
