@@ -37,6 +37,10 @@ namespace volumetric_kit::recon::sensor {
 /// surface while anything reads them. Its writer must have finished, as for
 /// any @ref YuvImage: the GPU pass waits on nothing.
 ///
+/// The images are shared across the queue families @ref create is given, as
+/// when a renderer on another family draws the pictures (MoltenVK hands recon
+/// and gfx different families).
+///
 /// @code
 /// auto importer = PixelBufferImporter::create(device, "ARKitCapture");
 /// RgbdFrame frame;
@@ -55,11 +59,25 @@ class VR_SENSOR_APPLE_API PixelBufferImporter {
   /// @param device The device the images are made on. Borrowed: it must
   ///        outlive the importer and every picture imported.
   /// @param who Names the importer's user in errors.
-  /// @return The importer; `Status::Code::Unsupported` where @p device imports
-  ///         no Metal textures (`Device::imports_metal_textures`) or names no
-  ///         Metal device.
+  /// @param queue_families The queue families that will read the images, as
+  ///        `BufferDesc::queue_families`: null for @p device's own alone.
+  ///        Two or more distinct give `VK_SHARING_MODE_CONCURRENT` images,
+  ///        which those families read with no ownership transfer; otherwise
+  ///        they are EXCLUSIVE. Duplicates count once, so a caller may pass
+  ///        its compute and render families unconditionally. When given, they
+  ///        include @p device's own family, on which the importer readies the
+  ///        images. Read during the call only.
+  /// @param queue_family_count The entries in @p queue_families.
+  /// @return The importer; `Status::Code::InvalidArgument` for a count with
+  ///         no families, more than `BufferDesc::kMaxQueueFamilies` distinct,
+  ///         one @p device does not have, or none that is @p device's own;
+  ///         or `Status::Code::Unsupported` where @p device imports no Metal
+  ///         textures (`Device::imports_metal_textures`) or names no Metal
+  ///         device.
   static core::Result<PixelBufferImporter> create(
-      const core::Device& device, std::string who = "PixelBufferImporter");
+      const core::Device& device, std::string who = "PixelBufferImporter",
+      const std::uint32_t* queue_families = nullptr,
+      std::uint32_t queue_family_count = 0);
 
   PixelBufferImporter(PixelBufferImporter&& other) noexcept;
   PixelBufferImporter& operator=(PixelBufferImporter&& other) noexcept;

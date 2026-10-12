@@ -109,14 +109,16 @@ CFMutableDictionaryRef dictionary() {
 
 }  // namespace
 
-core::Result<std::unique_ptr<VtJpeg>> VtJpeg::open(const core::Device& device,
-                                                   const char* who) {
+core::Result<std::unique_ptr<VtJpeg>> VtJpeg::open(
+    const core::Device& device, const char* who,
+    const std::uint32_t* queue_families, std::uint32_t queue_family_count) {
   if (!VTIsHardwareDecodeSupported(kCMVideoCodecType_JPEG)) {
     return core::Status::unsupported(
         std::string(who) + ": VideoToolbox has no hardware JPEG decoder");
   }
   VKC_ASSIGN(PixelBufferImporter pictures,
-             PixelBufferImporter::create(device, who));
+             PixelBufferImporter::create(device, who, queue_families,
+                                         queue_family_count));
   std::unique_ptr<VtJpeg> vt(new VtJpeg(std::move(pictures)));
   vt->who_ = who;
   VkPhysicalDeviceProperties props{};

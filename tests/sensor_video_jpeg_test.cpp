@@ -6,7 +6,8 @@
 // were made from, at an odd size too, prepared on the GPU with centred chroma;
 // the buffers nvJPEG's pictures hold; the JPEGs the hardware does not take
 // (4:2:2, and one past its size); corrupt bytes, which cost only themselves;
-// the decoders create refuses; and moves.
+// the decoders create refuses; VideoToolbox's images shared across queue
+// families; and moves.
 //
 // Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one (nvJPEG on the NVIDIA containers,
@@ -18,6 +19,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -280,6 +282,30 @@ int test_create_refusals(const Gpu& gpu) {
   return 0;
 }
 
+#if defined(__APPLE__)
+// Options::queue_families reach VideoToolbox's images: CONCURRENT across two
+// families, the pattern intact. A list the importer refuses fails create.
+int test_queue_families(const Gpu& gpu) {
+  JpegDecoder::Options options = decoder_options(gpu);
+  options.queue_family_count = 1;  // and no list
+  CHECK(JpegDecoder::create(options).status().domain() ==
+        vkc::Status::Code::InvalidArgument);
+  const std::optional<std::uint32_t> other =
+      vr_test::other_queue_family(gpu.device);
+  if (!other) return 0;
+  const std::uint32_t families[] = {gpu.device.queue_family(), *other};
+  options.queue_families = families;
+  options.queue_family_count = 2;
+  auto decoder = JpegDecoder::create(options);
+  CHECK(decoder.ok());
+  auto p = decode(decoder.value(), read_file(k420));
+  CHECK(p.ok());
+  CHECK(p->yuv.image[0]->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
+  CHECK(p->yuv.image[1]->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
+  return check_pattern(from_device(p.value(), gpu.device, gpu.allocator));
+}
+#endif
+
 // A corrupt frame is the camera's, not the GPU's: IoError for it alone, and
 // the next JPEG decodes on the device.
 int test_corrupt(const Gpu& gpu) {
@@ -340,6 +366,9 @@ int gpu_main(Gpu& gpu) {
 
   if (test_device(gpu) != 0) return 1;
   if (test_create_refusals(gpu) != 0) return 1;
+#if defined(__APPLE__)
+  if (test_queue_families(gpu) != 0) return 1;
+#endif
   if (test_corrupt(gpu) != 0) return 1;
   if (test_moves(gpu) != 0) return 1;
   std::puts("sensor_video_jpeg: OK");

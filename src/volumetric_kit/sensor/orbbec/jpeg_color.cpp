@@ -22,6 +22,8 @@ core::Result<std::unique_ptr<JpegColorDecoder>> JpegColorDecoder::start(
   JpegDecoder::Options decoding;
   decoding.device = options.device;
   decoding.allocator = options.allocator;
+  decoding.queue_families = options.queue_families.families;
+  decoding.queue_family_count = options.queue_families.count;
   auto decoder = JpegDecoder::create(decoding);
   if (!decoder) {
     return decoder.status().with_context(options.who +

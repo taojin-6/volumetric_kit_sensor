@@ -10,9 +10,9 @@
 // frame lost from the stream, or empty, costs the frames up to the next key
 // frame, as do the pairs a decoder too far behind drops from its queue, a
 // pause in the timestamps costs nothing, and decoding starts at the first key
-// frame; a stream the hardware refuses stops the decoder. The
-// frame-index gate is tested on its own, since a test cannot set an SDK
-// frame's index.
+// frame; a stream the hardware refuses stops the decoder; the pictures are
+// shared with the queue families it is given. The frame-index gate is tested
+// on its own, since a test cannot set an SDK frame's index.
 //
 // Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one, makes it fail instead.
@@ -133,6 +133,7 @@ struct Out {
   std::uint64_t color_us = 0;
   std::optional<sensor::DecodedPicture> meta;  // its storage let go
   bool images = false;  // VideoToolbox's images, not a buffer
+  VkSharingMode sharing = VK_SHARING_MODE_MAX_ENUM;  // the images'
   std::vector<std::uint8_t> planes[3];
 };
 
@@ -147,6 +148,10 @@ Out read_out(const ob::FrameSet& set) {
   if (!p) return o;
   vr_test::read_device_picture(p->yuv, *g_device, *g_allocator, o.planes);
   o.images = p->yuv.image[0] != nullptr;
+  if (o.images &&
+      p->yuv.image[1]->sharing_mode() == p->yuv.image[0]->sharing_mode()) {
+    o.sharing = p->yuv.image[0]->sharing_mode();
+  }
   p->yuv.device.reset();
   p->yuv.image[0].reset();
   p->yuv.image[1].reset();
@@ -166,10 +171,10 @@ struct Collected {
 
 // A decoder on the test's device whose queue holds two seconds at `fps`,
 // reading each colour frame's number as pair() writes it, or reading every
-// frame as unnumbered (0).
+// frame as unnumbered (0), its pictures shared with `families`.
 std::unique_ptr<orbbec::HevcColorDecoder> start(
     orbbec::HevcColorDecoder::Sink sink, std::uint32_t fps = 30,
-    bool numbered = true) {
+    bool numbered = true, const std::vector<std::uint32_t>& families = {}) {
   orbbec::HevcColorDecoder::Options options;
   options.fps = fps;
   options.who = "test";
@@ -178,6 +183,8 @@ std::unique_ptr<orbbec::HevcColorDecoder> start(
   };
   options.device = g_device;
   options.allocator = g_allocator;
+  std::copy(families.begin(), families.end(), options.queue_families.families);
+  options.queue_families.count = static_cast<std::uint32_t>(families.size());
   auto decoder = orbbec::HevcColorDecoder::start(options, std::move(sink));
   if (!decoder) {
     std::fprintf(stderr, "%s\n", decoder.status().message().c_str());
@@ -206,15 +213,17 @@ struct Run {
   std::uint64_t lost = 0;
   vkc::Status failure;
 };
-Run run(const Pairs& in, std::size_t expect, bool keep_frames = false) {
+Run run(const Pairs& in, std::size_t expect, bool keep_frames = false,
+        const std::vector<std::uint32_t>& families = {}) {
   auto collected = std::make_shared<Collected>();
-  auto decoder =
-      start([collected, keep_frames](std::shared_ptr<ob::FrameSet> set) {
+  auto decoder = start(
+      [collected, keep_frames](std::shared_ptr<ob::FrameSet> set) {
         Out o = read_out(*set);
         std::lock_guard<std::mutex> lock(collected->mutex);
         collected->out.push_back(std::move(o));
         if (keep_frames) collected->frames.push_back(std::move(set));
-      });
+      },
+      30, true, families);
   for (const auto& p : in) decoder->push(p);
   wait_for(*collected, expect, *decoder);
   // Let anything that should not come out have its chance to.
@@ -361,6 +370,25 @@ int test_every_pair_in_order() {
   }
   return 0;
 }
+
+#if defined(__APPLE__)
+// Options::queue_families reach the decoder: its pictures are CONCURRENT
+// across two families, each as the clip was made.
+int test_queue_families() {
+  const std::optional<std::uint32_t> other =
+      vr_test::other_queue_family(*g_device);
+  if (!other) return 0;
+  const Run r = run(pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1}), 2,
+                    false, {g_device->queue_family(), *other});
+  CHECK(r.out.size() == 2);
+  for (int i = 0; i < 2; ++i) {
+    const Out& o = r.out[static_cast<std::size_t>(i)];
+    if (check_pair(o, i, i) != 0) return 1;
+    CHECK(o.sharing == VK_SHARING_MODE_CONCURRENT);
+  }
+  return 0;
+}
+#endif
 
 // Frame 1 lost on the way: frames 2 and 3 are predicted from it, so they go
 // too, and decoding picks up at the key frame, 4. The gap in the frame
@@ -777,6 +805,9 @@ int gpu_main(vr_test::GpuContext& gpu) {
   if (test_labelled_stream() != 0) return 1;
   if (test_b_frames() != 0) return 1;
   if (test_open_gop_restart() != 0) return 1;
+#if defined(__APPLE__)
+  if (test_queue_families() != 0) return 1;
+#endif
   std::puts("sensor_orbbec_hevc: OK");
   return 0;
 }

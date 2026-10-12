@@ -1220,12 +1220,10 @@ int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
                        VK_SHARING_MODE_EXCLUSIVE) != 0) {
     return 1;
   }
-  std::uint32_t family_count = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(device.physical_device(),
-                                           &family_count, nullptr);
-  if (family_count > 1) {
+  if (const std::optional<std::uint32_t> other =
+          vr_test::other_queue_family(device)) {
     sensor::GpuFramePrepConfig two = twice;
-    two.color_queue_families[1] = own == 0 ? 1 : 0;
+    two.color_queue_families[1] = *other;
     if (prepared_sharing(device, allocator, two, f,
                          VK_SHARING_MODE_CONCURRENT) != 0) {
       return 1;

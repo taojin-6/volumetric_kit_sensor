@@ -5,8 +5,9 @@
 // on this machine's hardware onto the device and read back: the pattern the
 // clip was made from, the colour an unlabelled stream takes, a reset
 // mid-stream and after the end, a display window off the coded picture's
-// corner, a stream the hardware refuses, the decoders create refuses, the
-// argument checks, and moves.
+// corner, a stream the hardware refuses, the decoders create refuses,
+// VideoToolbox's images shared across queue families, the argument checks,
+// and moves.
 //
 // Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one (NVDEC on the NVIDIA containers,
@@ -410,6 +411,34 @@ int test_create_refusals(const Gpu& gpu) {
   return 0;
 }
 
+#if defined(__APPLE__)
+// Options::queue_families reach VideoToolbox's images: CONCURRENT across two
+// families, every picture as the clip was made. A list the importer refuses
+// fails create.
+int test_queue_families(const Gpu& gpu) {
+  HevcDecoder::Options options = decoder_options(gpu);
+  options.queue_family_count = 1;  // and no list
+  CHECK(HevcDecoder::create(options).status().domain() ==
+        vkc::Status::Code::InvalidArgument);
+  const std::optional<std::uint32_t> other =
+      vr_test::other_queue_family(gpu.device);
+  if (!other) return 0;
+  const std::uint32_t families[] = {gpu.device.queue_family(), *other};
+  options.queue_families = families;
+  options.queue_family_count = 2;
+  auto decoder = HevcDecoder::create(options);
+  CHECK(decoder.ok());
+  const Decoded decoded =
+      decode_clip(decoder.value(), vr_test::hevc_access_units(kPatches), gpu);
+  if (check_clip_shape(decoded) != 0) return 1;
+  for (const Picture& p : decoded.pictures) {
+    CHECK(p.meta.yuv.image[0]->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
+    CHECK(p.meta.yuv.image[1]->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
+  }
+  return 0;
+}
+#endif
+
 int test_arguments(const Gpu& gpu) {
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
@@ -468,6 +497,9 @@ int gpu_main(Gpu& gpu) {
 #endif
   if (test_refused(gpu) != 0) return 1;
   if (test_create_refusals(gpu) != 0) return 1;
+#if defined(__APPLE__)
+  if (test_queue_families(gpu) != 0) return 1;
+#endif
   if (test_arguments(gpu) != 0) return 1;
   if (test_moves(gpu) != 0) return 1;
   std::puts("sensor_video_hevc: OK");

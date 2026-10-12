@@ -21,6 +21,7 @@
 #include <libobsensor/ObSensor.hpp>
 
 #include "decode_worker.hpp"
+#include "frame_conversion.hpp"
 #include "picture_frames.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
@@ -88,6 +89,8 @@ class HevcColorDecoder {
     const core::Device* device = nullptr;
     // The allocator NVDEC's pictures are made through. Borrowed as device is.
     core::Allocator* allocator = nullptr;
+    // The queue families that read the pictures, for HevcDecoder::Options.
+    ColorQueueFamilies queue_families;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on

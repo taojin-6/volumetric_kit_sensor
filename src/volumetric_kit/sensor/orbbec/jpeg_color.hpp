@@ -20,6 +20,7 @@
 #include <libobsensor/ObSensor.hpp>
 
 #include "decode_worker.hpp"
+#include "frame_conversion.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
@@ -39,6 +40,8 @@ class JpegColorDecoder {
     const core::Device* device = nullptr;
     // The allocator nvJPEG's pictures are made through. Borrowed as device is.
     core::Allocator* allocator = nullptr;
+    // The queue families that read the pictures, for JpegDecoder::Options.
+    ColorQueueFamilies queue_families;
     std::string who;
   };
 

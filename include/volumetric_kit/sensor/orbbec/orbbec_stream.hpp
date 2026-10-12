@@ -20,6 +20,11 @@
 
 namespace volumetric_kit::recon::sensor {
 
+/// @brief The size of @ref OrbbecStreamOptions::color_queue_families: the
+///        core's `BufferDesc::kMaxQueueFamilies`, mirrored so this header
+///        includes no Vulkan.
+inline constexpr std::uint32_t kMaxColorQueueFamilies = 4;
+
 /// @brief How the colour stream crosses the wire. Either way the camera's
 ///        colour is decoded on a thread per camera, onto the GPU by the
 ///        hardware decoder.
@@ -104,6 +109,16 @@ struct OrbbecStreamOptions {
   /// VideoToolbox's need none. Borrowed: it must outlive the camera and every
   /// frame on it.
   core::Allocator* allocator = nullptr;
+  /// The queue families that will read the colour pictures themselves
+  /// (`YuvImage::image`), as @ref PixelBufferImporter::create takes them:
+  /// @ref device's own and, say, a renderer's that draws them. The twin of
+  /// `GpuFramePrepConfig::color_queue_families`, for the pictures rather than
+  /// the GPU pass's output; NVDEC and nvJPEG ignore them. Held by value,
+  /// since each start opens the decoders afresh.
+  std::uint32_t color_queue_families[kMaxColorQueueFamilies] = {};
+  /// Entries in @ref color_queue_families; more than
+  /// @ref kMaxColorQueueFamilies is refused when the camera opens.
+  std::uint32_t color_queue_family_count = 0;
 };
 
 }  // namespace volumetric_kit::recon::sensor

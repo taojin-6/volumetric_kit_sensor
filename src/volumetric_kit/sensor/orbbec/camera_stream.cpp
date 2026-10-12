@@ -216,6 +216,7 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
   s->configure_ffmpeg_logging_ = configure_logging;
   s->vulkan_device_ = streams.device;
   s->vulkan_allocator_ = streams.allocator;
+  s->color_queue_families_ = color_queue_families(streams);
   s->context_ = std::move(context);
   s->device_ = std::move(device);
   try {
@@ -369,6 +370,7 @@ core::Status CameraStream::start() {
     decoding.fps = fps_;
     decoding.device = vulkan_device_;
     decoding.allocator = vulkan_allocator_;
+    decoding.queue_families = color_queue_families_;
     // Once: the first start sets FFmpeg's level, and a later one leaves it
     // to whoever changed it since.
     decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
@@ -384,6 +386,7 @@ core::Status CameraStream::start() {
     }
     decoding.device = vulkan_device_;
     decoding.allocator = vulkan_allocator_;
+    decoding.queue_families = color_queue_families_;
     decoding.who = who_;
     VKC_ASSIGN(auto decoder, JpegColorDecoder::start(decoding, post));
     jpeg_ = std::move(decoder);

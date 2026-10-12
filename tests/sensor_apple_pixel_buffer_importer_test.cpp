@@ -7,7 +7,8 @@
 // read, not when it was imported -- at the picture's size from the buffer's
 // corner, each surface's images made once; the images hold the buffer; the
 // picture prepares as a frame's colour by the description its caller gives;
-// what it refuses; and moves.
+// the images' sharing across queue families, and a renderer's family copying
+// them on a device shared with recon; what it refuses; and moves.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -21,6 +22,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -32,6 +35,8 @@
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/shared_device.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
@@ -127,11 +132,12 @@ bool fill(CVPixelBufferRef pixels, int seed,
   return true;
 }
 
-// The picture read back holds pattern `seed`, `width` x `height` from the
-// buffer's corner.
-int check_holds(const YuvImage& yuv, const Gpu& gpu, int seed) {
+// The picture read back on `device`'s queue holds pattern `seed`, `width` x
+// `height` from the buffer's corner.
+int check_holds(const YuvImage& yuv, vkc::Device& device,
+                vkc::Allocator& allocator, int seed) {
   std::vector<std::uint8_t> planes[3];
-  vr_test::read_device_picture(yuv, gpu.device, gpu.allocator, planes);
+  vr_test::read_device_picture(yuv, device, allocator, planes);
   const std::uint32_t cw = (yuv.width + 1) / 2;
   const std::uint32_t ch = (yuv.height + 1) / 2;
   CHECK(planes[0].size() == std::size_t{yuv.width} * yuv.height);
@@ -149,6 +155,16 @@ int check_holds(const YuvImage& yuv, const Gpu& gpu, int seed) {
     }
   }
   return 0;
+}
+
+int check_holds(const YuvImage& yuv, const Gpu& gpu, int seed) {
+  return check_holds(yuv, gpu.device, gpu.allocator, seed);
+}
+
+// Both planes' sharing mode, or VK_SHARING_MODE_MAX_ENUM where they differ.
+VkSharingMode sharing(const YuvImage& yuv) {
+  const VkSharingMode mode = yuv.image[0]->sharing_mode();
+  return yuv.image[1]->sharing_mode() == mode ? mode : VK_SHARING_MODE_MAX_ENUM;
 }
 
 // Its planes as images, read in place: what the surface holds when they are
@@ -330,6 +346,128 @@ int test_refusals(const Gpu& gpu) {
   return 0;
 }
 
+// The images are EXCLUSIVE unless the importer is given two or more distinct
+// queue families, and CONCURRENT across those, up to kMaxQueueFamilies of
+// them; duplicates count once, so a list longer than kMaxQueueFamilies with
+// two distinct is taken. Refused, InvalidArgument: a count with no list, more
+// than kMaxQueueFamilies distinct, a family the device does not have, and a
+// list without the device's own family, on which the importer readies the
+// images.
+int test_sharing(const Gpu& gpu) {
+  const std::uint32_t own = gpu.device.queue_family();
+  const auto family_count =
+      static_cast<std::uint32_t>(gpu.device.caps().queue_families().size());
+  const Pixels pixels(make_pixels(32, 32, kFull));
+  CHECK(pixels.ref != nullptr && fill(pixels.ref, 6));
+  const auto imported = [&](const std::uint32_t* families, std::uint32_t count,
+                            YuvImage& yuv) {
+    auto importer =
+        PixelBufferImporter::create(gpu.device, "test", families, count);
+    return importer.ok() && importer->import(pixels.ref, 32, 32, yuv).ok();
+  };
+
+  YuvImage alone;
+  CHECK(imported(nullptr, 0, alone));
+  CHECK(sharing(alone) == VK_SHARING_MODE_EXCLUSIVE);
+  const std::uint32_t twice[] = {own, own};
+  YuvImage one;
+  CHECK(imported(twice, 1, one));
+  CHECK(sharing(one) == VK_SHARING_MODE_EXCLUSIVE);
+  YuvImage duplicated;
+  CHECK(imported(twice, 2, duplicated));
+  CHECK(sharing(duplicated) == VK_SHARING_MODE_EXCLUSIVE);
+
+  const auto refusal = [&](const std::uint32_t* families, std::uint32_t count) {
+    const vkc::Status s =
+        PixelBufferImporter::create(gpu.device, "test", families, count)
+            .status();
+    return s.domain() == vkc::Status::Code::InvalidArgument ? s.message()
+                                                            : std::string();
+  };
+  const auto says = [](const std::string& message, const char* what) {
+    return message.find(what) != std::string::npos;
+  };
+  CHECK(says(refusal(nullptr, 1), "queue_families is null"));
+  const std::uint32_t five[] = {own, own + 1, own + 2, own + 3, own + 4};
+  CHECK(says(refusal(five, 5), "kMaxQueueFamilies"));
+  const std::uint32_t past[] = {own, family_count};
+  CHECK(says(refusal(past, 2), "does not have"));
+
+  const std::optional<std::uint32_t> other =
+      vr_test::other_queue_family(gpu.device);
+  if (!other) {
+    std::puts("one queue family: no CONCURRENT images to check");
+    return 0;
+  }
+  CHECK(says(refusal(&*other, 1), "own family"));
+  const std::uint32_t both[] = {*other, own, *other, own, *other};
+  YuvImage shared;
+  CHECK(imported(both, 5, shared));
+  CHECK(sharing(shared) == VK_SHARING_MODE_CONCURRENT);
+  CHECK(check_holds(shared, gpu, 6) == 0);
+
+  // As many as kMaxQueueFamilies: the device's own and the first others.
+  if (family_count < vkc::BufferDesc::kMaxQueueFamilies) {
+    std::printf("%u queue families: kMaxQueueFamilies of them not checked\n",
+                family_count);
+    return 0;
+  }
+  std::vector<std::uint32_t> most = {own};
+  for (std::uint32_t f = 0; most.size() < vkc::BufferDesc::kMaxQueueFamilies;
+       ++f) {
+    if (f != own) most.push_back(f);
+  }
+  YuvImage widest;
+  CHECK(imported(most.data(), vkc::BufferDesc::kMaxQueueFamilies, widest));
+  CHECK(sharing(widest) == VK_SHARING_MODE_CONCURRENT);
+  return check_holds(widest, gpu, 6);
+}
+
+// What CONCURRENT is for: on one device shared by recon and a renderer on
+// another queue family, as MoltenVK hands them, a picture imported on recon's
+// family is copied on the renderer's, byte for byte. Windowless: the
+// renderer's queue does graphics and presents nothing. The validation layer
+// checks the CONCURRENT create info but not which family owns an EXCLUSIVE
+// image, so the sharing mode recorded on the image, which is the one the
+// image was created with, is what shows the read is legal.
+int test_cross_family() {
+  vkc::SharedDeviceConfig config;
+  config.instance = vkc::test::instance_config();
+  config.compute = vr::device_requirements();
+  config.graphics.queue_flags = VK_QUEUE_GRAPHICS_BIT;
+  auto shared = vkc::SharedDevice::create(config);
+  if (!shared) std::fprintf(stderr, "%s\n", shared.status().message().c_str());
+  CHECK(shared.ok());
+  const vkc::SharedDevice& device = *shared.value();
+  const vkc::Status loaded = vkc::test::check_layer_loaded(device.instance());
+  if (!loaded.ok()) std::fprintf(stderr, "%s\n", loaded.message().c_str());
+  CHECK(loaded.ok());
+  if (device.compute_family() == device.graphics_family()) {
+    std::printf("cross-family read skipped: %s\n", device.summary().c_str());
+    return 0;
+  }
+  auto recon = vkc::Device::adopt(device.compute_payload(), config.compute);
+  auto renderer =
+      vkc::Device::adopt(device.graphics_payload(), config.graphics);
+  CHECK(recon.ok() && renderer.ok());
+  CHECK(recon->imports_metal_textures());
+  auto allocator =
+      vkc::Allocator::create(device.instance().handle(), renderer.value());
+  CHECK(allocator.ok());
+
+  const std::uint32_t families[] = {device.compute_family(),
+                                    device.graphics_family()};
+  auto importer =
+      PixelBufferImporter::create(recon.value(), "test", families, 2);
+  CHECK(importer.ok());
+  const Pixels pixels(make_pixels(255, 143, kFull));
+  CHECK(pixels.ref != nullptr && fill(pixels.ref, 7));
+  YuvImage yuv;
+  CHECK(importer->import(pixels.ref, 255, 143, yuv).ok());
+  CHECK(sharing(yuv) == VK_SHARING_MODE_CONCURRENT);
+  return check_holds(yuv, renderer.value(), allocator.value(), 7);
+}
+
 int test_moves(const Gpu& gpu) {
   const Pixels pixels(make_pixels(32, 32, kFull));
   CHECK(pixels.ref != nullptr && fill(pixels.ref, 5));
@@ -366,6 +504,8 @@ int gpu_main(vr_test::GpuContext& gpu) {
   if (test_sets_only_the_planes(gpu) != 0) return 1;
   if (test_holds_the_buffer(gpu) != 0) return 1;
   if (test_prepares(gpu) != 0) return 1;
+  if (test_sharing(gpu) != 0) return 1;
+  if (test_cross_family() != 0) return 1;
   if (test_refusals(gpu) != 0) return 1;
   if (test_moves(gpu) != 0) return 1;
   std::puts("sensor_apple_pixel_buffer_importer: OK");
