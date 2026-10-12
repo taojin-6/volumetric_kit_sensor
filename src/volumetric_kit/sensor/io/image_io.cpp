@@ -46,6 +46,8 @@ core::Result<std::vector<std::uint8_t>> read_image(const char* api,
   VKC_TRY(core::check_path(api, path));
   VKC_TRY(check_dimensions(api, expected_w, expected_h));
   const std::string where = std::string(api) + ": " + path;
+  // Not core::read_file, which reads the whole file first: this refuses one
+  // stb cannot take (over INT_MAX bytes) before reading it.
   std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in) return core::Status::io_error(where + ": cannot open");
   const auto size = static_cast<std::streamoff>(in.tellg());
@@ -143,6 +145,8 @@ core::Result<std::vector<std::uint8_t>> encode_png(const std::string& where,
 
 // Every PNG writer writes through here, once the file's bytes are ready, so a
 // refused or failed encode leaves an existing file intact.
+// TODO: write through core::write_file (WriteMode::Replace), so a failed write
+// leaves it intact too.
 core::Status write_bytes(const std::string& where, const std::string& path,
                          const std::vector<std::uint8_t>& bytes) {
   std::ofstream out(path, std::ios::binary);

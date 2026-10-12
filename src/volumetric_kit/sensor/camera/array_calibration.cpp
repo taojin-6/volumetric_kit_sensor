@@ -219,6 +219,8 @@ core::Result<ArrayCalibration> parse_v2(const json& doc) {
     }
     if (!sensor->is_string()) return bad("world: \"sensor\" is not a string");
     array.world.sensor = sensor->get<std::string>();
+    // Empty is the struct's "no world"; a file that names one names a sensor.
+    if (array.world.sensor.empty()) return bad("world: \"sensor\" is empty");
   }
   for (auto it = sensors->begin(); it != sensors->end(); ++it) {
     VKC_ASSIGN(SensorCalibration sensor, sensor_v2(it.key(), *it));
@@ -247,8 +249,8 @@ core::Result<ArrayCalibration> parse_v1(const json& doc) {
 
 // --- writing -----------------------------------------------------------------
 
-// A value as JSON text: a number in the shortest form that reads back to the
-// same double, a string quoted and escaped.
+// A value as JSON text: a number in a form that reads back to the same double
+// (at most 17 significant digits), a string quoted and escaped.
 std::string text(double v) { return json(v).dump(); }
 std::string text(std::uint64_t v) { return json(v).dump(); }
 std::string text(const std::string& s) { return json(s).dump(); }
@@ -367,6 +369,9 @@ core::Result<ArrayCalibration> parse_array_calibration(
     }
     VKC_ASSIGN(array, parse_v2(doc));
   } else {
+    // Version 1 has neither key. A version without a format is a later file
+    // that lost its format, and read as version 1 it would lose its lenses.
+    if (doc.contains("version")) return bad("\"version\" without \"format\"");
     VKC_ASSIGN(array, parse_v1(doc));
   }
   std::sort(array.sensors.begin(), array.sensors.end(),

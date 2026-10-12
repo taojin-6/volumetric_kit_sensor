@@ -34,13 +34,14 @@
 ///   `depth_to_color`, beside `depth` only, is the same form:
 ///   `x_color = R(rvec) x_depth + tvec`.
 /// - A camera's `width` and `height` are the image its intrinsics are in
-///   pixels of. `distortion` is optional, absent for a pinhole lens; its
-///   `model` is `"rational"`, OpenCV's eight coefficients, the one this
-///   reader knows. `source` says whether the model is the sensor's own
-///   (`"factory"`) or solved from images (`"calibrated"`).
+///   pixels of. `distortion` may be absent, which reads as a pinhole lens;
+///   the writer always writes it. Its `model` is `"rational"`, OpenCV's
+///   eight coefficients, the one this reader knows. `source` says whether
+///   the model is the sensor's own (`"factory"`) or solved from images
+///   (`"calibrated"`).
 /// - `world`, optional, names the sensor whose colour camera is the world
 ///   frame; that sensor is posed at the origin.
-/// - Numbers are written in the shortest form that reads back exactly. Keys
+/// - Numbers are written in a form that reads back to the same double. Keys
 ///   this reader does not know are ignored; a later `version` is refused.
 ///
 /// Version 1, the family's earlier layout, has no `format` or `version`: a
@@ -123,20 +124,21 @@ VR_CAMERA_API const SensorCalibration* find_sensor(
 /// beside a depth camera; each camera model valid (@ref check_camera_model);
 /// and a world sensor that is in the array and posed at the origin.
 /// @param array  The calibration.
-/// @return OK; or `Status::Code::InvalidArgument` naming the sensor and what
-///         is wrong.
+/// @return OK; `Status::Code::InvalidArgument` naming the sensor and what is
+///         wrong; or `Status::Code::OutOfMemory`.
 VR_CAMERA_API core::Status validate_array_calibration(
     const ArrayCalibration& array);
 
 /// @brief Parse a calibration document, version 2 or version 1.
 /// @param json  The document's text.
-/// @return The calibration, its sensors in id order; or
+/// @return The calibration, its sensors in id order;
 ///         `Status::Code::InvalidArgument` naming what is wrong (not JSON,
-///         another format, a field of the wrong type, a version-1 sensor
-///         without a pose, or a calibration @ref validate_array_calibration
-///         refuses); or `Status::Code::Unsupported` for a later version, a
-///         distortion model other than `"rational"`, or a world that is not
-///         a sensor.
+///         another format, a field of the wrong type, a `version` without a
+///         `format`, a version-1 sensor without a pose, or a calibration
+///         @ref validate_array_calibration refuses);
+///         `Status::Code::Unsupported` for a later version, a distortion
+///         model other than `"rational"`, or a world that is not a sensor; or
+///         `Status::Code::OutOfMemory`.
 VR_CAMERA_API core::Result<ArrayCalibration> parse_array_calibration(
     std::string_view json);
 
@@ -150,13 +152,14 @@ VR_CAMERA_API core::Result<ArrayCalibration> read_array_calibration(
 
 /// @brief Format @p array as a version-2 document.
 ///
-/// Sensors in id order, every number in the shortest form that reads back
-/// to the same double, so @ref parse_array_calibration returns the same
-/// models exactly, and the same poses to the Rodrigues conversion's
-/// round-off.
+/// Sensors in id order, every number in a form that reads back to the same
+/// double (at most 17 significant digits), so @ref parse_array_calibration
+/// returns the same models exactly, and the same poses to the Rodrigues
+/// conversion's round-off.
 /// @param array  The calibration.
-/// @return The document; or `Status::Code::InvalidArgument` for a
-///         calibration @ref validate_array_calibration refuses.
+/// @return The document; `Status::Code::InvalidArgument` for a calibration
+///         @ref validate_array_calibration refuses; or
+///         `Status::Code::OutOfMemory`.
 VR_CAMERA_API core::Result<std::string> format_array_calibration(
     const ArrayCalibration& array);
 
@@ -168,8 +171,9 @@ VR_CAMERA_API core::Result<std::string> format_array_calibration(
 /// @param mode   `WriteMode::Replace` to replace a file at @p path
 ///               atomically, or `WriteMode::CreateNew` to refuse one.
 /// @return OK; `Status::Code::InvalidArgument` for a calibration
-///         @ref validate_array_calibration refuses, before the file is
-///         touched; or `core::write_file`'s error.
+///         @ref validate_array_calibration refuses, or
+///         `Status::Code::OutOfMemory`, before the file is touched; or
+///         `core::write_file`'s error.
 VR_CAMERA_API core::Status write_array_calibration(
     const std::string& path, const ArrayCalibration& array,
     core::WriteMode mode);

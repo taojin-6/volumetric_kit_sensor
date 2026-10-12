@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include <glm/gtc/constants.hpp>
+
 #include "test_check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
@@ -18,7 +20,7 @@ namespace camera = volumetric_kit::recon::camera;
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+const double kPi = glm::pi<double>();
 
 bool near(const camera::Mat4d& a, const camera::Mat4d& b, double eps) {
   for (int c = 0; c < 4; ++c) {

@@ -6,11 +6,12 @@
 #include <algorithm>
 #include <cmath>
 
+#include <glm/gtc/constants.hpp>
+
 namespace volumetric_kit::recon::camera {
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
 // How far a rotation may be from orthonormal: refuses a matrix that is not
 // one, and accepts one rounded through float.
 constexpr double kOrthonormalTolerance = 1e-6;
@@ -115,7 +116,7 @@ Vec3d rodrigues_from_rotation(const Mat3d& rotation) noexcept {
   // First order below 1e-8 rad, where theta / sin(theta) is 1 to round-off
   // and |vee|^2 may underflow.
   if (theta < 1e-8) return 0.5 * vee;
-  if (theta < kPi / 2) return (theta / (2.0 * sin_theta)) * vee;
+  if (theta < glm::half_pi<double>()) return (theta / (2.0 * sin_theta)) * vee;
   // Past pi/2 sin(theta) shrinks toward pi, so the axis comes from the
   // symmetric part, (R + R^T) / 2 = cos(theta) I + (1 - cos(theta)) k k^T,
   // off its largest diagonal, and only its sign from vee.

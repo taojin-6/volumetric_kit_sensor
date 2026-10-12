@@ -12,8 +12,10 @@
 #include <filesystem>
 #include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include <glm/gtc/constants.hpp>
 #include <nlohmann/json.hpp>
 
 #include "scratch_dir.hpp"
@@ -30,7 +32,7 @@ namespace {
 
 using Code = vkc::Status::Code;
 
-constexpr double kPi = 3.14159265358979323846;
+const double kPi = glm::pi<double>();
 
 // Two sensors: N at the origin, the world, with a colour and a depth camera;
 // B turned 90 degrees about +Y with tvec (0, 0, 2), its colour camera alone,
@@ -104,11 +106,15 @@ bool same(const camera::CameraModel& a, const camera::CameraModel& b) {
          p.k5 == q.k5 && p.k6 == q.k6;
 }
 
-bool refused(const std::string& json, Code code = Code::InvalidArgument) {
+// Whether `json` is refused in `code`'s domain, for `reason` when one is given:
+// a document refused for another reason does not count.
+bool refused(const std::string& json, Code code = Code::InvalidArgument,
+             const std::string& reason = "") {
   const auto r = camera::parse_array_calibration(json);
   if (r.ok()) return false;
   std::printf("  refused as expected: %s\n", r.status().message().c_str());
-  return r.status().domain() == code;
+  return r.status().domain() == code &&
+         r.status().message().find(reason) != std::string::npos;
 }
 
 // A version-2 document with one sensor, A, whose fields are `body`.
@@ -202,6 +208,15 @@ int test_refusals() {
                     "device_calibration": {"A": {}}})"));
   CHECK(refused(R"({"format": "volumetric_kit.array_calibration",
                     "version": "2", "device_calibration": {"A": {}}})"));
+  // A version without a format is not version 1, which has neither, so its
+  // lenses are not dropped as version 1's would be.
+  CHECK(refused(R"({"version": 2, "device_calibration": {"A": {
+                    "pose": {"rvec": [0, 0, 0], "tvec": [0, 0, 0]},
+                    "color": {"source": "bogus"}}}})",
+                Code::InvalidArgument, "\"version\" without \"format\""));
+  CHECK(refused(R"({"version": 3, "device_calibration": {"A": {
+                    "pose": {"rvec": [0, 0, 0], "tvec": [0, 0, 0]}}}})",
+                Code::InvalidArgument, "\"version\" without \"format\""));
   CHECK(refused(R"({"format": "another", "version": 2,
                     "device_calibration": {"A": {}}})"));
   CHECK(refused(R"({"format": "volumetric_kit.array_calibration",
@@ -222,6 +237,11 @@ int test_refusals() {
   CHECK(refused(one_sensor(R"("color": {"source": "factory", "width": 64.5,
       "height": 48,
       "intrinsics": {"fx": 50, "fy": 50, "cx": 31.5, "cy": 23.5}})")));
+  // 2^32 + 64, which a 32-bit cast would read as 64.
+  CHECK(refused(one_sensor(R"("color": {"source": "factory",
+      "width": 4294967360, "height": 48,
+      "intrinsics": {"fx": 50, "fy": 50, "cx": 31.5, "cy": 23.5}})"),
+                Code::InvalidArgument, "\"width\" is not a 32-bit"));
   CHECK(refused(one_sensor(R"("color": {"source": "factory", "width": 64,
       "height": 48})")));
   // A model check_camera_model refuses.
@@ -251,16 +271,29 @@ int test_refusals() {
   // depth_to_color beside a depth camera only, and rigid.
   CHECK(refused(one_sensor(
       R"("depth_to_color": {"rvec": [0, 0, 0], "tvec": [0, 0, 0]})")));
-  // The world must be a sensor of the array, posed at the origin.
-  CHECK(refused(one_sensor(pose, R"("world": {"sensor": "Z"}, )")));
-  CHECK(refused(one_sensor(R"("pose": {"rvec": [0, 0, 0], "tvec": [1, 0, 0]})",
-                           world_a)));
+  // The world must be a sensor of the array, posed at the origin: a
+  // micrometre off is off, the tolerance being for round-off alone.
+  const std::string off_origin = "must sit at the origin";
+  CHECK(refused(one_sensor(pose, R"("world": {"sensor": "Z"}, )"),
+                Code::InvalidArgument, "is not in the array"));
+  CHECK(refused(
+      one_sensor(R"("pose": {"rvec": [0, 0, 0], "tvec": [1, 0, 0]})", world_a),
+      Code::InvalidArgument, off_origin));
   CHECK(refused(one_sensor(R"("pose": {"rvec": [0, 0.1, 0],
                                        "tvec": [0, 0, 0]})",
-                           world_a)));
-  CHECK(refused(one_sensor(color, world_a)));
+                           world_a),
+                Code::InvalidArgument, off_origin));
+  CHECK(refused(one_sensor(R"("pose": {"rvec": [0, 0, 0],
+                                       "tvec": [0, 0, 1e-6]})",
+                           world_a),
+                Code::InvalidArgument, off_origin));
+  CHECK(refused(one_sensor(color, world_a), Code::InvalidArgument,
+                "is not posed"));
   CHECK(refused(one_sensor(pose, R"("world": {"sensor": 1}, )")));
   CHECK(refused(one_sensor(pose, R"("world": "A", )")));
+  // A world named, but by no id, is not a file without a world.
+  CHECK(refused(one_sensor(pose, R"("world": {"sensor": ""}, )"),
+                Code::InvalidArgument, "\"sensor\" is empty"));
   // A world this reader does not know, as a later writer may name.
   CHECK(refused(one_sensor(pose, R"("world": {"apriltag": {"id": 0}}, )"),
                 Code::Unsupported));
@@ -287,6 +320,19 @@ int test_refusals() {
   array.sensors[0] = a;
   array.sensors[0].depth.emplace();  // a model with a zero size
   CHECK(!camera::validate_array_calibration(array).ok());
+  // depth_to_color beside a depth camera, but not rigid: refused, and not
+  // written as some other transform.
+  array.sensors[0].depth =
+      camera::CameraCalibration{{{64, 48}, {50.0, 50.0, 31.5, 23.5}, {}},
+                                camera::IntrinsicsSource::Factory};
+  array.sensors[0].depth_to_color = camera::Mat4d(1.0);
+  CHECK(camera::validate_array_calibration(array).ok());
+  array.sensors[0].depth_to_color = camera::Mat4d(2.0);
+  const vkc::Status not_rigid = camera::validate_array_calibration(array);
+  CHECK(not_rigid.domain() == Code::InvalidArgument &&
+        not_rigid.message().find("depth_to_color: ") != std::string::npos);
+  CHECK(camera::format_array_calibration(array).status().domain() ==
+        Code::InvalidArgument);
   return 0;
 }
 
@@ -390,7 +436,7 @@ int test_round_trip() {
   CHECK(sensors.size() == written.sensors.size());
   CHECK(sensors.at("2-general").at("pose").at("tvec").size() == 3);
   CHECK(!sensors.at("6-unposed").contains("pose"));
-  // Every number is the double it was: shortest form, read back exactly.
+  // Every number reads back as the double it was.
   const nlohmann::json& lens = sensors.at("2-general").at("color");
   CHECK(lens.at("intrinsics").at("fx").get<double>() == 2239.0 + 1.0 / 3.0);
   CHECK(lens.at("distortion").at("p1").get<double>() == -1e-300);
@@ -416,6 +462,19 @@ int test_round_trip() {
       camera::parse_array_calibration(factory_text.value());
   CHECK(factory_read.ok());
   if (check_same(factory, factory_read.value()) != 0) return 1;
+
+  // Sensors are written in id order, whatever order the array holds them in.
+  camera::ArrayCalibration ab;
+  ab.sensors.resize(2);
+  ab.sensors[0].id = "A";
+  ab.sensors[1].id = "B";
+  camera::ArrayCalibration ba = ab;
+  std::swap(ba.sensors[0], ba.sensors[1]);
+  const auto ab_text = camera::format_array_calibration(ab);
+  const auto ba_text = camera::format_array_calibration(ba);
+  CHECK(ab_text.ok() && ba_text.ok());
+  CHECK(ba_text.value() == ab_text.value());
+  CHECK(ba_text.value().find("\"A\"") < ba_text.value().find("\"B\""));
 
   // A calibration validate refuses is not formatted.
   camera::ArrayCalibration off_origin = written;
