@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 
-# --- recon_sensor_utils: GPU pre-processing ---------------------------------
+# --- recon_sensor_utils: GPU pre-processing and readback ---------------------
 # A captured frame undistorted and converted by compute kernels, left on the
-# device for fusion. A target of its own because it carries Vulkan and shaders,
-# which recon_sensor -- what an out-of-tree driver compiles against -- does not
-# (the 2026-09-26 decision). Driver-neutral: it takes a sensor::RgbdFrame.
+# device for fusion; and a set's colour pictures copied to the host. A target of
+# its own because it carries Vulkan and shaders, which recon_sensor -- what an
+# out-of-tree driver compiles against -- does not (the 2026-09-26 decision).
+# Driver-neutral: it takes a sensor::RgbdFrame.
 include(GenerateExportHeader)
 include(GNUInstallDirs)
 
@@ -15,7 +16,8 @@ set(_vr_sensor_utils_generated_inc
 add_library(recon_sensor_utils)
 add_library(volumetric_kit::recon_sensor_utils ALIAS recon_sensor_utils)
 
-target_sources(recon_sensor_utils PRIVATE gpu_frame_prep.cpp)
+target_sources(recon_sensor_utils PRIVATE gpu_frame_prep.cpp
+                                          picture_readback.cpp yuv_planes.cpp)
 
 generate_export_header(
   recon_sensor_utils

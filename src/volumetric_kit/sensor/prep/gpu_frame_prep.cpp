@@ -21,6 +21,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
+#include "yuv_planes.hpp"
 
 namespace volumetric_kit::recon::sensor {
 namespace {
@@ -189,15 +190,6 @@ struct ColorLayout {
   VkDeviceSize out_bytes = 0;
 };
 
-// Whether `rows` rows of `row_bytes`, `stride` apart from `offset`, fit in
-// `size` bytes, worked out without overflowing 64 bits. `stride` is at least
-// `row_bytes`, which is at least 1.
-bool plane_fits(std::uint64_t offset, std::uint64_t stride, std::uint64_t rows,
-                std::uint64_t row_bytes, std::uint64_t size) noexcept {
-  if (offset > size || row_bytes > size - offset) return false;
-  return rows <= 1 || rows - 1 <= (size - offset - row_bytes) / stride;
-}
-
 core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
                                       std::uint64_t max_pixels,
                                       VkDeviceSize max_range) {
@@ -236,41 +228,6 @@ core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
   VKC_TRY(core::check_storage_buffer_range("GpuFramePrep: the depth buffer",
                                            out.out_bytes, max_range));
   return out;
-}
-
-// NV12's two planes as images the pass can copy: R8 luma and R8G8 chroma,
-// each at least the picture's size, as CommandBatch::copy checks them too.
-core::Status check_images(const YuvImage& image) {
-  if (image.layout != YuvLayout::Nv12 || image.image[0] == nullptr ||
-      image.image[1] == nullptr) {
-    return core::Status::invalid_argument(
-        "GpuFramePrep: colour planes as images are NV12's two");
-  }
-  const core::Image& y = *image.image[0];
-  const core::Image& c = *image.image[1];
-  const std::uint32_t cw = image.width / 2 + image.width % 2;
-  const std::uint32_t ch = image.height / 2 + image.height % 2;
-  if (y.format() != VK_FORMAT_R8_UNORM || c.format() != VK_FORMAT_R8G8_UNORM ||
-      y.width() < image.width || y.height() < image.height || c.width() < cw ||
-      c.height() < ch) {
-    return core::Status::invalid_argument(
-        "GpuFramePrep: the colour images must be R8 luma and R8G8 chroma, at "
-        "least the picture's size");
-  }
-  if ((y.usage() & c.usage() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
-    return core::Status::invalid_argument(
-        "GpuFramePrep: the colour images need TRANSFER_SRC usage");
-  }
-  const auto copyable = [](const core::Image& i) {
-    return i.layout() == VK_IMAGE_LAYOUT_GENERAL ||
-           i.layout() == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  };
-  if (!copyable(y) || !copyable(c)) {
-    return core::Status::invalid_argument(
-        "GpuFramePrep: the colour images must be in GENERAL or "
-        "TRANSFER_SRC_OPTIMAL");
-  }
-  return {};
 }
 
 core::Result<ColorLayout> check_color(const RgbdFrame& frame,
@@ -327,24 +284,15 @@ core::Result<ColorLayout> check_color(const RgbdFrame& frame,
         "below 1");
   }
   const bool nv12 = image.layout == YuvLayout::Nv12;
-  if (on_device && as_images) {
-    return core::Status::invalid_argument(
-        "GpuFramePrep: the colour planes must be in a buffer or images, not "
-        "both");
+  if (on_device && !as_images) {
+    // Empty or without storage usage, before its size is weighed.
+    VKC_TRY(core::StorageInput(*image.device)
+                .check("GpuFramePrep: the colour planes' buffer", 0));
   }
-  if (as_images) VKC_TRY(check_images(image));
-  const int planes = nv12 ? 2 : 3;
-  const std::uint64_t cw = (std::uint64_t{image.width} + 1) / 2;
-  const std::uint64_t ch = (std::uint64_t{image.height} + 1) / 2;
-  const std::uint64_t c_row = nv12 ? 2 * cw : cw;
-  const std::uint64_t rows[3] = {image.height, ch, ch};
-  const std::uint64_t row_bytes[3] = {image.width, c_row, c_row};
-  for (int p = 0; p < planes && on_device; ++p) {
-    if (image.stride[p] < row_bytes[p]) {
-      return core::Status::invalid_argument(
-          "GpuFramePrep: a colour plane's stride is shorter than its rows");
-    }
-  }
+  VKC_ASSIGN(const detail::YuvPlanes planes,
+             detail::check_yuv_planes(image, "GpuFramePrep"));
+  const std::uint64_t c_row = planes.row_bytes[1];
+  const std::uint64_t ch = planes.rows[1];
 
   out.ch = static_cast<std::uint32_t>(ch);
   out.c_step = nv12 ? 2 : 1;
@@ -356,32 +304,11 @@ core::Result<ColorLayout> check_color(const RgbdFrame& frame,
     out.cr_offset = out.cb_offset + 1;
     out.bind_bytes = out.cb_offset + round_up4(c_row * ch);
   } else {
-    const core::Buffer& buffer = *image.device;
-    const core::StorageInput bound(buffer);
-    // Empty or without storage usage, before its size is weighed.
-    VKC_TRY(bound.check("GpuFramePrep: the colour planes' buffer", 0));
-    std::uint64_t begin[3] = {}, end[3] = {};
-    for (int p = 0; p < planes; ++p) {
-      if (!plane_fits(image.offset[p], image.stride[p], rows[p], row_bytes[p],
-                      buffer.size())) {
-        return core::Status::invalid_argument(
-            "GpuFramePrep: a colour plane runs past its buffer");
-      }
-      begin[p] = image.offset[p];
-      end[p] = image.offset[p] + (rows[p] - 1) * image.stride[p] + row_bytes[p];
-    }
-    // Planes sharing bytes would read one as another, as I420 does with its
-    // offsets left at zero.
-    for (int p = 0; p < planes; ++p) {
-      for (int q = p + 1; q < planes; ++q) {
-        if (begin[p] < end[q] && begin[q] < end[p]) {
-          return core::Status::invalid_argument(
-              "GpuFramePrep: the colour planes overlap");
-        }
-      }
-    }
-    const std::uint64_t first = *std::min_element(begin, begin + planes);
-    const std::uint64_t last = *std::max_element(end, end + planes);
+    const core::StorageInput bound(*image.device);
+    const std::uint64_t first =
+        *std::min_element(planes.begin, planes.begin + planes.count);
+    const std::uint64_t last =
+        *std::max_element(planes.end, planes.end + planes.count);
     // The kernel reads whole words, so the last one must be in the buffer.
     VKC_TRY(bound.check("GpuFramePrep: the colour planes' buffer",
                         round_up4(last)));
