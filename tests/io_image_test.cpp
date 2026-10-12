@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -14,9 +13,9 @@
 #include <iterator>
 #include <limits>
 #include <string>
-#include <system_error>
 #include <vector>
 
+#include "scratch_dir.hpp"
 #include "test_allocation_failure.hpp"
 #include "test_check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -28,23 +27,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-struct Scratch {
-  fs::path path =
-      fs::temp_directory_path() /
-      ("recon_io_image_" +
-       std::to_string(
-           std::chrono::steady_clock::now().time_since_epoch().count()));
-  Scratch() { fs::create_directory(path); }
-  ~Scratch() {
-    std::error_code ignored;
-    fs::remove_all(path, ignored);
-  }
-};
-
-std::vector<std::uint8_t> read_bytes(const std::string& path) {
-  std::ifstream in(path, std::ios::binary);
-  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-}
+using vr_test::read_bytes;
 
 template <std::size_t N>
 bool write_fixture(const std::string& path, const std::uint8_t (&data)[N]) {
@@ -309,7 +292,7 @@ int rgba8_and_depth_fixtures(const fs::path& dir) {
 }  // namespace
 
 int main() {
-  Scratch scratch;
+  vr_test::Scratch scratch("recon_io_image_");
   CHECK(rgba8_and_depth_fixtures(scratch.path) == 0);
   CHECK(u16_round_trip(scratch.path) == 0);
   CHECK(u16_big_endian(scratch.path) == 0);
