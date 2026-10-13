@@ -68,7 +68,8 @@ void JpegColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
     }
     return;
   }
-  sink_(rebuilt_pair(depth, *color, picture_frame(picture.value())));
+  // The camera's JPEG goes on with its picture: the bytes a consumer saves.
+  sink_(rebuilt_pair(depth, *color, picture_frame(picture.value(), color)));
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

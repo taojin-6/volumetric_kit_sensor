@@ -4,14 +4,16 @@
 // The sensor array over scripted fake sensors: the arrays it refuses, the
 // order it starts and stops sensors in, a failed start, a start of a running
 // array and a move over one, trigger grouping (complete sets, a silent
-// secondary, the newest set winning, frames with no clock), the default
-// tolerance, an exhausted sensor, a drain that fails partway, poses from the
-// calibration (an unposed sensor refused), and a moved-from array. Host-only.
+// secondary, the newest set winning, frames with no clock), a set's skew and
+// spread, the default tolerance, an exhausted sensor, a drain that fails
+// partway, poses from the calibration (an unposed sensor refused), and a
+// moved-from array. Host-only.
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -306,6 +308,9 @@ int test_trigger() {
   CHECK(set.value()->timestamp_ns == base && set.value()->sequence == 100);
   CHECK(set.value()->frames[0]->sequence == 200);
   CHECK(set.value()->frames[2]->sequence == 300);
+  CHECK(set.value()->skew_ns(0) == 80'000 && set.value()->skew_ns(1) == 0);
+  CHECK(set.value()->skew_ns(2) == 150'000);
+  CHECK(set.value()->spread_ns() == 150'000);
   // Posed by the calibration; the sensor's own extrinsic kept.
   for (std::size_t c = 0; c < 3; ++c) {
     const auto& frame = *set.value()->frames[c];
@@ -321,6 +326,7 @@ int test_trigger() {
   set = array.poll_set();
   CHECK(set.ok() && set.value() && set.value()->count() == 2);
   CHECK(set.value()->frames[1]->sequence == 101 && !set.value()->frames[2]);
+  CHECK(!set.value()->skew_ns(2) && set.value()->spread_ns() == 80'000);
 
   // A slow poll gets the newest set; the older ones' frames go unmatched.
   for (std::uint64_t t = 2; t < 5; ++t) trigger(t, true);
@@ -445,6 +451,52 @@ int test_failed_drain_eviction() {
   return 0;
 }
 
+// A set's skew, each frame against the trigger, signed and saturated, and its
+// spread, over the frames it holds, whichever are missing.
+int test_skew_and_spread() {
+  const std::uint64_t trigger = 7'000'000'000;
+  const auto frame = [](std::uint64_t timestamp_ns) {
+    sensor::RgbdFrame f;
+    f.timestamp_ns = timestamp_ns;
+    return std::optional<sensor::RgbdFrame>(f);
+  };
+  sensor::FrameSet set;
+  set.timestamp_ns = trigger;
+  set.frames = {frame(trigger + 1'200'000), std::nullopt, frame(trigger),
+                frame(trigger - 2'500'000)};
+  CHECK(set.skew_ns(0) == 1'200'000);
+  CHECK(!set.skew_ns(1).has_value());
+  CHECK(set.skew_ns(2) == 0);
+  CHECK(set.skew_ns(3) == -2'500'000);  // before the trigger: negative
+  CHECK(set.spread_ns() == 3'700'000);
+
+  // The primary's frame gone: the trigger stays the set's, and the spread is
+  // over the frames left.
+  set.frames[2].reset();
+  CHECK(set.skew_ns(0) == 1'200'000 && set.spread_ns() == 3'700'000);
+  set.frames[3].reset();
+  CHECK(set.spread_ns() == 0);  // one frame
+  set.frames[0].reset();
+  CHECK(set.spread_ns() == 0 && !set.skew_ns(0));  // none
+  CHECK(sensor::FrameSet{}.spread_ns() == 0);
+
+  // Gaps past int64_t's range saturate, either way; 2^63 before the
+  // trigger is exactly its least.
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
+  constexpr std::uint64_t kHalf = std::uint64_t{1} << 63;
+  set.timestamp_ns = 0;
+  set.frames = {frame(kHalf - 1), frame(kHalf), frame(~std::uint64_t{0})};
+  CHECK(set.skew_ns(0) == kMax && set.skew_ns(1) == kMax &&
+        set.skew_ns(2) == kMax);
+  set.timestamp_ns = kHalf;
+  set.frames = {frame(0), frame(1)};
+  CHECK(set.skew_ns(0) == kMin && set.skew_ns(1) == kMin + 1);
+  set.timestamp_ns = ~std::uint64_t{0};
+  CHECK(set.skew_ns(0) == kMin && set.skew_ns(1) == kMin);
+  return 0;
+}
+
 int test_moved_from() {
   Rig r = triggered_rig();
   auto opened =
@@ -466,6 +518,7 @@ int main() {
   if (test_refusals() != 0) return 1;
   if (test_start_order() != 0) return 1;
   if (test_trigger() != 0) return 1;
+  if (test_skew_and_spread() != 0) return 1;
   if (test_default_tolerance() != 0) return 1;
   if (test_failed_drain() != 0) return 1;
   if (test_failed_drain_eviction() != 0) return 1;

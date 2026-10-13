@@ -44,7 +44,7 @@ core::Result<camera::CameraModel> camera_model_from(
     default:
       return core::Status::unsupported(
           who + ": " + what + " stream reports lens model " +
-          std::to_string(static_cast<int>(distortion.model)) +
+          lens_model_name(distortion.model) +
           ", which the GPU pass cannot undistort (it takes Brown-Conrady)");
   }
   camera::CameraModel cam;
@@ -73,6 +73,24 @@ core::Result<camera::CameraModel> camera_model_from(
                                           " stream: " + valid.message());
   }
   return cam;
+}
+
+std::string lens_model_name(OBCameraDistortionModel model) {
+  switch (model) {
+    case OB_DISTORTION_NONE:
+      return "none";
+    case OB_DISTORTION_MODIFIED_BROWN_CONRADY:
+      return "modified-brown-conrady";
+    case OB_DISTORTION_INVERSE_BROWN_CONRADY:
+      return "inverse-brown-conrady";
+    case OB_DISTORTION_BROWN_CONRADY:
+      return "brown-conrady";
+    case OB_DISTORTION_BROWN_CONRADY_K6:
+      return "brown-conrady-k6";
+    case OB_DISTORTION_KANNALA_BRANDT4:
+      return "kannala-brandt4";
+  }
+  return "unknown-" + std::to_string(static_cast<int>(model));
 }
 
 core::Result<camera::Mat4d> transform_from(const OBExtrinsic& extrinsic,

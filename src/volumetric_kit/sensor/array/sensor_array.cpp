@@ -247,6 +247,33 @@ std::size_t SensorArray::size() const noexcept {
   return impl_ != nullptr ? impl_->sensors.size() : 0;
 }
 
+std::optional<std::int64_t> FrameSet::skew_ns(std::size_t i) const {
+  VKC_CHECK(i < frames.size(), "FrameSet::skew_ns: index past the set");
+  if (!frames[i]) return std::nullopt;
+  const std::uint64_t t = frames[i]->timestamp_ns;
+  // The gap each way in unsigned, then signed, saturated where it does not
+  // fit: -2^63 does, so a frame that far before the trigger is exact.
+  constexpr auto kMax =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+  if (t >= timestamp_ns) {
+    return static_cast<std::int64_t>(std::min(t - timestamp_ns, kMax));
+  }
+  const std::uint64_t before = timestamp_ns - t;
+  return before > kMax ? std::numeric_limits<std::int64_t>::min()
+                       : -static_cast<std::int64_t>(before);
+}
+
+std::uint64_t FrameSet::spread_ns() const noexcept {
+  std::uint64_t earliest = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t latest = 0;
+  for (const std::optional<RgbdFrame>& frame : frames) {
+    if (!frame) continue;
+    earliest = std::min(earliest, frame->timestamp_ns);
+    latest = std::max(latest, frame->timestamp_ns);
+  }
+  return latest >= earliest ? latest - earliest : 0;
+}
+
 IRgbdSensor& SensorArray::sensor(std::size_t i) {
   VKC_CHECK(i < size(), "SensorArray::sensor: index past the array");
   return *impl_->sensors[i];

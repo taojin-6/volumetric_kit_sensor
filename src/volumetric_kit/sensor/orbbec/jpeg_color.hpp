@@ -46,7 +46,8 @@ class JpegColorDecoder {
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair --
-  // its depth, and its colour in a picture_frame -- on that thread.
+  // its depth, and its colour in a picture_frame that keeps the camera's
+  // JPEG frame too (color_bitstream) -- on that thread.
   // Unsupported where the decoder has no device path.
   static core::Result<std::unique_ptr<JpegColorDecoder>> start(
       const Options& options, Sink sink);

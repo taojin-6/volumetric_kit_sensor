@@ -18,6 +18,7 @@
 /// GPU API: a picture a decoder left on the device is named by `core`'s
 /// `Buffer` or `Image`, declared here (`sensor/yuv_image.hpp`).
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -28,6 +29,23 @@
 #include "volumetric_kit/recon/sensor/yuv_image.hpp"
 
 namespace volumetric_kit::recon::sensor {
+
+/// @brief The colour as the camera coded it, before any decoding: bytes a
+///        consumer can keep as they came.
+///
+/// Only a frame that decodes on its own carries one, an MJPEG camera's JPEG;
+/// an H.265 frame needs the frames before it, so none is handed out for it.
+struct ColorBitstream {
+  /// @brief What @ref data holds.
+  enum class Codec : std::uint8_t {
+    None,  ///< Nothing: the frame carries no bitstream.
+    Jpeg,  ///< One JPEG, as the camera sent it.
+  };
+  Codec codec = Codec::None;  ///< What @ref data holds.
+  /// The bytes, held by `RgbdFrame::pixels`; null with `Codec::None`.
+  const std::uint8_t* data = nullptr;
+  std::size_t size = 0;  ///< The count of @ref data; 0 with `Codec::None`.
+};
 
 /// @brief One RGB-D frame as the sensor captured it.
 ///
@@ -77,6 +95,10 @@ struct RgbdFrame {
   /// What the R'G'B' -- the matrix's, or @ref color_packed's -- is encoded
   /// as; the pass converts only from an encoding @ref is_canonical accepts.
   ColorEncoding color_encoding{};
+  /// The colour as the camera coded it, beside the decoded @ref color: an
+  /// MJPEG camera's JPEG, byte for byte. Held by @ref pixels. Empty for a
+  /// frame decoded from H.265 or taken from a dataset.
+  ColorBitstream color_bitstream{};
 
   /// The colour camera's frame to the world's, in this repo's camera axes
   /// (+Z forward, +Y down): where the sensor sits, from its calibration or,
@@ -96,8 +118,8 @@ struct RgbdFrame {
   /// counts within one capture session; it may begin again at a restart.
   std::uint64_t sequence = 0;
 
-  /// What @ref depth and @ref color_packed point into, held for as long as
-  /// the frame is; null when they need no owner.
+  /// What @ref depth, @ref color_packed and @ref color_bitstream point into,
+  /// held for as long as the frame is; null when they need no owner.
   std::shared_ptr<const void> pixels;
 
   /// @return `true` if this frame carries colour.
