@@ -6,7 +6,7 @@
 // array and a move over one, trigger grouping (complete sets, a silent
 // secondary, the newest set winning, frames with no clock), the default
 // tolerance, an exhausted sensor, a drain that fails partway, poses from the
-// calibration, and a moved-from array. Host-only.
+// calibration (an unposed sensor refused), and a moved-from array. Host-only.
 
 #include <algorithm>
 #include <chrono>
@@ -138,7 +138,9 @@ camera::ArrayCalibration calibration(const std::vector<std::string>& ids) {
   for (std::size_t i = 0; i < ids.size(); ++i) {
     camera::SensorCalibration s;
     s.id = ids[i];
-    s.color_to_world[3] = glm::dvec4(static_cast<double>(i), 0.0, 0.0, 1.0);
+    camera::Mat4d pose(1.0);
+    pose[3] = glm::dvec4(static_cast<double>(i), 0.0, 0.0, 1.0);
+    s.color_to_world = pose;
     c.sensors.push_back(s);
   }
   return c;
@@ -201,9 +203,14 @@ int test_refusals() {
     r.fakes[2]->mutable_info().clock = sensor::ClockDomain::Device;
     CHECK(refusal(std::move(r), trigger_options()) == Code::Unsupported);
   }
-  // A calibration must pose every sensor.
+  // A calibration must pose every sensor: one it lists for its lenses alone
+  // is as unposed as one it does not list.
   o = trigger_options();
   o.calibration = calibration({"S1", "P"});
+  CHECK(refusal(triggered_rig(), o) == Code::InvalidArgument);
+  o.calibration = calibration({"S1", "S2", "P"});
+  CHECK(refusal(triggered_rig(), o) == Code::Ok);
+  o.calibration.sensors[1].color_to_world.reset();
   CHECK(refusal(triggered_rig(), o) == Code::InvalidArgument);
   {  // A refusal leaves the sensors with the caller.
     Rig r = triggered_rig();

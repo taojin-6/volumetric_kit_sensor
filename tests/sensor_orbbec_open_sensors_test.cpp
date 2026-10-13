@@ -134,10 +134,11 @@ int test_refusals() {
   CHECK(mentions(s, "color_to_world"));
   CHECK(mentions(s, "calibration"));
 
-  // A file that cannot be read, or holds no rig, named.
+  // A file that cannot be read (core::read_file's error), or holds no rig,
+  // named.
   const std::string missing = VR_SYNC_FIXTURES "/missing.json";
   s = sensor::open_orbbec_sensors(missing, {}).status();
-  CHECK(s.domain() == vkc::Status::Code::IoError);
+  CHECK(s.domain() == vkc::Status::Code::NotFound);
   CHECK(mentions(s, missing));
   const std::string empty = VR_SYNC_FIXTURES "/no_devices.json";
   s = sensor::open_orbbec_sensors(empty, {}).status();

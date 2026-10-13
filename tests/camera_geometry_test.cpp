@@ -2,11 +2,14 @@
 // Copyright (c) 2026 Tao Jin
 
 // The camera tier's geometry: what check_rigid refuses, the rigid inverse,
-// Rodrigues against OpenCV's matrix, and OpenCV's extrinsic turned into a
-// camera's pose. Host-only.
+// Rodrigues against OpenCV's matrix and back to its vector at every angle,
+// and OpenCV's extrinsic turned into a camera's pose and back. Host-only.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+
+#include <glm/gtc/constants.hpp>
 
 #include "test_check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
@@ -17,7 +20,7 @@ namespace camera = volumetric_kit::recon::camera;
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+const double kPi = glm::pi<double>();
 
 bool near(const camera::Mat4d& a, const camera::Mat4d& b, double eps) {
   for (int c = 0; c < 4; ++c) {
@@ -77,6 +80,38 @@ int test_rodrigues() {
   return 0;
 }
 
+int test_rodrigues_inverse() {
+  // Each angle's rotation back to its vector, about axes that are not a
+  // coordinate axis and about x: cv::Rodrigues returns exactly zero below
+  // about 1e-5 rad, and sin(theta) vanishes toward pi.
+  const camera::Vec3d axes[] = {glm::normalize(camera::Vec3d(0.3, 0.5, 0.8)),
+                                glm::normalize(camera::Vec3d(0.2, 0.9, -0.4)),
+                                glm::normalize(camera::Vec3d(1.0, 1.0, 0.0)),
+                                camera::Vec3d(1.0, 0.0, 0.0)};
+  for (const double theta :
+       {0.0, 1e-9, 1e-6, 1e-5, 0.3, 1.0, kPi / 2, 2.5, kPi - 1e-6, kPi}) {
+    for (const camera::Vec3d& axis : axes) {
+      const camera::Vec3d rvec = theta * axis;
+      const camera::Mat3d rotation = camera::rotation_from_rodrigues(rvec);
+      const camera::Vec3d back = camera::rodrigues_from_rotation(rotation);
+      CHECK(near(camera::Mat4d(camera::rotation_from_rodrigues(back)),
+                 camera::Mat4d(rotation), 1e-14));
+      // The vector to round-off relative to its angle; at exactly pi, -rvec
+      // is the same rotation, and which comes back is arbitrary.
+      const double error = theta == kPi ? std::min(glm::length(back - rvec),
+                                                   glm::length(back + rvec))
+                                        : glm::length(back - rvec);
+      CHECK(error <= 1e-14 * theta);
+    }
+  }
+  // The vector is the shortest: a turn past pi comes back as one under it.
+  const camera::Vec3d over = (kPi + 0.5) * axes[0];
+  const camera::Vec3d under =
+      camera::rodrigues_from_rotation(camera::rotation_from_rodrigues(over));
+  CHECK(glm::length(under - (kPi - 0.5) * -axes[0]) < 1e-12);
+  return 0;
+}
+
 int test_nearest_rotation() {
   const camera::Mat3d r = camera::rotation_from_rodrigues({0.11, -0.02, 0.03});
   CHECK(near(camera::nearest_rotation(r), r, 1e-15));
@@ -104,6 +139,12 @@ int test_extrinsic_is_world_to_camera() {
   const glm::dvec4 ahead = camera_to_world * glm::dvec4(0.0, 0.0, 1.0, 1.0);
   CHECK(glm::length(camera::Vec3d(ahead) - camera::Vec3d(1.0, 0.0, 0.0)) <
         1e-15);
+
+  // And back to the same Rodrigues form.
+  const camera::RodriguesTransform back =
+      camera::rodrigues_from_matrix(camera::rigid_inverse(camera_to_world));
+  CHECK(glm::length(back.rvec - extrinsic.rvec) < 1e-15);
+  CHECK(glm::length(back.tvec - extrinsic.tvec) < 1e-15);
   return 0;
 }
 
@@ -113,6 +154,7 @@ int main() {
   if (test_check_rigid() != 0) return 1;
   if (test_rigid_inverse() != 0) return 1;
   if (test_rodrigues() != 0) return 1;
+  if (test_rodrigues_inverse() != 0) return 1;
   if (test_nearest_rotation() != 0) return 1;
   if (test_extrinsic_is_world_to_camera() != 0) return 1;
   std::printf("camera geometry tests passed\n");

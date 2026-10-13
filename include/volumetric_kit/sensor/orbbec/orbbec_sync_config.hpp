@@ -96,7 +96,8 @@ VR_SENSOR_ORBBEC_API core::Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(
 
 /// @brief Read and parse the sync configuration file at @p path.
 /// @return As @ref parse_orbbec_sync_config, messages naming the file; or
-///         `Status::Code::IoError` if it cannot be read.
+///         `core::read_file`'s error when it cannot be read
+///         (`Status::Code::NotFound` for a missing file).
 VR_SENSOR_ORBBEC_API core::Result<OrbbecRigSyncConfig> read_orbbec_sync_config(
     const std::string& path);
 

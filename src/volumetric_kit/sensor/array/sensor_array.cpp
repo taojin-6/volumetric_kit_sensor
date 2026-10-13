@@ -144,13 +144,15 @@ core::Result<SensorArray> SensorArray::open(
         camera::validate_array_calibration(options.calibration);
     if (!valid.ok()) return bad(valid.message());
     for (std::size_t i = 0; i < sensors.size(); ++i) {
+      // A sensor the file lists without a pose (its lenses alone) is as
+      // unposed as one it does not list.
       const camera::SensorCalibration* s =
           camera::find_sensor(options.calibration, sensors[i]->info().id);
-      if (s == nullptr) {
+      if (s == nullptr || !s->color_to_world) {
         return bad("the calibration does not pose sensor " +
                    sensors[i]->info().id);
       }
-      impl->poses[i] = s->color_to_world;
+      impl->poses[i] = *s->color_to_world;
     }
   }
 
