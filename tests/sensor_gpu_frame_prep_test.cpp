@@ -1238,6 +1238,8 @@ int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
 //   - A narrower colour camera 10 cm to the right: the depth kept is the
 //     region a host projection puts inside its image. A mask that ignored the
 //     pose would keep a region 39 px to one side of it.
+//   - A colour principal point a fraction of a pixel off: the image's edges
+//     are where the rounded colour pixel leaves it, not the pixel itself.
 //   - Off, and on a frame without colour, every depth pixel is kept.
 int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   sensor::GpuFramePrepConfig on;
@@ -1305,6 +1307,36 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   }
   CHECK(off == 0);
   CHECK(inside > 1000 && inside < std::size_t{kWidth} * kHeight / 2);
+
+  // The bounds are the rounded colour pixel's, as the colour pass marks
+  // coverage, not the pixel's own: a colour principal point `shift` px off the
+  // depth camera's puts depth pixel u at colour u + shift. At -0.25 the first
+  // row and column land at -0.25 and round into the image, so they are kept;
+  // at +0.6 the last land at size - 0.4 and round out of it, so they go.
+  for (const float shift : {-0.25f, 0.6f}) {
+    camera::CameraModel shifted = pinhole();
+    shifted.intrinsics.cx += shift;
+    shifted.intrinsics.cy += shift;
+    sensor::RgbdFrame nudged = frame_of(raw, pinhole());
+    nudged.color = planes.image(0.299f, 0.114f, true);
+    nudged.color_camera = shifted;
+    out = masked->prepare(nudged);
+    CHECK(out.ok());
+    const std::vector<float> g = depth_of(out.value());
+    const auto rounds_in = [shift](std::uint32_t i, std::uint32_t n) {
+      const float r = std::floor(static_cast<float>(i) + shift + 0.5f);
+      return r >= 0.0f && r < static_cast<float>(n);
+    };
+    std::size_t wrong_edge = 0;
+    for (std::uint32_t v = 0; v < kHeight; ++v) {
+      for (std::uint32_t u = 0; u < kWidth; ++u) {
+        const bool in = rounds_in(u, kWidth) && rounds_in(v, kHeight);
+        const float got = g[std::size_t{v} * kWidth + u];
+        if (in ? got != 1000.0f * kScale : got != 0.0f) ++wrong_edge;
+      }
+    }
+    CHECK(wrong_edge == 0);
+  }
 
   // Off, and a frame with no colour: nothing zeroed.
   const sensor::RgbdFrame depth_only = frame_of(raw, pinhole());
