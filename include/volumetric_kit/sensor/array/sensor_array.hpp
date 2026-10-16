@@ -159,8 +159,8 @@ class VR_SENSOR_ARRAY_API SensorArray {
   ///         tolerance of half a frame period or more, a calibration
   ///         that is invalid or does not pose a sensor (lists it unposed, or
   ///         not at all), or a device or an allocator without the other;
-  ///         what `GpuFramePrep::create` returns for a device the passes
-  ///         cannot be built on; or
+  ///         what `GpuFramePrep::create` returns for a @ref Options::prep it
+  ///         refuses or a device the passes cannot be built on; or
   ///         `Status::Code::Unsupported` for a tracked sensor, or, among
   ///         several sensors, no primary or more than one, a free-running
   ///         member, or one whose timestamps are on its own clock.

@@ -1188,8 +1188,10 @@ int prepared_sharing(vkc::Device& device, vkc::Allocator& allocator,
     CHECK(out.ok() && out->has_color());
     CHECK(out->depth->sharing_mode() == depth);
     CHECK(out->color->sharing_mode() == color);
-    // Storage usage alone: a consumer reads it as a storage buffer.
+    // Storage and transfer usage, no vertex usage: a consumer reads it as a
+    // storage buffer, or copies from it.
     CHECK((out->depth->usage() & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) != 0);
+    CHECK((out->depth->usage() & VK_BUFFER_USAGE_TRANSFER_SRC_BIT) != 0);
     CHECK((out->depth->usage() & VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) == 0);
     CHECK(held == nullptr || out->depth.get() == held);  // reused
     held = out->depth.get();
@@ -1204,8 +1206,8 @@ int prepared_sharing(vkc::Device& device, vkc::Allocator& allocator,
 // a consumer on another queue: no family, one, or the pass's own named twice
 // leaves it EXCLUSIVE, and a second family makes it CONCURRENT. Depth and
 // colour are independent: naming one's families leaves the other EXCLUSIVE.
-// A count past the array is refused for either. The second family is skipped
-// on a device that has only one.
+// A count past the array, or a family the device lacks, is refused for either.
+// The second family is skipped on a device that has only one.
 int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
   constexpr VkSharingMode kExclusive = VK_SHARING_MODE_EXCLUSIVE;
   constexpr VkSharingMode kConcurrent = VK_SHARING_MODE_CONCURRENT;
@@ -1249,14 +1251,34 @@ int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
       return 1;
     }
   }
+  // Refused at create, naming the output and why: a count past the array, and
+  // a family the device lacks -- for colour too, which no frame would
+  // otherwise reach while the frames carry none.
+  const auto device_families =
+      static_cast<std::uint32_t>(device.caps().queue_families().size());
+  struct Refusal {
+    sensor::GpuFramePrepConfig config;
+    const char* why;
+  };
   for (const bool depth : {true, false}) {
+    const std::string who =
+        std::string("GpuFramePrep::create, ") + (depth ? "depth" : "colour");
     sensor::GpuFramePrepConfig too_many;
     (depth ? too_many.depth_queue_family_count
            : too_many.color_queue_family_count) =
         vkc::BufferDesc::kMaxQueueFamilies + 1;
-    CHECK(sensor::GpuFramePrep::create(device, allocator, too_many)
-              .status()
-              .domain() == vkc::Status::Code::InvalidArgument);
+    const Refusal refusals[] = {
+        {too_many, ": queue_family_count"},
+        {depth ? named({own, device_families}, {})
+               : named({}, {own, device_families}),
+         ": queue family"},
+    };
+    for (const Refusal& r : refusals) {
+      const vkc::Status refused =
+          sensor::GpuFramePrep::create(device, allocator, r.config).status();
+      CHECK(refused.domain() == vkc::Status::Code::InvalidArgument);
+      CHECK(refused.message().rfind(who + r.why, 0) == 0);
+    }
   }
   return 0;
 }

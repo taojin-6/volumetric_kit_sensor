@@ -239,8 +239,9 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
 // size: arrays of 1, 3 and 5 sensors whose options name a second queue family
 // for depth alone hand out every frame's depth CONCURRENT and its colour
 // EXCLUSIVE (both EXCLUSIVE on a device with one family, where the pair
-// collapses to the pass's own), and a depth count past the array is refused
-// at open, as GpuFramePrep::create refuses it.
+// collapses to the pass's own), and a depth count past the array or a depth
+// family the device lacks is refused at open, as GpuFramePrep::create refuses
+// it.
 int test_prep_options(vkc::Device& device, vkc::Allocator& allocator) {
   const std::uint32_t own = device.queue_family();
   const std::optional<std::uint32_t> other =
@@ -286,14 +287,26 @@ int test_prep_options(vkc::Device& device, vkc::Allocator& allocator) {
       CHECK(frame->color->sharing_mode() == VK_SHARING_MODE_EXCLUSIVE);
     }
   }
-  std::vector<std::unique_ptr<sensor::IRgbdSensor>> one;
-  one.push_back(std::make_unique<Recording>("A", 0, sensor::SyncRole::Primary));
-  sensor::SensorArray::Options bad;
-  bad.device = &device;
-  bad.allocator = &allocator;
-  bad.prep.depth_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies + 1;
-  CHECK(sensor::SensorArray::open(std::move(one), bad).status().domain() ==
-        vkc::Status::Code::InvalidArgument);
+  sensor::SensorArray::Options too_many;
+  too_many.device = &device;
+  too_many.allocator = &allocator;
+  too_many.prep.depth_queue_family_count =
+      vkc::BufferDesc::kMaxQueueFamilies + 1;
+  sensor::SensorArray::Options missing = too_many;
+  missing.prep.depth_queue_families[0] = own;
+  missing.prep.depth_queue_families[1] =
+      static_cast<std::uint32_t>(device.caps().queue_families().size());
+  missing.prep.depth_queue_family_count = 2;
+  for (const sensor::SensorArray::Options* bad : {&too_many, &missing}) {
+    std::vector<std::unique_ptr<sensor::IRgbdSensor>> one;
+    one.push_back(
+        std::make_unique<Recording>("A", 0, sensor::SyncRole::Primary));
+    const vkc::Status refused =
+        sensor::SensorArray::open(std::move(one), *bad).status();
+    CHECK(refused.domain() == vkc::Status::Code::InvalidArgument);
+    CHECK(refused.message().find("GpuFramePrep::create, depth:") !=
+          std::string::npos);
+  }
   return 0;
 }
 

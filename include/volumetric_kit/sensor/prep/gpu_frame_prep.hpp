@@ -72,7 +72,7 @@ struct DeviceFrame {
 /// @brief Options for @ref GpuFramePrep::create.
 struct GpuFramePrepConfig {
   /// @brief Queue families that will access the frames' colour buffers,
-  ///        `Device`Frame::color.
+  ///        @ref DeviceFrame::color.
   ///
   /// Left empty (the default) the buffer is `VK_SHARING_MODE_EXCLUSIVE` to
   /// the pass's own family, which is right for a recon-only consumer and what
@@ -87,21 +87,23 @@ struct GpuFramePrepConfig {
   /// @see BufferDesc::queue_families, which this is copied into. Held by value,
   ///      since the pass re-reads it whenever it makes an output.
   std::uint32_t color_queue_families[core::BufferDesc::kMaxQueueFamilies] = {};
-  /// Entries in @ref color_queue_families; more than `kMaxQueueFamilies` is
-  /// refused by @ref GpuFramePrep::create.
+  /// Entries in @ref color_queue_families; more than `kMaxQueueFamilies`, or
+  /// an entry naming a family the device does not have, is refused by
+  /// @ref GpuFramePrep::create.
   std::uint32_t color_queue_family_count = 0;
 
   /// @brief Queue families that will access the frames' depth buffers,
-  ///        `Device`Frame::depth, as @ref color_queue_families does for
+  ///        @ref DeviceFrame::depth, as @ref color_queue_families does for
   ///        colour and independently of it.
   ///
   /// Left empty (the default) depth is EXCLUSIVE to the pass's own family,
   /// as recon's tiers read it. A consumer on another family -- a renderer
-  /// drawing points from the depth in place -- names both. The buffer keeps
-  /// the pass's storage usage alone; a consumer reads it as a storage buffer.
+  /// drawing points from the depth in place -- names both. The buffer has no
+  /// usage beyond the pass's storage and transfer usage (no vertex usage); a
+  /// consumer reads it as a storage buffer.
   std::uint32_t depth_queue_families[core::BufferDesc::kMaxQueueFamilies] = {};
-  /// Entries in @ref depth_queue_families; more than `kMaxQueueFamilies` is
-  /// refused by @ref GpuFramePrep::create.
+  /// Entries in @ref depth_queue_families; refused by
+  /// @ref GpuFramePrep::create as for @ref color_queue_family_count.
   std::uint32_t depth_queue_family_count = 0;
 
   /// @brief Keep depth only where the colour camera recorded it.
@@ -113,7 +115,7 @@ struct GpuFramePrepConfig {
   /// this set, a frame with colour has every depth pixel zeroed -- the pass's
   /// "no return" -- whose point, moved into the colour camera by the two
   /// poses, is behind it or lands on a pixel the colour pass marks uncovered
-  /// (`Device`Frame::color's coverage byte, black where the lens saw
+  /// (@ref DeviceFrame::color's coverage byte, black where the lens saw
   /// nothing). What survives is the two cameras' overlap. The test is the
   /// colour camera's view, not its line of sight: a point inside the view
   /// that a nearer surface hides from the colour camera is kept. A frame
@@ -160,7 +162,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///                   outputs (see @ref GpuFramePrepConfig).
   /// @return The pass; `Status::Code::InvalidArgument` for a
   ///         `color_queue_family_count` or a `depth_queue_family_count` past
-  ///         `BufferDesc::kMaxQueueFamilies`; or a non-OK `Status` if a
+  ///         `BufferDesc::kMaxQueueFamilies`, or a colour or depth queue
+  ///         family @p device does not have; or a non-OK `Status` if a
   ///         pipeline, descriptor object or buffer fails to build.
   static core::Result<GpuFramePrep> create(
       core::Device& device, core::Allocator& allocator,

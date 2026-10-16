@@ -339,6 +339,24 @@ core::Result<ColorLayout> check_color(const RgbdFrame& frame,
   return out;
 }
 
+// An output's queue families: no more than the config's array holds, each one
+// the device has.
+core::Status check_queue_families(const core::Device& device,
+                                  const std::uint32_t* families,
+                                  std::uint32_t count, const char* who) {
+  VKC_TRY(core::check_queue_family_count(count, who));
+  const std::size_t device_families = device.caps().queue_families().size();
+  for (std::uint32_t i = 0; i < count; ++i) {
+    if (families[i] >= device_families) {
+      return core::Status::invalid_argument(
+          std::string(who) + ": queue family " + std::to_string(families[i]) +
+          ", which the device does not have (" +
+          std::to_string(device_families) + " families)");
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 core::Result<GpuFramePrep> GpuFramePrep::create(
@@ -346,11 +364,14 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
     const GpuFramePrepConfig& config) {
   VKC_TRY(check_device_requirements(device, "GpuFramePrep::create"));
   // Here rather than at the first output, where it would surface as a buffer
-  // failure on the first frame.
-  VKC_TRY(core::check_queue_family_count(config.color_queue_family_count,
-                                         "GpuFramePrep::create, colour"));
-  VKC_TRY(core::check_queue_family_count(config.depth_queue_family_count,
-                                         "GpuFramePrep::create, depth"));
+  // failure on the first frame, naming neither the pass nor the output -- or,
+  // for colour, not until a frame carries some.
+  VKC_TRY(check_queue_families(device, config.color_queue_families,
+                               config.color_queue_family_count,
+                               "GpuFramePrep::create, colour"));
+  VKC_TRY(check_queue_families(device, config.depth_queue_families,
+                               config.depth_queue_family_count,
+                               "GpuFramePrep::create, depth"));
   GpuFramePrep prep;
   prep.device_ = &device;
   prep.allocator_ = &allocator;
@@ -711,7 +732,7 @@ core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
   // Device-local: only the kernels touch it, and on a discrete GPU the
   // fusion kernels' reads would otherwise cross the bus. Shared with the
   // families the config names for it, for a consumer on another queue, with
-  // the pass's storage usage alone.
+  // no usage beyond the pass's storage and transfer usage.
   VKC_ASSIGN(core::Buffer created,
              core::device_storage_buffer(*allocator_, bytes, 0, families,
                                          family_count));
