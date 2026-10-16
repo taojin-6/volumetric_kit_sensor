@@ -1,0 +1,70 @@
+#version 450
+
+// Runs core/shaders/pinhole.glsl over cases the host writes, each with a
+// camera of its own, so the host test sees what each function returns.
+// Invocation i handles case i: accepted[i] is 1 when vr_project_pinhole
+// accepts the case's point, and projected[i] and nearest[i] are then its pixel
+// and vr_nearest_pixel's, else (-1, -1) and (~0u, ~0u); unbounded[i] is
+// vr_pinhole_pixel's pixel and 1, or (-1, -1, 0) when it refuses the point;
+// unprojected[i].xyz is vr_unproject_pinhole of the case's pixel and depth;
+// and to_camera[i].xyz is vr_world_to_camera of the case's pose and world
+// point.
+//
+// Plain std430 and no scalar-layout extension: a consumer's kernel, as calib's
+// are, passes its camera field by field. The recon_*_glsl tests compile this
+// shader through the include root recon exports.
+
+#extension GL_GOOGLE_include_directive : require
+
+#include "volumetric_kit/recon/core/shaders/pinhole.glsl"
+
+layout(local_size_x = 64) in;
+
+struct Case {
+  vec4 k;      // fx, fy, cx, cy
+  vec4 point;  // xyz: the camera-space point to project; w: the depth
+  vec2 pixel;  // the pixel to unproject at point.w
+  uvec2 size;  // width, height
+  mat4 pose;   // cam_to_world, for `world`
+  vec4 world;  // xyz: the world point to move into the camera
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer Cases {
+  Case cases[];
+};
+layout(set = 0, binding = 1, std430) writeonly buffer Accepted {
+  uint accepted[];
+};
+layout(set = 0, binding = 2, std430) writeonly buffer Projected {
+  vec2 projected[];
+};
+layout(set = 0, binding = 3, std430) writeonly buffer Nearest {
+  uvec2 nearest[];
+};
+layout(set = 0, binding = 4, std430) writeonly buffer Unprojected {
+  vec4 unprojected[];
+};
+layout(set = 0, binding = 5, std430) writeonly buffer Unbounded {
+  vec4 unbounded[];
+};
+layout(set = 0, binding = 6, std430) writeonly buffer ToCamera {
+  vec4 to_camera[];
+};
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= uint(cases.length())) {
+    return;
+  }
+  Case c = cases[i];
+  vec2 px;
+  bool ok = vr_project_pinhole(c.point.xyz, c.k, c.size, px);
+  accepted[i] = ok ? 1u : 0u;
+  projected[i] = ok ? px : vec2(-1.0);
+  nearest[i] = ok ? vr_nearest_pixel(px, c.size) : uvec2(~0u);
+  vec2 q;
+  bool in_front = vr_pinhole_pixel(c.point.xyz, c.k, q);
+  unbounded[i] = in_front ? vec4(q, 1.0, 0.0) : vec4(-1.0, -1.0, 0.0, 0.0);
+  unprojected[i] = vec4(vr_unproject_pinhole(c.pixel, c.point.w, c.k), 0.0);
+  to_camera[i] = vec4(vr_world_to_camera(c.pose, c.world.xyz), 0.0);
+}
