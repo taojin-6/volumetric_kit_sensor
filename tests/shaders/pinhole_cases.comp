@@ -1,0 +1,55 @@
+#version 450
+
+// Runs core/shaders/pinhole.glsl over cases the host writes, each with a
+// camera of its own, so the host test sees what each function returns.
+// Invocation i handles case i: accepted[i] is 1 when vr_project_pinhole
+// accepts the case's point, and projected[i] and nearest[i] are then its pixel
+// and vr_nearest_pixel's, else (-1, -1) and (~0u, ~0u); unprojected[i].xyz is
+// vr_unproject_pinhole of the case's pixel and depth.
+//
+// Plain std430 and no scalar-layout extension: a consumer's kernel, as calib's
+// are, passes its camera field by field. The recon_*_glsl tests compile this
+// shader through the include root recon exports.
+
+#extension GL_GOOGLE_include_directive : require
+
+#include "volumetric_kit/recon/core/shaders/pinhole.glsl"
+
+layout(local_size_x = 64) in;
+
+struct Case {
+  vec4 k;      // fx, fy, cx, cy
+  vec4 point;  // xyz: the camera-space point to project; w: the depth
+  vec2 pixel;  // the pixel to unproject at point.w
+  uvec2 size;  // width, height
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer Cases {
+  Case cases[];
+};
+layout(set = 0, binding = 1, std430) writeonly buffer Accepted {
+  uint accepted[];
+};
+layout(set = 0, binding = 2, std430) writeonly buffer Projected {
+  vec2 projected[];
+};
+layout(set = 0, binding = 3, std430) writeonly buffer Nearest {
+  uvec2 nearest[];
+};
+layout(set = 0, binding = 4, std430) writeonly buffer Unprojected {
+  vec4 unprojected[];
+};
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= uint(cases.length())) {
+    return;
+  }
+  Case c = cases[i];
+  vec2 px;
+  bool ok = vr_project_pinhole(c.point.xyz, c.k, c.size, px);
+  accepted[i] = ok ? 1u : 0u;
+  projected[i] = ok ? px : vec2(-1.0);
+  nearest[i] = ok ? vr_nearest_pixel(px, c.size) : uvec2(~0u);
+  unprojected[i] = vec4(vr_unproject_pinhole(c.pixel, c.point.w, c.k), 0.0);
+}
