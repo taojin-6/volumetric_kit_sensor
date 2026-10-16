@@ -140,9 +140,9 @@ class VR_SENSOR_ARRAY_API SensorArray {
     /// The allocator the passes' buffers come from; given with @ref device
     /// and only with it. Borrowed, as @ref device is.
     core::Allocator* allocator = nullptr;
-    /// The passes' options: the queue families sharing their colour, and
-    /// whether depth is kept only where colour was recorded
-    /// (`GpuFramePrepConfig`).
+    /// Every pass's options, whatever the array's size: the queue families
+    /// sharing its colour and its depth, and whether depth is kept only where
+    /// colour was recorded (`GpuFramePrepConfig`).
     GpuFramePrepConfig prep{};
   };
 

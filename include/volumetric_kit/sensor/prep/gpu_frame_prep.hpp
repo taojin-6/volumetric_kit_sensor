@@ -82,8 +82,7 @@ struct GpuFramePrepConfig {
   /// reading an EXCLUSIVE buffer from a family that does not own it is
   /// undefined, and on Apple, where Metal has no ownership to violate, it is
   /// undefined in the way that appears to work. Duplicates collapse, so both
-  /// indices may be passed unconditionally. `Device`Frame::depth stays
-  /// EXCLUSIVE whatever this says, since only recon's tiers read it.
+  /// indices may be passed unconditionally.
   ///
   /// @see BufferDesc::queue_families, which this is copied into. Held by value,
   ///      since the pass re-reads it whenever it makes an output.
@@ -91,6 +90,19 @@ struct GpuFramePrepConfig {
   /// Entries in @ref color_queue_families; more than `kMaxQueueFamilies` is
   /// refused by @ref GpuFramePrep::create.
   std::uint32_t color_queue_family_count = 0;
+
+  /// @brief Queue families that will access the frames' depth buffers,
+  ///        `Device`Frame::depth, as @ref color_queue_families does for
+  ///        colour and independently of it.
+  ///
+  /// Left empty (the default) depth is EXCLUSIVE to the pass's own family,
+  /// as recon's tiers read it. A consumer on another family -- a renderer
+  /// drawing points from the depth in place -- names both. The buffer keeps
+  /// the pass's storage usage alone; a consumer reads it as a storage buffer.
+  std::uint32_t depth_queue_families[core::BufferDesc::kMaxQueueFamilies] = {};
+  /// Entries in @ref depth_queue_families; more than `kMaxQueueFamilies` is
+  /// refused by @ref GpuFramePrep::create.
+  std::uint32_t depth_queue_family_count = 0;
 
   /// @brief Keep depth only where the colour camera recorded it.
   ///
@@ -144,12 +156,12 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///                   this object).
   /// @param allocator  The allocator its buffers come from (must outlive
   ///                   this object and every frame it hands out).
-  /// @param config     Which queue families read the colour output (see
-  ///                   @ref GpuFramePrepConfig).
+  /// @param config     Which queue families read the colour and the depth
+  ///                   outputs (see @ref GpuFramePrepConfig).
   /// @return The pass; `Status::Code::InvalidArgument` for a
-  ///         `color_queue_family_count` past `BufferDesc::kMaxQueueFamilies`;
-  ///         or a non-OK `Status` if a pipeline, descriptor object or
-  ///         buffer fails to build.
+  ///         `color_queue_family_count` or a `depth_queue_family_count` past
+  ///         `BufferDesc::kMaxQueueFamilies`; or a non-OK `Status` if a
+  ///         pipeline, descriptor object or buffer fails to build.
   static core::Result<GpuFramePrep> create(
       core::Device& device, core::Allocator& allocator,
       const GpuFramePrepConfig& config = {});
@@ -249,9 +261,11 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
 
   // An output of at least `bytes`: the one held, when no DeviceFrame still
   // holds it too and it is big enough, else a new one, shared with the
-  // config's colour families when `color`.
+  // `family_count` families at `families` (the config's for that output).
   core::Status ensure_output(std::shared_ptr<core::Buffer>& buffer,
-                             VkDeviceSize bytes, const char* name, bool color);
+                             VkDeviceSize bytes, const char* name,
+                             const std::uint32_t* families,
+                             std::uint32_t family_count);
 
   // Borrowed (must outlive this).
   core::Device* device_ = nullptr;

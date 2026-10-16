@@ -3,9 +3,10 @@
 
 // A sensor array's sets prepared on the GPU in one batch: each frame comes
 // out as GpuFramePrep::prepare makes it alone, posed by the array's
-// calibration, and an empty slot stays empty; a device or an allocator given
-// without the other, an array without a device and a set of another size are
-// refused. Skips where no device is.
+// calibration, and an empty slot stays empty; the prep options reach every
+// pass of an array of any size; a device or an allocator given without the
+// other, an array without a device and a set of another size are refused.
+// Skips where no device is.
 
 #include <algorithm>
 #include <chrono>
@@ -234,8 +235,71 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   return 0;
 }
 
+// The array's prep options reach every sensor's pass, whatever the array's
+// size: arrays of 1, 3 and 5 sensors whose options name a second queue family
+// for depth alone hand out every frame's depth CONCURRENT and its colour
+// EXCLUSIVE (both EXCLUSIVE on a device with one family, where the pair
+// collapses to the pass's own), and a depth count past the array is refused
+// at open, as GpuFramePrep::create refuses it.
+int test_prep_options(vkc::Device& device, vkc::Allocator& allocator) {
+  const std::uint32_t own = device.queue_family();
+  const std::optional<std::uint32_t> other =
+      vr_test::other_queue_family(device);
+  const VkSharingMode want =
+      other ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+  for (const std::size_t count :
+       {std::size_t{1}, std::size_t{3}, std::size_t{5}}) {
+    std::vector<std::string> ids;
+    std::vector<std::unique_ptr<sensor::IRgbdSensor>> sensors;
+    std::vector<Recording*> recordings;
+    for (std::size_t i = 0; i < count; ++i) {
+      ids.push_back(std::string(1, static_cast<char>('A' + i)));
+      auto r = std::make_unique<Recording>(
+          ids[i], static_cast<int>(i),
+          i == 0 ? sensor::SyncRole::Primary : sensor::SyncRole::Secondary);
+      recordings.push_back(r.get());
+      sensors.push_back(std::move(r));
+    }
+    sensor::SensorArray::Options o;
+    o.calibration = posed(ids);
+    o.device = &device;
+    o.allocator = &allocator;
+    o.prep.depth_queue_families[0] = own;
+    o.prep.depth_queue_families[1] = other.value_or(own);
+    o.prep.depth_queue_family_count = 2;
+    auto opened = sensor::SensorArray::open(std::move(sensors), o);
+    CHECK(opened.ok());
+    sensor::SensorArray array = std::move(opened).value();
+    CHECK(array.start().ok());
+    for (Recording* r : recordings) CHECK(r->push(0, device, allocator).ok());
+    auto set = array.poll_set();
+    for (int ms = 0; ms < 200 && set.ok() && !set.value(); ++ms) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      set = array.poll_set();
+    }
+    CHECK(set.ok() && set.value());
+    auto prepared = array.process(*set.value());
+    CHECK(prepared.ok() && prepared.value().frames.size() == count);
+    for (const auto& frame : prepared.value().frames) {
+      CHECK(frame.has_value() && frame->has_color());
+      CHECK(frame->depth->sharing_mode() == want);
+      CHECK(frame->color->sharing_mode() == VK_SHARING_MODE_EXCLUSIVE);
+    }
+  }
+  std::vector<std::unique_ptr<sensor::IRgbdSensor>> one;
+  one.push_back(std::make_unique<Recording>("A", 0, sensor::SyncRole::Primary));
+  sensor::SensorArray::Options bad;
+  bad.device = &device;
+  bad.allocator = &allocator;
+  bad.prep.depth_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies + 1;
+  CHECK(sensor::SensorArray::open(std::move(one), bad).status().domain() ==
+        vkc::Status::Code::InvalidArgument);
+  return 0;
+}
+
 int gpu_main(vr_test::GpuContext& gpu) {
   if (run(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_prep_options(gpu.device, gpu.allocator) != 0) return 1;
   std::printf("sensor_array_process: OK\n");
   return 0;
 }
