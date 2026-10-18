@@ -39,8 +39,10 @@
 ///   eight coefficients, the one this reader knows. `source` says whether
 ///   the model is the sensor's own (`"factory"`) or solved from images
 ///   (`"calibrated"`).
-/// - `world`, optional, names the sensor whose colour camera is the world
-///   frame; that sensor is posed at the origin.
+/// - `world`, optional, is the world frame: `{"sensor": id}`, the colour
+///   camera of a sensor of the array, which is posed at the origin; or
+///   `{"apriltag": {"family": "tag36h11", "id": 0, "size_m": 0.15}}`, a
+///   printed tag (@ref AprilTagWorld). A world of another kind is refused.
 /// - Numbers are written in a form that reads back to the same double. Keys
 ///   this reader does not know are ignored; a later `version` is refused.
 ///
@@ -96,11 +98,29 @@ struct SensorCalibration {
   std::optional<Mat4d> depth_to_color;
 };
 
-/// @brief What the array's world frame is.
+/// @brief A printed AprilTag whose frame is the world.
+///
+/// The axes are OpenCV's marker frame, not libapriltag's (x right, y down,
+/// z into the tag): the origin at the tag's centre, x from its top-left
+/// corner to its top-right, y from its bottom-left corner to its top-left,
+/// and z out of the printed face. The corners are the tag's own, in the
+/// order OpenCV's detector returns them, however the tag is turned in an
+/// image. A tag laid face up on the floor puts z up and the floor at z = 0.
+struct AprilTagWorld {
+  /// The tag's family, as the AprilTag library names it (`"tag36h11"`).
+  std::string family;
+  int id = 0;           ///< The tag's id in its family.
+  double size_m = 0.0;  ///< The black square's edge, in metres.
+};
+
+/// @brief What the array's world frame is: a sensor, a tag, or unsaid.
 struct WorldFrame {
   /// The sensor whose colour camera is the world, posed at the origin;
-  /// empty where the file does not say.
+  /// empty where the world is not a sensor.
   std::string sensor;
+  /// The tag whose frame is the world, which poses no sensor at the origin;
+  /// empty where the world is not a tag.
+  std::optional<AprilTagWorld> apriltag;
 };
 
 /// @brief A sensor array's calibration: its world, and its sensors.
@@ -122,7 +142,9 @@ VR_CAMERA_API const SensorCalibration* find_sensor(
 /// At least one sensor; each id non-empty, UTF-8 and unique; each pose and
 /// `depth_to_color` rigid (@ref check_rigid), and `depth_to_color` only
 /// beside a depth camera; each camera model valid (@ref check_camera_model);
-/// and a world sensor that is in the array and posed at the origin.
+/// and at most one world: a sensor that is in the array and posed at the
+/// origin, or a tag with a non-empty UTF-8 family, an id of 0 or more and a
+/// finite size above 0.
 /// @param array  The calibration.
 /// @return OK; `Status::Code::InvalidArgument` naming the sensor and what is
 ///         wrong; or `Status::Code::OutOfMemory`.
@@ -137,8 +159,8 @@ VR_CAMERA_API core::Status validate_array_calibration(
 ///         `format`, a version-1 sensor without a pose, or a calibration
 ///         @ref validate_array_calibration refuses);
 ///         `Status::Code::Unsupported` for a later version, a distortion
-///         model other than `"rational"`, or a world that is not a sensor; or
-///         `Status::Code::OutOfMemory`.
+///         model other than `"rational"`, or a world that is neither a
+///         sensor nor a tag; or `Status::Code::OutOfMemory`.
 VR_CAMERA_API core::Result<ArrayCalibration> parse_array_calibration(
     std::string_view json);
 

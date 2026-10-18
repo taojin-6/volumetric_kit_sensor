@@ -73,6 +73,21 @@ core::Result<std::uint32_t> whole_number(const json& object, const char* key,
   return static_cast<std::uint32_t>(it->get<std::uint64_t>());
 }
 
+// A whole number, signed, in an int's range; validate judges its sign.
+core::Result<int> integer(const json& object, const char* key,
+                          const std::string& where) {
+  const auto it = object.find(key);
+  const bool fits =
+      it != object.end() &&
+      (it->is_number_unsigned()
+           ? it->get<std::uint64_t>() <=
+                 std::uint64_t{std::numeric_limits<int>::max()}
+           : it->is_number_integer() &&
+                 it->get<std::int64_t>() >= std::numeric_limits<int>::min());
+  if (!fits) return bad(where + "\"" + key + "\" is not a 32-bit integer");
+  return static_cast<int>(it->get<std::int64_t>());
+}
+
 // The object at `key`; null when there is none.
 core::Result<const json*> object_at(const json& parent, const char* key,
                                     const std::string& where) {
@@ -194,6 +209,36 @@ core::Result<SensorCalibration> sensor_v2(const std::string& id,
   return sensor;
 }
 
+// Both kinds are read where a world names both, for validate to refuse.
+core::Result<WorldFrame> world_v2(const json& block) {
+  WorldFrame world;
+  const auto sensor = block.find("sensor");
+  VKC_ASSIGN(const json* tag, object_at(block, "apriltag", "world: "));
+  if (sensor == block.end() && tag == nullptr) {
+    return unsupported(
+        "world: this reader knows {\"sensor\": id} and {\"apriltag\": tag}");
+  }
+  if (sensor != block.end()) {
+    if (!sensor->is_string()) return bad("world: \"sensor\" is not a string");
+    world.sensor = sensor->get<std::string>();
+    // Empty is the struct's "not a sensor", so a named sensor has an id.
+    if (world.sensor.empty()) return bad("world: \"sensor\" is empty");
+  }
+  if (tag != nullptr) {
+    const std::string where = "world: apriltag ";
+    AprilTagWorld t;
+    const auto family = tag->find("family");
+    if (family == tag->end() || !family->is_string()) {
+      return bad(where + "missing string \"family\"");
+    }
+    t.family = family->get<std::string>();
+    VKC_ASSIGN(t.id, integer(*tag, "id", where));
+    VKC_ASSIGN(t.size_m, number(*tag, "size_m", where));
+    world.apriltag = std::move(t);
+  }
+  return world;
+}
+
 core::Result<ArrayCalibration> parse_v2(const json& doc) {
   const auto version = doc.find("version");
   if (version == doc.end() || !version->is_number_unsigned()) {
@@ -213,14 +258,7 @@ core::Result<ArrayCalibration> parse_v2(const json& doc) {
   ArrayCalibration array;
   VKC_ASSIGN(const json* world, object_at(doc, "world", ""));
   if (world != nullptr) {
-    const auto sensor = world->find("sensor");
-    if (sensor == world->end()) {
-      return unsupported("world: this reader knows only {\"sensor\": id}");
-    }
-    if (!sensor->is_string()) return bad("world: \"sensor\" is not a string");
-    array.world.sensor = sensor->get<std::string>();
-    // Empty is the struct's "no world"; a file that names one names a sensor.
-    if (array.world.sensor.empty()) return bad("world: \"sensor\" is empty");
+    VKC_ASSIGN(array.world, world_v2(*world));
   }
   for (auto it = sensors->begin(); it != sensors->end(); ++it) {
     VKC_ASSIGN(SensorCalibration sensor, sensor_v2(it.key(), *it));
@@ -305,8 +343,27 @@ core::Status check_sensor(const SensorCalibration& sensor) {
   return {};
 }
 
+// A tag is not in the array, so nothing of it is checked against the poses.
+core::Status check_apriltag(const AprilTagWorld& tag) {
+  const std::string where = "world: apriltag ";
+  if (tag.family.empty()) return bad(where + "\"family\" is empty");
+  if (!is_utf8(tag.family)) return bad(where + "\"family\" is not UTF-8");
+  if (tag.id < 0) return bad(where + "\"id\" is negative");
+  if (!std::isfinite(tag.size_m) || !(tag.size_m > 0.0)) {
+    return bad(where + "\"size_m\" is not a finite length above 0");
+  }
+  return {};
+}
+
 core::Status check_world(const ArrayCalibration& array) {
   const std::string& id = array.world.sensor;
+  if (array.world.apriltag) {
+    if (!id.empty()) {
+      return bad("world: names both sensor " + id +
+                 " and an AprilTag; it is one or the other");
+    }
+    return check_apriltag(*array.world.apriltag);
+  }
   if (id.empty()) return {};
   const SensorCalibration* sensor = find_sensor(array, id);
   if (sensor == nullptr) {
@@ -410,6 +467,11 @@ core::Result<std::string> format_array_calibration(
                     ",\n  \"version\": " + text(kVersion) + ",\n";
   if (!array.world.sensor.empty()) {
     out += "  \"world\": {\"sensor\": " + text(array.world.sensor) + "},\n";
+  }
+  if (const auto& tag = array.world.apriltag) {
+    out += "  \"world\": {\"apriltag\": {\"family\": " + text(tag->family) +
+           ", \"id\": " + text(static_cast<std::uint64_t>(tag->id)) +
+           ", \"size_m\": " + text(tag->size_m) + "}},\n";
   }
   out += "  \"device_calibration\": {";
   const std::string indent = "      ";

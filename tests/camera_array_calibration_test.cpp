@@ -3,14 +3,15 @@
 
 // The sensor array's calibration file: version 2 read as calib writes it,
 // version 1 (the family's device_calibration layout) still read for its poses,
-// the refusals, a later version refused, and a calibration written and read
-// back with every model and number exact and every pose to round-off, through
-// the core's write_file. Host-only.
+// a world at an AprilTag, the refusals, a later version refused, and a
+// calibration written and read back with every model and number exact and
+// every pose to round-off, through the core's write_file. Host-only.
 
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -83,6 +84,16 @@ const char* kVersion1 = R"({
                          "width": 3840, "height": 2160},
           "pose": {"rvec": [0.0, 0.0, 0.0], "tvec": [0.0, 0.0, 0.0]}}
   }
+})";
+
+// A world at a floor tag: no sensor at the origin, B as above and C 2.5 m up.
+const char* kTagWorld = R"({
+  "format": "volumetric_kit.array_calibration", "version": 2,
+  "world": {"apriltag": {"family": "tag36h11", "id": 7, "size_m": 0.15},
+            "later": true},
+  "device_calibration": {
+    "B": {"pose": {"rvec": [0, 1.5707963267948966, 0], "tvec": [0, 0, 2]}},
+    "C": {"pose": {"rvec": [3.141592653589793, 0, 0], "tvec": [0, 0, 2.5]}}}
 })";
 
 bool near(const camera::Mat4d& a, const camera::Mat4d& b, double eps) {
@@ -177,6 +188,23 @@ int test_version1() {
   // Read for the poses alone: the lens fields are ignored.
   CHECK(!sa.color && !sa.depth && !sa.depth_to_color);
   if (check_b(a.sensors[1]) != 0) return 1;
+  return 0;
+}
+
+int test_tag_world() {
+  const auto r = camera::parse_array_calibration(kTagWorld);
+  CHECK(r.ok());
+  const camera::ArrayCalibration& a = r.value();
+  CHECK(a.world.sensor.empty() && a.world.apriltag);
+  CHECK(a.world.apriltag->family == "tag36h11");
+  CHECK(a.world.apriltag->id == 7 && a.world.apriltag->size_m == 0.15);
+  // The poses are the file's, none of them at the origin.
+  CHECK(a.sensors.size() == 2);
+  if (check_b(a.sensors[0]) != 0) return 1;
+  const camera::SensorCalibration& c = a.sensors[1];
+  CHECK(c.id == "C" && c.color_to_world);
+  CHECK(glm::length(camera::Vec3d((*c.color_to_world)[3]) -
+                    camera::Vec3d(0.0, 0.0, 2.5)) < 1e-15);
   return 0;
 }
 
@@ -295,8 +323,45 @@ int test_refusals() {
   CHECK(refused(one_sensor(pose, R"("world": {"sensor": ""}, )"),
                 Code::InvalidArgument, "\"sensor\" is empty"));
   // A world this reader does not know, as a later writer may name.
-  CHECK(refused(one_sensor(pose, R"("world": {"apriltag": {"id": 0}}, )"),
+  CHECK(refused(one_sensor(pose, R"("world": {"marker": {"id": 0}}, )"),
                 Code::Unsupported));
+  CHECK(refused(one_sensor(pose, R"("world": {}, )"), Code::Unsupported));
+  // A tag world: one or the other, and each of its fields whole.
+  const auto tag = [&](const std::string& fields) {
+    return one_sensor(pose, R"("world": {"apriltag": {)" + fields + "}}, ");
+  };
+  const std::string family = R"("family": "tag36h11", )";
+  CHECK(camera::parse_array_calibration(
+            tag(family + R"("id": 0, "size_m": 0.15)"))
+            .ok());
+  CHECK(refused(one_sensor(pose, R"("world": {"sensor": "A", "apriltag":
+                    {"family": "tag36h11", "id": 0, "size_m": 0.15}}, )"),
+                Code::InvalidArgument, "names both sensor A and an AprilTag"));
+  CHECK(refused(tag(R"("id": 0)"), Code::InvalidArgument,
+                "missing string \"family\""));
+  CHECK(refused(tag(R"("family": 36, "id": 0, "size_m": 0.15)"),
+                Code::InvalidArgument, "missing string \"family\""));
+  CHECK(refused(tag(R"("family": "", "id": 0, "size_m": 0.15)"),
+                Code::InvalidArgument, "\"family\" is empty"));
+  CHECK(refused(tag(family + R"("size_m": 0.15)"), Code::InvalidArgument,
+                "\"id\" is not a 32-bit integer"));
+  for (const char* id : {R"("0")", "0.5", "2147483648", "-2147483649"}) {
+    CHECK(refused(tag(family + R"("id": )" + id + R"(, "size_m": 0.15)"),
+                  Code::InvalidArgument, "\"id\" is not a 32-bit integer"));
+  }
+  CHECK(refused(tag(family + R"("id": -1, "size_m": 0.15)"),
+                Code::InvalidArgument, "\"id\" is negative"));
+  CHECK(camera::parse_array_calibration(
+            tag(family + R"("id": 2147483647, "size_m": 0.15)"))
+            .ok());
+  CHECK(refused(tag(family + R"("id": 0)"), Code::InvalidArgument,
+                "missing number \"size_m\""));
+  for (const char* size : {"0", "-0.15", R"("0.15")"}) {
+    CHECK(refused(tag(family + R"("id": 0, "size_m": )" + size),
+                  Code::InvalidArgument, "\"size_m\""));
+  }
+  CHECK(refused(one_sensor(pose, R"("world": {"apriltag": 0}, )"),
+                Code::InvalidArgument, "\"apriltag\" is not an object"));
   // Version 1: every listed camera needs a pose.
   CHECK(refused(R"({"device_calibration": {"A": {"intrinsics":
       {"fx": 1, "fy": 1, "cx": 0, "cy": 0}}}})"));
@@ -333,6 +398,37 @@ int test_refusals() {
         not_rigid.message().find("depth_to_color: ") != std::string::npos);
   CHECK(camera::format_array_calibration(array).status().domain() ==
         Code::InvalidArgument);
+
+  // A tag world, which JSON cannot spell wrong in every way: refused, naming
+  // the field, by validate and so by format.
+  array.sensors[0] = a;
+  array.world.apriltag = camera::AprilTagWorld{"tag36h11", 0, 0.15};
+  CHECK(camera::validate_array_calibration(array).ok());
+  const double inf = std::numeric_limits<double>::infinity();
+  const struct {
+    camera::AprilTagWorld tag;
+    const char* reason;
+  } bad_tags[] = {{{"", 0, 0.15}, "\"family\" is empty"},
+                  {{"tag\xff", 0, 0.15}, "\"family\" is not UTF-8"},
+                  {{"tag36h11", -1, 0.15}, "\"id\" is negative"},
+                  {{"tag36h11", 0, 0.0}, "\"size_m\""},
+                  {{"tag36h11", 0, -0.15}, "\"size_m\""},
+                  {{"tag36h11", 0, std::nan("")}, "\"size_m\""},
+                  {{"tag36h11", 0, inf}, "\"size_m\""},
+                  {{"tag36h11", 0, -inf}, "\"size_m\""}};
+  for (const auto& b : bad_tags) {
+    array.world.apriltag = b.tag;
+    const vkc::Status s = camera::validate_array_calibration(array);
+    CHECK(s.domain() == Code::InvalidArgument &&
+          s.message().find(b.reason) != std::string::npos);
+    CHECK(camera::format_array_calibration(array).status().domain() ==
+          Code::InvalidArgument);
+  }
+  array.world.apriltag = camera::AprilTagWorld{"tag36h11", 0, 0.15};
+  array.world.sensor = "A";
+  const vkc::Status both = camera::validate_array_calibration(array);
+  CHECK(both.domain() == Code::InvalidArgument &&
+        both.message().find("names both") != std::string::npos);
   return 0;
 }
 
@@ -391,6 +487,12 @@ camera::ArrayCalibration edge_cases() {
 int check_same(const camera::ArrayCalibration& written,
                const camera::ArrayCalibration& read) {
   CHECK(read.world.sensor == written.world.sensor);
+  CHECK(read.world.apriltag.has_value() == written.world.apriltag.has_value());
+  if (written.world.apriltag) {
+    const camera::AprilTagWorld& w = *written.world.apriltag;
+    const camera::AprilTagWorld& r = *read.world.apriltag;
+    CHECK(r.family == w.family && r.id == w.id && r.size_m == w.size_m);
+  }
   CHECK(read.sensors.size() == written.sensors.size());
   for (std::size_t i = 0; i < written.sensors.size(); ++i) {
     const camera::SensorCalibration& w = written.sensors[i];
@@ -481,6 +583,23 @@ int test_round_trip() {
   (*off_origin.sensors[0].color_to_world)[3].x = 0.5;
   CHECK(camera::format_array_calibration(off_origin).status().domain() ==
         Code::InvalidArgument);
+
+  // A tag world, with no sensor at the origin: its size, which has no short
+  // decimal form, comes back exactly, and so does everything else.
+  camera::ArrayCalibration tagged = off_origin;
+  tagged.world.sensor.clear();
+  tagged.world.apriltag = camera::AprilTagWorld{"tag36h11", 586, 0.2 / 3.0};
+  const auto tag_text = camera::format_array_calibration(tagged);
+  CHECK(tag_text.ok());
+  const auto tag_read = camera::parse_array_calibration(tag_text.value());
+  CHECK(tag_read.ok());
+  if (check_same(tagged, tag_read.value()) != 0) return 1;
+  const nlohmann::json tag_world =
+      nlohmann::json::parse(tag_text.value()).at("world");
+  CHECK(tag_world.size() == 1);
+  CHECK(tag_world.at("apriltag") ==
+        nlohmann::json(
+            {{"family", "tag36h11"}, {"id", 586}, {"size_m", 0.2 / 3.0}}));
   return 0;
 }
 
@@ -552,6 +671,7 @@ int test_files() {
 int main() {
   if (test_version2() != 0) return 1;
   if (test_version1() != 0) return 1;
+  if (test_tag_world() != 0) return 1;
   if (test_refusals() != 0) return 1;
   if (test_round_trip() != 0) return 1;
   if (test_files() != 0) return 1;

@@ -6,8 +6,8 @@
 // array and a move over one, trigger grouping (complete sets, a silent
 // secondary, the newest set winning, frames with no clock), a set's skew and
 // spread, the default tolerance, an exhausted sensor, a drain that fails
-// partway, poses from the calibration (an unposed sensor refused), and a
-// moved-from array. Host-only.
+// partway, poses from the calibration (an unposed sensor refused) whatever
+// its world, and a moved-from array. Host-only.
 
 #include <algorithm>
 #include <chrono>
@@ -350,6 +350,49 @@ int test_trigger() {
   return 0;
 }
 
+// A calibration's world: a tag's file poses each sensor as it says, none at
+// the origin; a sensor world must still be a sensor at the origin.
+int test_world() {
+  camera::ArrayCalibration tagged = calibration({"S1", "P", "S2"});
+  for (camera::SensorCalibration& s : tagged.sensors) {
+    (*s.color_to_world)[3].z = 2.5;  // over the floor tag
+  }
+  tagged.world.apriltag = camera::AprilTagWorld{"tag36h11", 0, 0.15};
+  const auto text = camera::format_array_calibration(tagged);
+  CHECK(text.ok());
+  auto o = trigger_options();
+  auto read = camera::parse_array_calibration(text.value());
+  CHECK(read.ok() && read.value().world.apriltag);
+  o.calibration = std::move(read).value();
+  Rig r = triggered_rig();
+  std::vector<Scripted*> f = r.fakes;  // S1, P, S2
+  sensor::SensorArray array = open_array(&r, o);
+  CHECK(array.start().ok());
+  f[1]->push(1'000'000'000, 1);
+  f[0]->push(1'000'000'000, 2);
+  f[2]->push(1'000'000'000, 3);
+  const auto set = array.poll_set();
+  CHECK(set.ok() && set.value() && set.value()->complete());
+  for (std::size_t c = 0; c < 3; ++c) {
+    const camera::Vec3d centre(set.value()->frames[c]->color_to_world[3]);
+    CHECK(glm::length(centre -
+                      camera::Vec3d(static_cast<double>(c), 0.0, 2.5)) < 1e-15);
+  }
+
+  // A sensor world: S1, at the origin, may be it; P, a metre off, may not.
+  o = trigger_options();
+  o.calibration = calibration({"S1", "P", "S2"});
+  o.calibration.world.sensor = "S1";
+  CHECK(refusal(triggered_rig(), o) == Code::Ok);
+  o.calibration.world.sensor = "P";
+  CHECK(refusal(triggered_rig(), o) == Code::InvalidArgument);
+  // Never both.
+  o.calibration.world.sensor = "S1";
+  o.calibration.world.apriltag = camera::AprilTagWorld{"tag36h11", 0, 0.15};
+  CHECK(refusal(triggered_rig(), o) == Code::InvalidArgument);
+  return 0;
+}
+
 // The default tolerance: 0.4 of the fastest sensor's frame period, 400 us at
 // 1 kHz, or 5000 us when no sensor reports a rate. A secondary just inside it
 // joins the primary's set; one just outside joins none.
@@ -518,6 +561,7 @@ int main() {
   if (test_refusals() != 0) return 1;
   if (test_start_order() != 0) return 1;
   if (test_trigger() != 0) return 1;
+  if (test_world() != 0) return 1;
   if (test_skew_and_spread() != 0) return 1;
   if (test_default_tolerance() != 0) return 1;
   if (test_failed_drain() != 0) return 1;
