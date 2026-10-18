@@ -146,8 +146,8 @@ VR_CAMERA_API const SensorCalibration* find_sensor(
 /// origin, or a tag with a non-empty UTF-8 family, an id of 0 or more and a
 /// finite size above 0.
 /// @param array  The calibration.
-/// @return OK; `Status::Code::InvalidArgument` naming the sensor and what is
-///         wrong; or `Status::Code::OutOfMemory`.
+/// @return OK; `Status::Code::InvalidArgument` naming what is wrong; or
+///         `Status::Code::OutOfMemory`.
 VR_CAMERA_API core::Status validate_array_calibration(
     const ArrayCalibration& array);
 
