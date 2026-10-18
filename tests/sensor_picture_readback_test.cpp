@@ -26,13 +26,13 @@
 #include "test_image.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
+#include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
-#include "volumetric_kit/core/vulkan/shared_device.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/utils/picture_readback.hpp"
@@ -339,38 +339,30 @@ int test_families(const vr_test::Gpu& gpu) {
 // An EXCLUSIVE buffer released by another family stays usable after either
 // read overload: preparation and a repeated read must not acquire it again.
 int test_read_then_prepare() {
-  vkc::SharedDeviceConfig config;
-  config.instance = vkc::test::instance_config();
-  config.compute = vr::device_requirements();
-  config.graphics.queue_flags = VK_QUEUE_GRAPHICS_BIT;
-  auto shared = vkc::SharedDevice::create(config);
-  CHECK(shared.ok());
-  CHECK(vkc::test::check_layer_loaded((*shared)->instance()).ok());
-  if ((*shared)->compute_family() == (*shared)->graphics_family()) {
+  auto made = vkc::test::TwoFamilyDevice::create(vr::device_requirements(), {});
+  if (!made) std::fprintf(stderr, "%s\n", made.status().message().c_str());
+  CHECK(made.ok());
+  vkc::test::TwoFamilyDevice& two = **made;
+  if (!two.crosses_families()) {
     std::printf("  read then prepare: cross-family case skipped (%s)\n",
-                (*shared)->summary().c_str());
+                two.shared().summary().c_str());
     return 0;
   }
-  auto reader =
-      vkc::Device::adopt((*shared)->compute_payload(), config.compute);
-  auto writer =
-      vkc::Device::adopt((*shared)->graphics_payload(), config.graphics);
-  CHECK(reader.ok() && writer.ok());
-  auto allocator =
-      vkc::Allocator::create((*shared)->instance().handle(), *reader);
-  CHECK(allocator.ok());
-  auto readback = PictureReadback::create(*reader, *allocator);
-  auto prep = sensor::GpuFramePrep::create(*reader, *allocator);
+  vkc::Device& reader = two.compute();
+  vkc::Device& writer = two.graphics();
+  vkc::Allocator& allocator = two.compute_allocator();
+  auto readback = PictureReadback::create(reader, allocator);
+  auto prep = sensor::GpuFramePrep::create(reader, allocator);
   CHECK(readback.ok() && prep.ok());
   const std::vector<std::uint8_t> bytes(96, 128);
   const std::vector<std::uint16_t> depth(64, 1000);
   for (const bool single : {true, false}) {
-    auto buffer = vkc::device_storage_buffer(*allocator, bytes.size());
+    auto buffer = vkc::device_storage_buffer(allocator, bytes.size());
     CHECK(buffer.ok());
     CHECK(buffer->sharing_mode() == VK_SHARING_MODE_EXCLUSIVE);
-    vkc::CommandBatch upload(*writer, *allocator);
+    vkc::CommandBatch upload(writer, two.graphics_allocator());
     CHECK(upload.upload(*buffer, 0, bytes.data(), bytes.size()).ok());
-    CHECK(upload.release(*buffer, reader->queue_family()).ok());
+    CHECK(upload.release(*buffer, reader.queue_family()).ok());
     CHECK(upload.submit().ok());
 
     std::vector<std::optional<sensor::RgbdFrame>> frames(3);
@@ -384,7 +376,7 @@ int test_read_then_prepare() {
     frame.color.width = frame.color.height = 8;
     frame.color.stride[0] = frame.color.stride[1] = 8;
     frame.color.offset[1] = 64;
-    frame.color.queue_family = writer->queue_family();
+    frame.color.queue_family = writer.queue_family();
     frame.color.device =
         std::make_shared<const vkc::Buffer>(std::move(*buffer));
 
@@ -395,7 +387,7 @@ int test_read_then_prepare() {
         single ? (*readback)->read(frame.color, Planes::Luma).status()
                : (*readback)->read(frames, Planes::Luma).status();
     CHECK(refused.domain() == vkc::Status::Code::InvalidArgument);
-    CHECK(frame.color.queue_family == writer->queue_family());
+    CHECK(frame.color.queue_family == writer.queue_family());
     frame.color.stride[0] = 8;
     if (single) {
       auto view = (*readback)->read(frame.color, Planes::Luma);
@@ -411,7 +403,7 @@ int test_read_then_prepare() {
     auto view = (*readback)->read(frame.color, Planes::All);
     CHECK(view.ok() && std::memcmp(view->luma, bytes.data(), 64) == 0);
     CHECK(std::memcmp(view->chroma[0], bytes.data() + 64, 32) == 0);
-    CHECK(frame.color.queue_family == reader->queue_family());
+    CHECK(frame.color.queue_family == reader.queue_family());
   }
   std::puts(
       "  read then prepare: both overloads, two families, repeated reads");

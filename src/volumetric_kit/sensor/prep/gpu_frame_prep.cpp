@@ -339,6 +339,24 @@ core::Result<ColorLayout> check_color(const RgbdFrame& frame,
   return out;
 }
 
+// An output's queue families: no more than the config's array holds, each one
+// the device has.
+core::Status check_queue_families(const core::Device& device,
+                                  const std::uint32_t* families,
+                                  std::uint32_t count, const char* who) {
+  VKC_TRY(core::check_queue_family_count(count, who));
+  const std::size_t device_families = device.caps().queue_families().size();
+  for (std::uint32_t i = 0; i < count; ++i) {
+    if (families[i] >= device_families) {
+      return core::Status::invalid_argument(
+          std::string(who) + ": queue family " + std::to_string(families[i]) +
+          ", which the device does not have (" +
+          std::to_string(device_families) + " families)");
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 core::Result<GpuFramePrep> GpuFramePrep::create(
@@ -346,9 +364,14 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
     const GpuFramePrepConfig& config) {
   VKC_TRY(check_device_requirements(device, "GpuFramePrep::create"));
   // Here rather than at the first output, where it would surface as a buffer
-  // failure on the first frame.
-  VKC_TRY(core::check_queue_family_count(config.color_queue_family_count,
-                                         "GpuFramePrep::create"));
+  // failure on the first frame, naming neither the pass nor the output -- or,
+  // for colour, not until a frame carries some.
+  VKC_TRY(check_queue_families(device, config.color_queue_families,
+                               config.color_queue_family_count,
+                               "GpuFramePrep::create, colour"));
+  VKC_TRY(check_queue_families(device, config.depth_queue_families,
+                               config.depth_queue_family_count,
+                               "GpuFramePrep::create, depth"));
   GpuFramePrep prep;
   prep.device_ = &device;
   prep.allocator_ = &allocator;
@@ -438,14 +461,16 @@ core::Status GpuFramePrep::stage_host(const RgbdFrame& frame,
   VKC_TRY(ensure_buffer(*device_, *allocator_, depth_in_, depth.in_bytes, false,
                         "sensor.raw_depth"));
   VKC_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame",
-                        /*color=*/false));
+                        config_.depth_queue_families,
+                        config_.depth_queue_family_count));
   if (frame.has_color()) {
     if (layout.from_images || layout.from_host) {
       VKC_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.bind_bytes,
                             false, "sensor.raw_color"));
     }
     VKC_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame",
-                          /*color=*/true));
+                          config_.color_queue_families,
+                          config_.color_queue_family_count));
   }
 
   // The depth, then any packed colour from the word after it.
@@ -691,7 +716,8 @@ core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
 
 core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
                                          VkDeviceSize bytes, const char* name,
-                                         bool color) {
+                                         const std::uint32_t* families,
+                                         std::uint32_t family_count) {
   // Reused only when this pass holds the last reference: a DeviceFrame kept
   // past this call keeps its contents, and this frame goes to a new buffer,
   // which measured no slower than reusing one (the residency decision's step
@@ -704,13 +730,12 @@ core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
     return {};
   }
   // Device-local: only the kernels touch it, and on a discrete GPU the
-  // fusion kernels' reads would otherwise cross the bus. The colour is shared
-  // with the families the config names, for a consumer on another queue.
-  VKC_ASSIGN(
-      core::Buffer created,
-      core::device_storage_buffer(
-          *allocator_, bytes, 0, color ? config_.color_queue_families : nullptr,
-          color ? config_.color_queue_family_count : 0));
+  // fusion kernels' reads would otherwise cross the bus. Shared with the
+  // families the config names for it, for a consumer on another queue, with
+  // no usage beyond the pass's storage and transfer usage.
+  VKC_ASSIGN(core::Buffer created,
+             core::device_storage_buffer(*allocator_, bytes, 0, families,
+                                         family_count));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
                            core::debug_object_handle(created.handle()), name);
   buffer = std::make_shared<core::Buffer>(std::move(created));

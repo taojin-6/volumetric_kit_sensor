@@ -31,11 +31,11 @@
 #include "device_picture_readback.hpp"
 #include "gpu_test.hpp"
 #include "test_check.hpp"
+#include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/core/vulkan/shared_device.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
@@ -431,41 +431,26 @@ int test_sharing(const Gpu& gpu) {
 // image, so the sharing mode recorded on the image, which is the one the
 // image was created with, is what shows the read is legal.
 int test_cross_family() {
-  vkc::SharedDeviceConfig config;
-  config.instance = vkc::test::instance_config();
-  config.compute = vr::device_requirements();
-  config.graphics.queue_flags = VK_QUEUE_GRAPHICS_BIT;
-  auto shared = vkc::SharedDevice::create(config);
-  if (!shared) std::fprintf(stderr, "%s\n", shared.status().message().c_str());
-  CHECK(shared.ok());
-  const vkc::SharedDevice& device = *shared.value();
-  const vkc::Status loaded = vkc::test::check_layer_loaded(device.instance());
-  if (!loaded.ok()) std::fprintf(stderr, "%s\n", loaded.message().c_str());
-  CHECK(loaded.ok());
-  if (device.compute_family() == device.graphics_family()) {
-    std::printf("cross-family read skipped: %s\n", device.summary().c_str());
+  auto made = vkc::test::TwoFamilyDevice::create(vr::device_requirements(), {});
+  if (!made) std::fprintf(stderr, "%s\n", made.status().message().c_str());
+  CHECK(made.ok());
+  vkc::test::TwoFamilyDevice& two = **made;
+  if (!two.crosses_families()) {
+    std::printf("cross-family read skipped: %s\n",
+                two.shared().summary().c_str());
     return 0;
   }
-  auto recon = vkc::Device::adopt(device.compute_payload(), config.compute);
-  auto renderer =
-      vkc::Device::adopt(device.graphics_payload(), config.graphics);
-  CHECK(recon.ok() && renderer.ok());
-  CHECK(recon->imports_metal_textures());
-  auto allocator =
-      vkc::Allocator::create(device.instance().handle(), renderer.value());
-  CHECK(allocator.ok());
-
-  const std::uint32_t families[] = {device.compute_family(),
-                                    device.graphics_family()};
+  CHECK(two.compute().imports_metal_textures());
   auto importer =
-      PixelBufferImporter::create(recon.value(), "test", families, 2);
+      PixelBufferImporter::create(two.compute(), "test", two.families().data(),
+                                  vkc::test::TwoFamilyDevice::kFamilyCount);
   CHECK(importer.ok());
   const Pixels pixels(make_pixels(255, 143, kFull));
   CHECK(pixels.ref != nullptr && fill(pixels.ref, 7));
   YuvImage yuv;
   CHECK(importer->import(pixels.ref, 255, 143, yuv).ok());
   CHECK(sharing(yuv) == VK_SHARING_MODE_CONCURRENT);
-  return check_holds(yuv, renderer.value(), allocator.value(), 7);
+  return check_holds(yuv, two.graphics(), two.graphics_allocator(), 7);
 }
 
 int test_moves(const Gpu& gpu) {

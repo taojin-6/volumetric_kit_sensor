@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/write_image.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -26,8 +27,8 @@
 namespace test_image {
 
 // A `width` x `height` image of `format` holding `texels`, rows packed, in
-// device-local memory of its own; `usage` beside TRANSFER_DST, which filling
-// it needs.
+// memory of its own, filled by the core's test::write_image; `usage` beside
+// TRANSFER_DST, which filling it needs.
 inline volumetric_kit::core::Result<volumetric_kit::core::Image> make(
     const volumetric_kit::core::Device& device,
     volumetric_kit::core::Allocator& allocator, VkFormat format,
@@ -69,43 +70,13 @@ inline volumetric_kit::core::Result<volumetric_kit::core::Image> make(
   adopted.format = format;
   adopted.extent = info.extent;
   adopted.usage = info.usage;
-  adopted.layout = VK_IMAGE_LAYOUT_GENERAL;
   vkc::Image out(adopted, [dev, image, backing] {
     vkDestroyImage(dev, image, nullptr);
     vkFreeMemory(dev, backing, nullptr);
   });
 
-  VKC_ASSIGN(
-      vkc::Buffer source,
-      allocator.create_buffer({texels.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                               vkc::MemoryUsage::Staging}));
-  std::memcpy(source.mapped(), texels.data(), texels.size());
-  VKC_TRY(device.submit_single_time([&](VkCommandBuffer cmd) {
-    VkImageMemoryBarrier b{};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = image;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                         nullptr, 1, &b);
-    VkBufferImageCopy region{};
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageExtent = {width, height, 1};
-    vkCmdCopyBufferToImage(cmd, source.handle(), image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                         nullptr, 1, &b);
-  }));
+  VKC_TRY(vkc::test::write_image(device, allocator, out, texels.data(),
+                                 texels.size(), VK_IMAGE_LAYOUT_GENERAL));
   return out;
 }
 

@@ -13,7 +13,8 @@
 //     in, and through a lens as the reference samples them;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
-//   - its colour output is shared with the queue families its config names;
+//   - its depth and colour outputs are shared with the queue families its
+//     config names for each, and read on another family as on its own;
 //   - with depth_within_color, depth survives only where colour recorded it;
 //   - its output fuses through the device-input overloads, and a slanted
 //     plane's field crosses zero within a tenth of a voxel of the plane.
@@ -26,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -39,6 +41,7 @@
 #include "test_image.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
+#include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -1168,30 +1171,46 @@ int test_frames_hold_buffers(sensor::GpuFramePrep& prep) {
   return 0;
 }
 
-// One pass under `config`: a frame with colour prepares, its colour output
-// carries `want` as its sharing mode, and its depth stays EXCLUSIVE.
+// One pass under `config`: a frame with colour prepares, and its depth and
+// colour outputs carry `depth` and `color` as their sharing modes, as do the
+// outputs the next frame reuses.
 int prepared_sharing(vkc::Device& device, vkc::Allocator& allocator,
                      const sensor::GpuFramePrepConfig& config,
-                     const sensor::RgbdFrame& frame, VkSharingMode want) {
+                     const sensor::RgbdFrame& frame, VkSharingMode depth,
+                     VkSharingMode color) {
   auto prep = sensor::GpuFramePrep::create(device, allocator, config);
   if (!prep) std::fprintf(stderr, "%s\n", prep.status().message().c_str());
   CHECK(prep.ok());
-  auto out = prep->prepare(frame);
-  if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
-  CHECK(out.ok() && out->has_color());
-  CHECK(out->depth->sharing_mode() == VK_SHARING_MODE_EXCLUSIVE);
-  CHECK(out->color->sharing_mode() == want);
-  const std::vector<float> d = depth_of(out.value());
-  CHECK(d.size() == std::size_t{kWidth} * kHeight && d[0] == 1000.0f * kScale);
+  const vkc::Buffer* held = nullptr;
+  for (int pass = 0; pass < 2; ++pass) {
+    auto out = prep->prepare(frame);
+    if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+    CHECK(out.ok() && out->has_color());
+    CHECK(out->depth->sharing_mode() == depth);
+    CHECK(out->color->sharing_mode() == color);
+    // Storage and transfer usage, no vertex usage: a consumer reads it as a
+    // storage buffer, or copies from it.
+    CHECK((out->depth->usage() & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) != 0);
+    CHECK((out->depth->usage() & VK_BUFFER_USAGE_TRANSFER_SRC_BIT) != 0);
+    CHECK((out->depth->usage() & VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) == 0);
+    CHECK(held == nullptr || out->depth.get() == held);  // reused
+    held = out->depth.get();
+    const std::vector<float> d = depth_of(out.value());
+    CHECK(d.size() == std::size_t{kWidth} * kHeight &&
+          d[0] == 1000.0f * kScale);
+  }
   return 0;
 }
 
-// The colour output is shared with the queue families the config names, for a
-// consumer on another queue: a second family makes it CONCURRENT, the pass's
-// own family named twice collapses to EXCLUSIVE, as does no config, and a
-// count past the array is refused. Depth is EXCLUSIVE throughout. The second
-// family is skipped on a device that has only one.
+// Each output is shared with the queue families the config names for it, for
+// a consumer on another queue: no family, one, or the pass's own named twice
+// leaves it EXCLUSIVE, and a second family makes it CONCURRENT. Depth and
+// colour are independent: naming one's families leaves the other EXCLUSIVE.
+// A count past the array, or a family the device lacks, is refused for either.
+// The second family is skipped on a device that has only one.
 int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
+  constexpr VkSharingMode kExclusive = VK_SHARING_MODE_EXCLUSIVE;
+  constexpr VkSharingMode kConcurrent = VK_SHARING_MODE_CONCURRENT;
   std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
   Planes planes = make_planes();
   sensor::RgbdFrame f = frame_of(raw, pinhole());
@@ -1199,34 +1218,149 @@ int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
   f.color_camera = pinhole();
 
   const std::uint32_t own = device.queue_family();
-  if (prepared_sharing(device, allocator, {}, f, VK_SHARING_MODE_EXCLUSIVE) !=
-      0) {
-    return 1;
-  }
-  sensor::GpuFramePrepConfig twice;
-  twice.color_queue_families[0] = own;
-  twice.color_queue_families[1] = own;
-  twice.color_queue_family_count = 2;
-  if (prepared_sharing(device, allocator, twice, f,
-                       VK_SHARING_MODE_EXCLUSIVE) != 0) {
-    return 1;
-  }
+  const auto named = [](std::initializer_list<std::uint32_t> depth,
+                        std::initializer_list<std::uint32_t> color) {
+    sensor::GpuFramePrepConfig c;
+    std::copy(depth.begin(), depth.end(), c.depth_queue_families);
+    c.depth_queue_family_count = static_cast<std::uint32_t>(depth.size());
+    std::copy(color.begin(), color.end(), c.color_queue_families);
+    c.color_queue_family_count = static_cast<std::uint32_t>(color.size());
+    return c;
+  };
+  struct Case {
+    sensor::GpuFramePrepConfig config;
+    VkSharingMode depth, color;
+  };
+  std::vector<Case> cases = {
+      {named({}, {}), kExclusive, kExclusive},
+      {named({own}, {}), kExclusive, kExclusive},
+      {named({own, own}, {own, own}), kExclusive, kExclusive},
+  };
   if (const std::optional<std::uint32_t> other =
           vr_test::other_queue_family(device)) {
-    sensor::GpuFramePrepConfig two = twice;
-    two.color_queue_families[1] = *other;
-    if (prepared_sharing(device, allocator, two, f,
-                         VK_SHARING_MODE_CONCURRENT) != 0) {
-      return 1;
-    }
+    cases.push_back({named({own, *other}, {}), kConcurrent, kExclusive});
+    cases.push_back({named({}, {own, *other}), kExclusive, kConcurrent});
+    cases.push_back({named({*other, own, *other, own}, {own, *other}),
+                     kConcurrent, kConcurrent});
   } else {
     std::printf("  one queue family: CONCURRENT outputs not exercised\n");
   }
-  sensor::GpuFramePrepConfig too_many;
-  too_many.color_queue_family_count = vkc::BufferDesc::kMaxQueueFamilies + 1;
-  CHECK(sensor::GpuFramePrep::create(device, allocator, too_many)
-            .status()
-            .domain() == vkc::Status::Code::InvalidArgument);
+  for (const Case& c : cases) {
+    if (prepared_sharing(device, allocator, c.config, f, c.depth, c.color) !=
+        0) {
+      return 1;
+    }
+  }
+  // Refused at create, naming the output and why: a count past the array, and
+  // a family the device lacks -- for colour too, which no frame would
+  // otherwise reach while the frames carry none.
+  const auto device_families =
+      static_cast<std::uint32_t>(device.caps().queue_families().size());
+  struct Refusal {
+    sensor::GpuFramePrepConfig config;
+    const char* why;
+  };
+  for (const bool depth : {true, false}) {
+    const std::string who =
+        std::string("GpuFramePrep::create, ") + (depth ? "depth" : "colour");
+    sensor::GpuFramePrepConfig too_many;
+    (depth ? too_many.depth_queue_family_count
+           : too_many.color_queue_family_count) =
+        vkc::BufferDesc::kMaxQueueFamilies + 1;
+    const Refusal refusals[] = {
+        {too_many, ": queue_family_count"},
+        {depth ? named({own, device_families}, {})
+               : named({}, {own, device_families}),
+         ": queue family"},
+    };
+    for (const Refusal& r : refusals) {
+      const vkc::Status refused =
+          sensor::GpuFramePrep::create(device, allocator, r.config).status();
+      CHECK(refused.domain() == vkc::Status::Code::InvalidArgument);
+      CHECK(refused.message().rfind(who + r.why, 0) == 0);
+    }
+  }
+  return 0;
+}
+
+// What depth_queue_families is for: on one device shared by recon and a
+// renderer on another queue family, carved as SharedDevice carves them, sets
+// of 1, 3 and 5 frames are prepared on recon's family in one batch each, and
+// every frame's depth and colour, read on the renderer's family, are what a
+// read on recon's family gets. Nothing depends on the count of frames. The
+// validation layer checks the CONCURRENT create info but not which family
+// owns an EXCLUSIVE buffer, so the recorded sharing mode is what shows the
+// read is legal. Skipped where the device puts both on one family.
+int test_cross_family() {
+  auto made = vkc::test::TwoFamilyDevice::create(vr::device_requirements(), {});
+  if (!made) std::fprintf(stderr, "%s\n", made.status().message().c_str());
+  CHECK(made.ok());
+  vkc::test::TwoFamilyDevice& two = **made;
+  if (!two.crosses_families()) {
+    std::printf("  cross-family read skipped: %s\n",
+                two.shared().summary().c_str());
+    return 0;
+  }
+  sensor::GpuFramePrepConfig config;
+  for (std::uint32_t i = 0; i < vkc::test::TwoFamilyDevice::kFamilyCount; ++i) {
+    config.depth_queue_families[i] = two.families()[i];
+    config.color_queue_families[i] = two.families()[i];
+  }
+  config.depth_queue_family_count = vkc::test::TwoFamilyDevice::kFamilyCount;
+  config.color_queue_family_count = vkc::test::TwoFamilyDevice::kFamilyCount;
+  constexpr std::uint32_t kW = 64, kH = 48;
+  const std::size_t n = std::size_t{kW} * kH;
+  camera::CameraModel cam;
+  cam.size = {kW, kH};
+  cam.intrinsics = {52.0, 51.5, 31.6, 23.8};
+  cam.distortion = {-0.2, 0.05, 0.001, -0.001, 0.0, 0.03, 0.0, 0.0};
+  for (const std::size_t count :
+       {std::size_t{1}, std::size_t{3}, std::size_t{5}}) {
+    std::vector<sensor::GpuFramePrep> preps;
+    std::vector<std::vector<std::uint16_t>> raws(count);
+    std::vector<std::vector<std::uint32_t>> words(count);
+    std::vector<std::optional<sensor::RgbdFrame>> frames(count);
+    for (std::size_t c = 0; c < count; ++c) {
+      auto prep = sensor::GpuFramePrep::create(two.compute(),
+                                               two.compute_allocator(), config);
+      CHECK(prep.ok());
+      preps.push_back(std::move(prep).value());
+      raws[c].resize(n);
+      for (std::size_t i = 0; i < n; ++i) {
+        raws[c][i] = static_cast<std::uint16_t>(500 + 97 * c + i % 251);
+      }
+      words[c] = packed_words(n, 0x9E3779B9u + static_cast<std::uint32_t>(c));
+      sensor::RgbdFrame& f = frames[c].emplace(frame_of(raws[c], cam));
+      f.color_packed = words[c].data();
+      f.color_camera = cam;
+    }
+    auto prepared = sensor::GpuFramePrep::prepare_batch(preps, frames);
+    if (!prepared) {
+      std::fprintf(stderr, "%s\n", prepared.status().message().c_str());
+    }
+    CHECK(prepared.ok() && prepared->size() == count);
+    for (std::size_t c = 0; c < count; ++c) {
+      const sensor::DeviceFrame& f = *(*prepared)[c];
+      CHECK(f.depth->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
+      CHECK(f.color->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
+      auto on_compute = vr_test::read_back<float>(
+          two.compute(), two.compute_allocator(), *f.depth, n);
+      auto on_graphics = vr_test::read_back<float>(
+          two.graphics(), two.graphics_allocator(), *f.depth, n);
+      CHECK(on_compute.ok() && on_graphics.ok());
+      CHECK(*on_graphics == *on_compute);
+      // Not a buffer of zeros: the pinhole centre reads its raw pixel.
+      const std::size_t centre = std::size_t{24} * kW + 32;
+      CHECK((*on_compute)[centre] > 0.0f);
+      auto color_compute = vr_test::read_back<std::uint32_t>(
+          two.compute(), two.compute_allocator(), *f.color, n);
+      auto color_graphics = vr_test::read_back<std::uint32_t>(
+          two.graphics(), two.graphics_allocator(), *f.color, n);
+      CHECK(color_compute.ok() && color_graphics.ok());
+      CHECK(*color_graphics == *color_compute);
+    }
+  }
+  std::printf("  cross-family read: 1, 3 and 5 frames, depth and colour\n");
   return 0;
 }
 
@@ -1564,6 +1698,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
   if (test_prepare_batch(gpu.device, gpu.allocator) != 0) return 1;
   if (test_batch_timing(gpu.device, gpu.allocator) != 0) return 1;
   if (test_queue_families(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_cross_family() != 0) return 1;
   if (test_depth_within_color(gpu.device, gpu.allocator) != 0) return 1;
 
   sensor::GpuFramePrep moved = std::move(prep).value();
