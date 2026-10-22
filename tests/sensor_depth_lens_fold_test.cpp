@@ -32,7 +32,9 @@ namespace camera = volumetric_kit::recon::camera;
 
 namespace {
 
-// A scan's step and reach, in normalized radius.
+// A scan's march, the step it is resolved to, and its reach, in normalized
+// radius.
+constexpr double kMarch = 0.01;
 constexpr double kStep = 5e-4;
 constexpr double kReach = 3.0;
 
@@ -49,17 +51,29 @@ double along(const camera::RationalDistortion& lens, double dx, double dy,
 
 // The radius along the ray through (x, y) at which `lens` first stops
 // carrying a point outward: the distorted point's distance along the ray
-// fails to grow over a step. A sign flip or a pole of the rational model
-// stops it too. kReach when the lens does not fold before it.
+// fails to grow over a step. Marched out at kMarch until it fails to grow
+// (a sign flip or a pole of the rational model stops it too), then bisected
+// in the two marches before for where it stops growing over kStep. kReach
+// when the lens does not fold before it.
 double fold_radius(const camera::RationalDistortion& lens, double x, double y) {
   const double norm = std::hypot(x, y);
   const double dx = x / norm, dy = y / norm;
+  const auto grows = [&](double r) {
+    return along(lens, dx, dy, r + kStep) > along(lens, dx, dy, r);
+  };
   double last = 0.0;
-  const int steps = static_cast<int>(kReach / kStep);
-  for (int i = 1; i <= steps; ++i) {
-    const double r = i * kStep;
+  const int marches = static_cast<int>(std::lround(kReach / kMarch));
+  for (int i = 1; i <= marches; ++i) {
+    const double r = i * kMarch;
     const double a = along(lens, dx, dy, r);
-    if (!(a > last)) return r - kStep;
+    if (!(a > last)) {
+      double lo = std::max(0.0, r - 2.0 * kMarch), hi = r;
+      for (int k = 0; k < 60; ++k) {
+        const double mid = 0.5 * (lo + hi);
+        (grows(mid) ? lo : hi) = mid;
+      }
+      return lo;
+    }
     last = a;
   }
   return kReach;
@@ -76,7 +90,6 @@ double undistorted_radius(const camera::RationalDistortion& lens, double xd,
   const double target = std::hypot(xd, yd);
   if (target == 0.0) return 0.0;
   const double dx = xd / target, dy = yd / target;
-  constexpr double kMarch = 0.01;
   double lo = 0.0, last = 0.0;
   for (double hi = kMarch; hi <= kReach; hi += kMarch) {
     const double a = along(lens, dx, dy, hi);
@@ -123,19 +136,20 @@ SameK same_k(const camera::CameraModel& cam) {
 }
 
 // How far undistorting moves `cam`'s raw pixels: each raw pixel against its
-// pinhole position at the same K, in pixels, over every second pixel and the
-// last row and column (so all four corners). `reached` is false if some raw
-// pixel has no ray reaching it.
+// pinhole position at the same K, in pixels. The mean is over every eighth
+// pixel; the largest and `reached` take in the last row and column too (so
+// all four corners), which would tilt the mean towards the edge. `reached` is
+// false if some raw pixel has no ray reaching it.
 struct Correction {
   bool reached = true;
   double mean_px = 0.0;
   double max_px = 0.0;
 };
 
-// Every second index below n, and the last.
-std::vector<std::uint32_t> every_second(std::uint32_t n) {
+// Every eighth index below n, and the last.
+std::vector<std::uint32_t> every_eighth(std::uint32_t n) {
   std::vector<std::uint32_t> out;
-  for (std::uint32_t i = 0; i < n; i += 2) out.push_back(i);
+  for (std::uint32_t i = 0; i < n; i += 8) out.push_back(i);
   if (out.back() != n - 1) out.push_back(n - 1);
   return out;
 }
@@ -146,8 +160,8 @@ Correction correction(const camera::CameraModel& cam) {
   Correction out;
   double sum = 0.0;
   std::size_t n = 0;
-  for (const std::uint32_t v : every_second(cam.size.height)) {
-    for (const std::uint32_t u : every_second(cam.size.width)) {
+  for (const std::uint32_t v : every_eighth(cam.size.height)) {
+    for (const std::uint32_t u : every_eighth(cam.size.width)) {
       const double xd = (u - cx) / fx, yd = (v - cy) / fy;
       const double rd = std::hypot(xd, yd);
       const double ru = undistorted_radius(cam.distortion, xd, yd);
@@ -157,8 +171,10 @@ Correction correction(const camera::CameraModel& cam) {
       }
       const double s = rd > 0.0 ? ru / rd - 1.0 : 0.0;
       const double moved = std::hypot(xd * s * fx, yd * s * fy);
-      sum += moved;
-      ++n;
+      if (u % 8 == 0 && v % 8 == 0) {
+        sum += moved;
+        ++n;
+      }
       out.max_px = std::max(out.max_px, moved);
     }
   }
