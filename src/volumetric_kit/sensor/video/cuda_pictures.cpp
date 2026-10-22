@@ -5,6 +5,7 @@
 
 #include <dlfcn.h>
 
+#include <atomic>
 #include <cstring>
 #include <optional>
 #include <string>
@@ -110,11 +111,18 @@ core::Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   // does not release a reused buffer back to CUDA: CUDA overwrites the
   // picture, a family may take a buffer without a transfer when its contents
   // need not survive, and its last reader finished before letting it go.
+  // use_count() is a relaxed load. Each fence orders CUDA's next write, or
+  // the release, after whatever the thread that dropped the last other
+  // reference did first, such as its fence wait on its last read.
   for (Slot& s : slots_) {
-    if (s.buffer.use_count() == 1 && s.bytes >= bytes) return &s;
+    if (s.buffer.use_count() == 1 && s.bytes >= bytes) {
+      std::atomic_thread_fence(std::memory_order_acquire);
+      return &s;
+    }
   }
   for (auto it = slots_.begin(); it != slots_.end();) {
     if (it->buffer.use_count() == 1) {
+      std::atomic_thread_fence(std::memory_order_acquire);
       it = slots_.erase(it);
     } else {
       ++it;
