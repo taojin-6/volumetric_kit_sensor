@@ -6,8 +6,8 @@
 // clip was made from, the colour an unlabelled stream takes, a reset
 // mid-stream and after the end, a display window off the coded picture's
 // corner, a stream the hardware refuses, the decoders create refuses,
-// VideoToolbox's images shared across queue families, the argument checks,
-// and moves.
+// VideoToolbox's images shared across queue families, NVDEC's decoders
+// sharing the GPU's primary CUDA context, the argument checks, and moves.
 //
 // Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one (NVDEC on the NVIDIA containers,
@@ -29,6 +29,11 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 #include "yuv_reference.hpp"
+
+#if !defined(__APPLE__)
+#include <cuda.h>
+#include <dlfcn.h>
+#endif
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
@@ -411,6 +416,60 @@ int test_create_refusals(const Gpu& gpu) {
   return 0;
 }
 
+#if !defined(__APPLE__)
+// How many CUDA devices have their primary context active, as libcuda says;
+// -1 where it cannot say.
+int active_primary_contexts() {
+  void* lib = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+  if (lib == nullptr) return -1;
+  const auto init = reinterpret_cast<decltype(&cuInit)>(dlsym(lib, "cuInit"));
+  const auto count = reinterpret_cast<decltype(&cuDeviceGetCount)>(
+      dlsym(lib, "cuDeviceGetCount"));
+  const auto get =
+      reinterpret_cast<decltype(&cuDeviceGet)>(dlsym(lib, "cuDeviceGet"));
+  const auto state = reinterpret_cast<decltype(&cuDevicePrimaryCtxGetState)>(
+      dlsym(lib, "cuDevicePrimaryCtxGetState"));
+  int devices = 0;
+  int active = -1;
+  if (init != nullptr && count != nullptr && get != nullptr &&
+      state != nullptr && init(0) == CUDA_SUCCESS &&
+      count(&devices) == CUDA_SUCCESS) {
+    active = 0;
+    for (int i = 0; i < devices && active >= 0; ++i) {
+      CUdevice device = 0;
+      unsigned flags = 0;
+      int on = 0;
+      if (get(&device, i) != CUDA_SUCCESS ||
+          state(device, &flags, &on) != CUDA_SUCCESS) {
+        active = -1;
+      } else {
+        active += on;
+      }
+    }
+  }
+  dlclose(lib);
+  return active;
+}
+
+// The decoders on a GPU share its primary CUDA context, each on a stream of
+// its own, and let it go with the last of them: none opens a context of its
+// own.
+int test_primary_context(const Gpu& gpu) {
+  CHECK(active_primary_contexts() == 0);
+  {
+    auto a = HevcDecoder::create(decoder_options(gpu));
+    auto b = HevcDecoder::create(decoder_options(gpu));
+    CHECK(a.ok() && b.ok());
+    CHECK(active_primary_contexts() == 1);
+    const AccessUnits units = vr_test::hevc_access_units(kPatches);
+    CHECK(check_clip_shape(decode_clip(a.value(), units, gpu)) == 0);
+    CHECK(check_clip_shape(decode_clip(b.value(), units, gpu)) == 0);
+  }
+  CHECK(active_primary_contexts() == 0);
+  return 0;
+}
+#endif
+
 #if defined(__APPLE__)
 // Options::queue_families reach VideoToolbox's images: CONCURRENT across two
 // families, every picture as the clip was made. A list the importer refuses
@@ -499,6 +558,8 @@ int gpu_main(Gpu& gpu) {
   if (test_create_refusals(gpu) != 0) return 1;
 #if defined(__APPLE__)
   if (test_queue_families(gpu) != 0) return 1;
+#else
+  if (test_primary_context(gpu) != 0) return 1;
 #endif
   if (test_arguments(gpu) != 0) return 1;
   if (test_moves(gpu) != 0) return 1;

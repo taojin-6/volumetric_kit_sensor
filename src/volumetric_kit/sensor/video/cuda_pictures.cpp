@@ -5,6 +5,7 @@
 
 #include <dlfcn.h>
 
+#include <atomic>
 #include <cstring>
 #include <optional>
 #include <string>
@@ -81,6 +82,41 @@ core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who) {
       std::string(who) + ": no CUDA device is the Vulkan device's GPU");
 }
 
+core::Result<std::unique_ptr<CudaStream>> CudaStream::open(
+    const core::Device& device, const char* who) {
+  VKC_ASSIGN(const int ordinal, cuda_ordinal_of(device, who));
+  const CudaDriver* cu = cuda_driver();
+  auto s = std::make_unique<CudaStream>();
+  CUresult r = cu->cuDeviceGet(&s->device, ordinal);
+  if (r == CUDA_SUCCESS) {
+    r = cu->cuDevicePrimaryCtxRetain(&s->context, s->device);
+  }
+  if (r != CUDA_SUCCESS) {
+    s->context = nullptr;
+    return cuda_error(who, r, "retaining the GPU's CUDA context");
+  }
+  const CudaContextScope scope(s->context);
+  if (!scope.ok()) {
+    return cuda_error(who, scope.result(), "making the CUDA context current");
+  }
+  r = cu->cuStreamCreate(&s->stream, CU_STREAM_NON_BLOCKING);
+  if (r != CUDA_SUCCESS) {
+    s->stream = nullptr;
+    return cuda_error(who, r, "creating a CUDA stream");
+  }
+  return s;
+}
+
+CudaStream::~CudaStream() {
+  if (context == nullptr) return;
+  const CudaDriver* cu = cuda_driver();
+  if (stream != nullptr) {
+    const CudaContextScope scope(context);
+    cu->cuStreamDestroy(stream);
+  }
+  cu->cuDevicePrimaryCtxRelease(device);
+}
+
 core::Result<std::unique_ptr<CudaPictures>> CudaPictures::create(
     const core::Device& device, core::Allocator& allocator, CUcontext context,
     CUstream stream, const char* who) {
@@ -110,11 +146,18 @@ core::Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   // does not release a reused buffer back to CUDA: CUDA overwrites the
   // picture, a family may take a buffer without a transfer when its contents
   // need not survive, and its last reader finished before letting it go.
+  // use_count() is a relaxed load. Each fence orders CUDA's next write, or
+  // the release, after whatever the thread that dropped the last other
+  // reference did first, such as its fence wait on its last read.
   for (Slot& s : slots_) {
-    if (s.buffer.use_count() == 1 && s.bytes >= bytes) return &s;
+    if (s.buffer.use_count() == 1 && s.bytes >= bytes) {
+      std::atomic_thread_fence(std::memory_order_acquire);
+      return &s;
+    }
   }
   for (auto it = slots_.begin(); it != slots_.end();) {
     if (it->buffer.use_count() == 1) {
+      std::atomic_thread_fence(std::memory_order_acquire);
       it = slots_.erase(it);
     } else {
       ++it;

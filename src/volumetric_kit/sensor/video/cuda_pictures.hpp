@@ -104,6 +104,24 @@ class CudaContextScope {
 // start, or no CUDA device is. @p who names the decoder in errors.
 core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who);
 
+// The primary CUDA context of a Vulkan device's GPU, retained, and a stream
+// of the holder's own on it that never waits on the legacy default stream:
+// every decoder on a GPU shares the one context, and each queues its work
+// apart from the others'. Released together, the stream first.
+struct CudaStream {
+  // @p who names the decoder in errors.
+  static core::Result<std::unique_ptr<CudaStream>> open(
+      const core::Device& device, const char* who);
+  CudaStream() = default;
+  ~CudaStream();
+  CudaStream(const CudaStream&) = delete;
+  CudaStream& operator=(const CudaStream&) = delete;
+
+  CUdevice device = 0;
+  CUcontext context = nullptr;
+  CUstream stream = nullptr;
+};
+
 // One exported buffer and CUDA's view of it. Its CUDA context is current
 // while it is acquired, moved, or released. Own each handle immediately, so
 // failed mapping or host allocation unwinds CUDA before the Vulkan buffer.
