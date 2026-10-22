@@ -337,6 +337,13 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   // Parameter-only packets are parsed by send(), before it returns. Hardware
   // decoding needs no frame threads holding those packets for a later call.
   context->thread_count = 1;
+#if VR_SENSOR_VIDEO_WITH_CUDA
+  // A picture is copied straight off NVDEC's surface, with no copy of
+  // FFmpeg's first: receive() copies it out before it returns and lets the
+  // surface go at the next call, so it holds one surface at most, which
+  // FFmpeg's pool leaves room for.
+  context->hwaccel_flags |= AV_HWACCEL_FLAG_UNSAFE_OUTPUT;
+#endif
   err = avcodec_open2(context, codec, nullptr);
   if (err < 0) return video::ffmpeg_error(kWho, "opening the decoder", err);
   return HevcDecoder(std::move(impl));
