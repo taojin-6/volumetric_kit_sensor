@@ -82,6 +82,41 @@ core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who) {
       std::string(who) + ": no CUDA device is the Vulkan device's GPU");
 }
 
+core::Result<std::unique_ptr<CudaStream>> CudaStream::open(
+    const core::Device& device, const char* who) {
+  VKC_ASSIGN(const int ordinal, cuda_ordinal_of(device, who));
+  const CudaDriver* cu = cuda_driver();
+  auto s = std::make_unique<CudaStream>();
+  CUresult r = cu->cuDeviceGet(&s->device, ordinal);
+  if (r == CUDA_SUCCESS) {
+    r = cu->cuDevicePrimaryCtxRetain(&s->context, s->device);
+  }
+  if (r != CUDA_SUCCESS) {
+    s->context = nullptr;
+    return cuda_error(who, r, "retaining the GPU's CUDA context");
+  }
+  const CudaContextScope scope(s->context);
+  if (!scope.ok()) {
+    return cuda_error(who, scope.result(), "making the CUDA context current");
+  }
+  r = cu->cuStreamCreate(&s->stream, CU_STREAM_NON_BLOCKING);
+  if (r != CUDA_SUCCESS) {
+    s->stream = nullptr;
+    return cuda_error(who, r, "creating a CUDA stream");
+  }
+  return s;
+}
+
+CudaStream::~CudaStream() {
+  if (context == nullptr) return;
+  const CudaDriver* cu = cuda_driver();
+  if (stream != nullptr) {
+    const CudaContextScope scope(context);
+    cu->cuStreamDestroy(stream);
+  }
+  cu->cuDevicePrimaryCtxRelease(device);
+}
+
 core::Result<std::unique_ptr<CudaPictures>> CudaPictures::create(
     const core::Device& device, core::Allocator& allocator, CUcontext context,
     CUstream stream, const char* who) {

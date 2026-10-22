@@ -32,6 +32,11 @@ constexpr const char* kWho = "HevcDecoder";
 constexpr AVHWDeviceType kDeviceType = AV_HWDEVICE_TYPE_CUDA;
 constexpr AVPixelFormat kDeviceFormat = AV_PIX_FMT_CUDA;
 constexpr const char* kPath = "NVDEC";
+
+// FFmpeg's device context's free: the context and stream it was given.
+void release_cuda_stream(AVHWDeviceContext* device) {
+  delete static_cast<video::CudaStream*>(device->user_opaque);
+}
 #else
 constexpr AVHWDeviceType kDeviceType = AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
 constexpr AVPixelFormat kDeviceFormat = AV_PIX_FMT_VIDEOTOOLBOX;
@@ -286,32 +291,40 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
     return video::ffmpeg_alloc_error(kWho, "opening the decoder");
   }
 
-  // The hardware device: on CUDA, the CUDA device that is the Vulkan
-  // device's GPU.
+  // The hardware device: on CUDA, the primary context of the Vulkan device's
+  // GPU and a stream of this decoder's own, which FFmpeg's device holds and
+  // lets go with its last reference.
   AVBufferRef* hw = nullptr;
 #if VR_SENSOR_VIDEO_WITH_CUDA
   // TODO(sensor): Options::queue_families for NVDEC's buffers, which a reader
   // on any family takes over from outside Vulkan for now.
-  VKC_ASSIGN(const int ordinal, video::cuda_ordinal_of(*options.device, kWho));
-  const std::string name = std::to_string(ordinal);
-  int err = av_hwdevice_ctx_create(&hw, kDeviceType, name.c_str(), nullptr, 0);
+  VKC_ASSIGN(std::unique_ptr<video::CudaStream> cuda,
+             video::CudaStream::open(*options.device, kWho));
+  hw = av_hwdevice_ctx_alloc(kDeviceType);
+  if (hw == nullptr) return video::ffmpeg_alloc_error(kWho, "opening NVDEC");
+  impl->hw_device.reset(hw);
+  auto* hw_context = reinterpret_cast<AVHWDeviceContext*>(hw->data);
+  auto* hw_cuda = static_cast<AVCUDADeviceContext*>(hw_context->hwctx);
+  hw_cuda->cuda_ctx = cuda->context;
+  hw_cuda->stream = cuda->stream;
+  hw_context->user_opaque = cuda.release();
+  hw_context->free = &release_cuda_stream;
+  int err = av_hwdevice_ctx_init(hw);
 #else
   VKC_ASSIGN(impl->pictures, PixelBufferImporter::create(
                                  *options.device, kWho, options.queue_families,
                                  options.queue_family_count));
   int err = av_hwdevice_ctx_create(&hw, kDeviceType, nullptr, nullptr, 0);
+  if (err >= 0) impl->hw_device.reset(hw);
 #endif
   if (err < 0) {
     return unsupported(std::string(kPath) +
                        ": no device opens: " + video::ffmpeg_message(err));
   }
-  impl->hw_device.reset(hw);
 #if VR_SENSOR_VIDEO_WITH_CUDA
-  const auto* hw_context = reinterpret_cast<const AVHWDeviceContext*>(hw->data);
-  const auto* cuda = static_cast<const AVCUDADeviceContext*>(hw_context->hwctx);
-  VKC_ASSIGN(impl->pictures,
-             video::CudaPictures::create(*options.device, *options.allocator,
-                                         cuda->cuda_ctx, cuda->stream, kWho));
+  VKC_ASSIGN(impl->pictures, video::CudaPictures::create(
+                                 *options.device, *options.allocator,
+                                 hw_cuda->cuda_ctx, hw_cuda->stream, kWho));
 #endif
 
   AVCodecContext* context = impl->codec.get();

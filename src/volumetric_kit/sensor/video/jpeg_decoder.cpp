@@ -105,10 +105,11 @@ bool refused(nvjpegStatus_t s) {
   return s == NVJPEG_STATUS_BAD_JPEG || s == NVJPEG_STATUS_INCOMPLETE_BITSTREAM;
 }
 
-// nvJPEG on the GPU's hardware JPEG engine, in the primary context of the
-// Vulkan device's GPU, and everything it holds there, released together. Only
-// the engine: nvJPEG's other back ends decode the entropy on the host (4.2 ms
-// of CPU a 4K frame for GPU_HYBRID; the 2026-09-28 decoded-frame decision).
+// nvJPEG on the GPU's hardware JPEG engine, on a stream of its own in the
+// primary context of the Vulkan device's GPU, and everything it holds there,
+// released together. Only the engine: nvJPEG's other back ends decode the
+// entropy on the host (4.2 ms of CPU a 4K frame for GPU_HYBRID; the
+// 2026-09-28 decoded-frame decision).
 struct NvjpegDecoder {
   // Its picture buffers are made through @p allocator.
   static core::Result<std::unique_ptr<NvjpegDecoder>> open(
@@ -121,9 +122,7 @@ struct NvjpegDecoder {
   core::Result<DecodedPicture> decode(const std::uint8_t* data,
                                       std::size_t size);
 
-  CUdevice cuda_device = 0;
-  CUcontext context = nullptr;
-  CUstream stream = nullptr;
+  std::unique_ptr<video::CudaStream> cuda;  // let go last
   // A picture waits on an event made to block, not spin: CUDA's default wait
   // bills the whole wait as CPU.
   CUevent done = nullptr;
@@ -143,28 +142,15 @@ core::Result<std::unique_ptr<NvjpegDecoder>> NvjpegDecoder::open(
   const Nvjpeg* n = nvjpeg();
   if (cu == nullptr) return unsupported("libcuda does not load");
   if (n == nullptr) return unsupported("libnvjpeg does not load");
-  VKC_ASSIGN(const int ordinal, video::cuda_ordinal_of(device, kWho));
   auto d = std::make_unique<NvjpegDecoder>();
-  CUresult r = cu->cuDeviceGet(&d->cuda_device, ordinal);
-  if (r == CUDA_SUCCESS) {
-    r = cu->cuDevicePrimaryCtxRetain(&d->context, d->cuda_device);
-  }
-  if (r != CUDA_SUCCESS) {
-    d->context = nullptr;
-    return video::cuda_error(kWho, r, "retaining the GPU's CUDA context");
-  }
-  const video::CudaContextScope scope(d->context);
+  VKC_ASSIGN(d->cuda, video::CudaStream::open(device, kWho));
+  const video::CudaContextScope scope(d->cuda->context);
   if (!scope.ok()) {
     return video::cuda_error(kWho, scope.result(),
                              "making the CUDA context current");
   }
-  r = cu->cuStreamCreate(&d->stream, CU_STREAM_NON_BLOCKING);
-  if (r != CUDA_SUCCESS) {
-    d->stream = nullptr;
-    return video::cuda_error(kWho, r, "opening nvJPEG");
-  }
-  r = cu->cuEventCreate(&d->done,
-                        CU_EVENT_BLOCKING_SYNC | CU_EVENT_DISABLE_TIMING);
+  const CUresult r = cu->cuEventCreate(
+      &d->done, CU_EVENT_BLOCKING_SYNC | CU_EVENT_DISABLE_TIMING);
   if (r != CUDA_SUCCESS) {
     d->done = nullptr;
     return video::cuda_error(kWho, r, "opening nvJPEG");
@@ -195,34 +181,31 @@ core::Result<std::unique_ptr<NvjpegDecoder>> NvjpegDecoder::open(
       !ok(s = n->nvjpegStateAttachDeviceBuffer(d->state, d->staging))) {
     return video::nvjpeg_error(kWho, s, "opening nvJPEG");
   }
-  VKC_ASSIGN(d->pictures, video::CudaPictures::create(
-                              device, allocator, d->context, d->stream, kWho));
+  VKC_ASSIGN(d->pictures,
+             video::CudaPictures::create(device, allocator, d->cuda->context,
+                                         d->cuda->stream, kWho));
   return d;
 }
 
 NvjpegDecoder::~NvjpegDecoder() {
-  if (context == nullptr) return;
+  if (cuda == nullptr) return;
   const video::CudaDriver* cu = video::cuda_driver();
   const Nvjpeg* n = nvjpeg();
-  {
-    const video::CudaContextScope scope(context);
-    pictures.reset();  // its imports go with the context
-    if (state != nullptr) n->nvjpegJpegStateDestroy(state);
-    if (decoder != nullptr) n->nvjpegDecoderDestroy(decoder);
-    if (params != nullptr) n->nvjpegDecodeParamsDestroy(params);
-    if (parsed != nullptr) n->nvjpegJpegStreamDestroy(parsed);
-    if (staging != nullptr) n->nvjpegBufferDeviceDestroy(staging);
-    if (pinned != nullptr) n->nvjpegBufferPinnedDestroy(pinned);
-    if (handle != nullptr) n->nvjpegDestroy(handle);
-    if (done != nullptr) cu->cuEventDestroy(done);
-    if (stream != nullptr) cu->cuStreamDestroy(stream);
-  }
-  cu->cuDevicePrimaryCtxRelease(cuda_device);
+  const video::CudaContextScope scope(cuda->context);
+  pictures.reset();  // its imports go with the context
+  if (state != nullptr) n->nvjpegJpegStateDestroy(state);
+  if (decoder != nullptr) n->nvjpegDecoderDestroy(decoder);
+  if (params != nullptr) n->nvjpegDecodeParamsDestroy(params);
+  if (parsed != nullptr) n->nvjpegJpegStreamDestroy(parsed);
+  if (staging != nullptr) n->nvjpegBufferDeviceDestroy(staging);
+  if (pinned != nullptr) n->nvjpegBufferPinnedDestroy(pinned);
+  if (handle != nullptr) n->nvjpegDestroy(handle);
+  if (done != nullptr) cu->cuEventDestroy(done);
 }
 
 core::Result<DecodedPicture> NvjpegDecoder::decode(const std::uint8_t* data,
                                                    std::size_t size) {
-  const video::CudaContextScope scope(context);
+  const video::CudaContextScope scope(cuda->context);
   if (!scope.ok()) {
     return video::cuda_error(kWho, scope.result(),
                              "making the CUDA context current");
@@ -297,12 +280,13 @@ core::Result<DecodedPicture> NvjpegDecoder::decode(const std::uint8_t* data,
   const bool decoded =
       step(n->nvjpegDecodeJpegHost(handle, decoder, state, params, parsed)) &&
       step(n->nvjpegDecodeJpegTransferToDevice(handle, decoder, state, parsed,
-                                               stream)) &&
-      step(n->nvjpegDecodeJpegDevice(handle, decoder, state, &out, stream));
+                                               cuda->stream)) &&
+      step(n->nvjpegDecodeJpegDevice(handle, decoder, state, &out,
+                                     cuda->stream));
   // What was queued finishes either way, so the buffers are free for the
   // next JPEG, and a failing GPU fails here.
   const video::CudaDriver* cu = video::cuda_driver();
-  CUresult r = cu->cuEventRecord(done, stream);
+  CUresult r = cu->cuEventRecord(done, cuda->stream);
   if (r == CUDA_SUCCESS) r = cu->cuEventSynchronize(done);
   if (r != CUDA_SUCCESS) return video::cuda_error(kWho, r, "decoding a JPEG");
   if (!decoded) return failed("decoding a JPEG");
