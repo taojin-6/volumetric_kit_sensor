@@ -10,7 +10,6 @@
 # and no recon_core -- so a driver can report its factory calibration in it
 # without a GPU API. The sensor tier builds on it.
 include(GenerateExportHeader)
-include(GNUInstallDirs)
 
 # The canonical glm::glm target, as recon_core finds it (see that file for why);
 # an imported target is visible only in the directory that finds it.
@@ -59,28 +58,7 @@ endif()
 target_include_directories(recon_camera SYSTEM PRIVATE "${VR_JSON_INCLUDE_DIR}")
 
 target_include_directories(
-  recon_camera
-  PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-         "$<BUILD_INTERFACE:${_vr_camera_generated_inc}>"
-         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+  recon_camera PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+                      "$<BUILD_INTERFACE:${_vr_camera_generated_inc}>")
 
 vr_target_warnings(recon_camera)
-
-if(VR_INSTALL)
-  install(
-    TARGETS recon_camera
-    EXPORT volumetric_kit_reconTargets
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  install(
-    DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/camera"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-  install(
-    DIRECTORY "${_vr_camera_generated_inc}/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-endif()

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Tao Jin
 
 // A sibling's use of the camera tier: it includes each of the tier's public
-// headers, so each must compile from a camera-only install, and checks a camera
+// headers, so each must compile in a camera-only build, and checks a camera
 // model, so it links recon_camera and the core's base tier.
 
 #include "volumetric_kit/recon/camera/array_calibration.hpp"

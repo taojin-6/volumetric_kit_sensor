@@ -105,11 +105,11 @@ struct Run {
   vkc::Status failure;
 };
 
-// Push `in`, wait for `expect` pairs out or the decoder to stop, and stop it.
-// The queue holds all of `in`, so none is skipped. The pictures are shared
-// with `families`.
+// Push `in`, wait until each pair is out or lost, or the decoder has failed,
+// and stop it: nothing more can come out. The queue holds all of `in`, so
+// none is skipped. The pictures are shared with `families`.
 Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
-        std::size_t expect, const std::vector<std::uint32_t>& families = {}) {
+        const std::vector<std::uint32_t>& families = {}) {
   struct Collected {
     std::mutex mutex;
     std::vector<std::shared_ptr<ob::FrameSet>> sets;
@@ -140,14 +140,13 @@ Run run(const std::vector<std::shared_ptr<ob::FrameSet>>& in,
       std::lock_guard<std::mutex> lock(collected->mutex);
       n = collected->sets.size();
     }
-    if (n >= expect || !decoder.value()->failure().ok() ||
+    if (n + decoder.value()->lost() >= in.size() ||
+        !decoder.value()->failure().ok() ||
         std::chrono::steady_clock::now() > deadline) {
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  // Let anything that should not come out have its chance to.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
   Run r;
   r.failure = decoder.value()->failure();
   decoder.value()->stop();
@@ -195,10 +194,9 @@ int test_losses() {
   const std::vector<std::uint8_t> jpeg = read_file(kJpeg);
   const std::vector<std::uint8_t> garbage(64, 0x5a);
   CHECK(pair({}, 3)->getColorFrame()->getDataSize() == 0);
-  const Run r = run(
-      {pair(jpeg, 0), pair(jpeg, 1, true, false), pair(jpeg, 2, false, true),
-       pair({}, 3), pair(garbage, 4), pair(jpeg, 5)},
-      2);
+  const Run r = run({pair(jpeg, 0), pair(jpeg, 1, true, false),
+                     pair(jpeg, 2, false, true), pair({}, 3), pair(garbage, 4),
+                     pair(jpeg, 5)});
   CHECK(r.out.size() == 2 && r.lost == 4);
   CHECK(r.out[1]->getColorFrame()->getTimeStampUs() ==
         kStartUs + 5 * kPeriodUs);
@@ -280,7 +278,7 @@ int test_device() {
   CHECK(!jpeg.empty());
   std::vector<std::shared_ptr<ob::FrameSet>> in;
   for (int f = 0; f < 5; ++f) in.push_back(pair(jpeg, f));
-  Run r = run(in, 5);
+  Run r = run(in);
   CHECK(r.out.size() == 5 && r.lost == 0 && r.failure.ok());
   std::shared_ptr<const void> held;
   for (int f = 0; f < 5; ++f) {
@@ -336,7 +334,7 @@ int test_bitstream() {
   in->pushFrame(std::move(depth));
   in->pushFrame(std::move(color));
 
-  Run r = run({in}, 1);
+  Run r = run({in});
   in.reset();
   CHECK(r.out.size() == 1 && r.failure.ok());
   const sensor::ColorBitstream b =
@@ -372,7 +370,7 @@ int test_queue_families() {
       vr_test::other_queue_family(*g_device);
   if (!other) return 0;
   const Run r =
-      run({pair(read_file(kJpeg), 0)}, 1, {g_device->queue_family(), *other});
+      run({pair(read_file(kJpeg), 0)}, {g_device->queue_family(), *other});
   CHECK(r.out.size() == 1 && r.failure.ok());
   const std::optional<sensor::DecodedPicture> p =
       orbbec::device_picture(*r.out[0]->getColorFrame());
@@ -398,7 +396,7 @@ int test_start_needs_device() {
 int test_unsupported_jpeg() {
   const std::vector<std::uint8_t> jpeg = read_file(k422);
   CHECK(!jpeg.empty());
-  const Run r = run({pair(jpeg, 0), pair(jpeg, 1)}, 1);
+  const Run r = run({pair(jpeg, 0), pair(jpeg, 1)});
   CHECK(r.failure.domain() == vkc::Status::Code::Unsupported);
   CHECK(r.out.empty());
   return 0;

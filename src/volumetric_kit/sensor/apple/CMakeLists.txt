@@ -9,7 +9,6 @@
 # ARKit's. Links recon_core alone; the YuvImage it fills is a header of
 # recon_sensor's (sensor/yuv_image.hpp) that names no camera.
 include(GenerateExportHeader)
-include(GNUInstallDirs)
 
 set(_vr_sensor_apple_generated_inc
     "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
@@ -55,28 +54,6 @@ target_link_libraries(
 target_include_directories(
   recon_sensor_apple
   PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-         "$<BUILD_INTERFACE:${_vr_sensor_apple_generated_inc}>"
-         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+         "$<BUILD_INTERFACE:${_vr_sensor_apple_generated_inc}>")
 
 vr_target_warnings(recon_sensor_apple)
-
-# The target, its headers (recon_sensor's install leaves them out) and the
-# generated export header.
-if(VR_INSTALL)
-  install(
-    TARGETS recon_sensor_apple
-    EXPORT volumetric_kit_reconTargets
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  install(
-    DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/sensor/apple"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon/sensor"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-  install(
-    DIRECTORY "${_vr_sensor_apple_generated_inc}/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-endif()
