@@ -206,14 +206,32 @@ bool wait_for(Collected& collected, std::size_t count,
   return collected.size() >= count;
 }
 
-// Push `in`, wait for `expect` pairs out, and stop.
+// Whether, within ten seconds, each of the `pushed` pairs has come out of
+// `decoder` or been lost but for `held`, or it has failed. With none held
+// nothing more can come out: a later pair would be one too many.
+bool settled(Collected& collected, std::size_t pushed, std::size_t held,
+             const orbbec::HevcColorDecoder& decoder) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  const auto accounted = [&] {
+    return collected.size() + decoder.lost() + held >= pushed;
+  };
+  while (!accounted() && decoder.failure().ok() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return accounted();
+}
+
+// Push `in`, wait until every pair is out or lost but for the `held` a
+// decoder may keep at the end, and stop.
 struct Run {
   std::vector<Out> out;
   std::vector<std::shared_ptr<ob::FrameSet>> frames;  // with keep_frames
   std::uint64_t lost = 0;
   vkc::Status failure;
 };
-Run run(const Pairs& in, std::size_t expect, bool keep_frames = false,
+Run run(const Pairs& in, std::size_t held = 0, bool keep_frames = false,
         const std::vector<std::uint32_t>& families = {}) {
   auto collected = std::make_shared<Collected>();
   auto decoder = start(
@@ -225,9 +243,7 @@ Run run(const Pairs& in, std::size_t expect, bool keep_frames = false,
       },
       30, true, families);
   for (const auto& p : in) decoder->push(p);
-  wait_for(*collected, expect, *decoder);
-  // Let anything that should not come out have its chance to.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  settled(*collected, in.size(), held, *decoder);
   Run r;
   r.failure = decoder->failure();
   decoder->stop();
@@ -303,7 +319,7 @@ int check_pair(
 int test_hands_on_device_pictures() {
   Run r = run(
       pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}),
-      8, true);
+      0, true);
   CHECK(r.frames.size() == 8 && r.lost == 0);
   std::shared_ptr<const void> held;
   std::shared_ptr<ob::Frame> copied;
@@ -365,8 +381,7 @@ int test_key_frames() {
 
 int test_every_pair_in_order() {
   const Run r = run(
-      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}),
-      8);
+      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}));
   CHECK(r.out.size() == 8);
   CHECK(r.lost == 0);
   for (int i = 0; i < 8; ++i) {
@@ -383,7 +398,7 @@ int test_queue_families() {
   const std::optional<std::uint32_t> other =
       vr_test::other_queue_family(*g_device);
   if (!other) return 0;
-  const Run r = run(pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1}), 2,
+  const Run r = run(pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1}), 0,
                     false, {g_device->queue_family(), *other});
   CHECK(r.out.size() == 2);
   for (int i = 0; i < 2; ++i) {
@@ -401,7 +416,7 @@ int test_queue_families() {
 // decodes frames 2 and 3 wrongly without an error, where FFmpeg 9 refuses.
 int test_gap_waits_for_key_frame() {
   const Run r = run(
-      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 2, 3, 4, 5, 6, 7}), 5);
+      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 2, 3, 4, 5, 6, 7}));
   CHECK(r.out.size() == 5);
   CHECK(r.lost == 2);
   const int want[] = {0, 4, 5, 6, 7};
@@ -416,10 +431,9 @@ int test_gap_waits_for_key_frame() {
 // secondary's first frame comes as soon as it starts, the rest once the
 // primary triggers it. Nothing is missing from the stream, so nothing is lost.
 int test_pause_costs_nothing() {
-  const Run r = run(
-      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7},
-            {0, 120, 121, 122, 123, 124, 125, 126}),
-      8);
+  const Run r = run(pairs(vr_test::hevc_access_units(kUnlabelled),
+                          {0, 1, 2, 3, 4, 5, 6, 7},
+                          {0, 120, 121, 122, 123, 124, 125, 126}));
   CHECK(r.out.size() == 8);
   CHECK(r.lost == 0);
   const int slots[] = {0, 120, 121, 122, 123, 124, 125, 126};
@@ -529,9 +543,7 @@ int test_overflow_waits_for_key_frame() {
     CHECK(wait_for(*collected, k - 3, *decoder));
     decoder->push(in[k]);
   }
-  CHECK(wait_for(*collected, 5, *decoder));
-  // Let anything that should not come out have its chance to.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(settled(*collected, in.size(), 0, *decoder));
   CHECK(decoder->failure().ok());
   decoder->stop();
   CHECK(decoder->lost() == 3);
@@ -548,7 +560,7 @@ int test_overflow_waits_for_key_frame() {
 // A stream joined mid-GOP starts at its first key frame.
 int test_start_waits_for_key_frame() {
   const Run r =
-      run(pairs(vr_test::hevc_access_units(kUnlabelled), {2, 3, 4, 5}), 2);
+      run(pairs(vr_test::hevc_access_units(kUnlabelled), {2, 3, 4, 5}));
   CHECK(r.out.size() == 2);
   CHECK(r.lost == 2);
   CHECK(slot_of(r.out[0]) == 4 && slot_of(r.out[1]) == 5);
@@ -559,9 +571,8 @@ int test_start_waits_for_key_frame() {
 // depth never came: decoded, so frame 3 still has the picture it is predicted
 // from, and dropped. Only that pair is lost.
 int test_color_without_depth() {
-  const Run r = run(
-      pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, -4, 3, 4, 5, 6, 7}),
-      7);
+  const Run r = run(pairs(vr_test::hevc_access_units(kUnlabelled),
+                          {0, 1, -4, 3, 4, 5, 6, 7}));
   CHECK(r.out.size() == 7);
   CHECK(r.lost == 1);
   const int want[] = {0, 1, 3, 4, 5, 6, 7};
@@ -573,7 +584,7 @@ int test_color_without_depth() {
 }
 
 int test_pair_without_color() {
-  const Run r = run(pairs(vr_test::hevc_access_units(kUnlabelled), {0, -1}), 1);
+  const Run r = run(pairs(vr_test::hevc_access_units(kUnlabelled), {0, -1}));
   CHECK(r.out.size() == 1);
   CHECK(r.lost == 1);
   return 0;
@@ -585,7 +596,7 @@ int test_empty_frame() {
   const auto units = vr_test::hevc_access_units(kUnlabelled);
   Pairs in = pairs(units, {0, 1, 2, 3, 4, 5, 6, 7});
   in[2] = pair({}, 2, 2);
-  const Run r = run(in, 6);
+  const Run r = run(in);
   CHECK(r.out.size() == 6);
   CHECK(r.lost == 2);
   const int want[] = {0, 1, 4, 5, 6, 7};
@@ -599,8 +610,7 @@ int test_empty_frame() {
 // A stream that labels itself is decoded as it says: BT.709 limited range.
 int test_labelled_stream() {
   const Run r = run(
-      pairs(vr_test::hevc_access_units(kLabelled), {0, 1, 2, 3, 4, 5, 6, 7}),
-      8);
+      pairs(vr_test::hevc_access_units(kLabelled), {0, 1, 2, 3, 4, 5, 6, 7}));
   CHECK(r.out.size() == 8);
   CHECK(r.lost == 0);
   for (int i = 0; i < 8; ++i) {
@@ -708,7 +718,7 @@ int test_b_frames() {
     frames.push_back(i);
     want.push_back(i);
   }
-  const Run r = run(pairs(units, frames, shows), want.size() - kHeldAtEnd);
+  const Run r = run(pairs(units, frames, shows), kHeldAtEnd);
   CHECK(r.lost == 0);
   return check_run(r, want, 8, [](int slot) { return slot % 8; });
 }
@@ -750,7 +760,7 @@ int test_open_gop_restart() {
   }
   std::vector<int> want = {0};
   for (int f = 6; f < static_cast<int>(units.size()); ++f) want.push_back(f);
-  const Run r = run(pairs(units, frames, slots), want.size() - kHeldAtEnd);
+  const Run r = run(pairs(units, frames, slots), kHeldAtEnd);
   CHECK(r.lost == 4);
   return check_run(r, want, 16,
                    [](int slot) { return slot < 16 ? slot : (slot - 16) % 8; });
@@ -774,7 +784,7 @@ int test_refused_stream() {
   CHECK(units.size() == 10);
   std::vector<int> frames;
   for (int i = 0; i < 10; ++i) frames.push_back(i);
-  const Run r = run(pairs(units, frames), 10);
+  const Run r = run(pairs(units, frames));
   CHECK(r.failure.domain() == vkc::Status::Code::Unsupported);
   CHECK(!r.out.empty());
   return 0;
