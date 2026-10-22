@@ -8,12 +8,9 @@
 # 1. Each option that needs the rest of recon is refused with VR_CAMERA_ONLY.
 # 2. The consumer (CMakeLists.txt here) fetches recon's source from SOURCE_DIR
 #    camera-only, checks that nothing reaches Vulkan and builds against the
-#    umbrella, which reaches recon_camera alone; recon's install from that build
-#    goes to BINARY_DIR/prefix.
-# 3. The consumer finds that installed package and builds against it again.
+#    umbrella, which reaches recon_camera alone.
 #
-# GENERATOR and CXX_COMPILER repeat the calling build's; each build and the
-# install are Release, so a multi-config generator builds what it installs.
+# GENERATOR and CXX_COMPILER repeat the calling build's; the build is Release.
 # Every FETCHCONTENT_SOURCE_DIR_<NAME> given is passed on, so it needs no
 # network.
 foreach(_var SOURCE_DIR BINARY_DIR GENERATOR CXX_COMPILER)
@@ -84,16 +81,7 @@ foreach(_option VR_BUILD_EXAMPLES VR_WITH_ORBBEC VR_WITH_FFMPEG VR_WITH_CUDA
   endif()
 endforeach()
 
-set(_prefix "${BINARY_DIR}/prefix")
-_vr_configure(fetched ${_fetch} -DVR_INSTALL=ON
-              "-DCMAKE_INSTALL_PREFIX=${_prefix}")
+_vr_configure(fetched ${_fetch})
 _vr_succeeded("Configuring recon's source camera-only")
 _vr_cmake(--build "${BINARY_DIR}/fetched" --config Release)
 _vr_succeeded("Building against recon's source")
-_vr_cmake(--install "${BINARY_DIR}/fetched" --config Release)
-_vr_succeeded("Installing recon")
-
-_vr_configure(installed "-DCMAKE_PREFIX_PATH=${_prefix}")
-_vr_succeeded("Configuring against the installed recon")
-_vr_cmake(--build "${BINARY_DIR}/installed" --config Release)
-_vr_succeeded("Building against the installed recon")

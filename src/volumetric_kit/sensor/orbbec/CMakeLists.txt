@@ -7,9 +7,8 @@
 # Its own target so recon_sensor -- the interface an out-of-tree driver compiles
 # against -- stays free of the SDK (the 2026-09-26 decision). The SDK is PRIVATE
 # and no SDK type reaches the public header, but linking still needs its
-# library, so the package config re-finds the SDK.
+# library.
 include(GenerateExportHeader)
-include(GNUInstallDirs)
 
 set(_vr_sensor_orbbec_generated_inc
     "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
@@ -64,32 +63,10 @@ vr_link_orbbec_sdk(recon_sensor_orbbec)
 target_include_directories(
   recon_sensor_orbbec
   PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-         "$<BUILD_INTERFACE:${_vr_sensor_orbbec_generated_inc}>"
-         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+         "$<BUILD_INTERFACE:${_vr_sensor_orbbec_generated_inc}>")
 
 # nlohmann/json parses the sync configuration, privately (see recon_camera).
 target_include_directories(recon_sensor_orbbec SYSTEM
                            PRIVATE "${VR_JSON_INCLUDE_DIR}")
 
 vr_target_warnings(recon_sensor_orbbec)
-
-# The target, its headers (recon_sensor's install leaves them out) and the
-# generated export header.
-if(VR_INSTALL)
-  install(
-    TARGETS recon_sensor_orbbec
-    EXPORT volumetric_kit_reconTargets
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  install(
-    DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/sensor/orbbec"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon/sensor"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-  install(
-    DIRECTORY "${_vr_sensor_orbbec_generated_inc}/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-endif()

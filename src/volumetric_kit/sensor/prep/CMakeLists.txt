@@ -8,7 +8,6 @@
 # out-of-tree driver compiles against -- does not (the 2026-09-26 decision).
 # Driver-neutral: it takes a sensor::RgbdFrame.
 include(GenerateExportHeader)
-include(GNUInstallDirs)
 
 set(_vr_sensor_utils_generated_inc
     "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
@@ -50,8 +49,7 @@ target_link_libraries(recon_sensor_utils PUBLIC recon_sensor recon_core)
 target_include_directories(
   recon_sensor_utils
   PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-         "$<BUILD_INTERFACE:${_vr_sensor_utils_generated_inc}>"
-         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+         "$<BUILD_INTERFACE:${_vr_sensor_utils_generated_inc}>")
 
 include(vr_embed)
 vr_embed_shaders(
@@ -60,24 +58,3 @@ vr_embed_shaders(
   "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_color.comp")
 
 vr_target_warnings(recon_sensor_utils)
-
-# The target, its headers (recon_sensor's install leaves them out) and the
-# generated export header.
-if(VR_INSTALL)
-  install(
-    TARGETS recon_sensor_utils
-    EXPORT volumetric_kit_reconTargets
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  install(
-    DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/sensor/utils"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon/sensor"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-  install(
-    DIRECTORY "${_vr_sensor_utils_generated_inc}/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-endif()

@@ -15,7 +15,6 @@
 # camera and core tiers rather than preprocessing the Vulkan surface to fill in
 # an intrinsics struct. It is also why the tests need no device.
 include(GenerateExportHeader)
-include(GNUInstallDirs)
 
 set(_vr_sensor_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 
@@ -55,41 +54,10 @@ target_compile_features(recon_sensor PUBLIC cxx_std_17)
 target_link_libraries(recon_sensor PUBLIC recon_camera recon_core)
 
 target_include_directories(
-  recon_sensor
-  PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-         "$<BUILD_INTERFACE:${_vr_sensor_generated_inc}>"
-         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+  recon_sensor PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+                      "$<BUILD_INTERFACE:${_vr_sensor_generated_inc}>")
 
 vr_target_warnings(recon_sensor)
-
-# Install the target into the shared export set + this tier's headers (the
-# sensor/ subtree) + its generated export header. Mirrors recon_texture so a
-# partial build never installs a header for a tier it did not build.
-if(VR_INSTALL)
-  install(
-    TARGETS recon_sensor
-    EXPORT volumetric_kit_reconTargets
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  # apple/, array/, orbbec/, utils/ and video/ are installed by their own
-  # targets.
-  install(
-    DIRECTORY "${PROJECT_SOURCE_DIR}/include/volumetric_kit/recon/sensor"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/volumetric_kit/recon"
-    FILES_MATCHING
-    PATTERN "*.hpp"
-    PATTERN "apple" EXCLUDE
-    PATTERN "array" EXCLUDE
-    PATTERN "orbbec" EXCLUDE
-    PATTERN "utils" EXCLUDE
-    PATTERN "video" EXCLUDE)
-  install(
-    DIRECTORY "${_vr_sensor_generated_inc}/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    FILES_MATCHING
-    PATTERN "*.hpp")
-endif()
 
 # The GPU pre-processing (Vulkan and shaders, so a target of its own); see
 # utils/CMakeLists.txt.
