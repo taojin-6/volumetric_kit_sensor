@@ -29,13 +29,17 @@ using sensor::PictureReadback;
 namespace {
 
 int test_create(vr_test::GpuContext& gpu) {
-  // Capture a timer allocation's size and call site, so a validation-layer
-  // allocation of the same size cannot consume the injected failure.
+  // Capture the last allocation a create makes, and its call site, so an
+  // allocation of the same size elsewhere cannot consume the injected
+  // failure. It is the reader's own, after its timer's: the last of the
+  // timer's may sit inside a validation layer's vkCreateQueryPool, where a
+  // throw would leak the pool the driver had made.
   auto& failure = vr_test::allocation_failure;
   failure.measure = true;
-  auto timer = vkc::GpuTimer::create(gpu.device);
+  auto measured = PictureReadback::create(gpu.device, gpu.allocator);
   failure.measure = false;
-  CHECK(timer.ok() && failure.bytes != 0 && failure.measured_site != nullptr);
+  CHECK(measured.ok() && failure.bytes != 0 &&
+        failure.measured_site != nullptr);
   failure.site = failure.measured_site;
   failure.injected = false;
   failure.armed = true;
