@@ -306,10 +306,13 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
                                      core::StageMetrics* metrics);
   // The whole frame checked, before anything is recorded.
   core::Result<Layout> check(const RgbdFrame& frame) const;
-  // A slot claimed and filled with the depth and any packed colour, and the
-  // outputs and the NV12 input made big enough; nothing recorded.
+  // A slot claimed and filled with the depth and any packed colour; nothing
+  // recorded and no buffer changed.
   core::Result<core::HostSlot> stage(const RgbdFrame& frame,
                                      const Layout& layout);
+  // Once the frame's slot is claimed, so the pass's last batch has resolved:
+  // the outputs and the NV12 input made big enough.
+  core::Status ensure_buffers(const RgbdFrame& frame, const Layout& layout);
   // Device planes taken over from their writer's family, the slot bound (one
   // copy where it is copied), plane images copied and the overlap mask's
   // parameters written, into `batch`; `*input` is the buffer the passes bind.

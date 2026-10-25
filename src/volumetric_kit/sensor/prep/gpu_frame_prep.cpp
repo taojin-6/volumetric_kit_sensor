@@ -460,22 +460,10 @@ core::Result<core::HostSlot> GpuFramePrep::stage(const RgbdFrame& frame,
                                                  const Layout& layout) {
   const DepthLayout& depth = layout.depth;
   const ColorLayout& color = layout.color;
-  VKC_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame",
-                        config_.depth_queue_families,
-                        config_.depth_queue_family_count));
-  if (frame.has_color()) {
-    if (layout.from_images) {
-      VKC_TRY(core::ensure_device_scratch(
-          *device_, *allocator_, color_in_, color.bind_bytes,
-          max_storage_buffer_range_, "sensor.raw_color"));
-    }
-    VKC_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame",
-                          config_.color_queue_families,
-                          config_.color_queue_family_count));
-  }
   // One slot: the frame is copied in as it is recorded, so the batch of the
   // pass's last record, which binds the slot, has resolved by then (its
-  // kernels' sets are rewritten too). A record before it has refuses here.
+  // kernels' sets are rewritten too). A record before it has refuses here,
+  // before ensure_buffers can free a buffer that batch still uses.
   if (inputs_ == nullptr) {
     core::HostRingDesc desc;
     desc.slot_bytes = layout.slot_bytes;
@@ -492,6 +480,22 @@ core::Result<core::HostSlot> GpuFramePrep::stage(const RgbdFrame& frame,
                 static_cast<std::size_t>(color.bind_bytes));
   }
   return slot;
+}
+
+core::Status GpuFramePrep::ensure_buffers(const RgbdFrame& frame,
+                                          const Layout& layout) {
+  VKC_TRY(ensure_output(depth_out_, layout.depth.out_bytes,
+                        "sensor.depth_frame", config_.depth_queue_families,
+                        config_.depth_queue_family_count));
+  if (!frame.has_color()) return {};
+  if (layout.from_images) {
+    VKC_TRY(core::ensure_device_scratch(
+        *device_, *allocator_, color_in_, layout.color.bind_bytes,
+        max_storage_buffer_range_, "sensor.raw_color"));
+  }
+  return ensure_output(color_out_, layout.color.out_bytes, "sensor.color_frame",
+                       config_.color_queue_families,
+                       config_.color_queue_family_count);
 }
 
 core::Status GpuFramePrep::record_inputs(
@@ -738,13 +742,18 @@ core::Status GpuFramePrep::record_frames(core::CommandBatch& batch,
                                          std::optional<DeviceFrame>* out,
                                          std::size_t count,
                                          core::GpuStageScope* stage) {
-  // Every frame's slot claimed and filled before anything is recorded, so
-  // both slots held refuses with the batch as it was; a slot claimed before
-  // a refusal goes back free.
+  // Every frame's slot claimed and filled before anything is recorded or
+  // resized, so a slot held refuses with the batch and every pass as they
+  // were; a slot claimed before a refusal goes back free. A claimed slot
+  // says its pass's last batch has resolved, so then its buffers may grow.
   std::vector<core::HostSlot> slots(count);
   for (std::size_t i = 0; i < count; ++i) {
     if (frames[i] == nullptr) continue;
     VKC_ASSIGN(slots[i], preps[i].stage(*frames[i], layouts[i]));
+  }
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] == nullptr) continue;
+    VKC_TRY(preps[i].ensure_buffers(*frames[i], layouts[i]));
   }
   // Every camera's inputs, then every camera's passes: the copies write
   // buffers of their own, so they run with no barrier between them.

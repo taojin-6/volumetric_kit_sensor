@@ -463,6 +463,37 @@ Planes patterned(std::uint32_t w, std::uint32_t h) {
   return p;
 }
 
+// A w x h pinhole frame, its depth held by the frame, its colour patterned
+// NV12 plane images, as VideoToolbox hands them out.
+sensor::RgbdFrame image_frame(std::uint32_t w, std::uint32_t h) {
+  camera::CameraModel cam = pinhole();
+  cam.size = {w, h};
+  auto raw = std::make_shared<std::vector<std::uint16_t>>(std::size_t{w} * h,
+                                                          std::uint16_t{1500});
+  sensor::RgbdFrame f = frame_of(*raw, cam);
+  f.pixels = raw;
+  f.color_camera = cam;
+  const Planes p = patterned(w, h);
+  std::vector<std::uint8_t> cbcr(2 * p.cb.size());
+  for (std::size_t i = 0; i < p.cb.size(); ++i) {
+    cbcr[2 * i] = p.cb[i];
+    cbcr[2 * i + 1] = p.cr[i];
+  }
+  const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  sensor::YuvImage& images = f.color;
+  images.layout = sensor::YuvLayout::Nv12;
+  images.width = w;
+  images.height = h;
+  images.kr = 0.2126f;
+  images.kb = 0.0722f;
+  images.full_range = false;
+  images.image[0] =
+      image_of(VK_FORMAT_R8_UNORM, 1, w, h, p.y.data(), w, h, src);
+  images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch, cbcr.data(),
+                             2 * p.cw, p.ch, src);
+  return f;
+}
+
 // Both passes against the host reference of the same sampling, on smooth
 // planes and random depth, at w x h. `padded` gives the planes rows longer
 // than their width, full of junk, as a decoder can hand them out.
@@ -970,7 +1001,8 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
 // batch, holds what prepare gives, and a set what prepare_batch gives; packed
 // colour after a depth whose bytes the binding alignment does not divide
 // lands exactly; a refused frame records nothing; a pass whose last batch is
-// unresolved refuses; and once warm a frame allocates nothing to move bytes,
+// unresolved refuses, changing no buffer that batch uses, even for a larger
+// frame; and once warm a frame allocates nothing to move bytes,
 // and a prepare is one submit.
 int test_record(vkc::Device& device, vkc::Allocator& allocator) {
   auto reference = sensor::GpuFramePrep::create(device, allocator);
@@ -1076,6 +1108,43 @@ int test_record(vkc::Device& device, vkc::Allocator& allocator) {
     CHECK(first.submit().ok() && second.submit().ok());
   }
   CHECK(prep.prepare(f).ok());
+
+  // That refusal changes no buffer the unresolved batch uses: a small frame
+  // of NV12 plane images, which the pass copies into a buffer of its own,
+  // recorded with its outputs' readback and its frame dropped, then a larger
+  // one refused; the first batch still reads what prepare gives.
+  {
+    auto fresh = sensor::GpuFramePrep::create(device, allocator);
+    CHECK(fresh.ok());
+    const sensor::RgbdFrame small_images = image_frame(16, 16);
+    const sensor::RgbdFrame large_images = image_frame(kWidth, kHeight);
+    auto want_small = reference->prepare(small_images);
+    CHECK(want_small.ok());
+    const std::vector<float> small_want_depth = depth_of(want_small.value());
+    const std::vector<std::uint32_t> small_want_color =
+        color_of(want_small.value());
+    std::vector<float> depth(small_want_depth.size());
+    std::vector<std::uint32_t> color(small_want_color.size());
+    vkc::CommandBatch first(device, allocator);
+    vkc::CommandBatch second(device, allocator);
+    {
+      auto a = fresh->record(first, small_images);
+      CHECK(a.ok() && a->has_color());
+      CHECK(first
+                .readback(*a->depth, 0, depth.size() * sizeof(float),
+                          depth.data())
+                .ok());
+      CHECK(first
+                .readback(*a->color, 0, color.size() * sizeof(std::uint32_t),
+                          color.data())
+                .ok());
+    }  // the frame and its outputs' leases go
+    CHECK(fresh->record(second, large_images).status().domain() ==
+          vkc::Status::Code::InvalidArgument);
+    CHECK(first.submit().ok() && second.submit().ok());
+    CHECK(depth == small_want_depth && color == small_want_color);
+    CHECK(fresh->prepare(large_images).ok());
+  }
 
   // Warm: a hundred frames allocate nothing that moves bytes, each prepare
   // one submit.
