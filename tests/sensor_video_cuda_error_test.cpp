@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <string>
 
-#include "cuda_pictures.hpp"
+#include "cuda_driver.hpp"
 #include "nvjpeg.hpp"
 #include "test_check.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
