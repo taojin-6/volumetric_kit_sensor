@@ -110,7 +110,8 @@ int test_ordinal_and_context(const Gpu& gpu, const Libcuda& cu, int ordinal) {
   return 0;
 }
 
-// Bytes no two rounds share, and no offset repeats within a round.
+// Bytes that change along the buffer and from round to round, so a stale
+// round or a shifted pointer reads back wrong.
 std::vector<std::uint8_t> pattern(std::size_t bytes, std::uint32_t round) {
   std::vector<std::uint8_t> out(bytes);
   std::uint32_t x = 0x9e3779b9u * (round + 1);
