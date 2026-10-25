@@ -9,7 +9,8 @@
 // VideoToolbox's images shared across queue families, NVDEC's decoders
 // sharing the GPU's primary CUDA context, the argument checks, and moves. On
 // VideoToolbox also: libavcodec's pictures to the bit at either range and
-// cropped, Main 10 refused, and a skipped access unit reported.
+// cropped, parameter sets that change mid-stream, Main 10 refused, and a
+// skipped access unit reported.
 //
 // Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one (NVDEC on the NVIDIA containers,
@@ -61,6 +62,9 @@ constexpr const char* kTestsrc2Cropped =
     VR_HEVC_DATA "/testsrc2_cropped_120x56.h265";
 constexpr const char* kTestsrc2Main10 =
     VR_HEVC_DATA "/testsrc2_main10_128x64.h265";
+// libavcodec's MD5s of the first two (tools/make_hevc_fixtures.sh prints them).
+constexpr const char* kTestsrc2Md5 = "e743e90ae47cb276844495b286c98b0f";
+constexpr const char* kTestsrc2FullMd5 = "4fe199a7b1bcc80dd1aec3f87b6a9af0";
 #endif
 
 std::int64_t pts_of(int frame) { return 1000 + 33 * frame; }
@@ -406,9 +410,9 @@ int test_reference_md5(const Gpu& gpu) {
     sensor::VideoColorMatrix matrix;  // BT.601 unlabelled, by the height
     bool full_range;
   } clips[] = {
-      {kTestsrc2, "e743e90ae47cb276844495b286c98b0f", 128, 64,
-       sensor::VideoColorMatrix::Bt601, false},
-      {kTestsrc2Full, "4fe199a7b1bcc80dd1aec3f87b6a9af0", 128, 64,
+      {kTestsrc2, kTestsrc2Md5, 128, 64, sensor::VideoColorMatrix::Bt601,
+       false},
+      {kTestsrc2Full, kTestsrc2FullMd5, 128, 64,
        sensor::VideoColorMatrix::Bt709, true},
       {kTestsrc2Cropped, "4f676ba80eb5db26c2156fde29f72a11", 120, 56,
        sensor::VideoColorMatrix::Bt601, false},
@@ -433,6 +437,71 @@ int test_reference_md5(const Gpu& gpu) {
     const std::string got = md5.hex();
     if (got != c.md5) std::fprintf(stderr, "%s: MD5 %s\n", c.clip, got.c_str());
     CHECK(got == c.md5);
+  }
+  return 0;
+}
+
+// Parameter sets that change mid-stream, at each sequence's IDR, sent to one
+// decoder: the patch clip, then labelled full range (its range alone
+// changes), then again; then testsrc2 (another size) and testsrc2 at full
+// range. Each picture comes out with its own sequence's size and range, in
+// display order, its samples the stream's own: the patch clip's pictures,
+// whichever range is declared, are the first part's to the bit, and the
+// testsrc2 ones libavcodec's.
+int test_parameter_change(const Gpu& gpu) {
+  const struct {
+    const char* clip;
+    const char* md5;  // null for the patch clip's
+    std::uint32_t width;
+    std::uint32_t height;
+    sensor::VideoColorMatrix matrix;
+    bool full_range;
+  } parts[] = {
+      {kPatches, nullptr, kWidth, kHeight, sensor::VideoColorMatrix::Bt709,
+       false},
+      {kFullRange, nullptr, kWidth, kHeight, sensor::VideoColorMatrix::Bt709,
+       true},
+      {kPatches, nullptr, kWidth, kHeight, sensor::VideoColorMatrix::Bt709,
+       false},
+      {kTestsrc2, kTestsrc2Md5, 128, 64, sensor::VideoColorMatrix::Bt601,
+       false},
+      {kTestsrc2Full, kTestsrc2FullMd5, 128, 64,
+       sensor::VideoColorMatrix::Bt709, true},
+  };
+  AccessUnits units;
+  for (const auto& part : parts) {
+    const AccessUnits more = vr_test::hevc_access_units(part.clip);
+    CHECK(more.size() == static_cast<std::size_t>(kFrames));
+    units.insert(units.end(), more.begin(), more.end());
+  }
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
+  CHECK(decoder.ok());
+  const Decoded decoded = decode_clip(decoder.value(), units, gpu);
+  if (!decoded.status.ok()) {
+    std::fprintf(stderr, "%s\n", decoded.status.message().c_str());
+  }
+  CHECK(decoded.status.ok());
+  CHECK(decoded.pictures.size() == units.size());
+  std::size_t next = 0;
+  for (const auto& part : parts) {
+    vr_test::Md5 md5;
+    for (int f = 0; f < kFrames; ++f, ++next) {
+      const Picture& p = decoded.pictures[next];
+      if (check_on_device(p.meta) != 0) return 1;
+      CHECK(p.meta.yuv.width == part.width && p.meta.yuv.height == part.height);
+      CHECK(yuv_reference::coded_in(p.meta.yuv, part.matrix, part.full_range));
+      for (const std::vector<std::uint8_t>& plane : p.planes) {
+        md5.update(plane.data(), plane.size());
+      }
+      if (part.md5 == nullptr) {
+        CHECK(p.meta.pts == pts_of(static_cast<int>(next)));
+        const std::size_t y = 36 * kWidth + 16;  // patch (0, 0)'s centre
+        CHECK(std::abs(p.planes[0][y] - patch_y(patch(0, 0, f))) <= 2);
+        const Picture& first = decoded.pictures[static_cast<std::size_t>(f)];
+        for (int i = 0; i < 3; ++i) CHECK(p.planes[i] == first.planes[i]);
+      }
+    }
+    if (part.md5 != nullptr) CHECK(md5.hex() == part.md5);
   }
   return 0;
 }
@@ -691,6 +760,7 @@ int gpu_main(Gpu& gpu) {
 #if defined(__APPLE__)
   if (test_malformed_cropped_sps(gpu) != 0) return 1;
   if (test_reference_md5(gpu) != 0) return 1;
+  if (test_parameter_change(gpu) != 0) return 1;
   if (test_main10(gpu) != 0) return 1;
   if (test_skipped_access_unit(gpu) != 0) return 1;
 #endif
