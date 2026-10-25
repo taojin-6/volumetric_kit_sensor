@@ -257,6 +257,30 @@ int test_out_of_order_within_camera() {
   return 0;
 }
 
+// The earliest trigger's deadline: none with nothing held, the wait out from
+// its first frame's arrival while a sensor is silent, and none once every
+// sensor has a frame for it or past it.
+int test_next_deadline() {
+  sensor::TriggerGrouper g(config());
+  std::vector<std::uint64_t> released;
+  CHECK(!g.next_deadline_us());
+  g.add(0, ts_of(0, 0), id_of(0, 0), 1000, &released);
+  CHECK(!g.next_deadline_us());  // no primary frame names a trigger yet
+  g.add(kPrimary, ts_of(kPrimary, 0), id_of(kPrimary, 0), 3000, &released);
+  g.add(3, ts_of(3, 0), id_of(3, 0), 4000, &released);
+  // Camera 1 is silent: the trigger waits 50 ms from camera 0's arrival.
+  CHECK(g.next_deadline_us() == std::optional<std::uint64_t>(1000 + 50000));
+  CHECK(!g.take(50999, &released));
+  CHECK(g.take(51000, &released));  // ready at the deadline, as said
+  // A frame past the trigger from the silent camera ends the wait for it.
+  g.add(kPrimary, ts_of(kPrimary, 1), id_of(kPrimary, 1), 60000, &released);
+  g.add(1, ts_of(1, 2), id_of(1, 2), 61000, &released);
+  g.add(0, ts_of(0, 1), id_of(0, 1), 61000, &released);
+  g.add(3, ts_of(3, 1), id_of(3, 1), 61000, &released);
+  CHECK(!g.next_deadline_us());
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -269,6 +293,7 @@ int main() {
   if (test_secondaries_before_primary() != 0) return 1;
   if (test_dropped_primary_frame() != 0) return 1;
   if (test_out_of_order_within_camera() != 0) return 1;
+  if (test_next_deadline() != 0) return 1;
   std::printf("trigger grouper tests passed\n");
   return 0;
 }

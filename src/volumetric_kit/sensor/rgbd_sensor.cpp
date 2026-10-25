@@ -25,4 +25,9 @@ const char* to_string(PoseSource source) noexcept {
   return source == PoseSource::Tracked ? "tracked" : "fixed";
 }
 
+core::Status IRgbdSensor::set_frame_notify(std::function<void()> /*notify*/) {
+  return core::Status::unsupported(
+      "IRgbdSensor::set_frame_notify: this sensor notifies nothing; poll it");
+}
+
 }  // namespace volumetric_kit::recon::sensor

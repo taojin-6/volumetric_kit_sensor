@@ -5,8 +5,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -35,6 +38,24 @@ std::uint64_t now_us() {
           .count());
 }
 
+// What the sensors' notifications wake: a count each bumps, under the
+// mutex, and the condition variable wait_set blocks on. Held by every
+// sensor's notify as well as the array, so a call in flight as the array
+// goes touches nothing freed.
+struct Wake {
+  std::mutex mutex;
+  std::condition_variable changed;
+  std::uint64_t count = 0;  // guarded by mutex
+
+  void notify() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      ++count;
+    }
+    changed.notify_one();
+  }
+};
+
 }  // namespace
 
 struct SensorArray::Impl {
@@ -58,6 +79,9 @@ struct SensorArray::Impl {
   std::uint64_t sets = 0;
   std::uint64_t incomplete = 0;
   std::uint64_t unmatched = 0;
+  // The sensors' notifications, and whether every sensor gives them.
+  std::shared_ptr<Wake> wake = std::make_shared<Wake>();
+  bool notifies = false;
 
   void release() {
     for (const std::uint64_t id : released) {
@@ -82,14 +106,24 @@ struct SensorArray::Impl {
     running = false;
   }
 
-  // Also when a move assignment replaces the array.
+  // Also when a move assignment replaces the array. A sensor started outside
+  // it (sensor()) is stopped too, so none delivers into an array that is
+  // gone; a notification in flight touches only its own Wake.
   ~Impl() {
-    if (running) stop();
+    if (running) {
+      stop();
+      return;
+    }
+    for (auto it = start_order.rbegin(); it != start_order.rend(); ++it) {
+      if (*it < sensors.size()) sensors[*it]->stop();
+    }
   }
 
   FrameSet finish(FrameSet set) {
     for (std::size_t c = 0; c < set.frames.size(); ++c) {
-      if (set.frames[c] && poses[c]) set.frames[c]->color_to_world = *poses[c];
+      if (!set.frames[c]) continue;
+      if (poses[c]) set.frames[c]->color_to_world = *poses[c];
+      set.arrival_ns = std::max(set.arrival_ns, set.frames[c]->arrival_ns);
     }
     ++sets;
     if (!set.complete()) ++incomplete;
@@ -97,6 +131,8 @@ struct SensorArray::Impl {
   }
 
   core::Result<std::optional<FrameSet>> take_trigger();
+  // Whether `set` can be prepared here, for `op`'s message.
+  core::Status check(const FrameSet& set, const char* op) const;
 };
 
 SensorArray::SensorArray(std::unique_ptr<Impl> impl) noexcept
@@ -239,6 +275,24 @@ core::Result<SensorArray> SensorArray::open(
       impl->preps.push_back(std::move(prep));
     }
   }
+  // Last, once nothing else can refuse: each sensor wakes wait_set, unless
+  // one notifies nothing, when wait_set is refused and the caller polls.
+  impl->notifies = true;
+  for (std::size_t i = 0; i < sensors.size(); ++i) {
+    const core::Status asked =
+        sensors[i]->set_frame_notify([wake = impl->wake] { wake->notify(); });
+    if (asked.ok()) continue;
+    // A sensor that cannot notify is polled; one that refuses otherwise (a
+    // started one) refuses the array, and the others notify nothing.
+    if (asked.domain() == core::Status::Code::Unsupported) {
+      impl->notifies = false;
+      continue;
+    }
+    for (std::size_t j = 0; j < i; ++j) {
+      static_cast<void>(sensors[j]->set_frame_notify({}));
+    }
+    return asked;
+  }
   impl->sensors = std::move(sensors);
   return SensorArray(std::move(impl));
 }
@@ -370,17 +424,76 @@ core::Result<std::optional<FrameSet>> SensorArray::Impl::take_trigger() {
   return std::optional<FrameSet>{finish(std::move(set))};
 }
 
+core::Result<std::optional<FrameSet>> SensorArray::wait_set(
+    std::chrono::milliseconds timeout, core::StageMetrics* metrics) {
+  if (impl_ == nullptr) return bad("wait_set on a moved-from array");
+  Impl& a = *impl_;
+  if (!a.running) return std::optional<FrameSet>{};
+  if (!a.notifies) {
+    return unsupported(
+        "wait_set: a sensor notifies nothing of its frames; poll_set it");
+  }
+  using Clock = std::chrono::steady_clock;
+  const Clock::time_point give_up = Clock::now() + timeout;
+  for (;;) {
+    // Read before the poll, so a frame posted while it runs wakes the wait.
+    std::uint64_t seen = 0;
+    {
+      std::lock_guard<std::mutex> lock(a.wake->mutex);
+      seen = a.wake->count;
+    }
+    std::optional<FrameSet> set;
+    {
+      const core::StageScope poll(metrics, "poll");
+      VKC_ASSIGN(set, a.take_trigger());
+    }
+    if (set) return set;
+    // Until a sensor posts, a waiting trigger's late sensors run out of
+    // time, or the caller's timeout passes.
+    Clock::time_point until = give_up;
+    if (const std::optional<std::uint64_t> due =
+            a.grouper->next_deadline_us()) {
+      const std::uint64_t now = now_us();
+      const auto left = std::chrono::microseconds(due > now ? *due - now : 0);
+      until = std::min(until, Clock::now() + left);
+    }
+    if (Clock::now() >= give_up) return std::optional<FrameSet>{};
+    const core::WaitScope wait(metrics, "wait: cameras");
+    std::unique_lock<std::mutex> lock(a.wake->mutex);
+    a.wake->changed.wait_until(lock, until,
+                               [&] { return a.wake->count != seen; });
+  }
+}
+
+core::Status SensorArray::Impl::check(const FrameSet& set,
+                                      const char* op) const {
+  if (preps.empty()) {
+    return bad(std::string(op) + " needs an array opened with a device");
+  }
+  if (set.frames.size() != sensors.size()) {
+    return bad("a set of " + std::to_string(set.frames.size()) +
+               " frames for an array of " + std::to_string(sensors.size()));
+  }
+  return {};
+}
+
+core::Result<DeviceFrameSet> SensorArray::record_process(
+    core::CommandBatch& batch, const FrameSet& set,
+    core::StageMetrics* metrics) {
+  if (impl_ == nullptr) return bad("record_process on a moved-from array");
+  VKC_TRY(impl_->check(set, "record_process"));
+  DeviceFrameSet out;
+  out.timestamp_ns = set.timestamp_ns;
+  out.sequence = set.sequence;
+  VKC_ASSIGN(out.frames, GpuFramePrep::record_set(batch, impl_->preps,
+                                                  set.frames, metrics));
+  return out;
+}
+
 core::Result<DeviceFrameSet> SensorArray::process(const FrameSet& set,
                                                   core::StageMetrics* metrics) {
   if (impl_ == nullptr) return bad("process on a moved-from array");
-  if (impl_->preps.empty()) {
-    return bad("process needs an array opened with a device");
-  }
-  if (set.frames.size() != impl_->sensors.size()) {
-    return bad("a set of " + std::to_string(set.frames.size()) +
-               " frames for an array of " +
-               std::to_string(impl_->sensors.size()));
-  }
+  VKC_TRY(impl_->check(set, "process"));
   DeviceFrameSet out;
   out.timestamp_ns = set.timestamp_ns;
   out.sequence = set.sequence;

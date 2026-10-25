@@ -189,6 +189,16 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///         decode, or came without depth -- counted failed. Zero on a
   ///         moved-from sensor.
   SensorStats stats() const noexcept override;
+  /// @brief As `IRgbdSensor::set_frame_notify`: called from the colour
+  ///        decoder's thread as each decoded pair reaches the camera's
+  ///        queue, and from the SDK's when the camera disconnects or the
+  ///        decoder fails. Each frame's `RgbdFrame::arrival_ns` is the
+  ///        host's system clock at the SDK's frame callback, before the
+  ///        colour is decoded.
+  /// @return As `IRgbdSensor::set_frame_notify`, never
+  ///         `Status::Code::Unsupported`; also
+  ///         `Status::Code::InvalidArgument` on a moved-from sensor.
+  core::Status set_frame_notify(std::function<void()> notify) override;
 
  private:
   struct Impl;

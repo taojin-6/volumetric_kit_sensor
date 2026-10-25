@@ -463,6 +463,37 @@ Planes patterned(std::uint32_t w, std::uint32_t h) {
   return p;
 }
 
+// A w x h pinhole frame, its depth held by the frame, its colour patterned
+// NV12 plane images, as VideoToolbox hands them out.
+sensor::RgbdFrame image_frame(std::uint32_t w, std::uint32_t h) {
+  camera::CameraModel cam = pinhole();
+  cam.size = {w, h};
+  auto raw = std::make_shared<std::vector<std::uint16_t>>(std::size_t{w} * h,
+                                                          std::uint16_t{1500});
+  sensor::RgbdFrame f = frame_of(*raw, cam);
+  f.pixels = raw;
+  f.color_camera = cam;
+  const Planes p = patterned(w, h);
+  std::vector<std::uint8_t> cbcr(2 * p.cb.size());
+  for (std::size_t i = 0; i < p.cb.size(); ++i) {
+    cbcr[2 * i] = p.cb[i];
+    cbcr[2 * i + 1] = p.cr[i];
+  }
+  const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  sensor::YuvImage& images = f.color;
+  images.layout = sensor::YuvLayout::Nv12;
+  images.width = w;
+  images.height = h;
+  images.kr = 0.2126f;
+  images.kb = 0.0722f;
+  images.full_range = false;
+  images.image[0] =
+      image_of(VK_FORMAT_R8_UNORM, 1, w, h, p.y.data(), w, h, src);
+  images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch, cbcr.data(),
+                             2 * p.cw, p.ch, src);
+  return f;
+}
+
 // Both passes against the host reference of the same sampling, on smooth
 // planes and random depth, at w x h. `padded` gives the planes rows longer
 // than their width, full of junk, as a decoder can hand them out.
@@ -842,9 +873,10 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   bad = dev;
   bad.queue_family = families;
   f.color = bad;
+  // Refused with the frame's checks, before anything is recorded or timed.
   vkc::StageMetrics metrics;
   CHECK(prep.prepare(f, &metrics).status().domain() == invalid);
-  CHECK(metrics.rows().size() == 1 && !metrics.rows()[0].has_gpu);
+  CHECK(metrics.rows().empty());
   std::printf(
       "  layouts: I420 and NV12 in a buffer and NV12 images agree, from byte "
       "%llu of their buffer\n",
@@ -962,6 +994,166 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   CHECK(
       sensor::GpuFramePrep::prepare_batch(too_few, frames).status().domain() ==
       vkc::Status::Code::InvalidArgument);
+  return 0;
+}
+
+// The record form: a frame recorded into a caller's batch, read back in that
+// batch, holds what prepare gives, and a set what prepare_batch gives; packed
+// colour after a depth whose bytes the binding alignment does not divide
+// lands exactly; a refused frame records nothing; a pass whose last batch is
+// unresolved refuses, changing no buffer that batch uses, even for a larger
+// frame; and once warm a frame allocates nothing to move bytes,
+// and a prepare is one submit.
+int test_record(vkc::Device& device, vkc::Allocator& allocator) {
+  auto reference = sensor::GpuFramePrep::create(device, allocator);
+  auto made = sensor::GpuFramePrep::create(device, allocator);
+  CHECK(reference.ok() && made.ok());
+  sensor::GpuFramePrep& prep = made.value();
+  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight);
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    raw[i] = static_cast<std::uint16_t>((i * 7919u) % 6000u);
+  }
+  const std::vector<std::uint32_t> words = packed_words(raw.size(), 7);
+  sensor::RgbdFrame f = frame_of(raw, lensed());
+  f.color_packed = words.data();
+  f.color_camera = lensed();
+  auto want = reference->prepare(f);
+  CHECK(want.ok());
+  const std::vector<float> want_depth = depth_of(want.value());
+  const std::vector<std::uint32_t> want_color = color_of(want.value());
+  {
+    vkc::CommandBatch batch(device, allocator);
+    auto got = prep.record(batch, f);
+    CHECK(got.ok() && got->has_color());
+    std::vector<float> depth(raw.size());
+    std::vector<std::uint32_t> color(raw.size());
+    CHECK(batch
+              .readback(*got->depth, 0, depth.size() * sizeof(float),
+                        depth.data())
+              .ok());
+    CHECK(batch
+              .readback(*got->color, 0, color.size() * sizeof(std::uint32_t),
+                        color.data())
+              .ok());
+    CHECK(batch.submit().ok());
+    CHECK(depth == want_depth && color == want_color);
+  }
+
+  // A set, a camera missing, against prepare_batch.
+  std::vector<sensor::GpuFramePrep> preps;
+  std::vector<sensor::GpuFramePrep> blocking;
+  for (int c = 0; c < 3; ++c) {
+    auto a = sensor::GpuFramePrep::create(device, allocator);
+    auto b = sensor::GpuFramePrep::create(device, allocator);
+    CHECK(a.ok() && b.ok());
+    preps.push_back(std::move(a).value());
+    blocking.push_back(std::move(b).value());
+  }
+  std::vector<std::optional<sensor::RgbdFrame>> frames{
+      f, std::nullopt, frame_of(raw, pinhole())};
+  auto blocked = sensor::GpuFramePrep::prepare_batch(blocking, frames);
+  CHECK(blocked.ok());
+  {
+    vkc::CommandBatch batch(device, allocator);
+    auto set = sensor::GpuFramePrep::record_set(batch, preps, frames);
+    CHECK(set.ok() && set->size() == 3 && !(*set)[1]);
+    CHECK(batch.submit().ok());
+    for (const std::size_t c : {std::size_t{0}, std::size_t{2}}) {
+      CHECK(depth_of(*(*set)[c]) == depth_of(*(*blocked)[c]));
+    }
+    CHECK(color_of(*(*set)[0]) == color_of(*(*blocked)[0]));
+  }
+
+  // 3x3 depth is 18 bytes, a word-padded 20, so the packed colour after it
+  // starts at the binding alignment instead.
+  camera::CameraModel tiny = pinhole();
+  tiny.size = {3, 3};
+  tiny.intrinsics = {4.0f, 4.0f, 1.0f, 1.0f};
+  const std::vector<std::uint16_t> tiny_raw{1, 2, 3, 4, 5, 6, 7, 8, 9};
+  const std::vector<std::uint32_t> tiny_words = packed_words(9, 11);
+  sensor::RgbdFrame small = frame_of(tiny_raw, tiny);
+  small.color_packed = tiny_words.data();
+  small.color_camera = tiny;
+  auto exact = prep.prepare(small);
+  CHECK(exact.ok());
+  const std::vector<float> small_depth = depth_of(exact.value());
+  const std::vector<std::uint32_t> small_color = color_of(exact.value());
+  CHECK(small_depth.size() == 9 && small_color.size() == 9);
+  for (std::size_t i = 0; i < 9; ++i) {
+    CHECK(small_depth[i] == static_cast<float>(tiny_raw[i]) * kScale);
+    CHECK(small_color[i] == ((tiny_words[i] & 0xFFFFFFu) | 0xFF000000u));
+  }
+
+  // A refused frame records nothing: the batch submits nothing.
+  {
+    sensor::RgbdFrame refused = f;
+    refused.depth = nullptr;
+    vkc::CommandBatch batch(device, allocator);
+    const vkc::DeviceCounters was = device.counters();
+    CHECK(prep.record(batch, refused).status().domain() ==
+          vkc::Status::Code::InvalidArgument);
+    CHECK(batch.submit().ok());
+    CHECK(device.counters().submits == was.submits);
+  }
+
+  // A batch recorded and unresolved holds the pass's slot: a record before
+  // it resolves refuses, with nothing recorded, and after it records again.
+  {
+    vkc::CommandBatch first(device, allocator);
+    vkc::CommandBatch second(device, allocator);
+    auto a = prep.record(first, f);
+    CHECK(a.ok());
+    CHECK(prep.record(second, f).status().domain() ==
+          vkc::Status::Code::InvalidArgument);
+    CHECK(first.submit().ok() && second.submit().ok());
+  }
+  CHECK(prep.prepare(f).ok());
+
+  // That refusal changes no buffer the unresolved batch uses: a small frame
+  // of NV12 plane images, which the pass copies into a buffer of its own,
+  // recorded with its outputs' readback and its frame dropped, then a larger
+  // one refused; the first batch still reads what prepare gives.
+  {
+    auto fresh = sensor::GpuFramePrep::create(device, allocator);
+    CHECK(fresh.ok());
+    const sensor::RgbdFrame small_images = image_frame(16, 16);
+    const sensor::RgbdFrame large_images = image_frame(kWidth, kHeight);
+    auto want_small = reference->prepare(small_images);
+    CHECK(want_small.ok());
+    const std::vector<float> small_want_depth = depth_of(want_small.value());
+    const std::vector<std::uint32_t> small_want_color =
+        color_of(want_small.value());
+    std::vector<float> depth(small_want_depth.size());
+    std::vector<std::uint32_t> color(small_want_color.size());
+    vkc::CommandBatch first(device, allocator);
+    vkc::CommandBatch second(device, allocator);
+    {
+      auto a = fresh->record(first, small_images);
+      CHECK(a.ok() && a->has_color());
+      CHECK(first
+                .readback(*a->depth, 0, depth.size() * sizeof(float),
+                          depth.data())
+                .ok());
+      CHECK(first
+                .readback(*a->color, 0, color.size() * sizeof(std::uint32_t),
+                          color.data())
+                .ok());
+    }  // the frame and its outputs' leases go
+    CHECK(fresh->record(second, large_images).status().domain() ==
+          vkc::Status::Code::InvalidArgument);
+    CHECK(first.submit().ok() && second.submit().ok());
+    CHECK(depth == small_want_depth && color == small_want_color);
+    CHECK(fresh->prepare(large_images).ok());
+  }
+
+  // Warm: a hundred frames allocate nothing that moves bytes, each prepare
+  // one submit.
+  CHECK(prep.prepare(f).ok());
+  const vkc::DeviceCounters warm = device.counters();
+  for (int i = 0; i < 100; ++i) CHECK(prep.prepare(f).ok());
+  const vkc::DeviceCounters now = device.counters();
+  CHECK(now.staging_buffers == warm.staging_buffers);
+  CHECK(now.submits - warm.submits == 100);
   return 0;
 }
 
@@ -1696,6 +1888,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
     return 1;
   }
   if (test_prepare_batch(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_record(gpu.device, gpu.allocator) != 0) return 1;
   if (test_batch_timing(gpu.device, gpu.allocator) != 0) return 1;
   if (test_queue_families(gpu.device, gpu.allocator) != 0) return 1;
   if (test_cross_family() != 0) return 1;

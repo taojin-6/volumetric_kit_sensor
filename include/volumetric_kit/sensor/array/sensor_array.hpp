@@ -14,6 +14,7 @@
 /// by. What a vendor's rig needs beyond that (writing sync settings, the
 /// SDK's clock sync) is its driver's, set when the sensor is opened.
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -23,6 +24,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/recon/camera/array_calibration.hpp"
 #include "volumetric_kit/recon/sensor/array/export.hpp"
@@ -42,6 +44,9 @@ struct FrameSet {
   /// for this trigger never came. Each frame is posed by the array's
   /// calibration (`RgbdFrame::color_to_world`).
   std::vector<std::optional<RgbdFrame>> frames;
+  /// When the set's last frame reached the host: the latest of its frames'
+  /// `RgbdFrame::arrival_ns`, on the system clock; 0 when none says.
+  std::uint64_t arrival_ns = 0;
 
   /// @return How many sensors this set holds a frame from.
   std::size_t count() const noexcept {
@@ -88,11 +93,14 @@ struct SensorArrayStats {
 /// @brief Several RGB-D sensors read as one array.
 ///
 /// @ref open checks that the sensors can form one, and that the calibration
-/// poses each of them. @ref start starts every secondary before the primary
-/// -- the primary's first trigger is what they wait for. @ref poll_set drains
-/// every sensor's frames, groups them by trigger, and hands out a set, each
-/// frame posed by the calibration; @ref process prepares a set on the GPU,
-/// every stream in one batch.
+/// poses each of them, and asks each sensor to notify the array of its frames
+/// (`IRgbdSensor::set_frame_notify`). @ref start starts every secondary
+/// before the primary -- the primary's first trigger is what they wait for.
+/// @ref poll_set drains every sensor's frames, groups them by trigger, and
+/// hands out a set, each frame posed by the calibration; @ref wait_set blocks
+/// for the next set on the sensors' notifications. @ref record_process records
+/// a set's preparation on the GPU, every stream, into a caller's batch, and
+/// @ref process prepares it in one of its own.
 ///
 /// The primary's frames name the triggers, and each secondary's frame within
 /// @ref Options::tolerance_us of one on the host's clock belongs to it: a
@@ -160,10 +168,12 @@ class VR_SENSOR_ARRAY_API SensorArray {
   ///         that is invalid or does not pose a sensor (lists it unposed, or
   ///         not at all), or a device or an allocator without the other;
   ///         what `GpuFramePrep::create` returns for a @ref Options::prep it
-  ///         refuses or a device the passes cannot be built on; or
+  ///         refuses or a device the passes cannot be built on;
   ///         `Status::Code::Unsupported` for a tracked sensor, or, among
   ///         several sensors, no primary or more than one, a free-running
-  ///         member, or one whose timestamps are on its own clock.
+  ///         member, or one whose timestamps are on its own clock; or what a
+  ///         sensor's `IRgbdSensor::set_frame_notify` refuses, other than
+  ///         `Status::Code::Unsupported` (a started sensor).
   static core::Result<SensorArray> open(
       std::vector<std::unique_ptr<IRgbdSensor>>&& sensors,
       const Options& options);
@@ -203,18 +213,47 @@ class VR_SENSOR_ARRAY_API SensorArray {
   ///         array; or the first sensor's failure.
   core::Result<std::optional<FrameSet>> poll_set();
 
-  /// @brief Prepare @p set on the array's device: every stream of every
-  ///        sensor undistorted and converted in one batch, one submit and
-  ///        one wait for the set (`GpuFramePrep::prepare_batch`).
+  /// @brief @ref poll_set, waiting up to @p timeout for a set: blocked between
+  ///        polls on the sensors' frame notifications, never for a fixed
+  ///        sleep, and woken too when a trigger stops waiting for a late
+  ///        sensor (one and a half frame periods of the slowest).
+  /// @param timeout  The longest wait.
+  /// @param metrics  Optional: `"wait: cameras"`, the time blocked, and
+  ///                 `"poll"`, the polls' host time.
+  /// @return The set; an empty optional when @p timeout passed with none ready
+  ///         or the array is not started; `Status::Code::Unsupported` when a
+  ///         sensor notifies nothing (@ref poll_set it instead);
+  ///         `Status::Code::InvalidArgument` on a moved-from array; or the
+  ///         first sensor's failure, which wakes the wait.
+  core::Result<std::optional<FrameSet>> wait_set(
+      std::chrono::milliseconds timeout, core::StageMetrics* metrics = nullptr);
+
+  /// @brief Record preparing @p set into @p batch: every stream of every
+  ///        sensor copied into its pass's slot, undistorted and converted
+  ///        (`GpuFramePrep::record_set`), with nothing submitted.
+  /// @param batch    Records the work; the caller submits it, and keeps @p set
+  ///                 until it has resolved, since its pictures are read then.
+  /// @param set      A set this array handed out.
+  /// @param metrics  Optional: one `"frame prep"` row for the set, its host
+  ///                 half now and its device half from
+  ///                 `PendingBatch::device_rows`.
+  /// @return The prepared set, whose buffers hold it once @p batch has run;
+  ///         `Status::Code::InvalidArgument` on a moved-from array, one opened
+  ///         without a device, or a set of another size; or what
+  ///         `GpuFramePrep::record_set` refuses.
+  core::Result<DeviceFrameSet> record_process(
+      core::CommandBatch& batch, const FrameSet& set,
+      core::StageMetrics* metrics = nullptr);
+
+  /// @brief Prepare @p set on the array's device: @ref record_process, one
+  ///        submit and its wait (`GpuFramePrep::prepare_batch`).
   ///
   /// Returns once the set is ready, so a caller fuses it as soon as this
   /// returns; a pass reuses its buffers once no `DeviceFrame` holds them.
   /// @param set      A set this array handed out.
   /// @param metrics  Optional: one `"frame prep"` row for the set.
-  /// @return The prepared set; `Status::Code::InvalidArgument` on a
-  ///         moved-from array, one opened without a device, or a set of
-  ///         another size; what `GpuFramePrep::prepare` returns for a frame
-  ///         it refuses; otherwise a buffer or submit failure.
+  /// @return The prepared set; @ref record_process's refusals; otherwise a
+  ///         buffer or submit failure.
   core::Result<DeviceFrameSet> process(const FrameSet& set,
                                        core::StageMetrics* metrics = nullptr);
 

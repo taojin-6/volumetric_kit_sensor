@@ -20,6 +20,7 @@
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "yuv_planes.hpp"
 
@@ -29,9 +30,8 @@ namespace {
 // Both kernels' local_size_x.
 constexpr std::uint32_t kLocalSize = 256;
 
-// The most commands record_uploads and record_passes time for one frame: the
-// depth copy and two plane-image copies (or one packed-colour copy), and the
-// two passes.
+// The most commands record_inputs and record_passes time for one frame: the
+// slot's copy, two plane-image copies and the two passes.
 constexpr std::uint32_t kSpansPerFrame = 5;
 
 // shaders/lens.glsl's LensCamera, under scalar layout.
@@ -139,32 +139,13 @@ core::Status check_pose(const char* what, const camera::Mat4d& pose) {
   return {};
 }
 
-// A buffer of at least `bytes`, kept when it is big enough: a device-local
-// input, filled through the pass's batch so the kernels never read the raw
-// frame across the bus, or the system-memory staging the frame is written
-// into. The staging is kept too: a batch stages through a buffer of its own
-// per call, and four passes doing that at once with 4K frames had VMA
-// allocate and free a block for every set.
-core::Status ensure_buffer(const core::Device& device,
-                           core::Allocator& allocator, core::Buffer& buffer,
-                           VkDeviceSize bytes, bool staging, const char* name) {
-  if (buffer.valid() && buffer.size() >= bytes) return {};
-  buffer = core::Buffer();
-  if (staging) {
-    VKC_ASSIGN(buffer,
-               allocator.create_buffer({bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                        core::MemoryUsage::Staging,
-                                        core::HostAccess::SequentialWrite}));
-  } else {
-    VKC_ASSIGN(buffer, core::device_storage_buffer(allocator, bytes));
-  }
-  device.set_object_name(VK_OBJECT_TYPE_BUFFER,
-                         core::debug_object_handle(buffer.handle()), name);
-  return {};
-}
-
 VkDeviceSize round_up4(VkDeviceSize bytes) noexcept {
   return (bytes + 3) & ~VkDeviceSize{3};
+}
+
+// `bytes` rounded up to a multiple of `alignment`, a power of two.
+VkDeviceSize round_up(VkDeviceSize bytes, VkDeviceSize alignment) noexcept {
+  return (bytes + alignment - 1) & ~(alignment - 1);
 }
 
 // A frame's depth half, checked, and the bytes it moves.
@@ -413,14 +394,28 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
   return prep;
 }
 
-// A checked frame: its two halves' layouts, and where its colour comes from.
+// A checked frame: its two halves' layouts, where its colour comes from, and
+// its bytes in the slot.
 struct GpuFramePrep::Layout {
   DepthLayout depth;
   ColorLayout color;
-  // NV12 plane images, or packed host words staged after the depth, both
-  // copied into color_in_; else colour is read in place.
+  // NV12 plane images, copied into color_in_; packed host words, copied into
+  // the slot after the depth; else colour is read in place.
   bool from_images = false;
   bool from_host = false;
+  // The slot holds the depth from byte 0, and packed colour from this
+  // offset, at minStorageBufferOffsetAlignment; its bytes used.
+  VkDeviceSize color_at = 0;
+  VkDeviceSize slot_bytes = 0;
+};
+
+// An output the fusion tiers read, and its lease: held while a DeviceFrame
+// shares the buffer. The frame's deleter clears it with release order and
+// ensure_output reads it with acquire order, so whatever a holder did with
+// the buffer on any thread happens before the pass writes it again.
+struct GpuFramePrep::Output {
+  core::Buffer buffer;
+  std::atomic<bool> held{false};
 };
 
 core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
@@ -441,69 +436,81 @@ core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
   layout.from_images =
       frame.color.image[0] != nullptr || frame.color.image[1] != nullptr;
   layout.from_host = frame.color_packed != nullptr;
+  // Device planes come from a family the batch can take them over from, so
+  // the acquire refuses nothing once recording starts.
+  if (frame.color.device != nullptr) {
+    const std::uint32_t family = frame.color.queue_family;
+    if (family != kQueueFamilyIgnored && family != kQueueFamilyExternal &&
+        family >= device_->caps().queue_families().size()) {
+      return core::Status::invalid_argument(
+          "GpuFramePrep: the colour planes come from queue family " +
+          std::to_string(family) + ", which the device does not have");
+    }
+  }
+  layout.slot_bytes = layout.depth.in_bytes;
+  if (layout.from_host) {
+    layout.color_at = round_up(
+        layout.depth.in_bytes,
+        std::max<VkDeviceSize>(min_storage_buffer_offset_alignment_, 4));
+    layout.slot_bytes = layout.color_at + layout.color.bind_bytes;
+  }
   return layout;
 }
 
-core::Status GpuFramePrep::acquire(core::CommandBatch& batch,
-                                   const RgbdFrame& frame) {
-  // Device planes taken over from the family that wrote them, first, so a
-  // family the device lacks is refused before any work.
-  if (frame.color.device != nullptr) {
-    VKC_TRY(batch.acquire(*frame.color.device, frame.color.queue_family));
-  }
-  return {};
-}
-
-core::Status GpuFramePrep::stage_host(const RgbdFrame& frame,
-                                      const Layout& layout) {
+core::Result<core::HostSlot> GpuFramePrep::stage(const RgbdFrame& frame,
+                                                 const Layout& layout) {
   const DepthLayout& depth = layout.depth;
   const ColorLayout& color = layout.color;
-  VKC_TRY(ensure_buffer(*device_, *allocator_, depth_in_, depth.in_bytes, false,
-                        "sensor.raw_depth"));
-  VKC_TRY(ensure_output(depth_out_, depth.out_bytes, "sensor.depth_frame",
-                        config_.depth_queue_families,
-                        config_.depth_queue_family_count));
-  if (frame.has_color()) {
-    if (layout.from_images || layout.from_host) {
-      VKC_TRY(ensure_buffer(*device_, *allocator_, color_in_, color.bind_bytes,
-                            false, "sensor.raw_color"));
-    }
-    VKC_TRY(ensure_output(color_out_, color.out_bytes, "sensor.color_frame",
-                          config_.color_queue_families,
-                          config_.color_queue_family_count));
+  // One slot: the frame is copied in as it is recorded, so the batch of the
+  // pass's last record, which binds the slot, has resolved by then (its
+  // kernels' sets are rewritten too). A record before it has refuses here,
+  // before ensure_buffers can free a buffer that batch still uses.
+  if (inputs_ == nullptr) {
+    core::HostRingDesc desc;
+    desc.slot_bytes = layout.slot_bytes;
+    desc.slots = 1;
+    desc.name = "sensor.raw_frame";
+    VKC_ASSIGN(inputs_, core::HostRing::create(*device_, *allocator_, desc));
   }
-
-  // The depth, then any packed colour from the word after it.
-  const VkDeviceSize color_bytes = layout.from_host ? color.bind_bytes : 0;
-  VKC_TRY(ensure_buffer(*device_, *allocator_, staging_,
-                        depth.in_bytes + color_bytes, true,
-                        "sensor.raw_staging"));
-  auto* staged = static_cast<std::uint8_t*>(staging_.mapped());
-  std::memcpy(staged, frame.depth,
+  VKC_ASSIGN(core::HostSlot slot, inputs_->claim(layout.slot_bytes));
+  // The depth, then any packed colour at its aligned offset.
+  std::memcpy(slot.data(), frame.depth,
               std::size_t{depth.pixels} * sizeof(std::uint16_t));
   if (layout.from_host) {
-    std::memcpy(staged + depth.in_bytes, frame.color_packed,
-                static_cast<std::size_t>(color_bytes));
+    std::memcpy(slot.data() + layout.color_at, frame.color_packed,
+                static_cast<std::size_t>(color.bind_bytes));
   }
-  return {};
+  return slot;
 }
 
-core::Status GpuFramePrep::record_uploads(core::CommandBatch& batch,
-                                          const RgbdFrame& frame,
-                                          const Layout& layout,
-                                          core::GpuStageScope* stage) {
-  const DepthLayout& depth = layout.depth;
+core::Status GpuFramePrep::ensure_buffers(const RgbdFrame& frame,
+                                          const Layout& layout) {
+  VKC_TRY(ensure_output(depth_out_, layout.depth.out_bytes,
+                        "sensor.depth_frame", config_.depth_queue_families,
+                        config_.depth_queue_family_count));
+  if (!frame.has_color()) return {};
+  if (layout.from_images) {
+    VKC_TRY(core::ensure_device_scratch(
+        *device_, *allocator_, color_in_, layout.color.bind_bytes,
+        max_storage_buffer_range_, "sensor.raw_color"));
+  }
+  return ensure_output(color_out_, layout.color.out_bytes, "sensor.color_frame",
+                       config_.color_queue_families,
+                       config_.color_queue_family_count);
+}
+
+core::Status GpuFramePrep::record_inputs(
+    core::CommandBatch& batch, const RgbdFrame& frame, const Layout& layout,
+    const core::HostSlot& slot, core::GpuStageScope* stage, VkBuffer* input) {
   const ColorLayout& color = layout.color;
   const YuvImage& image = frame.color;
-  // The copies are timed with the passes, so the row's device half counts
-  // moving the frame too.
-  const VkDeviceSize depth_bytes =
-      VkDeviceSize{depth.pixels} * sizeof(std::uint16_t);
-  VKC_TRY(batch.copy(staging_, 0, depth_in_, 0, depth_bytes, stage));
-  if (layout.from_host) {
-    VKC_TRY(batch.copy(staging_, depth.in_bytes, color_in_, 0, color.bind_bytes,
-                       stage));
+  // Device planes taken over from the family that wrote them.
+  if (image.device != nullptr) {
+    VKC_TRY(batch.acquire(*image.device, image.queue_family));
   }
+  // The slot's used range: bound in place, or one copy into its mirror, which
+  // joins the open tile, the frame prep's.
+  VKC_ASSIGN(*input, batch.input(slot, 0, layout.slot_bytes));
   if (layout.from_images) {
     VKC_TRY(batch.copy(*image.image[0], image.width, image.height, color_in_, 0,
                        stage));
@@ -522,14 +529,13 @@ core::Status GpuFramePrep::record_uploads(core::CommandBatch& batch,
 
 core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
                                          const RgbdFrame& frame,
-                                         const Layout& layout,
+                                         const Layout& layout, VkBuffer input,
                                          core::GpuStageScope* stage) {
   const DepthLayout& depth = layout.depth;
   const ColorLayout& color = layout.color;
   const YuvImage& image = frame.color;
-  depth_kernel_.set.write_storage_buffer(0, depth_in_.handle(), 0,
-                                         depth.in_bytes);
-  depth_kernel_.set.write_storage_buffer(1, depth_out_->handle(), 0,
+  depth_kernel_.set.write_storage_buffer(0, input, 0, depth.in_bytes);
+  depth_kernel_.set.write_storage_buffer(1, depth_out_->buffer.handle(), 0,
                                          depth.out_bytes);
   const bool within_color = config_.depth_within_color && frame.has_color();
   const DepthParams depth_params{lens_params(frame.depth_camera),
@@ -538,11 +544,15 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
                          core::group_count(depth.pixels, kLocalSize),
                          max_workgroup_count_x_, stage));
   if (frame.has_color()) {
-    const bool in_input = layout.from_images || layout.from_host;
-    color_kernel_.set.write_storage_buffer(
-        0, in_input ? color_in_.handle() : image.device->handle(),
-        color.bind_offset, color.bind_bytes);
-    color_kernel_.set.write_storage_buffer(1, color_out_->handle(), 0,
+    // Packed words where the slot holds them, plane images where they were
+    // copied, planes in a buffer where the decoder left them.
+    const VkBuffer planes = layout.from_host     ? input
+                            : layout.from_images ? color_in_.handle()
+                                                 : image.device->handle();
+    const VkDeviceSize at =
+        layout.from_host ? layout.color_at : color.bind_offset;
+    color_kernel_.set.write_storage_buffer(0, planes, at, color.bind_bytes);
+    color_kernel_.set.write_storage_buffer(1, color_out_->buffer.handle(), 0,
                                            color.out_bytes);
     const auto u32 = [](VkDeviceSize v) {
       return static_cast<std::uint32_t>(v);
@@ -569,30 +579,36 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
   return {};
 }
 
-void GpuFramePrep::abandon(const RgbdFrame& frame, const Layout& layout) {
-  // A failed wait may leave the copy and the kernels running, so the staging
-  // is let go rather than rewritten or freed, as the batch lets go of its
-  // own; and so are the device planes, buffer or images, which the caller may
-  // drop, and a decoder reuse, as soon as the call returns.
-  static_cast<void>(new core::Buffer(std::move(staging_)));
+void GpuFramePrep::abandon(const RgbdFrame& frame) {
+  // The device may still run the copies and the kernels, so the device
+  // planes, buffer or images, which the caller may drop, and a decoder reuse,
+  // as soon as the call returns, are let go rather than freed. The slot stays
+  // with the batch, which the device keeps.
   if (frame.color.device != nullptr) {
     static_cast<void>(
         new std::shared_ptr<const core::Buffer>(frame.color.device));
   }
-  if (layout.from_images) {
-    static_cast<void>(
-        new std::shared_ptr<const core::Image>(frame.color.image[0]));
-    static_cast<void>(
-        new std::shared_ptr<const core::Image>(frame.color.image[1]));
+  for (const std::shared_ptr<const core::Image>& plane : frame.color.image) {
+    if (plane != nullptr) {
+      static_cast<void>(new std::shared_ptr<const core::Image>(plane));
+    }
   }
 }
 
 DeviceFrame GpuFramePrep::finish(const RgbdFrame& frame) const {
+  // An output's buffer for the frame, its lease held until every copy goes.
+  const auto lease = [](const std::shared_ptr<Output>& output) {
+    output->held.store(true, std::memory_order_relaxed);
+    return std::shared_ptr<const core::Buffer>(
+        &output->buffer, [keep = output](const core::Buffer*) {
+          keep->held.store(false, std::memory_order_release);
+        });
+  };
   // The pinhole cameras of the undistorted images, narrowed as the passes
   // read them, each posed: the depth camera through the sensor's extrinsic.
   const LensParams d = lens_params(frame.depth_camera);
   DeviceFrame out;
-  out.depth = depth_out_;
+  out.depth = lease(depth_out_);
   out.depth_camera.fx = d.fx;
   out.depth_camera.fy = d.fy;
   out.depth_camera.cx = d.cx;
@@ -605,13 +621,76 @@ DeviceFrame GpuFramePrep::finish(const RgbdFrame& frame) const {
       Mat4f(frame.color_to_world * frame.depth_to_color);
   if (frame.has_color()) {
     const LensParams c = lens_params(frame.color_camera);
-    out.color = color_out_;
+    out.color = lease(color_out_);
     out.color_camera = ColorCameraParams{
         c.fx, c.fy, c.cx, c.cy, c.width, c.height, Mat4f(frame.color_to_world)};
     out.color_encoding = frame.color_encoding;
   }
   out.timestamp_ns = frame.timestamp_ns;
   return out;
+}
+
+namespace {
+
+// A set's frames as pointers, a missing one null; refused with fewer passes
+// than frames, naming `op`.
+template <typename Pass>
+core::Result<std::vector<const RgbdFrame*>> listed_frames(
+    const char* op, const std::vector<Pass>& preps,
+    const std::vector<std::optional<RgbdFrame>>& frames) {
+  if (preps.size() < frames.size()) {
+    return core::Status::invalid_argument(
+        std::string("GpuFramePrep::") + op + ": " +
+        std::to_string(frames.size()) + " frames for " +
+        std::to_string(preps.size()) + " passes");
+  }
+  std::vector<const RgbdFrame*> listed(frames.size(), nullptr);
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    if (frames[i]) listed[i] = &*frames[i];
+  }
+  return listed;
+}
+
+}  // namespace
+
+core::Result<DeviceFrame> GpuFramePrep::record(
+    core::CommandBatch& batch, const RgbdFrame& frame,
+    core::StageMetrics* metrics) try {
+  // A set of one, through record_set's path.
+  const RgbdFrame* const frames[] = {&frame};
+  Layout layout;
+  VKC_ASSIGN(GpuFramePrep* const first, check_frames(this, frames, &layout, 1));
+  VKC_TRY(gpu_timer_.reserve(*device_, kSpansPerFrame));
+  core::GpuStageScope stage(metrics, first->gpu_timer_, "frame prep");
+  std::optional<DeviceFrame> out;
+  VKC_TRY(record_frames(batch, this, frames, &layout, &out, 1, &stage));
+  return std::move(*out);
+} catch (const std::bad_alloc&) {
+  return core::Status::out_of_memory("GpuFramePrep: out of host memory");
+}
+
+core::Result<std::vector<std::optional<DeviceFrame>>> GpuFramePrep::record_set(
+    core::CommandBatch& batch, std::vector<GpuFramePrep>& preps,
+    const std::vector<std::optional<RgbdFrame>>& frames,
+    core::StageMetrics* metrics) try {
+  VKC_ASSIGN(const std::vector<const RgbdFrame*> listed,
+             listed_frames("record_set", preps, frames));
+  std::vector<Layout> layouts(frames.size());
+  std::vector<std::optional<DeviceFrame>> out(frames.size());
+  VKC_ASSIGN(
+      GpuFramePrep* const first,
+      check_frames(preps.data(), listed.data(), layouts.data(), frames.size()));
+  if (first == nullptr) return out;
+  // The set's timed commands all in one window, which grows with the array.
+  VKC_TRY(first->gpu_timer_.reserve(
+      *first->device_,
+      kSpansPerFrame * static_cast<std::uint32_t>(frames.size())));
+  core::GpuStageScope stage(metrics, first->gpu_timer_, "frame prep");
+  VKC_TRY(record_frames(batch, preps.data(), listed.data(), layouts.data(),
+                        out.data(), frames.size(), &stage));
+  return out;
+} catch (const std::bad_alloc&) {
+  return core::Status::out_of_memory("GpuFramePrep: out of host memory");
 }
 
 core::Result<DeviceFrame> GpuFramePrep::prepare(const RgbdFrame& frame,
@@ -628,15 +707,8 @@ core::Result<std::vector<std::optional<DeviceFrame>>>
 GpuFramePrep::prepare_batch(std::vector<GpuFramePrep>& preps,
                             const std::vector<std::optional<RgbdFrame>>& frames,
                             core::StageMetrics* metrics) {
-  if (preps.size() < frames.size()) {
-    return core::Status::invalid_argument(
-        "GpuFramePrep::prepare_batch: " + std::to_string(frames.size()) +
-        " frames for " + std::to_string(preps.size()) + " passes");
-  }
-  std::vector<const RgbdFrame*> listed(frames.size(), nullptr);
-  for (std::size_t i = 0; i < frames.size(); ++i) {
-    if (frames[i]) listed[i] = &*frames[i];
-  }
+  VKC_ASSIGN(const std::vector<const RgbdFrame*> listed,
+             listed_frames("prepare_batch", preps, frames));
   std::vector<Layout> layouts(frames.size());
   std::vector<std::optional<DeviceFrame>> out(frames.size());
   VKC_TRY(prepare_frames(preps.data(), listed.data(), layouts.data(),
@@ -644,17 +716,13 @@ GpuFramePrep::prepare_batch(std::vector<GpuFramePrep>& preps,
   return out;
 }
 
-core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
-                                          const RgbdFrame* const* frames,
-                                          Layout* layouts,
-                                          std::optional<DeviceFrame>* out,
-                                          std::size_t count,
-                                          core::StageMetrics* metrics) {
+core::Result<GpuFramePrep*> GpuFramePrep::check_frames(
+    GpuFramePrep* preps, const RgbdFrame* const* frames, Layout* layouts,
+    std::size_t count) {
   // Every frame checked before any is recorded, so a refused set costs no
   // work and times no row; and every pass on the first one's device, which
   // runs the batch.
   GpuFramePrep* first = nullptr;
-  std::uint32_t present = 0;
   for (std::size_t i = 0; i < count; ++i) {
     if (frames[i] == nullptr) continue;
     VKC_ASSIGN(layouts[i], preps[i].check(*frames[i]));
@@ -664,49 +732,42 @@ core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
       return core::Status::invalid_argument(
           "GpuFramePrep::prepare_batch: the passes are on different devices");
     }
-    ++present;
   }
-  if (first == nullptr) return {};
+  return first;
+}
 
-  // The set's timed commands all in one window, which grows with the array.
-  VKC_TRY(first->gpu_timer_.reserve(*first->device_, kSpansPerFrame * present));
-  core::GpuStageScope stage(metrics, first->gpu_timer_, "frame prep");
-  core::CommandBatch batch(*first->device_, *first->allocator_);
+core::Status GpuFramePrep::record_frames(core::CommandBatch& batch,
+                                         GpuFramePrep* preps,
+                                         const RgbdFrame* const* frames,
+                                         const Layout* layouts,
+                                         std::optional<DeviceFrame>* out,
+                                         std::size_t count,
+                                         core::GpuStageScope* stage) {
+  // Every frame's slot claimed and filled before anything is recorded or
+  // resized, so a slot held refuses with the batch and every pass as they
+  // were; a slot claimed before a refusal goes back free. A claimed slot
+  // says its pass's last batch has resolved, so then its buffers may grow.
+  std::vector<core::HostSlot> slots(count);
   for (std::size_t i = 0; i < count; ++i) {
-    if (frames[i] != nullptr) VKC_TRY(preps[i].acquire(batch, *frames[i]));
+    if (frames[i] == nullptr) continue;
+    VKC_ASSIGN(slots[i], preps[i].stage(*frames[i], layouts[i]));
   }
-  try {
-    for (std::size_t i = 0; i < count; ++i) {
-      if (frames[i] != nullptr) {
-        VKC_TRY(preps[i].stage_host(*frames[i], layouts[i]));
-      }
-    }
-  } catch (const std::bad_alloc&) {
-    return core::Status::out_of_memory("GpuFramePrep: out of host memory");
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] == nullptr) continue;
+    VKC_TRY(preps[i].ensure_buffers(*frames[i], layouts[i]));
   }
-  // Every camera's uploads, then every camera's passes: the uploads write
+  // Every camera's inputs, then every camera's passes: the copies write
   // buffers of their own, so they run with no barrier between them.
+  std::vector<VkBuffer> inputs(count, VK_NULL_HANDLE);
   for (std::size_t i = 0; i < count; ++i) {
-    if (frames[i] != nullptr) {
-      VKC_TRY(preps[i].record_uploads(batch, *frames[i], layouts[i], &stage));
-    }
+    if (frames[i] == nullptr) continue;
+    VKC_TRY(preps[i].record_inputs(batch, *frames[i], layouts[i], slots[i],
+                                   stage, &inputs[i]));
   }
   for (std::size_t i = 0; i < count; ++i) {
-    if (frames[i] != nullptr) {
-      VKC_TRY(preps[i].record_passes(batch, *frames[i], layouts[i], &stage));
-    }
-  }
-  // TODO: submit through the core's submit_async once the pipelined stages
-  // land (DESIGN.md's Next work, step 4): the set then waits on the previous
-  // stage's timeline rather than on the host, and a failure abandons the
-  // passes only while its PendingBatch::in_flight() says the device may still
-  // run them, where every failure abandons them now.
-  const core::Status submitted = batch.submit();
-  if (!submitted.ok()) {
-    for (std::size_t i = 0; i < count; ++i) {
-      if (frames[i] != nullptr) preps[i].abandon(*frames[i], layouts[i]);
-    }
-    return submitted;
+    if (frames[i] == nullptr) continue;
+    VKC_TRY(preps[i].record_passes(batch, *frames[i], layouts[i], inputs[i],
+                                   stage));
   }
   for (std::size_t i = 0; i < count; ++i) {
     if (frames[i] != nullptr) out[i] = preps[i].finish(*frames[i]);
@@ -714,31 +775,66 @@ core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
   return {};
 }
 
-core::Status GpuFramePrep::ensure_output(std::shared_ptr<core::Buffer>& buffer,
+core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
+                                          const RgbdFrame* const* frames,
+                                          Layout* layouts,
+                                          std::optional<DeviceFrame>* out,
+                                          std::size_t count,
+                                          core::StageMetrics* metrics) try {
+  VKC_ASSIGN(GpuFramePrep* const first,
+             check_frames(preps, frames, layouts, count));
+  if (first == nullptr) return {};
+  VKC_TRY(first->gpu_timer_.reserve(
+      *first->device_, kSpansPerFrame * static_cast<std::uint32_t>(count)));
+  // The row spans the wait too, and takes the batch's device half after it.
+  core::GpuStageScope stage(metrics, first->gpu_timer_, "frame prep");
+  core::CommandBatch batch(*first->device_, *first->allocator_);
+  VKC_TRY(record_frames(batch, preps, frames, layouts, out, count, &stage));
+  core::Result<core::PendingBatch> pending = batch.submit_async({}, {});
+  const core::Status ran = pending.ok() ? pending->wait() : pending.status();
+  if (!ran.ok()) {
+    // A submit that loses the device may still be pending, as may a failed
+    // wait. The core keeps the command resources in both cases, but the
+    // external pictures read by those commands belong to the frame.
+    if ((pending.ok() && pending->in_flight()) ||
+        (!pending.ok() && core::vk_result(ran) == VK_ERROR_DEVICE_LOST)) {
+      for (std::size_t i = 0; i < count; ++i) {
+        if (frames[i] != nullptr) abandon(*frames[i]);
+      }
+    }
+    for (std::size_t i = 0; i < count; ++i) out[i].reset();
+    return ran;
+  }
+  if (metrics != nullptr) metrics->merge_device(pending->device_rows());
+  return {};
+} catch (const std::bad_alloc&) {
+  return core::Status::out_of_memory("GpuFramePrep: out of host memory");
+}
+
+core::Status GpuFramePrep::ensure_output(std::shared_ptr<Output>& output,
                                          VkDeviceSize bytes, const char* name,
                                          const std::uint32_t* families,
                                          std::uint32_t family_count) {
-  // Reused only when this pass holds the last reference: a DeviceFrame kept
-  // past this call keeps its contents, and this frame goes to a new buffer,
-  // which measured no slower than reusing one (the residency decision's step
-  // 5b), so there is no ring.
-  if (buffer != nullptr && buffer.use_count() == 1 && buffer->size() >= bytes) {
-    // use_count() is a relaxed load. The fence orders this thread's next
-    // write after whatever the thread that dropped the last other reference
-    // did first, such as a renderer's fence wait on its copy from it.
-    std::atomic_thread_fence(std::memory_order_acquire);
+  // Reused only once no DeviceFrame holds its lease: a frame kept past this
+  // call keeps its contents, and this frame goes to a new buffer, which
+  // measured no slower than reusing one (the residency decision's step 5b),
+  // so there is no ring.
+  if (output != nullptr && !output->held.load(std::memory_order_acquire) &&
+      output->buffer.size() >= bytes) {
     return {};
   }
   // Device-local: only the kernels touch it, and on a discrete GPU the
   // fusion kernels' reads would otherwise cross the bus. Shared with the
   // families the config names for it, for a consumer on another queue, with
-  // no usage beyond the pass's storage and transfer usage.
-  VKC_ASSIGN(core::Buffer created,
-             core::device_storage_buffer(*allocator_, bytes, 0, families,
-                                         family_count));
+  // no usage beyond the pass's storage and transfer usage. The host's half
+  // first, so running out of host memory leaves no buffer made.
+  auto made = std::make_shared<Output>();
+  VKC_ASSIGN(made->buffer, core::device_storage_buffer(*allocator_, bytes, 0,
+                                                       families, family_count));
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
-                           core::debug_object_handle(created.handle()), name);
-  buffer = std::make_shared<core::Buffer>(std::move(created));
+                           core::debug_object_handle(made->buffer.handle()),
+                           name);
+  output = std::move(made);
   return {};
 }
 

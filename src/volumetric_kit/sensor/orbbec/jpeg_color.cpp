@@ -65,6 +65,7 @@ void JpegColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
     // A corrupt JPEG costs itself; anything else, every JPEG after it.
     if (picture.status().domain() != core::Status::Code::IoError) {
       worker_.fail(picture.status().with_context(options_.who));
+      if (options_.on_failure) options_.on_failure();
     }
     return;
   }

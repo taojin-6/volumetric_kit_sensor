@@ -91,6 +91,9 @@ class HevcColorDecoder {
     core::Allocator* allocator = nullptr;
     // The queue families that read the pictures, for HevcDecoder::Options.
     ColorQueueFamilies queue_families;
+    // Called on the decoder's thread once decoding stops for good (failure),
+    // so a consumer waiting for a pair learns why; may be empty.
+    std::function<void()> on_failure;
   };
 
   // Open the decoder and start its thread. `sink` gets each decoded pair, on

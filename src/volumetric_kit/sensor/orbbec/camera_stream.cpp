@@ -161,13 +161,21 @@ core::Result<std::shared_ptr<ob::Device>> discover(ob::Context& context,
 }  // namespace
 
 void Mailbox::post(std::shared_ptr<ob::FrameSet> frameset) {
-  if (frameset == nullptr) return;
-  std::lock_guard<std::mutex> lock(mutex);
-  pending.push_back(std::move(frameset));
-  while (pending.size() > depth) {
-    pending.pop_front();
-    dropped.fetch_add(1, std::memory_order_relaxed);
+  std::function<void()> wake;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (frameset != nullptr) {
+      pending.push_back(std::move(frameset));
+      while (pending.size() > depth) {
+        pending.pop_front();
+        dropped.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+    wake = notify;
   }
+  // After the lock, so the poll it wakes finds the pair and no lock is held
+  // across the two.
+  if (wake) wake();
 }
 
 void Mailbox::on_devices_changed(const std::string& serial,
@@ -175,9 +183,16 @@ void Mailbox::on_devices_changed(const std::string& serial,
   try {
     for (std::uint32_t i = 0; i < removed.getCount(); ++i) {
       if (serial == or_empty(removed.getSerialNumber(i))) {
-        std::lock_guard<std::mutex> lock(mutex);
-        fault = "camera " + serial + " disconnected; reopen it to use it again";
-        disconnected.store(true, std::memory_order_release);
+        std::function<void()> wake;
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          fault =
+              "camera " + serial + " disconnected; reopen it to use it again";
+          disconnected.store(true, std::memory_order_release);
+          wake = notify;
+        }
+        // A consumer blocked for the next pair polls now, and is told.
+        if (wake) wake();
         return;
       }
     }
@@ -369,8 +384,12 @@ core::Status CameraStream::start() {
   const auto post = [mailbox = mailbox_](std::shared_ptr<ob::FrameSet> fs) {
     mailbox->post(std::move(fs));
   };
+  // A decoder that stops for good wakes the consumer with no pair: its next
+  // take reports why.
+  const auto failed = [mailbox = mailbox_] { mailbox->post(nullptr); };
   if (color_codec_ == OrbbecColorCodec::Hevc) {
     HevcColorDecoder::Options decoding;
+    decoding.on_failure = failed;
     decoding.fps = fps_;
     decoding.device = vulkan_device_;
     decoding.allocator = vulkan_allocator_;
@@ -392,6 +411,7 @@ core::Status CameraStream::start() {
     decoding.allocator = vulkan_allocator_;
     decoding.queue_families = color_queue_families_;
     decoding.who = who_;
+    decoding.on_failure = failed;
     VKC_ASSIGN(auto decoder, JpegColorDecoder::start(decoding, post));
     jpeg_ = std::move(decoder);
   }
@@ -415,6 +435,15 @@ core::Status CameraStream::start() {
       // Runs on the SDK's thread; it must never throw back into the SDK.
       try {
         if (fs == nullptr) return;
+        // The pair's arrival on the host, on the system clock: written into
+        // the depth frame, which the colour decoder passes on as it is, and
+        // read into RgbdFrame::arrival_ns.
+        if (const auto depth = fs->getDepthFrame()) {
+          depth->setSystemTimestampUs(static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  std::chrono::system_clock::now().time_since_epoch())
+                  .count()));
+        }
         mailbox->received.fetch_add(1, std::memory_order_relaxed);
         if (hevc != nullptr) {
           hevc->push(std::move(fs));
@@ -454,6 +483,11 @@ void CameraStream::stop() noexcept {
 void CameraStream::set_queue_depth(std::size_t depth) {
   std::lock_guard<std::mutex> lock(mailbox_->mutex);
   mailbox_->depth = depth > 0 ? depth : 1;
+}
+
+void CameraStream::set_frame_notify(std::function<void()> notify) {
+  std::lock_guard<std::mutex> lock(mailbox_->mutex);
+  mailbox_->notify = std::move(notify);
 }
 
 core::Status CameraStream::decoder_failure() const {
@@ -617,6 +651,8 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
                                       : depth->getTimeStampUs()) *
                          1000;
     frame.sequence = depth->getIndex();
+    // Stamped at the SDK's frame callback (start).
+    frame.arrival_ns = depth->getSystemTimeStampUs() * 1000;
   } catch (const std::exception& e) {  // ob::Error is one
     return skip(std::string("the SDK failed on it: ") + e.what());
   }

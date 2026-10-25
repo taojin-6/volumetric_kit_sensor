@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -46,13 +47,17 @@ struct Mailbox {
   std::deque<std::shared_ptr<ob::FrameSet>> pending;  // guarded by mutex
   std::size_t depth = 1;                              // guarded by mutex
   std::string fault;                                  // guarded by mutex
+  // The consumer's wake-up (IRgbdSensor::set_frame_notify), copied under the
+  // mutex and called after it is released; guarded by mutex.
+  std::function<void()> notify;
   // Set, after `fault`, once the camera is gone; read without the lock.
   std::atomic<bool> disconnected{false};
   std::atomic<std::uint64_t> received{0};
   std::atomic<std::uint64_t> dropped{0};
 
   // A pair into `pending`, uncounted: one the SDK delivered already and a
-  // colour decoder has decoded.
+  // colour decoder has decoded; then the consumer woken. A null pair wakes it
+  // alone: the decoder failed, which its next take reports.
   void post(std::shared_ptr<ob::FrameSet> frameset);
   void on_devices_changed(const std::string& serial,
                           const ob::DeviceList& removed);
@@ -109,6 +114,9 @@ class CameraStream {
 
   // How many untaken pairs the mailbox keeps (default 1). Set before start.
   void set_queue_depth(std::size_t depth);
+  // Who the mailbox wakes as each pair lands, the camera goes or the decoder
+  // fails (IRgbdSensor::set_frame_notify). Set before start.
+  void set_frame_notify(std::function<void()> notify);
   // The newest pair not yet taken, or null, the older ones counted dropped;
   // IoError once disconnected, and the colour decoder's failure once it has
   // stopped (Unsupported, Backend, OutOfMemory). A taken pair is this
