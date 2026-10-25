@@ -3,6 +3,7 @@
 
 #include "orbbec_camera_stub.hpp"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -94,6 +95,7 @@ core::Status CameraStream::sync_clock_to_host() { return {}; }
 core::Status CameraStream::start() { return {}; }
 void CameraStream::stop() noexcept {}
 void CameraStream::set_queue_depth(std::size_t) {}
+void CameraStream::set_frame_notify(std::function<void()>) {}
 OrbbecStreamStats CameraStream::stats() const noexcept { return {}; }
 void CameraStream::discard() noexcept {}
 core::Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
