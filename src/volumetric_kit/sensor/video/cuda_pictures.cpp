@@ -3,11 +3,7 @@
 
 #include "cuda_pictures.hpp"
 
-#include <dlfcn.h>
-
 #include <atomic>
-#include <cstring>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -17,127 +13,29 @@
 
 namespace volumetric_kit::recon::sensor::video {
 
-const CudaDriver* cuda_driver() {
-  static const std::optional<CudaDriver> loaded =
-      []() -> std::optional<CudaDriver> {
-    void* lib = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
-    if (lib == nullptr) return std::nullopt;
-    CudaDriver d;
-    bool ok = true;
-#define VR_CUDA_LOAD(name)                                                  \
-  d.name =                                                                  \
-      reinterpret_cast<decltype(d.name)>(dlsym(lib, VR_CUDA_STRING(name))); \
-  ok = ok && d.name != nullptr;
-    VR_CUDA_FUNCTIONS(VR_CUDA_LOAD)
-#undef VR_CUDA_LOAD
-    if (!ok) {
-      dlclose(lib);
-      return std::nullopt;
-    }
-    return d;
-  }();
-  return loaded ? &*loaded : nullptr;
-}
-
-core::Status cuda_error(const char* who, CUresult result, const char* what) {
-  const char* name = nullptr;
-  cuda_driver()->cuGetErrorName(result, &name);
-  return core::Status::backend_error(
-      core::Status::Backend::Cuda, static_cast<std::int64_t>(result),
-      std::string(who) + ": " + what + ": " +
-          (name != nullptr ? name : "CUDA error"));
-}
-
-core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who) {
-  VkPhysicalDeviceIDProperties id{};
-  id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
-  VkPhysicalDeviceProperties2 props{};
-  props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-  props.pNext = &id;
-  vkGetPhysicalDeviceProperties2(device.physical_device(), &props);
-
-  const CudaDriver* cu = cuda_driver();
-  if (cu == nullptr) {
-    return core::Status::unsupported(std::string(who) +
-                                     ": libcuda does not load");
-  }
-  CUresult r = cu->cuInit(0);
-  if (r != CUDA_SUCCESS) {
-    return core::Status::unsupported(
-        cuda_error(who, r, "starting CUDA").message());
-  }
-  int count = 0;
-  r = cu->cuDeviceGetCount(&count);
-  if (r != CUDA_SUCCESS) return cuda_error(who, r, "counting CUDA devices");
-  for (int i = 0; i < count; ++i) {
-    CUdevice ordinal = 0;
-    CUuuid uuid{};
-    if (cu->cuDeviceGet(&ordinal, i) != CUDA_SUCCESS ||
-        cu->cuDeviceGetUuid(&uuid, ordinal) != CUDA_SUCCESS) {
-      continue;
-    }
-    if (std::memcmp(uuid.bytes, id.deviceUUID, VK_UUID_SIZE) == 0) return i;
-  }
-  return core::Status::unsupported(
-      std::string(who) + ": no CUDA device is the Vulkan device's GPU");
-}
-
-core::Result<std::unique_ptr<CudaStream>> CudaStream::open(
+core::Result<std::unique_ptr<CudaSession>> CudaSession::open(
     const core::Device& device, const char* who) {
-  VKC_ASSIGN(const int ordinal, cuda_ordinal_of(device, who));
-  const CudaDriver* cu = cuda_driver();
-  auto s = std::make_unique<CudaStream>();
-  CUresult r = cu->cuDeviceGet(&s->device, ordinal);
-  if (r == CUDA_SUCCESS) {
-    r = cu->cuDevicePrimaryCtxRetain(&s->context, s->device);
-  }
-  if (r != CUDA_SUCCESS) {
-    s->context = nullptr;
-    return cuda_error(who, r, "retaining the GPU's CUDA context");
-  }
-  const CudaContextScope scope(s->context);
-  if (!scope.ok()) {
-    return cuda_error(who, scope.result(), "making the CUDA context current");
-  }
-  r = cu->cuStreamCreate(&s->stream, CU_STREAM_NON_BLOCKING);
-  if (r != CUDA_SUCCESS) {
-    s->stream = nullptr;
-    return cuda_error(who, r, "creating a CUDA stream");
-  }
+  auto s = std::make_unique<CudaSession>();
+  core::Result<std::unique_ptr<CudaContext>> opened = CudaContext::open(device);
+  if (!opened) return opened.status().with_context(who);
+  s->context = std::move(opened).value();
+  core::Result<std::unique_ptr<CudaStream>> made =
+      CudaStream::open(*s->context);
+  if (!made) return made.status().with_context(who);
+  s->stream = std::move(made).value();
   return s;
 }
 
-CudaStream::~CudaStream() {
-  if (context == nullptr) return;
-  const CudaDriver* cu = cuda_driver();
-  if (stream != nullptr) {
-    const CudaContextScope scope(context);
-    cu->cuStreamDestroy(stream);
-  }
-  cu->cuDevicePrimaryCtxRelease(device);
-}
-
 core::Result<std::unique_ptr<CudaPictures>> CudaPictures::create(
-    const core::Device& device, core::Allocator& allocator, CUcontext context,
-    CUstream stream, const char* who) {
+    const core::Device& device, core::Allocator& allocator,
+    const CudaContext& context, CUstream stream, const char* who) {
   if (!device.exports_memory()) {
     return core::Status::unsupported(std::string(who) +
                                      ": the device does not export memory "
                                      "(VK_KHR_external_memory_fd)");
   }
-  if (cuda_driver() == nullptr) {
-    return core::Status::unsupported(std::string(who) +
-                                     ": libcuda does not load");
-  }
   return std::unique_ptr<CudaPictures>(
       new CudaPictures(device, allocator, context, stream, who));
-}
-
-CudaPictures::~CudaPictures() {
-  const CudaContextScope scope(context_);
-  // Release the slots before the scope restores the previous CUDA context.
-  // A picture can keep the Vulkan buffer alive after its CUDA view is gone.
-  slots_.clear();
 }
 
 core::Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
@@ -149,14 +47,14 @@ core::Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   // use_count() is a relaxed load. Each fence orders CUDA's next write, or
   // the release, after whatever the thread that dropped the last other
   // reference did first, such as its fence wait on its last read.
-  for (Slot& s : slots_) {
-    if (s.buffer.use_count() == 1 && s.bytes >= bytes) {
+  for (const std::unique_ptr<Slot>& s : slots_) {
+    if (s->buffer.use_count() == 1 && s->bytes >= bytes) {
       std::atomic_thread_fence(std::memory_order_acquire);
-      return &s;
+      return s.get();
     }
   }
   for (auto it = slots_.begin(); it != slots_.end();) {
-    if (it->buffer.use_count() == 1) {
+    if ((*it)->buffer.use_count() == 1) {
       std::atomic_thread_fence(std::memory_order_acquire);
       it = slots_.erase(it);
     } else {
@@ -168,50 +66,28 @@ core::Result<CudaPictures::Slot*> CudaPictures::slot(std::uint64_t bytes) {
   device_->set_object_name(VK_OBJECT_TYPE_BUFFER,
                            core::debug_object_handle(exported.buffer.handle()),
                            "sensor.decoded_picture");
-  CUDA_EXTERNAL_MEMORY_HANDLE_DESC handle{};
-  handle.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
-  handle.handle.fd = exported.fd.get();
-  handle.size = exported.memory_size;
-  handle.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
-  Slot s;
-  s.bytes = bytes;
-  const CudaDriver* cu = cuda_driver();
-  CUresult r = cu->cuImportExternalMemory(&s.memory, &handle);
-  if (r != CUDA_SUCCESS) {
-    // An import that fails leaves the descriptor ours: the UniqueFd closes it.
-    return cuda_error(who_, r, "importing a Vulkan buffer");
-  }
-  // One that succeeds hands it to CUDA, which closes it.
-  static_cast<void>(exported.fd.release());
-  CUDA_EXTERNAL_MEMORY_BUFFER_DESC mapped{};
-  mapped.offset = 0;
-  mapped.size = bytes;
-  r = cu->cuExternalMemoryGetMappedBuffer(&s.pointer, s.memory, &mapped);
-  if (r != CUDA_SUCCESS) {
-    return cuda_error(who_, r, "mapping a Vulkan buffer");
-  }
-  s.buffer = std::make_shared<core::Buffer>(std::move(exported.buffer));
+  // Each owner is held from the moment it exists, the mapping after the
+  // buffer, so a failed host allocation releases CUDA's view first.
+  core::Result<std::unique_ptr<CudaBufferMapping>> mapping =
+      CudaBufferMapping::map(*context_, exported);
+  if (!mapping) return mapping.status().with_context(who_);
+  auto s = std::make_unique<Slot>();
+  s->buffer = std::make_shared<core::Buffer>(std::move(exported.buffer));
+  s->mapping = std::move(mapping).value();
+  s->bytes = bytes;
   slots_.push_back(std::move(s));
-  return &slots_.back();
+  return slots_.back().get();
 }
 
 core::Result<CudaPictures::Target> CudaPictures::take(std::uint64_t bytes) {
-  const CudaContextScope scope(context_);
-  if (!scope.ok()) {
-    return cuda_error(who_, scope.result(), "making the CUDA context current");
-  }
   VKC_ASSIGN(Slot * s, slot(bytes));
-  return Target{s->buffer, s->pointer};
+  return Target{s->buffer, s->mapping->pointer()};
 }
 
 core::Status CudaPictures::copy(CUdeviceptr luma, std::size_t luma_pitch,
                                 CUdeviceptr chroma, std::size_t chroma_pitch,
                                 std::uint32_t width, std::uint32_t height,
                                 YuvImage& out) {
-  const CudaContextScope scope(context_);
-  if (!scope.ok()) {
-    return cuda_error(who_, scope.result(), "making the CUDA context current");
-  }
   // Rows packed: Y, then the interleaved chroma at half height, each pair of
   // samples covering two luma columns, so a chroma row is the width rounded
   // up to even.
@@ -221,12 +97,17 @@ core::Status CudaPictures::copy(CUdeviceptr luma, std::size_t luma_pitch,
   const std::uint64_t bytes = round_up(chroma_at + chroma_row * chroma_rows, 4);
   VKC_ASSIGN(Slot * s, slot(bytes));
 
+  const CudaContextScope scope(context_->handle());
+  if (!scope.ok()) {
+    return cuda_error(who_, scope.result(), "making the CUDA context current");
+  }
+  const CUdeviceptr pointer = s->mapping->pointer();
   CUDA_MEMCPY2D plane{};
   plane.srcMemoryType = CU_MEMORYTYPE_DEVICE;
   plane.dstMemoryType = CU_MEMORYTYPE_DEVICE;
   plane.srcDevice = luma;
   plane.srcPitch = luma_pitch;
-  plane.dstDevice = s->pointer;
+  plane.dstDevice = pointer;
   plane.dstPitch = width;
   plane.WidthInBytes = width;
   plane.Height = height;
@@ -235,7 +116,7 @@ core::Status CudaPictures::copy(CUdeviceptr luma, std::size_t luma_pitch,
   if (r == CUDA_SUCCESS) {
     plane.srcDevice = chroma;
     plane.srcPitch = chroma_pitch;
-    plane.dstDevice = s->pointer + chroma_at;
+    plane.dstDevice = pointer + chroma_at;
     plane.dstPitch = chroma_row;
     plane.WidthInBytes = chroma_row;
     plane.Height = chroma_rows;
