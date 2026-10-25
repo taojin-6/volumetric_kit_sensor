@@ -7,13 +7,12 @@
 // IOSurface whose planes PixelBufferImporter hands to Vulkan as images, so an
 // MJPEG camera's picture never reaches the host.
 
-#include <VideoToolbox/VideoToolbox.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <utility>
 
+#include "videotoolbox.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
@@ -30,7 +29,6 @@ class VtJpeg {
   static core::Result<std::unique_ptr<VtJpeg>> open(
       const core::Device& device, const char* who,
       const std::uint32_t* queue_families, std::uint32_t queue_family_count);
-  ~VtJpeg();
   VtJpeg(const VtJpeg&) = delete;
   VtJpeg& operator=(const VtJpeg&) = delete;
 
@@ -53,8 +51,8 @@ class VtJpeg {
   const char* who_ = nullptr;
   PixelBufferImporter pictures_;
   std::uint32_t max_extent_ = 0;  // the device's maxImageDimension2D
-  CMVideoFormatDescriptionRef format_ = nullptr;
-  VTDecompressionSessionRef session_ = nullptr;
+  FormatPtr format_;
+  SessionPtr session_;
   std::uint32_t width_ = 0;  // the session's size
   std::uint32_t height_ = 0;
 };

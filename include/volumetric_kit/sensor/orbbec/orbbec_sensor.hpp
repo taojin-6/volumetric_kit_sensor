@@ -98,9 +98,9 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
     bool sync_clock_to_host = false;
     /// Switch off the SDK's log file (it writes `./Log/` at DEBUG by default)
     /// and route its console sink at WARN, at @ref open, and set FFmpeg's log
-    /// level to ERROR at the first @ref start. Process-wide: the SDK and
-    /// FFmpeg have one logger each, so an application configuring either
-    /// itself turns this off.
+    /// level to ERROR at the first @ref start where the decoders use FFmpeg
+    /// (off Apple). Process-wide: the SDK and FFmpeg have one logger each,
+    /// so an application configuring either itself turns this off.
     bool configure_sdk_logging = true;
   };
 

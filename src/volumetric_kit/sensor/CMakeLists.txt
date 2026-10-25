@@ -66,15 +66,16 @@ add_subdirectory(utils)
 # Several sensors read as one, above every driver; see array/CMakeLists.txt.
 add_subdirectory(array)
 
-# Apple's pictures on the device, with no FFmpeg; see apple/CMakeLists.txt.
-# Ahead of the video decoders, whose VideoToolbox pictures come through it.
+# Apple's pictures on the device; see apple/CMakeLists.txt. Ahead of the video
+# decoders, whose VideoToolbox pictures come through it.
 if(APPLE)
   add_subdirectory(apple)
 endif()
 
-# The FFmpeg-backed video decoder; see video/CMakeLists.txt. Ahead of the Orbbec
-# driver, which decodes its cameras' colour with it.
-if(VR_WITH_FFMPEG)
+# The video decoders, on every Apple platform and elsewhere with FFmpeg; see
+# video/CMakeLists.txt. Ahead of the Orbbec driver, which decodes its cameras'
+# colour with them.
+if(APPLE OR VR_WITH_FFMPEG)
   add_subdirectory(video)
 endif()
 
