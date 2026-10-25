@@ -19,7 +19,7 @@ set -euo pipefail
 db="$1"
 out="$2"
 mkdir -p "$out"
-ios=(xcrun --sdk iphoneos clang++ -target arm64-apple-ios27.0)
+ios=(xcrun --sdk iphoneos clang++ -target arm64-apple-ios26.0)
 
 # Each source of the two targets, with its own flags, listed as compiled.
 python3 -I - "$db" "$out" "${ios[@]}" >"$out/objects.txt" <<'EOF'
