@@ -7,7 +7,9 @@
 // mid-stream and after the end, a display window off the coded picture's
 // corner, a stream the hardware refuses, the decoders create refuses,
 // VideoToolbox's images shared across queue families, NVDEC's decoders
-// sharing the GPU's primary CUDA context, the argument checks, and moves.
+// sharing the GPU's primary CUDA context, the argument checks, and moves. On
+// VideoToolbox also: libavcodec's pictures to the bit at either range and
+// cropped, Main 10 refused, and a skipped access unit reported.
 //
 // Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one (NVDEC on the NVIDIA containers,
@@ -18,12 +20,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "device_picture_readback.hpp"
 #include "gpu_test.hpp"
 #include "hevc_fixture.hpp"
+#include "md5.hpp"
 #include "test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -50,6 +54,14 @@ constexpr const char* kCropped = VR_HEVC_DATA "/cropped_240x128.h265";
 constexpr const char* kRefused = VR_HEVC_DATA "/refused_256x144.h265";
 constexpr const char* kUnlabelled = VR_HEVC_DATA "/unlabelled_256x144.h265";
 constexpr const char* kFullRange = VR_HEVC_DATA "/fullrange_256x144.h265";
+#if defined(__APPLE__)
+constexpr const char* kTestsrc2 = VR_HEVC_DATA "/testsrc2_128x64.h265";
+constexpr const char* kTestsrc2Full = VR_HEVC_DATA "/testsrc2_full_128x64.h265";
+constexpr const char* kTestsrc2Cropped =
+    VR_HEVC_DATA "/testsrc2_cropped_120x56.h265";
+constexpr const char* kTestsrc2Main10 =
+    VR_HEVC_DATA "/testsrc2_main10_128x64.h265";
+#endif
 
 std::int64_t pts_of(int frame) { return 1000 + 33 * frame; }
 
@@ -263,9 +275,9 @@ int test_reset(const Gpu& gpu) {
 }
 
 // The cropped clip is the uncropped one's pixels, 16 right and 16 down, from
-// NVDEC. VideoToolbox cannot crop there (FFmpeg sizes its output at the
-// display size, filled from the coded corner), so it refuses the stream, and
-// a reset does not undo the refusal.
+// NVDEC. VideoToolbox cannot crop there (it fills a picture of the display
+// size from the coded corner), so it refuses the stream, and a reset does not
+// undo the refusal.
 int test_cropped(const Gpu& gpu) {
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
@@ -362,6 +374,131 @@ int test_malformed_cropped_sps(const Gpu& gpu) {
   CHECK(decoder->reset().ok());
   CHECK(decoder->send(patches[0].data(), patches[0].size(), 0).domain() ==
         vkc::Status::Code::Unsupported);
+  return 0;
+}
+
+// The MD5 implementation, on RFC 1321's own examples.
+int test_md5() {
+  const auto md5 = [](const std::string& text) {
+    vr_test::Md5 m;
+    m.update(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+    return m.hex();
+  };
+  CHECK(md5("") == "d41d8cd98f00b204e9800998ecf8427e");
+  CHECK(md5("abc") == "900150983cd24fb0d6963f7d28e17f72");
+  CHECK(md5("12345678901234567890123456789012345678901234567890123456789012"
+            "345678901234567890") == "57edf4a22be3c955ac49da2e2107b67a");
+  return 0;
+}
+
+// testsrc2 with B-frames, decoded by VideoToolbox: each clip's pictures, in
+// display order, are libavcodec's to the bit (the MD5s
+// tools/make_hevc_fixtures.sh prints). With no colour description the clip is
+// video range, labelled full range it is full range, each written at its own
+// range; the cropped one is its display window, 8 short at the right and the
+// bottom.
+int test_reference_md5(const Gpu& gpu) {
+  const struct {
+    const char* clip;
+    const char* md5;
+    std::uint32_t width;
+    std::uint32_t height;
+    sensor::VideoColorMatrix matrix;  // BT.601 unlabelled, by the height
+    bool full_range;
+  } clips[] = {
+      {kTestsrc2, "e743e90ae47cb276844495b286c98b0f", 128, 64,
+       sensor::VideoColorMatrix::Bt601, false},
+      {kTestsrc2Full, "4fe199a7b1bcc80dd1aec3f87b6a9af0", 128, 64,
+       sensor::VideoColorMatrix::Bt709, true},
+      {kTestsrc2Cropped, "4f676ba80eb5db26c2156fde29f72a11", 120, 56,
+       sensor::VideoColorMatrix::Bt601, false},
+  };
+  for (const auto& c : clips) {
+    const Decoded decoded = decode(gpu, c.clip);
+    if (!decoded.status.ok()) {
+      std::fprintf(stderr, "%s: %s\n", c.clip,
+                   decoded.status.message().c_str());
+    }
+    CHECK(decoded.status.ok());
+    CHECK(decoded.pictures.size() == static_cast<std::size_t>(kFrames));
+    vr_test::Md5 md5;
+    for (const Picture& p : decoded.pictures) {
+      if (check_on_device(p.meta) != 0) return 1;
+      CHECK(p.meta.yuv.width == c.width && p.meta.yuv.height == c.height);
+      CHECK(yuv_reference::coded_in(p.meta.yuv, c.matrix, c.full_range));
+      for (const std::vector<std::uint8_t>& plane : p.planes) {
+        md5.update(plane.data(), plane.size());
+      }
+    }
+    const std::string got = md5.hex();
+    if (got != c.md5) std::fprintf(stderr, "%s: MD5 %s\n", c.clip, got.c_str());
+    CHECK(got == c.md5);
+  }
+  return 0;
+}
+
+// Main 10 is refused before any picture comes out, and stays refused.
+int test_main10(const Gpu& gpu) {
+  const AccessUnits units = vr_test::hevc_access_units(kTestsrc2Main10);
+  CHECK(units.size() == static_cast<std::size_t>(kFrames));
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
+  CHECK(decoder.ok());
+  const Decoded decoded = decode_clip(decoder.value(), units, gpu);
+  CHECK(decoded.pictures.empty());
+  CHECK(decoded.status.domain() == vkc::Status::Code::Unsupported);
+  CHECK(decoder->reset().ok());
+  CHECK(decoder->send(units[0].data(), units[0].size(), 0).domain() ==
+        vkc::Status::Code::Unsupported);
+  return 0;
+}
+
+// An access unit skipped (frame 1 of the patch clip, IPPP with a key frame
+// every 4): the two predicted from it are reported, IoError, rather than
+// decoded from a picture the decoder never had, and decoding picks up at the
+// key frame, as the clip was made. A decoder that starts at frame 2 reports
+// it too.
+int test_skipped_access_unit(const Gpu& gpu) {
+  const AccessUnits units = vr_test::hevc_access_units(kPatches);
+  for (const int first : {0, 2}) {
+    auto decoder = HevcDecoder::create(decoder_options(gpu));
+    CHECK(decoder.ok());
+    std::vector<int> failed;
+    std::vector<Picture> shown;
+    for (int i = first; i <= kFrames; ++i) {
+      if (i == 1) continue;
+      const bool end = i == kFrames;
+      const vkc::Status sent = decoder->send(
+          end ? nullptr : units[static_cast<std::size_t>(i)].data(),
+          end ? 0 : units[static_cast<std::size_t>(i)].size(), pts_of(i));
+      if (!sent.ok()) {
+        CHECK(sent.domain() == vkc::Status::Code::IoError);
+        failed.push_back(i);
+      }
+      for (;;) {
+        auto picture = decoder->receive();
+        CHECK(picture.ok());
+        if (!picture.value()) break;
+        Picture p;
+        p.meta = *picture.value();
+        vr_test::read_device_picture(p.meta.yuv, gpu.device, gpu.allocator,
+                                     p.planes);
+        shown.push_back(std::move(p));
+      }
+    }
+    CHECK((failed == std::vector<int>{2, 3}));
+    const std::vector<int> want_shown = first == 0
+                                            ? std::vector<int>{0, 4, 5, 6, 7}
+                                            : std::vector<int>{4, 5, 6, 7};
+    CHECK(shown.size() == want_shown.size());
+    for (std::size_t k = 0; k < shown.size(); ++k) {
+      const int f = want_shown[k];
+      CHECK(shown[k].meta.pts == pts_of(f));
+      CHECK(shown[k].planes[0].size() ==
+            static_cast<std::size_t>(kWidth * kHeight));
+      const std::size_t y = 36 * kWidth + 16;  // patch (0, 0)'s centre
+      CHECK(std::abs(shown[k].planes[0][y] - patch_y(patch(0, 0, f))) <= 2);
+    }
+  }
   return 0;
 }
 #endif
@@ -553,6 +690,9 @@ int gpu_main(Gpu& gpu) {
   if (test_cropped(gpu) != 0) return 1;
 #if defined(__APPLE__)
   if (test_malformed_cropped_sps(gpu) != 0) return 1;
+  if (test_reference_md5(gpu) != 0) return 1;
+  if (test_main10(gpu) != 0) return 1;
+  if (test_skipped_access_unit(gpu) != 0) return 1;
 #endif
   if (test_refused(gpu) != 0) return 1;
   if (test_create_refusals(gpu) != 0) return 1;
@@ -573,6 +713,9 @@ int main() {
   // Unbuffered, so a crash inside FFmpeg or a driver still shows which clip
   // it was on.
   std::setvbuf(stdout, nullptr, _IONBF, 0);
+#if defined(__APPLE__)
+  if (test_md5() != 0) return 1;
+#endif
   if (vr_test::hevc_access_units(kPatches).size() !=
       static_cast<std::size_t>(kFrames)) {
     std::fprintf(stderr, "FAIL: cannot split %s into %d access units\n",

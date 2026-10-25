@@ -30,4 +30,17 @@ core::Status ffmpeg_alloc_error(const char* who, const std::string& what) {
                                      ": FFmpeg could not allocate");
 }
 
+ColorCodes color_codes(const AVFrame& frame) noexcept {
+  ColorCodes codes;
+  codes.matrix = frame.colorspace;
+  codes.transfer = frame.color_trc;
+  codes.primaries = frame.color_primaries;
+  codes.full_range = frame.color_range == AVCOL_RANGE_JPEG;
+  // FFmpeg numbers the chroma sitings one past H.273, from 0 for none.
+  if (frame.chroma_location != AVCHROMA_LOC_UNSPECIFIED) {
+    codes.chroma_location = frame.chroma_location - 1;
+  }
+  return codes;
+}
+
 }  // namespace volumetric_kit::recon::sensor::video

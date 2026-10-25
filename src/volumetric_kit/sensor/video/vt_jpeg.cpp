@@ -56,57 +56,6 @@ std::optional<JpegFrame> read_frame(const std::uint8_t* d, std::size_t n) {
   return std::nullopt;
 }
 
-// Both the decode call and its synchronous callback can fail. Keep the
-// callback's status even when it supplies no picture.
-struct Decoded {
-  CVPixelBufferRef picture = nullptr;
-  OSStatus status = noErr;
-};
-
-void on_picture(void*, void* frame, OSStatus status, VTDecodeInfoFlags,
-                CVImageBufferRef image, CMTime, CMTime) {
-  auto& decoded = *static_cast<Decoded*>(frame);
-  decoded.status = status;
-  if (status == noErr && image != nullptr) {
-    decoded.picture = CVPixelBufferRetain(image);
-  }
-}
-
-core::Status vt_error(const char* who, const std::string& what, OSStatus error,
-                      bool decoding = false) {
-  const std::string message = std::string(who) + ": " + what +
-                              " (VideoToolbox status " + std::to_string(error) +
-                              ")";
-  switch (error) {
-    case kVTParameterErr:
-      // DecodeFrame's arguments are already checked, but VideoToolbox also
-      // returns this for a truncated JPEG. At session creation it still
-      // means the device path failed.
-      if (decoding) return core::Status::io_error(message);
-      break;
-    case kVTVideoDecoderBadDataErr:
-    case kVTVideoDecoderReferenceMissingErr:
-      return core::Status::io_error(message);
-    case kVTVideoDecoderUnsupportedDataFormatErr:
-    case kVTCouldNotFindVideoDecoderErr:
-      return core::Status::unsupported(message);
-    case kVTAllocationFailedErr:
-    case kCMFormatDescriptionError_AllocationFailed:
-      return core::Status::out_of_memory(message);
-    default:
-      break;
-  }
-  return core::Status::backend_error(core::Status::Backend::VideoToolbox, error,
-                                     message);
-}
-
-// A dictionary to fill, released with its values.
-CFMutableDictionaryRef dictionary() {
-  return CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
-                                   &kCFTypeDictionaryKeyCallBacks,
-                                   &kCFTypeDictionaryValueCallBacks);
-}
-
 }  // namespace
 
 core::Result<std::unique_ptr<VtJpeg>> VtJpeg::open(
@@ -127,61 +76,31 @@ core::Result<std::unique_ptr<VtJpeg>> VtJpeg::open(
   return vt;
 }
 
-VtJpeg::~VtJpeg() { stop(); }
-
 void VtJpeg::stop() noexcept {
-  if (session_ != nullptr) {
-    VTDecompressionSessionInvalidate(session_);
-    CFRelease(session_);
-    session_ = nullptr;
-  }
-  if (format_ != nullptr) {
-    CFRelease(format_);
-    format_ = nullptr;
-  }
+  session_.reset();
+  format_.reset();
   width_ = height_ = 0;
 }
 
 core::Status VtJpeg::start(std::uint32_t width, std::uint32_t height) {
   stop();
+  CMVideoFormatDescriptionRef format = nullptr;
   const OSStatus described = CMVideoFormatDescriptionCreate(
       kCFAllocatorDefault, kCMVideoCodecType_JPEG,
       static_cast<std::int32_t>(width), static_cast<std::int32_t>(height),
-      nullptr, &format_);
-  if (described != noErr) {
-    format_ = nullptr;
-    return vt_error(who_, "describing a JPEG", described);
-  }
-  // NV12 on an IOSurface Metal reads, full range as the JPEG's samples are;
-  // on the hardware or not at all.
-  CFMutableDictionaryRef out = dictionary();
-  const std::int32_t pixel = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
-  CFNumberRef number =
-      CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &pixel);
-  CFMutableDictionaryRef surface = dictionary();
-  CFDictionarySetValue(out, kCVPixelBufferPixelFormatTypeKey, number);
-  CFDictionarySetValue(out, kCVPixelBufferIOSurfacePropertiesKey, surface);
-  CFDictionarySetValue(out, kCVPixelBufferMetalCompatibilityKey,
-                       kCFBooleanTrue);
-  CFMutableDictionaryRef spec = dictionary();
-  CFDictionarySetValue(
-      spec, kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
-      kCFBooleanTrue);
-  const VTDecompressionOutputCallbackRecord callback{&on_picture, nullptr};
-  const OSStatus made = VTDecompressionSessionCreate(
-      kCFAllocatorDefault, format_, spec, out, &callback, &session_);
-  CFRelease(spec);
-  CFRelease(surface);
-  CFRelease(number);
-  CFRelease(out);
-  if (made != noErr) {
-    session_ = nullptr;
+      nullptr, &format);
+  if (described != noErr) return vt_error(who_, "describing a JPEG", described);
+  format_.reset(format);
+  // Full range, as the JPEG's samples are.
+  core::Result<SessionPtr> session =
+      open_session(format_.get(), true, who_,
+                   "a " + std::to_string(width) + "x" + std::to_string(height) +
+                       " JPEG session");
+  if (!session) {
     stop();
-    return vt_error(who_,
-                    "opening a " + std::to_string(width) + "x" +
-                        std::to_string(height) + " JPEG session",
-                    made);
+    return session.status();
   }
+  session_ = std::move(session).value();
   width_ = width;
   height_ = height;
   return {};
@@ -214,39 +133,19 @@ core::Result<DecodedPicture> VtJpeg::decode(const std::uint8_t* data,
     VKC_TRY(start(frame->width, frame->height));
   }
 
-  // The bytes wrapped, not copied: they outlive the synchronous decode.
-  CMBlockBufferRef block = nullptr;
-  if (CMBlockBufferCreateWithMemoryBlock(
-          kCFAllocatorDefault, const_cast<std::uint8_t*>(data), size,
-          kCFAllocatorNull, nullptr, 0, size, 0, &block) != noErr) {
-    return core::Status::out_of_memory(std::string(who_) + ": wrapping a JPEG");
-  }
-  CMSampleBufferRef sample = nullptr;
-  const std::size_t sizes[1] = {size};
-  const OSStatus wrapped = CMSampleBufferCreateReady(
-      kCFAllocatorDefault, block, format_, 1, 0, nullptr, 1, sizes, &sample);
-  CFRelease(block);
-  if (wrapped != noErr) {
-    return core::Status::out_of_memory(std::string(who_) + ": wrapping a JPEG");
-  }
-  Decoded decoded;
-  OSStatus status =
-      VTDecompressionSessionDecodeFrame(session_, sample, 0, &decoded, nullptr);
-  CFRelease(sample);
-  if (status == noErr) status = decoded.status;
+  core::Result<PixelBufferPtr> decoded =
+      decode_sample(session_.get(), format_.get(), data, size, who_, "a JPEG");
   // A session that fails is started afresh for the next JPEG.
-  if (status != noErr) {
-    if (decoded.picture != nullptr) CVPixelBufferRelease(decoded.picture);
+  if (!decoded) {
     stop();
-    return vt_error(who_, "decoding a JPEG", status, true);
+    return decoded.status();
   }
-  if (decoded.picture == nullptr) return fail("the JPEG does not decode");
+  if (decoded.value() == nullptr) return fail("the JPEG does not decode");
 
+  // The images hold the picture's buffer, ours let go on the way out.
   DecodedPicture out;
-  const core::Status imported =
-      pictures_.import(decoded.picture, frame->width, frame->height, out.yuv);
-  CVPixelBufferRelease(decoded.picture);  // the images hold their own
-  VKC_TRY(imported);
+  VKC_TRY(pictures_.import(decoded.value().get(), frame->width, frame->height,
+                           out.yuv));
   return out;
 }
 

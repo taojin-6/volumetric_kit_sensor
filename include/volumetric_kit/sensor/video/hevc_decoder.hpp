@@ -7,8 +7,9 @@
 /// @brief An H.265/HEVC decoder on the GPU's hardware, handing out pictures on
 ///        the device only.
 ///
-/// Nothing camera-specific: bytes in, pictures out. No FFmpeg type appears
-/// here; linking still needs FFmpeg's libraries, which the target carries.
+/// Nothing camera-specific: bytes in, pictures out. No FFmpeg or VideoToolbox
+/// type appears here; off Apple, linking still needs FFmpeg's libraries, which
+/// the target carries.
 
 #include <cstddef>
 #include <cstdint>
@@ -24,13 +25,16 @@ namespace volumetric_kit::recon::sensor {
 
 /// @brief Decodes an H.265 elementary stream (Annex B), one access unit at a
 ///        time in decode order, on the hardware of the device it is given:
-///        VideoToolbox on Apple, NVDEC through FFmpeg in a build with
-///        VR_WITH_CUDA (Linux). Pictures come out in display order, NV12, on
-///        that device (@ref DecodedPicture), and never cross to the host.
+///        VideoToolbox, directly, on Apple, where hardware decoding is
+///        required and there is no software fallback; NVDEC through FFmpeg in
+///        a build with VR_WITH_CUDA (Linux). Pictures come out in display
+///        order, NV12, on that device (@ref DecodedPicture), and never cross
+///        to the host.
 ///
 /// Every access unit must be sent: each frame is predicted from earlier ones,
-/// so skipping one corrupts the pictures after it until the next key frame.
-/// Drop pictures after @ref receive instead.
+/// so skipping one costs the pictures after it until the next key frame
+/// (VideoToolbox reports each as `Status::Code::IoError`). Drop pictures after
+/// @ref receive instead.
 ///
 /// @warning Not thread-safe: use from one thread.
 class VR_SENSOR_VIDEO_API HevcDecoder {
@@ -40,11 +44,15 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// The matrix and range to decode a stream by when it declares no matrix,
     /// for a source known to code one it does not name: the Femto Mega writes
     /// no colour description and codes BT.601 full range. The range goes with
-    /// the matrix, since FFmpeg reads a stream that declares neither as
-    /// limited. A stream that declares a matrix is decoded as it declares.
-    /// Empty: an unlabelled stream is guessed at (@ref DecodedPicture::yuv).
+    /// the matrix, since a stream that declares neither reads as limited. A
+    /// stream that declares a matrix is decoded as it declares. Empty: an
+    /// unlabelled stream is guessed at (@ref DecodedPicture::yuv). Either way
+    /// the samples are the stream's own: VideoToolbox writes them at the
+    /// range the stream declares, video range when it declares none.
     std::optional<VideoColorDescription> unlabelled_color;
-    /// Set FFmpeg's log level to ERROR. Process-wide: FFmpeg has one logger.
+    /// Set FFmpeg's log level to ERROR, where NVDEC decodes through it. Does
+    /// nothing on Apple, which uses no FFmpeg. Process-wide: FFmpeg has one
+    /// logger.
     bool configure_ffmpeg_logging = true;
     /// The device the pictures are handed out on, whose GPU decodes them: one
     /// that imports Metal textures on Apple, one that exports memory and is a
@@ -67,7 +75,8 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   /// @return The decoder; `Status::Code::Unsupported` if there is no device
   ///         path: no @ref Options::device (or, for NVDEC, no
   ///         @ref Options::allocator), a device whose GPU this build's
-  ///         hardware path cannot reach, or an FFmpeg without that path;
+  ///         hardware path cannot reach, an FFmpeg without NVDEC, or on
+  ///         Apple no hardware HEVC decoder;
   ///         `Status::Code::InvalidArgument` for queue families
   ///         VideoToolbox's importer refuses; or `Status::Code::IoError`,
   ///         `Status::Code::OutOfMemory` or `Status::Code::Backend` if FFmpeg
@@ -84,8 +93,8 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   /// @return OK; `Status::Code::IoError` if the data cannot be decoded, which
   ///         costs the pictures up to the next key frame;
   ///         `Status::Code::Unsupported`, from then on, once the stream is one
-  ///         the hardware cannot decode or hand out (not 8-bit 4:2:0, or on
-  ///         VideoToolbox cropped at the left or top);
+  ///         the hardware cannot decode or hand out (not 8-bit 4:2:0, Main 10
+  ///         say, or on VideoToolbox cropped at the left or top);
   ///         `Status::Code::Backend` or `Status::Code::OutOfMemory` if the
   ///         hardware decoder fails; or
   ///         `Status::Code::InvalidArgument` on a moved-from decoder, a null

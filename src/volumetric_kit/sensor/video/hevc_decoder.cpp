@@ -3,22 +3,21 @@
 
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
 
-#include <climits>
-#include <cstring>
 #include <string>
 #include <utility>
 
+#if VR_SENSOR_VIDEO_WITH_CUDA
+#include <climits>
+#include <cstring>
+
+#include "cuda_pictures.hpp"
 #include "ffmpeg.hpp"
 #include "frame_color.hpp"
-#if VR_SENSOR_VIDEO_WITH_CUDA
-#include "cuda_pictures.hpp"
 extern "C" {
 #include <libavutil/hwcontext_cuda.h>
 }
 #elif defined(__APPLE__)
-#include <vector>
-
-#include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
+#include "vt_hevc.hpp"
 #else
 #error "HevcDecoder decodes on NVDEC (VR_WITH_CUDA) or VideoToolbox only"
 #endif
@@ -27,6 +26,10 @@ namespace volumetric_kit::recon::sensor {
 namespace {
 
 constexpr const char* kWho = "HevcDecoder";
+
+core::Status unsupported(const std::string& why) {
+  return core::Status::unsupported(std::string(kWho) + ": " + why);
+}
 
 #if VR_SENSOR_VIDEO_WITH_CUDA
 constexpr AVHWDeviceType kDeviceType = AV_HWDEVICE_TYPE_CUDA;
@@ -37,111 +40,6 @@ constexpr const char* kPath = "NVDEC";
 void release_cuda_stream(AVHWDeviceContext* device) {
   delete static_cast<video::CudaStream*>(device->user_opaque);
 }
-#else
-constexpr AVHWDeviceType kDeviceType = AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
-constexpr AVPixelFormat kDeviceFormat = AV_PIX_FMT_VIDEOTOOLBOX;
-constexpr const char* kPath = "VideoToolbox";
-
-// A NAL unit's payload bits, emulation prevention removed, read MSB first. A
-// read past the end reads zeros and sets overrun().
-class BitReader {
- public:
-  BitReader(const std::uint8_t* payload, std::size_t size) {
-    int zeros = 0;
-    for (std::size_t i = 0; i < size; ++i) {
-      if (zeros >= 2 && payload[i] == 3) {  // the 03 of 00 00 03
-        zeros = 0;
-        continue;
-      }
-      zeros = payload[i] == 0 ? zeros + 1 : 0;
-      rbsp_.push_back(payload[i]);
-    }
-  }
-  std::uint32_t bits(int n) {
-    std::uint32_t value = 0;
-    for (; n > 0; --n) {
-      if (pos_ >= 8 * rbsp_.size()) {
-        overrun_ = true;
-        return 0;
-      }
-      value = (value << 1) | ((rbsp_[pos_ >> 3] >> (7 - (pos_ & 7))) & 1u);
-      ++pos_;
-    }
-    return value;
-  }
-  void skip(std::size_t n) { pos_ += n; }
-  std::uint32_t ue() {  // Exp-Golomb
-    int zeros = 0;
-    while (bits(1) == 0) {
-      if (overrun_ || ++zeros > 31) {
-        overrun_ = true;
-        return 0;
-      }
-    }
-    return static_cast<std::uint32_t>((std::uint64_t{1} << zeros) - 1 +
-                                      bits(zeros));
-  }
-  bool overrun() const noexcept { return overrun_ || pos_ > 8 * rbsp_.size(); }
-
- private:
-  std::vector<std::uint8_t> rbsp_;
-  std::size_t pos_ = 0;
-  bool overrun_ = false;
-};
-
-// Whether an SPS (the NAL unit, header included) has a conformance window
-// with a left or top offset (H.265 7.3.2.2). One that cannot be read counts
-// as having none: FFmpeg rejects it too.
-bool sps_crops_left_or_top(const std::uint8_t* nal, std::size_t size) {
-  BitReader r(nal + 2, size - 2);
-  r.skip(4);  // sps_video_parameter_set_id
-  const std::uint32_t sub_layers = r.bits(3);
-  r.skip(1);   // sps_temporal_id_nesting_flag
-  r.skip(96);  // profile_tier_level: the general profile, tier and level
-  bool profile[8] = {};
-  bool level[8] = {};
-  for (std::uint32_t i = 0; i < sub_layers; ++i) {
-    profile[i] = r.bits(1) != 0;
-    level[i] = r.bits(1) != 0;
-  }
-  if (sub_layers > 0) r.skip(2 * (8 - sub_layers));
-  for (std::uint32_t i = 0; i < sub_layers; ++i) {
-    if (profile[i]) r.skip(88);
-    if (level[i]) r.skip(8);
-  }
-  r.ue();                            // sps_seq_parameter_set_id
-  if (r.ue() == 3) r.skip(1);        // chroma_format_idc; separate_colour_plane
-  r.ue();                            // pic_width_in_luma_samples
-  r.ue();                            // pic_height_in_luma_samples
-  if (r.bits(1) == 0) return false;  // conformance_window_flag
-  const std::uint32_t left = r.ue();
-  r.ue();  // right
-  const std::uint32_t top = r.ue();
-  return !r.overrun() && (left != 0 || top != 0);
-}
-
-bool is_cropping_sps(const std::uint8_t* data, std::size_t begin,
-                     std::size_t end) {
-  return begin + 2 <= end && ((data[begin] >> 1) & 0x3f) == 33 &&  // SPS_NUT
-         sps_crops_left_or_top(data + begin, end - begin);
-}
-
-// The end of the first SPS whose prefix says it crops the left or top, or 0.
-// FFmpeg must still validate the whole SPS before the stream is refused.
-// Only NAL units ahead of the first slice are read: a cropping SPS must not
-// reach VideoToolbox, which would decode the wrong region of the picture.
-std::size_t cropping_sps_end(const std::uint8_t* data, std::size_t size) {
-  std::size_t nal = size;  // where the NAL unit being scanned starts
-  for (std::size_t i = 0; i + 3 <= size; ++i) {
-    if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1) continue;
-    if (is_cropping_sps(data, nal, i)) return i;
-    nal = i + 3;
-    if (nal < size && ((data[nal] >> 1) & 0x3f) < 32) return 0;  // VCL
-    i += 2;
-  }
-  return is_cropping_sps(data, nal, size) ? size : 0;
-}
-#endif
 
 // Whether this FFmpeg decodes HEVC on the build's hardware path.
 bool has_device_path(const AVCodec* codec) {
@@ -155,13 +53,11 @@ bool has_device_path(const AVCodec* codec) {
     }
   }
 }
-
-core::Status unsupported(const std::string& why) {
-  return core::Status::unsupported(std::string(kWho) + ": " + why);
-}
+#endif
 
 }  // namespace
 
+#if VR_SENSOR_VIDEO_WITH_CUDA
 struct HevcDecoder::Impl {
   std::optional<VideoColorDescription> unlabelled_color;  // as in Options
   bool ended = false;
@@ -170,11 +66,7 @@ struct HevcDecoder::Impl {
   video::CodecContextPtr codec;
   video::PacketPtr packet;
   video::FramePtr decoded;
-#if VR_SENSOR_VIDEO_WITH_CUDA
   std::unique_ptr<video::CudaPictures> pictures;
-#else
-  std::optional<PixelBufferImporter> pictures;
-#endif
 
   // @p frame handed over on the device; Unsupported for one the device path
   // cannot take.
@@ -204,7 +96,6 @@ struct HevcDecoder::Impl {
   }
 };
 
-#if VR_SENSOR_VIDEO_WITH_CUDA
 // Copied device to device into a buffer Vulkan reads. FFmpeg has taken the
 // right and bottom crop off a hardware picture's size, and left the left and
 // top to whoever reads it.
@@ -238,50 +129,32 @@ core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
   DecodedPicture out;
   VKC_TRY(pictures->copy(luma, luma_pitch, chroma, chroma_pitch, width, height,
                          out.yuv));
-  video::describe_color(frame, unlabelled_color, out);
+  video::describe_color(video::color_codes(frame), unlabelled_color, out);
   return out;
 }
 #else
-// Its planes as images. VideoToolbox has cropped the right and bottom, and a
-// stream cropped at the left or top is refused before it reaches it.
-core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
-  if (frame.format != AV_PIX_FMT_VIDEOTOOLBOX) {
-    return unsupported("VideoToolbox handed out a picture not on the GPU");
-  }
-  if (frame.crop_left != 0 || frame.crop_top != 0) {
-    return unsupported("VideoToolbox cannot crop the left or top of a picture");
-  }
-  DecodedPicture out;
-  VKC_TRY(pictures->import(
-      reinterpret_cast<CVPixelBufferRef>(frame.data[3]),
-      static_cast<std::uint32_t>(frame.width -
-                                 static_cast<int>(frame.crop_right)),
-      static_cast<std::uint32_t>(frame.height -
-                                 static_cast<int>(frame.crop_bottom)),
-      out.yuv));
-  video::describe_color(frame, unlabelled_color, out);
-  return out;
-}
+struct HevcDecoder::Impl {
+  std::unique_ptr<video::VtHevc> vt;
+};
 #endif
 
 core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   if (options.device == nullptr) {
     return unsupported("no device to decode onto (Options::device)");
   }
+  auto impl = std::make_unique<Impl>();
 #if VR_SENSOR_VIDEO_WITH_CUDA
   if (options.allocator == nullptr) {
     return unsupported(
         "no allocator to make NVDEC's picture buffers through "
         "(Options::allocator)");
   }
-#endif
   if (options.configure_ffmpeg_logging) av_log_set_level(AV_LOG_ERROR);
   const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
   if (codec == nullptr || !has_device_path(codec)) {
     return unsupported(std::string("this FFmpeg has no ") + kPath +
                        " HEVC decoder");
   }
-  auto impl = std::make_unique<Impl>();
   impl->unlabelled_color = options.unlabelled_color;
   impl->codec.reset(avcodec_alloc_context3(codec));
   impl->packet.reset(av_packet_alloc());
@@ -291,16 +164,14 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
     return video::ffmpeg_alloc_error(kWho, "opening the decoder");
   }
 
-  // The hardware device: on CUDA, the primary context of the Vulkan device's
-  // GPU and a stream of this decoder's own, which FFmpeg's device holds and
-  // lets go with its last reference.
-  AVBufferRef* hw = nullptr;
-#if VR_SENSOR_VIDEO_WITH_CUDA
+  // The hardware device: the primary context of the Vulkan device's GPU and a
+  // stream of this decoder's own, which FFmpeg's device holds and lets go
+  // with its last reference.
   // TODO(sensor): Options::queue_families for NVDEC's buffers, which a reader
   // on any family takes over from outside Vulkan for now.
   VKC_ASSIGN(std::unique_ptr<video::CudaStream> cuda,
              video::CudaStream::open(*options.device, kWho));
-  hw = av_hwdevice_ctx_alloc(kDeviceType);
+  AVBufferRef* hw = av_hwdevice_ctx_alloc(kDeviceType);
   if (hw == nullptr) return video::ffmpeg_alloc_error(kWho, "opening NVDEC");
   impl->hw_device.reset(hw);
   auto* hw_context = reinterpret_cast<AVHWDeviceContext*>(hw->data);
@@ -310,22 +181,13 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   hw_context->user_opaque = cuda.release();
   hw_context->free = &release_cuda_stream;
   int err = av_hwdevice_ctx_init(hw);
-#else
-  VKC_ASSIGN(impl->pictures, PixelBufferImporter::create(
-                                 *options.device, kWho, options.queue_families,
-                                 options.queue_family_count));
-  int err = av_hwdevice_ctx_create(&hw, kDeviceType, nullptr, nullptr, 0);
-  if (err >= 0) impl->hw_device.reset(hw);
-#endif
   if (err < 0) {
     return unsupported(std::string(kPath) +
                        ": no device opens: " + video::ffmpeg_message(err));
   }
-#if VR_SENSOR_VIDEO_WITH_CUDA
   VKC_ASSIGN(impl->pictures, video::CudaPictures::create(
                                  *options.device, *options.allocator,
                                  hw_cuda->cuda_ctx, hw_cuda->stream, kWho));
-#endif
 
   AVCodecContext* context = impl->codec.get();
   context->hw_device_ctx = av_buffer_ref(hw);
@@ -339,6 +201,11 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   context->thread_count = 1;
   err = avcodec_open2(context, codec, nullptr);
   if (err < 0) return video::ffmpeg_error(kWho, "opening the decoder", err);
+#else
+  VKC_ASSIGN(impl->vt, video::VtHevc::open(
+                           *options.device, kWho, options.unlabelled_color,
+                           options.queue_families, options.queue_family_count));
+#endif
   return HevcDecoder(std::move(impl));
 }
 
@@ -353,6 +220,7 @@ core::Status HevcDecoder::send(const std::uint8_t* data, std::size_t size,
   if (impl_ == nullptr) {
     return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
+#if VR_SENSOR_VIDEO_WITH_CUDA
   if (!impl_->refusal.empty()) return core::Status::unsupported(impl_->refusal);
   if (impl_->ended) {
     return core::Status::invalid_argument(
@@ -369,44 +237,30 @@ core::Status HevcDecoder::send(const std::uint8_t* data, std::size_t size,
     return core::Status::invalid_argument(
         std::string(kWho) + ": an access unit needs data and under 2 GiB");
   }
-  std::size_t crop_end = 0;
-#if !VR_SENSOR_VIDEO_WITH_CUDA
-  crop_end = cropping_sps_end(data, size);
-#endif
-  // Submit only through the suspect SPS: no slices can reach VideoToolbox
-  // before the crop is refused, and no later NAL can obscure whether this
-  // SPS parsed. Its preceding VPS is needed for that validation.
-  const std::size_t submitted = crop_end != 0 ? crop_end : size;
   AVPacket* packet = impl_->packet.get();
   av_packet_unref(packet);
-  int err = av_new_packet(packet, static_cast<int>(submitted));
+  int err = av_new_packet(packet, static_cast<int>(size));
   if (err < 0) return video::ffmpeg_error(kWho, "allocating a packet", err);
-  std::memcpy(packet->data, data, submitted);
+  std::memcpy(packet->data, data, size);
   packet->pts = pts;
-  // FFmpeg normally logs and skips a malformed parameter set. Require its
-  // error here so a truncated SPS cannot become a permanent crop refusal.
-  const int recognition = context->err_recognition;
-  if (crop_end != 0) context->err_recognition |= AV_EF_EXPLODE;
   err = avcodec_send_packet(context, packet);
-  context->err_recognition = recognition;
   if (!impl_->refusal.empty()) return core::Status::unsupported(impl_->refusal);
   if (err == AVERROR(EAGAIN)) {
     return core::Status::invalid_argument(
         std::string(kWho) + ": take the pictures waiting before sending more");
   }
   if (err < 0) return video::ffmpeg_error(kWho, "decoding", err);
-  if (crop_end != 0) {
-    impl_->refusal = std::string(kWho) +
-                     ": VideoToolbox cannot crop the left or top of a picture";
-    return core::Status::unsupported(impl_->refusal);
-  }
   return {};
+#else
+  return impl_->vt->send(data, size, pts);
+#endif
 }
 
 core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
   if (impl_ == nullptr) {
     return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
+#if VR_SENSOR_VIDEO_WITH_CUDA
   AVFrame* decoded = impl_->decoded.get();
   av_frame_unref(decoded);
   const int err = avcodec_receive_frame(impl_->codec.get(), decoded);
@@ -431,16 +285,23 @@ core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
                             ? decoded->pts
                             : decoded->best_effort_timestamp;
   return std::optional<DecodedPicture>(std::move(picture).value());
+#else
+  return impl_->vt->receive();
+#endif
 }
 
 core::Status HevcDecoder::reset() {
   if (impl_ == nullptr) {
     return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
+#if VR_SENSOR_VIDEO_WITH_CUDA
   // As for a seek: FFmpeg drops what it holds, leaves draining, and takes the
   // next key frame as the first, skipping the pictures that lead it.
   avcodec_flush_buffers(impl_->codec.get());
   impl_->ended = false;
+#else
+  impl_->vt->reset();
+#endif
   return {};
 }
 

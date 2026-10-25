@@ -3,8 +3,9 @@
 
 #pragma once
 
-// The one place this target includes FFmpeg: its C headers, owning pointers
-// for the objects it allocates, and its error codes as a Status. Internal.
+// The one place this target includes FFmpeg (NVDEC's path): its C headers,
+// owning pointers for the objects it allocates, its error codes as a Status,
+// and the colour a frame carries. Internal.
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -17,6 +18,7 @@ extern "C" {
 #include <memory>
 #include <string>
 
+#include "frame_color.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 
 namespace volumetric_kit::recon::sensor::video {
@@ -52,5 +54,8 @@ core::Status ffmpeg_error(const char* who, const std::string& what, int err);
 
 /// @return An OutOfMemory for an allocation FFmpeg refused.
 core::Status ffmpeg_alloc_error(const char* who, const std::string& what);
+
+/// @return The colour @p frame declares, as H.273 codes.
+ColorCodes color_codes(const AVFrame& frame) noexcept;
 
 }  // namespace volumetric_kit::recon::sensor::video

@@ -4,7 +4,8 @@
 #
 # Regenerates the committed HEVC clips with the ffmpeg CLI (built with
 # libx265). All are Annex B, headers repeated on every key frame and an access
-# unit delimiter before each frame, BT.709 limited range but one.
+# unit delimiter before each frame. The patch clips are BT.709 limited range
+# but one.
 #
 #   tests/data/hevc/patches_256x144.h265   8 frames (IPPP) of 8x2 solid
 #       patches that shift one patch left per frame; the test recomputes each
@@ -26,6 +27,16 @@
 #       decoder refuses the stream with pictures still held for display.
 #
 # 256x144: NVDEC's smallest HEVC picture is 144x144.
+#
+# And 8 frames of testsrc2 at 128x64, with B-frames, for VideoToolbox: each
+# decodes to the MD5 of libavcodec's own decode of it, in display order, which
+# the script prints last (tests/sensor_video_hevc_test.cpp holds them).
+#   tests/data/hevc/testsrc2_128x64.h265  no colour description: video range.
+#   tests/data/hevc/testsrc2_full_128x64.h265  BT.709, full range.
+#   tests/data/hevc/testsrc2_cropped_120x56.h265  the first, its display
+#       window 8 short at the right and the bottom (only the SPS differs).
+#   tests/data/hevc/testsrc2_main10_128x64.h265  Main 10, which the device
+#       path refuses.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -76,3 +87,28 @@ ffmpeg -hide_banner -loglevel error -y -f lavfi \
   -i "color=c=0x808080:s=256x144:r=30,format=gray" \
   -frames:v 2 -c:v libx265 -x265-params "$x265" -f hevc "$grey"
 cat "$tmp" "$grey" >"$root/tests/data/hevc/refused_256x144.h265"
+
+t2="testsrc2=s=128x64:r=30"
+x265_t2="keyint=8:min-keyint=8:bframes=2:b-adapt=0:scenecut=0:open-gop=0"
+x265_t2+=":repeat-headers=1:aud=1:info=0:qp=20:log-level=error"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$t2" -frames:v 8 \
+  -vf format=yuv420p -c:v libx265 -x265-params "$x265_t2" -f hevc \
+  "$root/tests/data/hevc/testsrc2_128x64.h265"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$t2" -frames:v 8 \
+  -vf scale=out_color_matrix=bt709:out_range=full,format=yuv420p \
+  -c:v libx265 \
+  -x265-params "$x265_t2:range=full:colorprim=bt709:transfer=bt709:colormatrix=bt709" \
+  -f hevc "$root/tests/data/hevc/testsrc2_full_128x64.h265"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$t2" -frames:v 8 \
+  -vf format=yuv420p10le -c:v libx265 -profile:v main10 \
+  -x265-params "$x265_t2" -f hevc \
+  "$root/tests/data/hevc/testsrc2_main10_128x64.h265"
+ffmpeg -hide_banner -loglevel error -y \
+  -i "$root/tests/data/hevc/testsrc2_128x64.h265" -c copy \
+  -bsf:v hevc_metadata=crop_right=8:crop_bottom=8 -f hevc \
+  "$root/tests/data/hevc/testsrc2_cropped_120x56.h265"
+for clip in testsrc2_128x64 testsrc2_full_128x64 testsrc2_cropped_120x56; do
+  printf '%s ' "$clip"
+  ffmpeg -hide_banner -loglevel error \
+    -i "$root/tests/data/hevc/$clip.h265" -fps_mode passthrough -f md5 -
+done
