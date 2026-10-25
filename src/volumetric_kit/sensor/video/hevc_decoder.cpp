@@ -37,8 +37,8 @@ constexpr AVPixelFormat kDeviceFormat = AV_PIX_FMT_CUDA;
 constexpr const char* kPath = "NVDEC";
 
 // FFmpeg's device context's free: the context and stream it was given.
-void release_cuda_stream(AVHWDeviceContext* device) {
-  delete static_cast<video::CudaStream*>(device->user_opaque);
+void release_cuda_session(AVHWDeviceContext* device) {
+  delete static_cast<video::CudaSession*>(device->user_opaque);
 }
 
 // Whether this FFmpeg decodes HEVC on the build's hardware path.
@@ -169,25 +169,26 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   // with its last reference.
   // TODO(sensor): Options::queue_families for NVDEC's buffers, which a reader
   // on any family takes over from outside Vulkan for now.
-  VKC_ASSIGN(std::unique_ptr<video::CudaStream> cuda,
-             video::CudaStream::open(*options.device, kWho));
+  VKC_ASSIGN(std::unique_ptr<video::CudaSession> cuda,
+             video::CudaSession::open(*options.device, kWho));
+  const CudaContext& cuda_context = *cuda->context;
   AVBufferRef* hw = av_hwdevice_ctx_alloc(kDeviceType);
   if (hw == nullptr) return video::ffmpeg_alloc_error(kWho, "opening NVDEC");
   impl->hw_device.reset(hw);
   auto* hw_context = reinterpret_cast<AVHWDeviceContext*>(hw->data);
   auto* hw_cuda = static_cast<AVCUDADeviceContext*>(hw_context->hwctx);
-  hw_cuda->cuda_ctx = cuda->context;
-  hw_cuda->stream = cuda->stream;
+  hw_cuda->cuda_ctx = cuda->context->handle();
+  hw_cuda->stream = cuda->stream->handle();
   hw_context->user_opaque = cuda.release();
-  hw_context->free = &release_cuda_stream;
+  hw_context->free = &release_cuda_session;
   int err = av_hwdevice_ctx_init(hw);
   if (err < 0) {
     return unsupported(std::string(kPath) +
                        ": no device opens: " + video::ffmpeg_message(err));
   }
-  VKC_ASSIGN(impl->pictures, video::CudaPictures::create(
-                                 *options.device, *options.allocator,
-                                 hw_cuda->cuda_ctx, hw_cuda->stream, kWho));
+  VKC_ASSIGN(impl->pictures,
+             video::CudaPictures::create(*options.device, *options.allocator,
+                                         cuda_context, hw_cuda->stream, kWho));
 
   AVCodecContext* context = impl->codec.get();
   context->hw_device_ctx = av_buffer_ref(hw);

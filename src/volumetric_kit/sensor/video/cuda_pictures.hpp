@@ -5,9 +5,8 @@
 
 // NVIDIA's decoders' pictures, handed over on the device (VR_WITH_CUDA,
 // Linux): NVDEC's copied device to device, nvJPEG's decoded in place, into
-// Vulkan buffers CUDA has imported, so the kernels read them where they are
-// and they never cross the bus. libcuda is loaded at run time, as FFmpeg
-// loads it, so a build with CUDA starts without it.
+// Vulkan buffers CUDA has imported (sensor/video/cuda_interop.hpp), so the
+// kernels read them where they are and they never cross the bus.
 
 #include <cuda.h>
 
@@ -16,14 +15,11 @@
 #include <utility>
 #include <vector>
 
+#include "cuda_driver.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
+#include "volumetric_kit/recon/sensor/video/cuda_interop.hpp"
 #include "volumetric_kit/recon/sensor/yuv_image.hpp"
-
-// A macro's expansion as a string: a cuda.h name's versioned symbol, or
-// nvjpeg.h's major version.
-#define VR_CUDA_STRING(name) VR_CUDA_STRING_(name)
-#define VR_CUDA_STRING_(name) #name
 
 namespace volumetric_kit::recon::sensor::video {
 
@@ -40,137 +36,31 @@ inline void place_cuda_buffer(std::shared_ptr<const core::Buffer> buffer,
   out.queue_family = kQueueFamilyExternal;
 }
 
-// The driver entry points used here. Each name goes through cuda.h's macros,
-// so it is the versioned symbol its prototype declares (cuMemFree is
-// cuMemFree_v2).
-#define VR_CUDA_FUNCTIONS(X)         \
-  X(cuInit)                          \
-  X(cuGetErrorName)                  \
-  X(cuDeviceGetCount)                \
-  X(cuDeviceGet)                     \
-  X(cuDeviceGetUuid)                 \
-  X(cuDevicePrimaryCtxRetain)        \
-  X(cuDevicePrimaryCtxRelease)       \
-  X(cuCtxPushCurrent)                \
-  X(cuCtxPopCurrent)                 \
-  X(cuStreamCreate)                  \
-  X(cuStreamDestroy)                 \
-  X(cuStreamSynchronize)             \
-  X(cuEventCreate)                   \
-  X(cuEventDestroy)                  \
-  X(cuEventRecord)                   \
-  X(cuEventSynchronize)              \
-  X(cuImportExternalMemory)          \
-  X(cuExternalMemoryGetMappedBuffer) \
-  X(cuDestroyExternalMemory)         \
-  X(cuMemFree)                       \
-  X(cuMemcpy2DAsync)
-
-struct CudaDriver {
-#define VR_CUDA_DECLARE(name) decltype(&::name) name = nullptr;
-  VR_CUDA_FUNCTIONS(VR_CUDA_DECLARE)
-#undef VR_CUDA_DECLARE
-};
-
-// libcuda, loaded once and kept; null where it does not load or lacks an
-// entry point.
-const CudaDriver* cuda_driver();
-
-// A Cuda Backend error naming @p who, @p what it was doing and CUDA's name for
-// @p result, which is not CUDA_SUCCESS.
-core::Status cuda_error(const char* who, CUresult result, const char* what);
-
-// A CUDA context made current for a scope, and the one before put back.
-// libcuda must have loaded.
-class CudaContextScope {
- public:
-  explicit CudaContextScope(CUcontext context)
-      : result_(cuda_driver()->cuCtxPushCurrent(context)) {}
-  ~CudaContextScope() {
-    CUcontext popped = nullptr;
-    if (ok()) cuda_driver()->cuCtxPopCurrent(&popped);
-  }
-  CudaContextScope(const CudaContextScope&) = delete;
-  CudaContextScope& operator=(const CudaContextScope&) = delete;
-  bool ok() const noexcept { return result_ == CUDA_SUCCESS; }
-  CUresult result() const noexcept { return result_; }
-
- private:
-  CUresult result_;
-};
-
-// The CUDA device that is @p device's GPU: Vulkan's deviceUUID matched
-// against each CUDA device's. Unsupported where libcuda does not load or
-// start, or no CUDA device is. @p who names the decoder in errors.
-core::Result<int> cuda_ordinal_of(const core::Device& device, const char* who);
-
-// The primary CUDA context of a Vulkan device's GPU, retained, and a stream
-// of the holder's own on it that never waits on the legacy default stream:
-// every decoder on a GPU shares the one context, and each queues its work
-// apart from the others'. Released together, the stream first.
-struct CudaStream {
+// A decoder's CUDA: the primary context of its device's GPU, and a stream of
+// its own on it. Released together, the stream first.
+struct CudaSession {
   // @p who names the decoder in errors.
-  static core::Result<std::unique_ptr<CudaStream>> open(
+  static core::Result<std::unique_ptr<CudaSession>> open(
       const core::Device& device, const char* who);
-  CudaStream() = default;
-  ~CudaStream();
-  CudaStream(const CudaStream&) = delete;
-  CudaStream& operator=(const CudaStream&) = delete;
+  CudaSession() = default;
+  CudaSession(const CudaSession&) = delete;
+  CudaSession& operator=(const CudaSession&) = delete;
 
-  CUdevice device = 0;
-  CUcontext context = nullptr;
-  CUstream stream = nullptr;
+  std::unique_ptr<CudaContext> context;
+  std::unique_ptr<CudaStream> stream;
 };
 
-// One exported buffer and CUDA's view of it. Its CUDA context is current
-// while it is acquired, moved, or released. Own each handle immediately, so
-// failed mapping or host allocation unwinds CUDA before the Vulkan buffer.
-struct CudaPictureSlot {
-  CudaPictureSlot() = default;
-  ~CudaPictureSlot() { reset(); }
-  CudaPictureSlot(const CudaPictureSlot&) = delete;
-  CudaPictureSlot& operator=(const CudaPictureSlot&) = delete;
-  CudaPictureSlot(CudaPictureSlot&& other) noexcept {
-    *this = std::move(other);
-  }
-  CudaPictureSlot& operator=(CudaPictureSlot&& other) noexcept {
-    if (this != &other) {
-      reset();
-      buffer = std::move(other.buffer);
-      memory = std::exchange(other.memory, nullptr);
-      pointer = std::exchange(other.pointer, 0);
-      bytes = std::exchange(other.bytes, 0);
-    }
-    return *this;
-  }
-
-  std::shared_ptr<core::Buffer> buffer;
-  CUexternalMemory memory = nullptr;
-  CUdeviceptr pointer = 0;
-  std::uint64_t bytes = 0;
-
- private:
-  void reset() noexcept {
-    if (pointer != 0) cuda_driver()->cuMemFree(std::exchange(pointer, 0));
-    if (memory != nullptr) {
-      cuda_driver()->cuDestroyExternalMemory(std::exchange(memory, nullptr));
-    }
-    buffer.reset();
-    bytes = 0;
-  }
-};
-
-// A ring of exported Vulkan buffers on one device, each imported into CUDA
+// A ring of exported Vulkan buffers on one device, each mapped into CUDA
 // once, in the decoder's CUDA context. A picture takes one that no earlier
 // picture still holds, or a new one; a free one too small for it is let go.
 class CudaPictures {
  public:
-  // The buffers are made through @p allocator, which, like @p device, must
-  // outlive this and every picture on it. @p who names the decoder in errors.
+  // The buffers are made through @p allocator, which, like @p device and
+  // @p context, must outlive this and every picture on it. @p who names the
+  // decoder in errors.
   static core::Result<std::unique_ptr<CudaPictures>> create(
-      const core::Device& device, core::Allocator& allocator, CUcontext context,
-      CUstream stream, const char* who);
-  ~CudaPictures();
+      const core::Device& device, core::Allocator& allocator,
+      const CudaContext& context, CUstream stream, const char* who);
   CudaPictures(const CudaPictures&) = delete;
   CudaPictures& operator=(const CudaPictures&) = delete;
 
@@ -190,22 +80,33 @@ class CudaPictures {
   core::Result<Target> take(std::uint64_t bytes);
 
  private:
-  using Slot = CudaPictureSlot;
+  // One exported buffer and CUDA's view of it, which goes first. A picture
+  // can keep the buffer alive after the view is gone.
+  struct Slot {
+    Slot() = default;
+    Slot(const Slot&) = delete;
+    Slot& operator=(const Slot&) = delete;
+
+    std::shared_ptr<core::Buffer> buffer;
+    std::unique_ptr<CudaBufferMapping> mapping;
+    std::uint64_t bytes = 0;
+  };
+
   CudaPictures(const core::Device& device, core::Allocator& allocator,
-               CUcontext context, CUstream stream, const char* who)
+               const CudaContext& context, CUstream stream, const char* who)
       : device_(&device),
         allocator_(&allocator),
-        context_(context),
+        context_(&context),
         stream_(stream),
         who_(who) {}
   core::Result<Slot*> slot(std::uint64_t bytes);
 
   const core::Device* device_;
   core::Allocator* allocator_;
-  CUcontext context_;
+  const CudaContext* context_;
   CUstream stream_;
   const char* who_;
-  std::vector<Slot> slots_;
+  std::vector<std::unique_ptr<Slot>> slots_;
 };
 
 }  // namespace volumetric_kit::recon::sensor::video
