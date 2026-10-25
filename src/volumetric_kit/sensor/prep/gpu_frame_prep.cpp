@@ -20,6 +20,7 @@
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "yuv_planes.hpp"
 
@@ -792,9 +793,11 @@ core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
   core::Result<core::PendingBatch> pending = batch.submit_async({}, {});
   const core::Status ran = pending.ok() ? pending->wait() : pending.status();
   if (!ran.ok()) {
-    // A refused submit ran nothing; a failed wait may leave the device
-    // running the batch, which reads the planes.
-    if (pending.ok() && pending->in_flight()) {
+    // A submit that loses the device may still be pending, as may a failed
+    // wait. The core keeps the command resources in both cases, but the
+    // external pictures read by those commands belong to the frame.
+    if ((pending.ok() && pending->in_flight()) ||
+        (!pending.ok() && core::vk_result(ran) == VK_ERROR_DEVICE_LOST)) {
       for (std::size_t i = 0; i < count; ++i) {
         if (frames[i] != nullptr) abandon(*frames[i]);
       }
