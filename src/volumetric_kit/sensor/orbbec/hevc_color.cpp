@@ -80,6 +80,7 @@ void HevcColorDecoder::decoder_error(core::Status why) {
   worker_.lose(in_flight_.size());
   in_flight_.clear();
   worker_.fail(std::move(why).with_context(options_.who));
+  if (options_.on_failure) options_.on_failure();
 }
 
 void HevcColorDecoder::push(std::shared_ptr<ob::FrameSet> pair) noexcept {

@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <utility>
@@ -121,6 +122,10 @@ struct SensorStats {
 /// sets a deeper queue and @ref drain s every frame, oldest first, so it can
 /// group frames of several sensors by trigger.
 ///
+/// A sensor may also tell a consumer that a frame is ready
+/// (@ref set_frame_notify), so the consumer blocks instead of polling at a
+/// fixed rate; @ref poll or @ref drain still takes the frame.
+///
 /// A frame holds its pixels (`RgbdFrame::pixels`), so it may be kept past the
 /// next poll, at the cost of the driver's buffers it holds.
 ///
@@ -185,6 +190,22 @@ class VR_SENSOR_API IRgbdSensor {
 
   /// @return The counters since the last @ref start.
   virtual SensorStats stats() const noexcept = 0;
+
+  /// @brief Have the sensor call @p notify each time a frame becomes ready for
+  ///        @ref poll or @ref drain, or the sensor fails, so a consumer can
+  ///        block between polls instead of sleeping (`SensorArray::wait_set`
+  ///        waits on one notification for all its sensors).
+  ///
+  /// @p notify runs on whatever thread delivers the frame, after the frame is
+  /// held, so the poll it wakes finds it. It must be quick, must not call
+  /// back into the sensor, and may run after a later call replaced it, so it
+  /// owns whatever it touches.
+  /// @param notify  Called once for each frame held and on a failure; empty
+  ///                stops the calls.
+  /// @return OK; `Status::Code::InvalidArgument` once started;
+  ///         `Status::Code::Unsupported` for a sensor that notifies nothing,
+  ///         the default, whose consumer polls it.
+  virtual core::Status set_frame_notify(std::function<void()> notify);
 
   /// @brief The "nothing this tick" return: `return std::nullopt;` needs two
   ///        user-defined conversions and does not compile, and

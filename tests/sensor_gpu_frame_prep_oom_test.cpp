@@ -5,6 +5,7 @@
 // OutOfMemory, keeps the previous frame intact, and permits a retry.
 // Skips without a device.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -50,14 +51,19 @@ int staging_failure_case(vr_test::Gpu ctx, bool single) {
   auto held = prepare();
   CHECK(held.ok());
 
-  // Measure the allocation for a shared Buffer instead of assuming a standard
-  // library's control-block size. This reaches output staging after
-  // prepare_batch has allocated its bookkeeping vectors.
+  // Measure the allocation for a shared output -- a Buffer and its lease, as
+  // the pass holds one -- instead of assuming a standard library's
+  // control-block size. This reaches the new output after prepare_batch has
+  // allocated its bookkeeping vectors.
+  struct Leased {
+    vkc::Buffer buffer;
+    std::atomic<bool> held{false};
+  };
   auto& failure = vr_test::allocation_failure;
   failure.measure = true;
-  auto owner = std::make_shared<vkc::Buffer>();
+  auto owner = std::make_shared<Leased>();
   failure.measure = false;
-  CHECK(failure.bytes != 0 && !owner->valid());
+  CHECK(failure.bytes != 0 && !owner->buffer.valid());
   owner.reset();
 
   // Keeping the previous output forces a new one for this frame.

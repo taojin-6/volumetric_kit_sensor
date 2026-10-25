@@ -13,8 +13,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -106,6 +108,78 @@ class Scripted final : public sensor::IRgbdSensor {
  private:
   sensor::SensorInfo info_;
   std::vector<sensor::RgbdFrame> frames_;
+  bool started_ = false;
+};
+
+// A sensor that notifies: frames posted, or a failure, from any thread, as a
+// driver's own thread delivers them.
+class Notifying final : public sensor::IRgbdSensor {
+ public:
+  Notifying(std::string id, sensor::SyncRole role, std::uint32_t fps) {
+    info_.id = std::move(id);
+    info_.role = role;
+    info_.clock = sensor::ClockDomain::Host;
+    info_.fps = fps;
+  }
+  // A frame, stamped as arriving at `arrival_ns`, then the wake-up.
+  void post(std::uint64_t timestamp_ns, std::uint64_t arrival_ns) {
+    std::function<void()> wake;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      sensor::RgbdFrame f;
+      f.timestamp_ns = timestamp_ns;
+      f.arrival_ns = arrival_ns;
+      frames_.push_back(std::move(f));
+      wake = notify_;
+    }
+    if (wake) wake();
+  }
+  // A failure the next drain reports, then the wake-up.
+  void fail(const std::string& why) {
+    std::function<void()> wake;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      fault_ = why;
+      wake = notify_;
+    }
+    if (wake) wake();
+  }
+  std::function<void()> notify() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return notify_;
+  }
+
+  const sensor::SensorInfo& info() const noexcept override { return info_; }
+  vkc::Status set_queue_depth(std::size_t) override { return {}; }
+  vkc::Status start() override {
+    started_ = true;
+    return {};
+  }
+  void stop() noexcept override { started_ = false; }
+  vkc::Result<std::optional<sensor::RgbdFrame>> poll() override {
+    return no_frame();
+  }
+  vkc::Status drain(std::vector<sensor::RgbdFrame>* out) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!fault_.empty()) return vkc::Status::io_error(fault_);
+    for (sensor::RgbdFrame& f : frames_) out->push_back(std::move(f));
+    frames_.clear();
+    return {};
+  }
+  sensor::SensorStats stats() const noexcept override { return {}; }
+  vkc::Status set_frame_notify(std::function<void()> notify) override {
+    if (started_) return vkc::Status::invalid_argument("already started");
+    std::lock_guard<std::mutex> lock(mutex_);
+    notify_ = std::move(notify);
+    return {};
+  }
+
+ private:
+  sensor::SensorInfo info_;
+  std::mutex mutex_;
+  std::vector<sensor::RgbdFrame> frames_;  // guarded by mutex_
+  std::function<void()> notify_;           // guarded by mutex_
+  std::string fault_;                      // guarded by mutex_
   bool started_ = false;
 };
 
@@ -540,6 +614,113 @@ int test_skew_and_spread() {
   return 0;
 }
 
+// Milliseconds since `start`.
+double ms_since(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now() - start)
+      .count();
+}
+
+// wait_set: blocked on the sensors' notifications, it returns a frame posted
+// from another thread, and a failure, at once; with none, at its timeout; a
+// trigger missing a secondary, at the grouping's deadline with no new frame;
+// a set's arrival is its latest frame's; a sensor that notifies nothing makes
+// it refuse; and a notification after the array is gone touches nothing
+// freed (ASan).
+int test_wait_set() {
+  using Clock = std::chrono::steady_clock;
+  {
+    std::vector<std::unique_ptr<sensor::IRgbdSensor>> one;
+    auto owned =
+        std::make_unique<Notifying>("N", sensor::SyncRole::FreeRun, 30);
+    Notifying* n = owned.get();
+    one.push_back(std::move(owned));
+    auto opened = sensor::SensorArray::open(std::move(one), {});
+    CHECK(opened.ok());
+    sensor::SensorArray array = std::move(opened).value();
+    // Not started: nothing to wait for.
+    auto idle = array.wait_set(std::chrono::milliseconds(1));
+    CHECK(idle.ok() && !idle.value());
+    CHECK(array.start().ok());
+    Clock::time_point t = Clock::now();
+    auto none = array.wait_set(std::chrono::milliseconds(30));
+    CHECK(none.ok() && !none.value() && ms_since(t) >= 29.0);
+
+    std::thread poster([n] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      n->post(7'000'000, 123);
+    });
+    t = Clock::now();
+    vkc::StageMetrics metrics;
+    auto got = array.wait_set(std::chrono::seconds(5), &metrics);
+    const double waited = ms_since(t);
+    poster.join();
+    CHECK(got.ok() && got.value() && got.value()->arrival_ns == 123);
+    std::printf("  a posted frame woke the wait after %.1f ms\n", waited);
+    CHECK(waited < 1000.0);
+    CHECK(metrics.rows().size() == 2);  // "poll", then "wait: cameras"
+    CHECK(std::string(metrics.rows()[1].name) == "wait: cameras");
+    CHECK(metrics.rows()[1].wait_ms == metrics.rows()[1].cpu_ms);
+
+    std::thread failer([n] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      n->fail("camera gone");
+    });
+    t = Clock::now();
+    auto failed = array.wait_set(std::chrono::seconds(5));
+    const double told = ms_since(t);
+    failer.join();
+    CHECK(!failed.ok() && failed.status().domain() == Code::IoError);
+    CHECK(told < 1000.0);
+
+    // A notify kept past the array: harmless.
+    const std::function<void()> late = n->notify();
+    CHECK(late != nullptr);
+    {
+      sensor::SensorArray gone = std::move(array);
+    }
+    late();
+  }
+  {
+    // A trigger missing its secondary, out at 1.5 frame periods (50 ms).
+    std::vector<std::unique_ptr<sensor::IRgbdSensor>> rig;
+    auto p = std::make_unique<Notifying>("P", sensor::SyncRole::Primary, 30);
+    auto s = std::make_unique<Notifying>("S", sensor::SyncRole::Secondary, 30);
+    Notifying* primary = p.get();
+    Notifying* secondary = s.get();
+    rig.push_back(std::move(p));
+    rig.push_back(std::move(s));
+    auto opened = sensor::SensorArray::open(std::move(rig), {});
+    CHECK(opened.ok());
+    sensor::SensorArray array = std::move(opened).value();
+    CHECK(array.start().ok());
+    primary->post(9'000'000'000, 100);
+    secondary->post(9'000'100'000, 200);
+    auto both = array.wait_set(std::chrono::seconds(5));
+    CHECK(both.ok() && both.value() && both.value()->complete());
+    CHECK(both.value()->arrival_ns == 200);  // the latest frame's
+    primary->post(9'033'333'000, 300);
+    const Clock::time_point t = Clock::now();
+    auto alone = array.wait_set(std::chrono::seconds(5));
+    const double waited = ms_since(t);
+    CHECK(alone.ok() && alone.value() && !alone.value()->complete());
+    std::printf("  a trigger missing its secondary went out after %.1f ms\n",
+                waited);
+    CHECK(waited >= 40.0 && waited < 1000.0);
+  }
+  {
+    // A sensor that notifies nothing: wait_set refuses; poll_set it.
+    Rig r = triggered_rig();
+    auto opened =
+        sensor::SensorArray::open(std::move(r.sensors), trigger_options());
+    CHECK(opened.ok());
+    CHECK(opened->start().ok());
+    CHECK(opened->wait_set(std::chrono::milliseconds(1)).status().domain() ==
+          Code::Unsupported);
+  }
+  return 0;
+}
+
 int test_moved_from() {
   Rig r = triggered_rig();
   auto opened =
@@ -566,6 +747,7 @@ int main() {
   if (test_default_tolerance() != 0) return 1;
   if (test_failed_drain() != 0) return 1;
   if (test_failed_drain_eviction() != 0) return 1;
+  if (test_wait_set() != 0) return 1;
   if (test_moved_from() != 0) return 1;
   std::printf("sensor array tests passed\n");
   return 0;

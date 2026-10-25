@@ -117,6 +117,11 @@ struct RgbdFrame {
   /// timestamp cannot tell from a late one. Like @ref timestamp_ns, it
   /// counts within one capture session; it may begin again at a restart.
   std::uint64_t sequence = 0;
+  /// When the host received the frame, on `std::chrono::system_clock`, in
+  /// nanoseconds since its epoch: what a sender's latency counts from. 0 when
+  /// the driver does not say, as a recording's frames, which arrive when
+  /// polled.
+  std::uint64_t arrival_ns = 0;
 
   /// What @ref depth, @ref color_packed and @ref color_bitstream point into,
   /// held for as long as the frame is; null when they need no owner.

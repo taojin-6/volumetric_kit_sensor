@@ -30,6 +30,7 @@
 #include "volumetric_kit/core/vulkan/descriptor.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
+#include "volumetric_kit/core/vulkan/host_ring.hpp"
 #include "volumetric_kit/recon/core/camera_params.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
@@ -140,12 +141,14 @@ struct GpuFramePrepConfig {
 /// where they are, after the pass takes them over from the queue family that
 /// wrote them (`YuvImage::queue_family`); NV12's planes as images, as
 /// VideoToolbox's picture arrives, are copied into the pass's input on the
-/// device in the same batch. A dataset decoded on the host hands its colour
-/// over as packed R'G'B' words instead (@ref RgbdFrame::color_packed), which
-/// go up with the depth: each copied into the pass's staging, and up in its
-/// batch. Nothing else goes up from the host.
+/// device in the same batch. A frame's depth, and colour a dataset decoded on
+/// the host (@ref RgbdFrame::color_packed), are copied into the pass's
+/// persistent slot (`core::HostRing`), which its batch binds: in place where
+/// the device's mapped memory is cached (Apple, lavapipe), and through one
+/// copy of the used range elsewhere (a discrete GPU). Nothing else goes up
+/// from the host, and nothing is allocated per frame.
 ///
-/// Every check on the frame is made before anything is uploaded, so a refused
+/// Every check on the frame is made before anything is recorded, so a refused
 /// frame leaves the pass and the frames it handed out as they were.
 ///
 /// @warning The `Device` and `Allocator` passed to @ref create must
@@ -175,15 +178,58 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   GpuFramePrep(const GpuFramePrep&) = delete;
   GpuFramePrep& operator=(const GpuFramePrep&) = delete;
 
-  /// @brief Upload @p frame's depth and any host colour, undistort and
-  ///        convert the frame, and hand the result over as buffers on the
-  ///        device.
+  /// @brief Record @ref prepare's work for @p frame into @p batch: the frame
+  ///        copied into one of the pass's slots, any device planes taken over,
+  ///        and both passes, with nothing submitted.
+  ///
+  /// The frame is checked before anything is recorded, so a refusal leaves
+  /// @p batch and the pass as they were. The frame handed back holds its
+  /// buffers, which hold the prepared frame once @p batch has run.
+  /// @param batch    Records the work; the caller submits it.
+  /// @param frame    The frame. Its depth and host colour are copied here.
+  ///                 Device planes are read when @p batch runs, so keep the
+  ///                 frame until the batch has resolved, and after a failed
+  ///                 wait for as long as `PendingBatch::in_flight` says.
+  /// @param metrics  Optional: a `"frame prep"` row, its host half now and its
+  ///                 device half from `PendingBatch::device_rows`.
+  /// @return The frame; with nothing recorded, @ref prepare's refusals, or
+  ///         `Status::Code::InvalidArgument` while the batch of the pass's
+  ///         last record has not resolved (its slot is held); or, after the
+  ///         first commands, so the caller drops @p batch, a buffer failure.
+  /// @pre The batch of this pass's last record has resolved: it binds the
+  ///      pass's slot and its kernels' sets, which this rewrites.
+  core::Result<DeviceFrame> record(core::CommandBatch& batch,
+                                   const RgbdFrame& frame,
+                                   core::StageMetrics* metrics = nullptr);
+
+  /// @brief @ref record several cameras' frames into @p batch: every frame's
+  ///        copies, then every frame's passes, so the copies run with no
+  ///        barrier between them.
+  ///
+  /// What `SensorArray::record_process` records. Every frame is checked
+  /// before any is recorded.
+  /// @param batch    As @ref record.
+  /// @param preps    One pass per camera, all made with @p batch's `Device`;
+  ///                 `preps[i]` records `frames[i]`.
+  /// @param frames   One entry per camera, an empty one skipped; kept as
+  ///                 @ref record says.
+  /// @param metrics  Optional: one `"frame prep"` row for the set, timed by
+  ///                 the first pass used.
+  /// @return One `DeviceFrame` per present frame, empty where the frame was;
+  ///         @ref prepare_batch's refusals; or as @ref record.
+  static core::Result<std::vector<std::optional<DeviceFrame>>> record_set(
+      core::CommandBatch& batch, std::vector<GpuFramePrep>& preps,
+      const std::vector<std::optional<RgbdFrame>>& frames,
+      core::StageMetrics* metrics = nullptr);
+
+  /// @brief Undistort and convert @p frame, and hand the result over as
+  ///        buffers on the device: @ref record, one submit and its wait.
   /// @param frame    The frame; read during the call only. Device planes must
   ///                 be on this pass's device, their writer finished.
   /// @param metrics  Optional `StageMetrics` collecting a `"frame prep"`
-  ///                 row: the upload and both passes on the host, and on the
-  ///                 device the frame's copies up and the two dispatches.
-  ///                 `nullptr` measures nothing.
+  ///                 row: the copy into the slot and both passes on the host,
+  ///                 and on the device the frame's copy up and the two
+  ///                 dispatches. `nullptr` measures nothing.
   /// @return The frame, which holds its buffers; @ref
   ///         Status::Code::InvalidArgument for a moved-from pass, a frame
   ///         without depth, a depth range that is not finite with
@@ -201,14 +247,13 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         dispatch (16.7 M pixels);
   ///         `Status::Code::Unsupported` for a colour encoding
   ///         @ref is_canonical refuses; `Status::Code::OutOfMemory` for a
-  ///         host allocation failure while staging the frame, with previously
-  ///         returned frames intact; otherwise a buffer or dispatch failure.
+  ///         host allocation failure, with previously returned frames intact;
+  ///         otherwise a buffer or dispatch failure.
   core::Result<DeviceFrame> prepare(const RgbdFrame& frame,
                                     core::StageMetrics* metrics = nullptr);
 
-  /// @brief @ref prepare several cameras' frames in one batch: every frame's
-  ///        uploads and passes recorded into one command buffer, submitted
-  ///        once and waited on once.
+  /// @brief @ref prepare several cameras' frames in one batch:
+  ///        @ref record_set, one submit and its wait.
   ///
   /// The array's way (`SensorArray::process`): one submit and one wait for
   /// the set rather than one a camera. Every frame is checked before any is
@@ -233,39 +278,59 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
  private:
   GpuFramePrep() = default;
 
-  // A checked frame's layout (gpu_frame_prep.cpp).
+  // A checked frame's layout, and an output with its lease
+  // (gpu_frame_prep.cpp).
   struct Layout;
-  // The one path prepare and prepare_batch take: `preps[i]` prepares
-  // `*frames[i]` into `out[i]`, a null frame skipped, with `layouts[i]` its
-  // scratch, for `count` frames.
+  struct Output;
+  // Every frame checked, `layouts[i]` for `*frames[i]`, a null frame skipped,
+  // and every pass on one device: the first pass used, or null for no frame.
+  static core::Result<GpuFramePrep*> check_frames(
+      GpuFramePrep* preps, const RgbdFrame* const* frames, Layout* layouts,
+      std::size_t count);
+  // The one path record, record_set, prepare and prepare_batch take: the
+  // checked frames recorded into `batch`, `preps[i]` recording `*frames[i]`
+  // into `out[i]`, timed under `stage`.
+  static core::Status record_frames(core::CommandBatch& batch,
+                                    GpuFramePrep* preps,
+                                    const RgbdFrame* const* frames,
+                                    const Layout* layouts,
+                                    std::optional<DeviceFrame>* out,
+                                    std::size_t count,
+                                    core::GpuStageScope* stage);
+  // prepare's and prepare_batch's: record_frames, one submit and its wait.
   static core::Status prepare_frames(GpuFramePrep* preps,
                                      const RgbdFrame* const* frames,
                                      Layout* layouts,
                                      std::optional<DeviceFrame>* out,
                                      std::size_t count,
                                      core::StageMetrics* metrics);
-  // The whole frame checked, before anything is uploaded.
+  // The whole frame checked, before anything is recorded.
   core::Result<Layout> check(const RgbdFrame& frame) const;
-  // Device planes taken over from their writer's family, into `batch`.
-  core::Status acquire(core::CommandBatch& batch, const RgbdFrame& frame);
-  // The buffers made big enough, and the depth and any packed colour staged.
-  core::Status stage_host(const RgbdFrame& frame, const Layout& layout);
-  // The copies up and the overlap mask's parameters, recorded into `batch`.
-  core::Status record_uploads(core::CommandBatch& batch, const RgbdFrame& frame,
-                              const Layout& layout, core::GpuStageScope* stage);
-  // Both passes, recorded into `batch` after the uploads; the outputs hold
-  // the result once the batch is submitted.
+  // A slot claimed and filled with the depth and any packed colour, and the
+  // outputs and the NV12 input made big enough; nothing recorded.
+  core::Result<core::HostSlot> stage(const RgbdFrame& frame,
+                                     const Layout& layout);
+  // Device planes taken over from their writer's family, the slot bound (one
+  // copy where it is copied), plane images copied and the overlap mask's
+  // parameters written, into `batch`; `*input` is the buffer the passes bind.
+  core::Status record_inputs(core::CommandBatch& batch, const RgbdFrame& frame,
+                             const Layout& layout, const core::HostSlot& slot,
+                             core::GpuStageScope* stage, VkBuffer* input);
+  // Both passes, recorded into `batch` after the inputs; the outputs hold
+  // the result once the batch has run.
   core::Status record_passes(core::CommandBatch& batch, const RgbdFrame& frame,
-                             const Layout& layout, core::GpuStageScope* stage);
-  // After a submit that failed: let go of what the GPU may still read.
-  void abandon(const RgbdFrame& frame, const Layout& layout);
-  // The frame handed out after a submit that succeeded.
+                             const Layout& layout, VkBuffer input,
+                             core::GpuStageScope* stage);
+  // After a batch that failed and may still run: let go of the device planes
+  // it may read.
+  static void abandon(const RgbdFrame& frame);
+  // The frame handed out, its outputs leased to it.
   DeviceFrame finish(const RgbdFrame& frame) const;
 
-  // An output of at least `bytes`: the one held, when no DeviceFrame still
-  // holds it too and it is big enough, else a new one, shared with the
+  // An output of at least `bytes`: the one held, when no DeviceFrame holds
+  // its lease and it is big enough, else a new one, shared with the
   // `family_count` families at `families` (the config's for that output).
-  core::Status ensure_output(std::shared_ptr<core::Buffer>& buffer,
+  core::Status ensure_output(std::shared_ptr<Output>& output,
                              VkDeviceSize bytes, const char* name,
                              const std::uint32_t* families,
                              std::uint32_t family_count);
@@ -285,22 +350,21 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   core::DescriptorPool pool_;
   core::GpuTimer gpu_timer_;
 
-  // The raw inputs, device-local and filled through the pass's batch, grown
-  // to the largest frame seen and kept; colour already on the device is read
-  // where it is instead.
-  core::Buffer depth_in_;
+  // Each frame's depth, and colour a dataset decoded on the host, copied into
+  // its one slot, the colour range at minStorageBufferOffsetAlignment; made
+  // at the first record, grown as a larger frame asks.
+  std::unique_ptr<core::HostRing> inputs_;
+  // NV12 plane images, copied on the device and kept, grown to the largest
+  // picture seen; colour already in a device buffer is read where it is.
   core::Buffer color_in_;
-  // The depth and any packed colour on the host side, host-visible and kept
-  // like the inputs.
-  core::Buffer staging_;
   // The colour camera and the depth-to-colour transform the depth pass masks
   // by (GpuFramePrepConfig::depth_within_color), written inline each frame
   // that uses them; bound once, at create.
   core::Buffer overlap_;
-  // The outputs the fusion tiers read, device-local, shared with the
-  // DeviceFrames handed out; reused only once no frame holds them.
-  std::shared_ptr<core::Buffer> depth_out_;
-  std::shared_ptr<core::Buffer> color_out_;
+  // The outputs the fusion tiers read, device-local, leased to the
+  // DeviceFrames handed out; reused only once no frame holds the lease.
+  std::shared_ptr<Output> depth_out_;
+  std::shared_ptr<Output> color_out_;
 };
 
 }  // namespace volumetric_kit::recon::sensor

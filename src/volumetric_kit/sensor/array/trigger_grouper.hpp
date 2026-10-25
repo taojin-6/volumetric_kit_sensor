@@ -90,6 +90,14 @@ class TriggerGrouper {
   std::optional<Group> take(std::uint64_t now_us,
                             std::vector<std::uint64_t>* released);
 
+  /// @brief When the earliest trigger held becomes ready by time alone, its
+  ///        missing sensors' wait run out (@ref Config::max_wait_us), so a
+  ///        consumer that found none ready knows how long it may block.
+  /// @return That host time (us); empty when no trigger is held, or when the
+  ///         earliest waits for no sensor's silence (it is ready now, or
+  ///         waits only for frames that will come).
+  std::optional<std::uint64_t> next_deadline_us() const;
+
   /// @brief Forget every frame held.
   /// @param released  Receives their ids.
   void clear(std::vector<std::uint64_t>* released);

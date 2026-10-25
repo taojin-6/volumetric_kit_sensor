@@ -2,12 +2,14 @@
 // Copyright (c) 2026 Tao Jin
 
 // The sensor vocabulary: defaults, the no_frame/some_frame returns, frame
-// ownership through pixels, and stable enum names. Host-only.
+// ownership through pixels, a sensor that notifies nothing by default, and
+// stable enum names. Host-only.
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -54,6 +56,37 @@ int test_frame_returns_and_ownership() {
   return 0;
 }
 
+// A sensor that overrides nothing optional notifies nothing: its consumer
+// polls it.
+int test_notify_default() {
+  class Polled final : public sensor::IRgbdSensor {
+   public:
+    const sensor::SensorInfo& info() const noexcept override { return info_; }
+    volumetric_kit::core::Status set_queue_depth(std::size_t) override {
+      return {};
+    }
+    volumetric_kit::core::Status start() override { return {}; }
+    void stop() noexcept override {}
+    volumetric_kit::core::Result<std::optional<sensor::RgbdFrame>> poll()
+        override {
+      return no_frame();
+    }
+    volumetric_kit::core::Status drain(
+        std::vector<sensor::RgbdFrame>*) override {
+      return {};
+    }
+    sensor::SensorStats stats() const noexcept override { return {}; }
+
+   private:
+    sensor::SensorInfo info_;
+  } polled;
+  CHECK(polled.set_frame_notify([] {}).domain() ==
+        volumetric_kit::core::Status::Code::Unsupported);
+  CHECK(polled.set_frame_notify({}).domain() ==
+        volumetric_kit::core::Status::Code::Unsupported);
+  return 0;
+}
+
 int test_names() {
   CHECK(std::strcmp(sensor::to_string(sensor::SyncRole::Primary), "primary") ==
         0);
@@ -72,6 +105,7 @@ int test_names() {
 int main() {
   if (test_defaults() != 0) return 1;
   if (test_frame_returns_and_ownership() != 0) return 1;
+  if (test_notify_default() != 0) return 1;
   if (test_names() != 0) return 1;
   std::printf("rgbd sensor contract tests passed\n");
   return 0;

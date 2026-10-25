@@ -3,7 +3,8 @@
 
 // A sensor array's sets prepared on the GPU in one batch: each frame comes
 // out as GpuFramePrep::prepare makes it alone, posed by the array's
-// calibration, and an empty slot stays empty; the prep options reach every
+// calibration, and an empty slot stays empty, recorded into a caller's batch
+// the same; the prep options reach every
 // pass of an array of any size; a device or an allocator given without the
 // other, an array without a device and a set of another size are refused.
 // Skips where no device is.
@@ -170,6 +171,23 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
     CHECK(prepared.ok());
     CHECK(prepared.value().sequence == seq);
     CHECK(prepared.value().frames.size() == ids.size());
+    {
+      // Recorded into a caller's batch: the same frames, once it has run.
+      vkc::CommandBatch batch(device, allocator);
+      auto recorded = array.record_process(batch, *set.value());
+      CHECK(recorded.ok() && recorded->sequence == seq);
+      CHECK(batch.submit().ok());
+      for (std::size_t c = 0; c < ids.size(); ++c) {
+        const auto& a = prepared.value().frames[c];
+        const auto& b = recorded->frames[c];
+        CHECK(a.has_value() == b.has_value());
+        if (!a) continue;
+        CHECK(read<float>(device, allocator, *b->depth, n) ==
+              read<float>(device, allocator, *a->depth, n));
+        CHECK(read<std::uint32_t>(device, allocator, *b->color, n) ==
+              read<std::uint32_t>(device, allocator, *a->color, n));
+      }
+    }
     for (std::size_t c = 0; c < ids.size(); ++c) {
       const auto& frame = set.value()->frames[c];
       const auto& device_frame = prepared.value().frames[c];
@@ -204,6 +222,11 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   wrong.frames.resize(2);
   CHECK(array.process(wrong).status().domain() ==
         vkc::Status::Code::InvalidArgument);
+  {
+    vkc::CommandBatch batch(device, allocator);
+    CHECK(array.record_process(batch, wrong).status().domain() ==
+          vkc::Status::Code::InvalidArgument);
+  }
   // So is a device or an allocator without the other, and processing
   // without a device.
   for (const bool device_only : {true, false}) {

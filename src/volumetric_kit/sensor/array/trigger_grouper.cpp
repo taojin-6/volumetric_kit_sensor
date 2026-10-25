@@ -84,6 +84,30 @@ std::optional<TriggerGrouper::Group> TriggerGrouper::take(
   return newest;
 }
 
+std::optional<std::uint64_t> TriggerGrouper::next_deadline_us() const {
+  const std::deque<Entry>& anchor = queues_[config_.anchor];
+  if (anchor.empty()) return std::nullopt;
+  // take()'s reading of the earliest trigger, without letting anything go.
+  const Entry& trigger = anchor.front();
+  std::uint64_t first_arrival = trigger.arrived_us;
+  bool waiting = false;
+  for (std::size_t c = 0; c < queues_.size(); ++c) {
+    if (c == config_.anchor) continue;
+    const std::deque<Entry>& q = queues_[c];
+    auto it = q.begin();
+    while (it != q.end() && it->ts_us + config_.tolerance_us < trigger.ts_us) {
+      ++it;
+    }
+    if (it == q.end()) {
+      waiting = true;
+    } else if (it->ts_us <= trigger.ts_us + config_.tolerance_us) {
+      first_arrival = std::min(first_arrival, it->arrived_us);
+    }
+  }
+  if (!waiting) return std::nullopt;
+  return first_arrival + config_.max_wait_us;
+}
+
 void TriggerGrouper::clear(std::vector<std::uint64_t>* released) {
   for (auto& q : queues_) {
     for (const Entry& e : q) released->push_back(e.id);

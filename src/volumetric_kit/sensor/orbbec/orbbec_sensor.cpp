@@ -203,6 +203,19 @@ SensorStats OrbbecSensor::stats() const noexcept {
   return SensorStats{s.received, s.delivered, s.dropped, s.failed + s.lost};
 }
 
+core::Status OrbbecSensor::set_frame_notify(std::function<void()> notify) {
+  if (impl_ == nullptr) {
+    return core::Status::invalid_argument(
+        "OrbbecSensor: set_frame_notify on a moved-from sensor");
+  }
+  if (impl_->stream->running()) {
+    return core::Status::invalid_argument(
+        "OrbbecSensor: the frame notification is set before start");
+  }
+  impl_->stream->set_frame_notify(std::move(notify));
+  return {};
+}
+
 core::Result<std::vector<std::unique_ptr<IRgbdSensor>>> open_orbbec_sensors(
     const std::string& sync_path, const OrbbecSensor::Options& options) {
   if (!options.serial.empty() || options.sync) {
