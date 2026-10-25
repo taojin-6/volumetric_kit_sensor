@@ -7,9 +7,9 @@
 # compiled for the iOS floor with the include paths and definitions of a macOS
 # build's compile commands, warnings as errors, the importer with ARC and its
 # header as plain C++ too; then linked into an iOS library against the SDK's
-# frameworks, so a symbol iOS does not have fails the link. Only what an app
-# links beside them is left unresolved: the core's, recon's other tiers' and
-# Vulkan's symbols.
+# frameworks, so a symbol iOS does not have fails the link. Only their
+# dependencies' symbols are left unresolved: the core's, recon's other tiers'
+# and Vulkan's.
 #
 #   tools/ios_build_check.sh <build>/compile_commands.json <out dir>
 #
@@ -62,20 +62,21 @@ while IFS= read -r obj; do
 done <"$out/objects.txt"
 
 # One object, so only the symbols the targets do not define stay undefined;
-# those an app links beside them may stay so (-U), and any other fails.
+# their dependencies' symbols may stay so (-U), and any other fails.
 "${ios[@]}" -r -nostdlib -o "$out/targets.o" "${objects[@]}"
 nm -u -j "$out/targets.o" | sort -u >"$out/undefined.txt"
 xcrun c++filt <"$out/undefined.txt" >"$out/demangled.txt"
 paste "$out/undefined.txt" "$out/demangled.txt" |
   awk -F'\t' '$2 ~ /volumetric_kit::(core|recon)::/ || $1 ~ /^_vk[A-Z]/ {
-    print "-Wl,-U," $1 }' >"$out/app_symbols.txt"
+    print "-Wl,-U," $1 }' >"$out/dependency_symbols.txt"
 link=("${ios[@]}" -dynamiclib -o "$out/libios_build_check.dylib"
   "$out/targets.o" -framework VideoToolbox -framework CoreMedia
   -framework CoreVideo -framework CoreFoundation -framework IOSurface
   -framework Metal -framework Foundation)
 while IFS= read -r flag; do
   link+=("$flag")
-done <"$out/app_symbols.txt"
+done <"$out/dependency_symbols.txt"
 "${link[@]}"
 echo "iOS build check: ${#objects[@]} sources linked," \
-  "$(wc -l <"$out/app_symbols.txt" | tr -d ' ') symbols left to the app"
+  "$(wc -l <"$out/dependency_symbols.txt" | tr -d ' ') dependency symbols" \
+  "left unresolved"
