@@ -355,7 +355,9 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
 
   // Each frame's depth, and colour a dataset decoded on the host, copied into
   // its one slot, the colour range at minStorageBufferOffsetAlignment; made
-  // at the first record, grown as a larger frame asks.
+  // at the first record, grown as a larger frame asks. The host only writes
+  // the slot (core::HostAccess::SequentialWrite), so where the ring is
+  // copied, as on a discrete GPU, it is write-combined staging.
   std::unique_ptr<core::HostRing> inputs_;
   // NV12 plane images, copied on the device and kept, grown to the largest
   // picture seen; colour already in a device buffer is read where it is.
