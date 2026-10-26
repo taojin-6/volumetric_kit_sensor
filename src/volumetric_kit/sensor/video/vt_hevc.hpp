@@ -23,12 +23,12 @@
 #include <vector>
 
 #include "frame_color.hpp"
-#include "hevc_syntax.hpp"
 #include "videotoolbox.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
+#include "volumetric_kit/recon/sensor/video/hevc_syntax.hpp"
 
 namespace volumetric_kit::recon::sensor::video {
 

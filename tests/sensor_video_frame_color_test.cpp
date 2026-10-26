@@ -38,7 +38,7 @@ constexpr int kDisplayP3 = 12;
 
 // What describe_color makes of @p codes, for a picture @p height rows tall.
 sensor::DecodedPicture described(
-    const video::ColorCodes& codes, int height,
+    const sensor::ColorCodes& codes, int height,
     const std::optional<sensor::VideoColorDescription>& unlabelled =
         std::nullopt) {
   sensor::DecodedPicture picture;
@@ -83,7 +83,7 @@ int test_resolve_encoding() {
   CHECK(!video::resolve_encoding(kHlg, kBt2020));
   CHECK(!video::resolve_encoding(kSmpte170m, kSmpte170m));
 
-  video::ColorCodes codes;
+  sensor::ColorCodes codes;
   codes.transfer = kPq;
   codes.primaries = kBt2020;
   CHECK(is(described(codes, 720).encoding, Transfer::Bt2020Pq,
@@ -96,7 +96,7 @@ int test_resolve_encoding() {
 // The matrix by the code or the height, described by its weights, and the
 // range by the flag.
 int test_matrix_and_range() {
-  video::ColorCodes codes;
+  sensor::ColorCodes codes;
   const struct {
     int code;
     VideoColorMatrix want;
@@ -125,7 +125,7 @@ int test_matrix_and_range() {
 // that declare one keep it.
 int test_unlabelled_color() {
   const sensor::VideoColorDescription femto{VideoColorMatrix::Bt601, true};
-  video::ColorCodes codes;
+  sensor::ColorCodes codes;
   CHECK(yuv_reference::coded_in(described(codes, 720, femto).yuv,
                                 VideoColorMatrix::Bt601, true));
   codes.matrix = kBt709;
@@ -145,7 +145,7 @@ int test_chroma_locations() {
       {4, ChromaLocation::BottomLeft}, {5, ChromaLocation::Bottom},
       {6, ChromaLocation::Left},
   };
-  video::ColorCodes codes;
+  sensor::ColorCodes codes;
   CHECK(described(codes, 720).yuv.chroma_location == ChromaLocation::Left);
   for (const auto& c : cases) {
     codes.chroma_location = c.code;
