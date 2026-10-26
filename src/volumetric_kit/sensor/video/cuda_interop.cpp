@@ -195,7 +195,8 @@ core::Result<std::unique_ptr<CudaImageMapping>> CudaImageMapping::map(
   }
   static_cast<void>(exported.fd.release());
   // The image starts at its dedicated memory's first byte, in the layout
-  // CUDA's array of the same format and extent has.
+  // CUDA's array of the same format and extent has. CUDA must be told of an
+  // image a draw may render into (cuExternalMemoryGetMappedMipmappedArray).
   CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mapped{};
   mapped.offset = 0;
   mapped.arrayDesc.Width = image.width();
@@ -203,7 +204,10 @@ core::Result<std::unique_ptr<CudaImageMapping>> CudaImageMapping::map(
   mapped.arrayDesc.Depth = 0;
   mapped.arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
   mapped.arrayDesc.NumChannels = channels;
-  mapped.arrayDesc.Flags = 0;
+  mapped.arrayDesc.Flags =
+      (image.usage() & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0
+          ? CUDA_ARRAY3D_COLOR_ATTACHMENT
+          : 0u;
   mapped.numLevels = 1;
   r = cu->cuExternalMemoryGetMappedMipmappedArray(&m->levels_, m->memory_,
                                                   &mapped);

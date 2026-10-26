@@ -7,8 +7,8 @@
 // alone or every plane, one picture or a set; buffers taken over from the
 // readback's own family, a CONCURRENT buffer's other family and from outside
 // Vulkan, and images from outside Vulkan; the host memory grown and reused;
-// views that outlive their
-// pictures; every refusal; and the stage row. Skips without a device.
+// views that outlive their pictures; every refusal; and the stage row. Skips
+// without a device.
 
 #include <cstddef>
 #include <cstdint>

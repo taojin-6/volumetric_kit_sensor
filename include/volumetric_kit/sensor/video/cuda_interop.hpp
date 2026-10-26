@@ -139,7 +139,8 @@ class VR_SENSOR_VIDEO_API CudaBufferMapping {
 };
 
 /// @brief An image made with `core::create_exported_image`, mapped into CUDA
-///        as an array of its format and extent, one level.
+///        as an array of its format and extent, one level, marked as a
+///        colour attachment where the image's usage makes it one.
 ///
 /// CUDA writes, Vulkan reads, as for @ref CudaBufferMapping, and the image's
 /// layout crosses with it. Before CUDA's first write a Vulkan batch hands the

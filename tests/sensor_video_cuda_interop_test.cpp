@@ -3,11 +3,12 @@
 
 // The public CUDA interop on this machine's GPU: cuda_ordinal_of names the
 // CUDA device whose UUID is the Vulkan device's, and CudaContext is that
-// device's primary context; a buffer, and R8 and R8G8 images, that CUDA
-// writes on a stream read back through Vulkan with the bytes written, round
-// after round; and an exported buffer or image whose descriptor was already
-// taken, or an image of a format CUDA is not given, is refused. The checks
-// call libcuda through a loader of their own, so they do not lean on recon's.
+// device's primary context; a buffer, and R8, R8G8 and colour-attachment
+// R8G8B8A8 images, that CUDA writes on a stream read back through Vulkan with
+// the bytes written, round after round; and an exported buffer or image whose
+// descriptor was already taken, or an image of a format CUDA is not given, is
+// refused. The checks call libcuda through a loader of their own, so they do
+// not lean on recon's.
 //
 // Where CUDA does not reach the device's GPU the test skips;
 // VR_TEST_HEVC_BACKEND, which CI sets on the NVIDIA leg, makes it fail
@@ -198,7 +199,8 @@ int test_taken_descriptor(const Gpu& gpu) {
   return 0;
 }
 
-// An R8 and an R8G8 image, of odd size, that CUDA writes on a stream of its
+// An R8 and an R8G8 image, as NVDEC's pictures are, and an R8G8B8A8 one a
+// draw may render into, of odd size, that CUDA writes on a stream of its
 // own, synchronized, read back through Vulkan with the bytes written, round
 // after round: handed over to CUDA once, in GENERAL, before its first write,
 // then taken back from VK_QUEUE_FAMILY_EXTERNAL after each write and never
@@ -210,12 +212,24 @@ int test_cuda_writes_vulkan_reads_images(const Gpu& gpu, const Libcuda& cu) {
   CHECK(context.ok());
   auto stream = sensor::CudaStream::open(*context.value());
   CHECK(stream.ok());
-  for (const VkFormat format : {VK_FORMAT_R8_UNORM, VK_FORMAT_R8G8_UNORM}) {
-    const std::uint32_t bytes_per = format == VK_FORMAT_R8_UNORM ? 1 : 2;
+  constexpr VkImageUsageFlags kSampled =
+      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  const struct {
+    VkFormat format;
+    std::uint32_t bytes_per;
+    VkImageUsageFlags usage;
+  } images[] = {
+      {VK_FORMAT_R8_UNORM, 1, kSampled},
+      {VK_FORMAT_R8G8_UNORM, 2, kSampled},
+      {VK_FORMAT_R8G8B8A8_UNORM, 4,
+       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
+  };
+  for (const auto& made : images) {
+    const std::uint32_t bytes_per = made.bytes_per;
     vkc::ImageDesc desc;
     desc.extent = {kWidth, kHeight};
-    desc.format = format;
-    desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    desc.format = made.format;
+    desc.usage = made.usage;
     auto exported = vkc::create_exported_image(gpu.device, gpu.allocator, desc);
     CHECK(exported.ok());
     vkc::Image& image = exported.value().image;

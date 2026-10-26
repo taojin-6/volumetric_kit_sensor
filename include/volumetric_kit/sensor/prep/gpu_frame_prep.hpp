@@ -144,9 +144,8 @@ struct GpuFramePrepConfig {
 /// arrive, are sampled where they are, with no copy, either after the pass
 /// takes them over from the queue family that wrote them
 /// (`YuvImage::queue_family`). The two read the same samples, so give the
-/// same frame. A frame's depth,
-/// and colour a dataset decoded on
-/// the host (@ref RgbdFrame::color_packed), are copied into the pass's
+/// same frame. A frame's depth, and colour a dataset decoded on the host
+/// (@ref RgbdFrame::color_packed), are copied into the pass's
 /// persistent slot (`core::HostRing`), which its batch binds: in place where
 /// the device's mapped memory is cached (Apple, lavapipe), and through one
 /// copy of the used range elsewhere (a discrete GPU). Nothing else goes up
