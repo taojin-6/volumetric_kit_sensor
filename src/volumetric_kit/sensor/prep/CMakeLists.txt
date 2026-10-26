@@ -53,8 +53,10 @@ target_include_directories(
 
 include(vr_embed)
 vr_embed_shaders(
-  recon_sensor_utils SHADERS
+  recon_sensor_utils
+  SHADERS
   "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_depth.comp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_color.comp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_color.comp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_color_images.comp")
 
 vr_target_warnings(recon_sensor_utils)

@@ -24,9 +24,11 @@ core::Status refuse(const char* who, const char* why) {
   return core::Status::invalid_argument(std::string(who) + ": " + why);
 }
 
-// NV12's two planes as images a copy reads: R8 luma and R8G8 chroma, each at
-// least the picture's size, as CommandBatch::copy checks them too.
-core::Status check_images(const YuvImage& image, const char* who) {
+// NV12's two planes as images `read` takes: R8 luma and R8G8 chroma, each at
+// least the picture's size, sampled through their views or copied, as
+// CommandBatch::copy checks them too.
+core::Status check_images(const YuvImage& image, const char* who,
+                          ImageRead read) {
   if (image.layout != YuvLayout::Nv12 || image.image[0] == nullptr ||
       image.image[1] == nullptr) {
     return refuse(who, "colour planes as images are NV12's two");
@@ -41,6 +43,22 @@ core::Status check_images(const YuvImage& image, const char* who) {
     return refuse(who,
                   "the colour images must be R8 luma and R8G8 chroma, at "
                   "least the picture's size");
+  }
+  if (read == ImageRead::Sample) {
+    if ((y.usage() & c.usage() & VK_IMAGE_USAGE_SAMPLED_BIT) == 0 ||
+        y.view() == VK_NULL_HANDLE || c.view() == VK_NULL_HANDLE) {
+      return refuse(who, "the colour images need SAMPLED usage and a view");
+    }
+    const auto sampled = [](const core::Image& i) {
+      return i.layout() == VK_IMAGE_LAYOUT_GENERAL ||
+             i.layout() == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    };
+    if (!sampled(y) || !sampled(c)) {
+      return refuse(who,
+                    "the colour images must be in GENERAL or "
+                    "SHADER_READ_ONLY_OPTIMAL");
+    }
+    return {};
   }
   if ((y.usage() & c.usage() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0) {
     return refuse(who, "the colour images need TRANSFER_SRC usage");
@@ -59,15 +77,15 @@ core::Status check_images(const YuvImage& image, const char* who) {
 
 }  // namespace
 
-core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image,
-                                         const char* who) {
+core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
+                                         ImageRead read) {
   const bool on_device = image.device != nullptr;
   const bool as_images = image.image[0] != nullptr || image.image[1] != nullptr;
   if (on_device && as_images) {
     return refuse(who,
                   "the colour planes must be in a buffer or images, not both");
   }
-  if (as_images) VKC_TRY(check_images(image, who));
+  if (as_images) VKC_TRY(check_images(image, who, read));
   const bool nv12 = image.layout == YuvLayout::Nv12;
   const std::uint64_t cw = (std::uint64_t{image.width} + 1) / 2;
   const std::uint64_t ch = (std::uint64_t{image.height} + 1) / 2;

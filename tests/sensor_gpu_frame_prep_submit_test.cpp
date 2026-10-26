@@ -90,13 +90,13 @@ struct Set {
     frames[0]->color.stride[0] = frames[0]->color.stride[1] = 16;
     buffer = frames[0]->color.device;
 
-    auto made_luma =
-        test_image::make(gpu.device, gpu.allocator, VK_FORMAT_R8_UNORM, 16, 16,
-                         std::vector<std::uint8_t>(256, 128));
+    auto made_luma = test_image::make(
+        gpu.device, gpu.allocator, VK_FORMAT_R8_UNORM, 16, 16,
+        std::vector<std::uint8_t>(256, 128), VK_IMAGE_USAGE_SAMPLED_BIT);
     CHECK(made_luma.ok());
-    auto made_chroma =
-        test_image::make(gpu.device, gpu.allocator, VK_FORMAT_R8G8_UNORM, 8, 8,
-                         std::vector<std::uint8_t>(128, 128));
+    auto made_chroma = test_image::make(
+        gpu.device, gpu.allocator, VK_FORMAT_R8G8_UNORM, 8, 8,
+        std::vector<std::uint8_t>(128, 128), VK_IMAGE_USAGE_SAMPLED_BIT);
     CHECK(made_chroma.ok());
     frames[2]->color.image[0] =
         std::make_shared<vkc::Image>(std::move(*made_luma));

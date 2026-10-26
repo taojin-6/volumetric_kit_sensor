@@ -24,14 +24,19 @@ struct YuvPlanes {
   std::uint64_t end[3] = {};        // and one past the last
 };
 
-// `image`'s planes, checked as a copy reads them: in a buffer or as images,
+// How a reader takes plane images: GpuFramePrep samples them where they are,
+// PictureReadback copies them.
+enum class ImageRead { Sample, Copy };
+
+// `image`'s planes, checked as `read` takes them: in a buffer or as images,
 // not both. Images are NV12's R8 luma and R8G8 chroma, each at least the
-// picture's size, with TRANSFER_SRC usage, in GENERAL or
+// picture's size: to sample, with SAMPLED usage and a view, in GENERAL or
+// SHADER_READ_ONLY_OPTIMAL; to copy, with TRANSFER_SRC usage, in GENERAL or
 // TRANSFER_SRC_OPTIMAL. Planes in YuvImage::device each have a stride at
 // least their rows, lie inside the buffer and overlap no other; the buffer
 // itself (empty, its usage) is the caller's to check first. `who` starts
 // every message.
-core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image,
-                                         const char* who);
+core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
+                                         ImageRead read);
 
 }  // namespace volumetric_kit::recon::sensor::detail

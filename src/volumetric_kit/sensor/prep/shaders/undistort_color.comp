@@ -1,71 +1,43 @@
 #version 450
 
-// Colour undistortion and Y'CbCr to R'G'B' in one pass. One thread per pixel
-// of the pinhole image: find where the lens puts it in the captured picture,
-// sample luma and chroma there bilinearly, each at its own siting, and convert
-// by the picture's matrix and range; or, for packed R'G'B' words, sample R, G
-// and B there bilinearly. One pass, so no intermediate R'G'B' image is written
-// at the captured size. The high byte is the pixel's coverage: 0xFF where the
-// lens maps inside the captured picture, 0 where it maps outside, which is
-// black and which fusion then skips (ColorFrame::coverage_in_alpha) rather
-// than fusing as colour.
+// Colour undistortion and Y'CbCr to R'G'B' in one pass (undistort_color.glsl),
+// over planes in a buffer: a decoder's, or NV12's, or packed R'G'B' words a
+// dataset decoded on the host. For packed words, R, G and B are sampled
+// bilinearly where the lens puts the pixel, through the same coverage test,
+// and kept as they are.
 
 #extension GL_GOOGLE_include_directive : require
-#include "lens.glsl"
-
-layout(local_size_x = 256) in;
+#include "undistort_color.glsl"
 
 // The planes, four bytes to a word: luma rows y_stride bytes apart from
 // y_offset, Cb and Cr rows cb_stride and cr_stride bytes apart from cb_offset
 // and cr_offset, samples c_step bytes apart: 1 in I420's planes of their own,
 // 2 in NV12's interleaved one, where Cr sits a byte after Cb. With packed_rgb,
 // the picture's own words instead, R | G << 8 | B << 16, from byte 0.
-// TODO(sensor): read Apple's plane images, VideoToolbox's IOSurface imported
-// through VK_EXT_metal_objects, directly rather than copied into a buffer
-// first, if measuring shows the copy (0.28-0.31 ms of GPU at 4K on an M5
-// Max) is worth a second path.
 layout(set = 0, binding = 0, scalar) readonly buffer Planes { uint planes[]; };
 // R | G << 8 | B << 16 | coverage << 24, the tsdf tier's colour layout.
 layout(set = 0, binding = 1, scalar) writeonly buffer Color { uint color[]; };
 
-layout(push_constant, scalar) uniform Params {
-  LensCamera cam;
-  uint y_offset;   // bytes
-  uint cb_offset;  // bytes
-  uint cr_offset;  // bytes
-  uint y_stride;   // bytes a luma row
-  uint cb_stride;  // bytes a Cb row
-  uint cr_stride;  // bytes a Cr row
-  uint c_step;     // bytes between chroma samples
-  float kr;
-  float kb;
-  uint full_range;
-  float chroma_x;
-  float chroma_y;
-  uint packed_rgb;  // packed R'G'B' words, not Y'CbCr planes
-} pc;
-
-float texel(uint base, uint row_bytes, uint step, uint x, uint y) {
+float byte_at(uint base, uint row_bytes, uint step, uint x, uint y) {
   uint i = base + y * row_bytes + x * step;
   return float((planes[i >> 2] >> ((i & 3u) * 8u)) & 0xFFu);
 }
 
-// Bilinear over a plane of w x h texels, centres at integer coordinates,
-// clamped to the edge.
-float sample_plane(uint base, uint row_bytes, uint step, uint w, uint h,
-                   vec2 p) {
-  p = clamp(p, vec2(0.0), vec2(float(w - 1u), float(h - 1u)));
-  uvec2 a = uvec2(floor(p));
-  uvec2 b = min(a + 1u, uvec2(w - 1u, h - 1u));
-  vec2 f = p - vec2(a);
-  float top = mix(texel(base, row_bytes, step, a.x, a.y),
-                  texel(base, row_bytes, step, b.x, a.y), f.x);
-  float bottom = mix(texel(base, row_bytes, step, a.x, b.y),
-                     texel(base, row_bytes, step, b.x, b.y), f.x);
-  return mix(top, bottom, f.y);
+float luma_at(uint x, uint y) {
+  return byte_at(pc.y_offset, pc.y_stride, 1u, x, y);
 }
 
-uint code(float c) { return uint(clamp(c, 0.0, 1.0) * 255.0 + 0.5); }
+vec2 chroma_at(uint x, uint y) {
+  return vec2(byte_at(pc.cb_offset, pc.cb_stride, pc.c_step, x, y),
+              byte_at(pc.cr_offset, pc.cr_stride, pc.c_step, x, y));
+}
+
+// A packed word's R, G and B; the high byte is never read.
+vec3 rgb_at(uint x, uint y) {
+  uint word = planes[y * pc.cam.width + x];
+  return vec3(float(word & 0xFFu), float((word >> 8) & 0xFFu),
+              float((word >> 16) & 0xFFu));
+}
 
 void main() {
   uint gid = gl_GlobalInvocationID.x;
@@ -74,45 +46,21 @@ void main() {
   if (gid >= w * h) {
     return;
   }
-  vec2 s = source_pixel(pc.cam, vec2(float(gid % w), float(gid / w)));
-  if (!(s.x >= -0.5 && s.y >= -0.5 && s.x <= float(w) - 0.5 &&
-        s.y <= float(h) - 0.5)) {
+  vec2 s;
+  if (!source_of(gid, s)) {
     color[gid] = 0u;
     return;
   }
-  if (pc.packed_rgb != 0u) {
-    // R, G and B as byte planes 4 apart; the high byte is never read.
-    float r = sample_plane(0u, 4u * w, 4u, w, h, s);
-    float g = sample_plane(1u, 4u * w, 4u, w, h, s);
-    float b = sample_plane(2u, 4u * w, 4u, w, h, s);
-    color[gid] = code(r / 255.0) | (code(g / 255.0) << 8) |
-                 (code(b / 255.0) << 16) | 0xFF000000u;
+  if (pc.packed_rgb == 0u) {
+    color[gid] = ycbcr_word(s);
     return;
   }
-  // The decoder's sample positions: JPEG is centred in both axes; HEVC's
-  // default is left-aligned horizontally and centred vertically.
-  uint cw = (w + 1u) / 2u;
-  uint ch = (h + 1u) / 2u;
-  vec2 c = (s - vec2(pc.chroma_x, pc.chroma_y)) * 0.5;
-  float y = sample_plane(pc.y_offset, pc.y_stride, 1u, w, h, s);
-  float cb = sample_plane(pc.cb_offset, pc.cb_stride, pc.c_step, cw, ch, c);
-  float cr = sample_plane(pc.cr_offset, pc.cr_stride, pc.c_step, cw, ch, c);
-
-  float luma;
-  float pb;
-  float pr;
-  if (pc.full_range != 0u) {
-    luma = y / 255.0;
-    pb = (cb - 128.0) / 255.0;
-    pr = (cr - 128.0) / 255.0;
-  } else {
-    luma = (y - 16.0) / 219.0;
-    pb = (cb - 128.0) / 224.0;
-    pr = (cr - 128.0) / 224.0;
-  }
-  float kg = 1.0 - pc.kr - pc.kb;
-  float r = luma + 2.0 * (1.0 - pc.kr) * pr;
-  float b = luma + 2.0 * (1.0 - pc.kb) * pb;
-  float g = (luma - pc.kr * r - pc.kb * b) / kg;
-  color[gid] = code(r) | (code(g) << 8) | (code(b) << 16) | 0xFF000000u;
+  uvec2 lo, hi;
+  vec2 f;
+  bilinear_taps(w, h, s, lo, hi, f);
+  vec3 rgb = bilinear(rgb_at(lo.x, lo.y), rgb_at(hi.x, lo.y),
+                      rgb_at(lo.x, hi.y), rgb_at(hi.x, hi.y), f) /
+             255.0;
+  color[gid] = code(rgb.r) | (code(rgb.g) << 8) | (code(rgb.b) << 16) |
+               0xFF000000u;
 }

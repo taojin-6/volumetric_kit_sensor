@@ -5,7 +5,7 @@
 
 // An image made and filled by hand and left in GENERAL, as an import hands
 // one to recon, on any GPU: what the tests of the image copy and of colour
-// arriving as images read.
+// arriving as images read, copied or sampled.
 
 #include <cstdint>
 #include <cstring>
@@ -28,7 +28,8 @@ namespace test_image {
 
 // A `width` x `height` image of `format` holding `texels`, rows packed, in
 // memory of its own, filled by the core's test::write_image; `usage` beside
-// TRANSFER_DST, which filling it needs.
+// TRANSFER_DST, which filling it needs, and with SAMPLED a view, which a
+// sampler reads it through.
 inline volumetric_kit::core::Result<volumetric_kit::core::Image> make(
     const volumetric_kit::core::Device& device,
     volumetric_kit::core::Allocator& allocator, VkFormat format,
@@ -65,12 +66,28 @@ inline volumetric_kit::core::Result<volumetric_kit::core::Image> make(
     vkDestroyImage(dev, image, nullptr);
     return vkc::Status::out_of_memory("test image: no memory for it");
   }
+  VkImageView view = VK_NULL_HANDLE;
+  if ((usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0) {
+    VkImageViewCreateInfo view_info{};
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image = image;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = format;
+    view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(dev, &view_info, nullptr, &view) != VK_SUCCESS) {
+      vkFreeMemory(dev, backing, nullptr);
+      vkDestroyImage(dev, image, nullptr);
+      return vkc::Status::out_of_memory("test image: no view of it");
+    }
+  }
   vkc::ImageInfo adopted;
   adopted.image = image;
+  adopted.view = view;
   adopted.format = format;
   adopted.extent = info.extent;
   adopted.usage = info.usage;
-  vkc::Image out(adopted, [dev, image, backing] {
+  vkc::Image out(adopted, [dev, image, view, backing] {
+    vkDestroyImageView(dev, view, nullptr);
     vkDestroyImage(dev, image, nullptr);
     vkFreeMemory(dev, backing, nullptr);
   });

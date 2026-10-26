@@ -147,7 +147,8 @@ struct PixelBufferImporter::Impl {
     return core::Status::out_of_memory(who + ": " + what);
   }
 
-  // Plane @p plane of @p surface as an image of @p format, still UNDEFINED.
+  // Plane @p plane of @p surface as an image of @p format, still UNDEFINED,
+  // with a view: GpuFramePrep samples it, and PictureReadback copies it.
   core::Result<core::Image> plane_image(CVPixelBufferRef pixels,
                                         IOSurfaceRef surface, int plane,
                                         VkFormat format,
@@ -191,7 +192,7 @@ core::Result<core::Image> PixelBufferImporter::Impl::plane_image(
   info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
-  info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   if (!families.empty()) {
     info.sharingMode = VK_SHARING_MODE_CONCURRENT;
     info.queueFamilyIndexCount = static_cast<std::uint32_t>(families.size());
@@ -208,14 +209,28 @@ core::Result<core::Image> PixelBufferImporter::Impl::plane_image(
     vkDestroyImage(dev, image, nullptr);
     return error("binding a picture plane");
   }
+  VkImageViewCreateInfo view_info{};
+  view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  view_info.image = image;
+  view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  view_info.format = format;
+  view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  VkImageView view = VK_NULL_HANDLE;
+  if (vkCreateImageView(dev, &view_info, nullptr, &view) != VK_SUCCESS) {
+    vkDestroyImage(dev, image, nullptr);
+    vkFreeMemory(dev, memory_handle, nullptr);
+    return error("viewing a picture plane");
+  }
   core::ImageInfo adopted;
   adopted.image = image;
+  adopted.view = view;
   adopted.format = format;
   adopted.extent = info.extent;
   adopted.usage = info.usage;
   adopted.layout = VK_IMAGE_LAYOUT_GENERAL;
   adopted.sharing = info.sharingMode;
-  return core::Image(adopted, [dev, image, memory_handle, texture] {
+  return core::Image(adopted, [dev, image, view, memory_handle, texture] {
+    vkDestroyImageView(dev, view, nullptr);
     vkDestroyImage(dev, image, nullptr);
     vkFreeMemory(dev, memory_handle, nullptr);
     static_cast<void>(texture);  // released with the capture
@@ -230,13 +245,15 @@ PixelBufferImporter::Impl::import_surface(CVPixelBufferRef pixels,
                                     MTLPixelFormatR8Unorm));
   VKC_ASSIGN(out->chroma, plane_image(pixels, surface, 1, VK_FORMAT_R8G8_UNORM,
                                       MTLPixelFormatRG8Unorm));
-  // Into GENERAL, once. Vulkan may discard contents on a transition from
-  // UNDEFINED, but Metal has no layouts, so MoltenVK keeps them.
+  // Into GENERAL, once, before every later read: a compute shader's sample or
+  // a copy. Vulkan may discard contents on a transition from UNDEFINED, but
+  // Metal has no layouts, so MoltenVK keeps them.
   VkImageMemoryBarrier b[2]{};
   const VkImage images[2] = {out->luma.handle(), out->chroma.handle()};
   for (int i = 0; i < 2; ++i) {
     b[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b[i].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    b[i].dstAccessMask =
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
     b[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     b[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
     b[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -249,8 +266,9 @@ PixelBufferImporter::Impl::import_surface(CVPixelBufferRef pixels,
   VKC_TRY(device->submit_single_time(
       [&](VkCommandBuffer cmd) {
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                             nullptr, 2, b);
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 2, b);
       },
       out));
   return out;

@@ -15,11 +15,14 @@
 #include <utility>
 
 #include "undistort_color_comp.spv.hpp"
+#include "undistort_color_images_comp.spv.hpp"
 #include "undistort_depth_comp.spv.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
+#include "volumetric_kit/core/vulkan/compute_pipeline.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/shader.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "yuv_planes.hpp"
@@ -31,8 +34,8 @@ namespace {
 constexpr std::uint32_t kLocalSize = 256;
 
 // The most commands record_inputs and record_passes time for one frame: the
-// slot's copy, two plane-image copies and the two passes.
-constexpr std::uint32_t kSpansPerFrame = 5;
+// slot's copy and the two passes.
+constexpr std::uint32_t kSpansPerFrame = 3;
 
 // shaders/lens.glsl's LensCamera, under scalar layout.
 struct LensParams {
@@ -157,12 +160,11 @@ struct DepthLayout {
 
 // A frame's colour half, checked: the range of the planes' buffer the kernel
 // binds, where it finds each plane in that range, and the bytes it moves.
-// Plane images are copied into the pass's input packed tightly, each plane
-// starting on a word, and bound from byte 0, as are packed host words; planes
-// in a buffer are read where they are, bound from the first.
+// Packed host words are bound from byte 0 of their range in the slot; planes
+// in a buffer are read where they are, bound from the first; plane images
+// are sampled where they are, and bind no bytes.
 struct ColorLayout {
   std::uint32_t pixels = 0;
-  std::uint32_t ch = 0;  // chroma rows
   // Each plane's first byte, from bind_offset, and its row stride; chroma
   // samples c_step bytes apart.
   VkDeviceSize y_offset = 0, cb_offset = 0, cr_offset = 0;
@@ -271,50 +273,41 @@ core::Result<ColorLayout> check_color(const RgbdFrame& frame,
                 .check("GpuFramePrep: the colour planes' buffer", 0));
   }
   VKC_ASSIGN(const detail::YuvPlanes planes,
-             detail::check_yuv_planes(image, "GpuFramePrep"));
-  const std::uint64_t c_row = planes.row_bytes[1];
-  const std::uint64_t ch = planes.rows[1];
+             detail::check_yuv_planes(image, "GpuFramePrep",
+                                      detail::ImageRead::Sample));
+  VKC_TRY(core::check_storage_buffer_range("GpuFramePrep: the colour buffer",
+                                           out.out_bytes, max_range));
+  // Read at integer coordinates through their views: no byte is bound.
+  if (as_images) return out;
 
-  out.ch = static_cast<std::uint32_t>(ch);
   out.c_step = nv12 ? 2 : 1;
-  if (as_images) {
-    // NV12, so Cr sits one byte after Cb.
-    out.y_stride = image.width;
-    out.cb_stride = out.cr_stride = c_row;
-    out.cb_offset = round_up4(pixels);
-    out.cr_offset = out.cb_offset + 1;
-    out.bind_bytes = out.cb_offset + round_up4(c_row * ch);
-  } else {
-    const core::StorageInput bound(*image.device);
-    const std::uint64_t first =
-        *std::min_element(planes.begin, planes.begin + planes.count);
-    const std::uint64_t last =
-        *std::max_element(planes.end, planes.end + planes.count);
-    // The kernel reads whole words, so the last one must be in the buffer.
-    VKC_TRY(bound.check("GpuFramePrep: the colour planes' buffer",
-                        round_up4(last)));
-    // Bound from the first plane, rounded down to the alignment a binding's
-    // offset needs (and to a word, which the kernel reads), so the limits
-    // below weigh the picture rather than where it sits in its buffer: a
-    // decoder's ring slot far into one buffer, say.
-    const VkDeviceSize align = std::max<VkDeviceSize>(offset_alignment, 4);
-    out.bind_offset = first / align * align;
-    out.bind_bytes = round_up4(last) - out.bind_offset;
-    out.y_offset = image.offset[0] - out.bind_offset;
-    out.cb_offset = image.offset[1] - out.bind_offset;
-    out.cr_offset =
-        (nv12 ? image.offset[1] + 1 : image.offset[2]) - out.bind_offset;
-    out.y_stride = image.stride[0];
-    out.cb_stride = image.stride[1];
-    out.cr_stride = nv12 ? image.stride[1] : image.stride[2];
-  }
+  const core::StorageInput bound(*image.device);
+  const std::uint64_t first =
+      *std::min_element(planes.begin, planes.begin + planes.count);
+  const std::uint64_t last =
+      *std::max_element(planes.end, planes.end + planes.count);
+  // The kernel reads whole words, so the last one must be in the buffer.
+  VKC_TRY(
+      bound.check("GpuFramePrep: the colour planes' buffer", round_up4(last)));
+  // Bound from the first plane, rounded down to the alignment a binding's
+  // offset needs (and to a word, which the kernel reads), so the limits below
+  // weigh the picture rather than where it sits in its buffer: a decoder's
+  // ring slot far into one buffer, say.
+  const VkDeviceSize align = std::max<VkDeviceSize>(offset_alignment, 4);
+  out.bind_offset = first / align * align;
+  out.bind_bytes = round_up4(last) - out.bind_offset;
+  out.y_offset = image.offset[0] - out.bind_offset;
+  out.cb_offset = image.offset[1] - out.bind_offset;
+  out.cr_offset =
+      (nv12 ? image.offset[1] + 1 : image.offset[2]) - out.bind_offset;
+  out.y_stride = image.stride[0];
+  out.cb_stride = image.stride[1];
+  out.cr_stride = nv12 ? image.stride[1] : image.stride[2];
   // The kernel addresses the planes in 32-bit bytes from the binding.
   if (out.bind_bytes > std::numeric_limits<std::uint32_t>::max()) {
     return core::Status::invalid_argument(
         "GpuFramePrep: the colour planes span more than 4 GiB");
   }
-  VKC_TRY(core::check_storage_buffer_range("GpuFramePrep: the colour buffer",
-                                           out.out_bytes, max_range));
   VKC_TRY(core::check_storage_buffer_range("GpuFramePrep: the colour planes",
                                            out.bind_bytes, max_range));
   return out;
@@ -338,6 +331,80 @@ core::Status check_queue_families(const core::Device& device,
   return {};
 }
 
+// The image entry's sampler: nearest and clamped, though texelFetch, its one
+// read, filters nothing; a combined image sampler needs one.
+core::Result<core::UniqueHandle<VkSampler, vkDestroySampler>> make_sampler(
+    const core::Device& device) {
+  VkSamplerCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  info.magFilter = VK_FILTER_NEAREST;
+  info.minFilter = VK_FILTER_NEAREST;
+  info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  VkSampler sampler = VK_NULL_HANDLE;
+  VKC_VK_TRY(vkCreateSampler(device.handle(), &info, nullptr, &sampler));
+  return core::UniqueHandle<VkSampler, vkDestroySampler>(device.handle(),
+                                                         sampler);
+}
+
+// The colour pass's image entry, built by hand, since KernelSetBuilder binds
+// storage buffers only: two combined image samplers, NV12's planes, then the
+// output, with a pool of its own for the kernel's one set. `out` is replaced
+// only once everything is built.
+core::Status build_images_kernel(const core::Device& device,
+                                 const VkPushConstantRange& push,
+                                 core::ComputeKernel& out,
+                                 core::DescriptorPool& pool) {
+  VkDescriptorSetLayoutBinding bindings[3]{};
+  for (std::uint32_t i = 0; i < 3; ++i) {
+    bindings[i].binding = i;
+    bindings[i].descriptorType = i < 2
+                                     ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                     : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[i].descriptorCount = 1;
+    bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  }
+  core::ComputeKernel kernel;
+  kernel.name = "undistort_color_images";
+  kernel.push_bytes = push.size;
+  kernel.bindings = 1;  // the storage buffers among them
+  VKC_ASSIGN(kernel.layout,
+             core::DescriptorSetLayout::create(device.handle(), bindings, 3));
+  // The module is transient: the pipeline does not retain it. SPIR-V is a
+  // stream of words, and vkc_embed_shaders aligns its arrays to 4.
+  VKC_ASSIGN(
+      const core::ShaderModule module,
+      core::ShaderModule::create(device.handle(),
+                                 // NOLINTNEXTLINE(*-reinterpret-cast)
+                                 reinterpret_cast<const std::uint32_t*>(
+                                     vr_undistort_color_images_comp_spv),
+                                 vr_undistort_color_images_comp_spv_size));
+  const VkDescriptorSetLayout layout = kernel.layout.handle();
+  core::ComputePipelineDesc desc;
+  desc.shader = &module;
+  desc.set_layouts = &layout;
+  desc.set_layout_count = 1;
+  desc.push_ranges = &push;
+  desc.push_range_count = 1;
+  desc.cache = device.pipeline_cache();
+  VKC_ASSIGN(kernel.pipeline,
+             core::ComputePipeline::create(device.handle(), desc));
+  const VkDescriptorPoolSize sizes[2] = {
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+  VKC_ASSIGN(core::DescriptorPool made,
+             core::DescriptorPool::create(device.handle(), sizes, 2, 1));
+  VKC_ASSIGN(kernel.set, made.allocate(layout));
+  device.set_object_name(VK_OBJECT_TYPE_PIPELINE,
+                         core::debug_object_handle(kernel.pipeline.handle()),
+                         kernel.name);
+  out = std::move(kernel);
+  pool = std::move(made);
+  return {};
+}
+
 }  // namespace
 
 core::Result<GpuFramePrep> GpuFramePrep::create(
@@ -358,8 +425,8 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
   prep.allocator_ = &allocator;
   prep.config_ = config;
 
-  // Two storage bindings each, input then output, and the kernel's params as
-  // push constants.
+  // Storage bindings, input then output, and the kernel's params as push
+  // constants.
   VkPushConstantRange depth_push{};
   depth_push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   depth_push.size = sizeof(DepthParams);
@@ -374,6 +441,11 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
                  vr_undistort_color_comp_spv, vr_undistort_color_comp_spv_size,
                  2, &color_push));
   VKC_ASSIGN(prep.pool_, kb.build());
+  // Colour from NV12's plane images, sampled where they are.
+  VKC_ASSIGN(prep.sampler_, make_sampler(device));
+  const core::Status images = build_images_kernel(
+      device, color_push, prep.color_images_kernel_, prep.images_pool_);
+  if (!images.ok()) return images.with_context("undistort_color_images");
 
   VkPhysicalDeviceProperties props{};
   vkGetPhysicalDeviceProperties(device.physical_device(), &props);
@@ -399,8 +471,8 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
 struct GpuFramePrep::Layout {
   DepthLayout depth;
   ColorLayout color;
-  // NV12 plane images, copied into color_in_; packed host words, copied into
-  // the slot after the depth; else colour is read in place.
+  // NV12 plane images, sampled in place; packed host words, copied into the
+  // slot after the depth; else planes in a buffer, read in place.
   bool from_images = false;
   bool from_host = false;
   // The slot holds the depth from byte 0, and packed colour from this
@@ -490,20 +562,16 @@ core::Status GpuFramePrep::ensure_buffers(const RgbdFrame& frame,
                         "sensor.depth_frame", config_.depth_queue_families,
                         config_.depth_queue_family_count));
   if (!frame.has_color()) return {};
-  if (layout.from_images) {
-    VKC_TRY(core::ensure_device_scratch(
-        *device_, *allocator_, color_in_, layout.color.bind_bytes,
-        max_storage_buffer_range_, "sensor.raw_color"));
-  }
   return ensure_output(color_out_, layout.color.out_bytes, "sensor.color_frame",
                        config_.color_queue_families,
                        config_.color_queue_family_count);
 }
 
-core::Status GpuFramePrep::record_inputs(
-    core::CommandBatch& batch, const RgbdFrame& frame, const Layout& layout,
-    const core::HostSlot& slot, core::GpuStageScope* stage, VkBuffer* input) {
-  const ColorLayout& color = layout.color;
+core::Status GpuFramePrep::record_inputs(core::CommandBatch& batch,
+                                         const RgbdFrame& frame,
+                                         const Layout& layout,
+                                         const core::HostSlot& slot,
+                                         VkBuffer* input) {
   const YuvImage& image = frame.color;
   // Device planes taken over from the family that wrote them.
   if (image.device != nullptr) {
@@ -512,12 +580,6 @@ core::Status GpuFramePrep::record_inputs(
   // The slot's used range: bound in place, or one copy into its mirror, which
   // joins the open tile, the frame prep's.
   VKC_ASSIGN(*input, batch.input(slot, 0, layout.slot_bytes));
-  if (layout.from_images) {
-    VKC_TRY(batch.copy(*image.image[0], image.width, image.height, color_in_, 0,
-                       stage));
-    VKC_TRY(batch.copy(*image.image[1], (image.width + 1) / 2, color.ch,
-                       color_in_, color.cb_offset, stage));
-  }
   // The overlap mask, for a frame with colour when the config asks: the
   // colour camera and the depth-to-colour transform, written inline.
   if (config_.depth_within_color && frame.has_color()) {
@@ -545,16 +607,27 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
                          core::group_count(depth.pixels, kLocalSize),
                          max_workgroup_count_x_, stage));
   if (frame.has_color()) {
-    // Packed words where the slot holds them, plane images where they were
-    // copied, planes in a buffer where the decoder left them.
-    const VkBuffer planes = layout.from_host     ? input
-                            : layout.from_images ? color_in_.handle()
-                                                 : image.device->handle();
-    const VkDeviceSize at =
-        layout.from_host ? layout.color_at : color.bind_offset;
-    color_kernel_.set.write_storage_buffer(0, planes, at, color.bind_bytes);
-    color_kernel_.set.write_storage_buffer(1, color_out_->buffer.handle(), 0,
-                                           color.out_bytes);
+    // Plane images sampled where they are, in the layout they are in; packed
+    // words where the slot holds them; planes in a buffer where the decoder
+    // left them.
+    const core::ComputeKernel& kernel =
+        layout.from_images ? color_images_kernel_ : color_kernel_;
+    if (layout.from_images) {
+      for (std::uint32_t p = 0; p < 2; ++p) {
+        kernel.set.write_combined_image_sampler(p, image.image[p]->view(),
+                                                sampler_.get(),
+                                                image.image[p]->layout());
+      }
+      kernel.set.write_storage_buffer(2, color_out_->buffer.handle(), 0,
+                                      color.out_bytes);
+    } else {
+      const VkBuffer planes = layout.from_host ? input : image.device->handle();
+      const VkDeviceSize at =
+          layout.from_host ? layout.color_at : color.bind_offset;
+      kernel.set.write_storage_buffer(0, planes, at, color.bind_bytes);
+      kernel.set.write_storage_buffer(1, color_out_->buffer.handle(), 0,
+                                      color.out_bytes);
+    }
     const auto u32 = [](VkDeviceSize v) {
       return static_cast<std::uint32_t>(v);
     };
@@ -573,7 +646,7 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
                                    chroma[0],
                                    chroma[1],
                                    layout.from_host ? 1u : 0u};
-    VKC_TRY(batch.dispatch(color_kernel_, &color_params, sizeof(color_params),
+    VKC_TRY(batch.dispatch(kernel, &color_params, sizeof(color_params),
                            core::group_count(color.pixels, kLocalSize),
                            max_workgroup_count_x_, stage));
   }
@@ -581,10 +654,10 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
 }
 
 void GpuFramePrep::abandon(const RgbdFrame& frame) {
-  // The device may still run the copies and the kernels, so the device
-  // planes, buffer or images, which the caller may drop, and a decoder reuse,
-  // as soon as the call returns, are let go rather than freed. The slot stays
-  // with the batch, which the device keeps.
+  // The device may still run the kernels, so the device planes, buffer or
+  // images, which the caller may drop, and a decoder reuse, as soon as the
+  // call returns, are let go rather than freed. The slot stays with the
+  // batch, which the device keeps.
   if (frame.color.device != nullptr) {
     static_cast<void>(
         new std::shared_ptr<const core::Buffer>(frame.color.device));
@@ -757,13 +830,13 @@ core::Status GpuFramePrep::record_frames(core::CommandBatch& batch,
     if (frames[i] == nullptr) continue;
     VKC_TRY(preps[i].ensure_buffers(*frames[i], layouts[i]));
   }
-  // Every camera's inputs, then every camera's passes: the copies write
-  // buffers of their own, so they run with no barrier between them.
+  // Every camera's inputs, then every camera's passes: the slots' copies
+  // write buffers of their own, so they run with no barrier between them.
   std::vector<VkBuffer> inputs(count, VK_NULL_HANDLE);
   for (std::size_t i = 0; i < count; ++i) {
     if (frames[i] == nullptr) continue;
     VKC_TRY(preps[i].record_inputs(batch, *frames[i], layouts[i], slots[i],
-                                   stage, &inputs[i]));
+                                   &inputs[i]));
   }
   for (std::size_t i = 0; i < count; ++i) {
     if (frames[i] == nullptr) continue;
