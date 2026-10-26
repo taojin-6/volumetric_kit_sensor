@@ -181,9 +181,8 @@ core::Result<std::unique_ptr<NvjpegDecoder>> NvjpegDecoder::open(
       !ok(s = n->nvjpegStateAttachDeviceBuffer(d->state, d->staging))) {
     return video::nvjpeg_error(kWho, s, "opening nvJPEG");
   }
-  VKC_ASSIGN(d->pictures,
-             video::CudaPictures::create(device, allocator, *d->cuda->context,
-                                         d->cuda->stream->handle(), kWho));
+  VKC_ASSIGN(d->pictures, video::CudaPictures::create(device, allocator,
+                                                      *d->cuda->context, kWho));
   return d;
 }
 

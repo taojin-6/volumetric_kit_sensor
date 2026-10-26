@@ -509,14 +509,28 @@ core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
       frame.color.image[0] != nullptr || frame.color.image[1] != nullptr;
   layout.from_host = frame.color_packed != nullptr;
   // Device planes come from a family the batch can take them over from, so
-  // the acquire refuses nothing once recording starts.
-  if (frame.color.device != nullptr) {
+  // the acquire refuses nothing once recording starts. An EXCLUSIVE image
+  // crosses only from outside Vulkan (CommandBatch::acquire); one another
+  // family reads is made CONCURRENT.
+  if (frame.color.device != nullptr || layout.from_images) {
     const std::uint32_t family = frame.color.queue_family;
-    if (family != kQueueFamilyIgnored && family != kQueueFamilyExternal &&
-        family >= device_->caps().queue_families().size()) {
+    const bool special =
+        family == kQueueFamilyIgnored || family == kQueueFamilyExternal;
+    if (!special && family >= device_->caps().queue_families().size()) {
       return core::Status::invalid_argument(
           "GpuFramePrep: the colour planes come from queue family " +
           std::to_string(family) + ", which the device does not have");
+    }
+    if (layout.from_images && !special && family != device_->queue_family()) {
+      for (const std::shared_ptr<const core::Image>& plane :
+           frame.color.image) {
+        if (plane->sharing_mode() != VK_SHARING_MODE_CONCURRENT) {
+          return core::Status::invalid_argument(
+              "GpuFramePrep: the colour images come from queue family " +
+              std::to_string(family) +
+              ", and EXCLUSIVE images cross only from outside Vulkan");
+        }
+      }
     }
   }
   layout.slot_bytes = layout.depth.in_bytes;
@@ -573,9 +587,15 @@ core::Status GpuFramePrep::record_inputs(core::CommandBatch& batch,
                                          const core::HostSlot& slot,
                                          VkBuffer* input) {
   const YuvImage& image = frame.color;
-  // Device planes taken over from the family that wrote them.
+  // Device planes taken over from the family that wrote them, images in the
+  // layout they are in.
   if (image.device != nullptr) {
     VKC_TRY(batch.acquire(*image.device, image.queue_family));
+  }
+  if (layout.from_images) {
+    for (const std::shared_ptr<const core::Image>& plane : image.image) {
+      VKC_TRY(batch.acquire(*plane, image.queue_family, plane->layout()));
+    }
   }
   // The slot's used range: bound in place, or one copy into its mirror, which
   // joins the open tile, the frame prep's.

@@ -5,7 +5,7 @@
 
 /// @file sensor/video/cuda_interop.hpp
 /// @brief CUDA on the GPU of a recon device: its primary context, a stream,
-///        and a buffer the device exported, mapped into CUDA.
+///        and a buffer or an image the device exported, mapped into CUDA.
 ///
 /// Built with VR_WITH_CUDA (Linux) only, and includes cuda.h. libcuda is
 /// loaded at run time, so a program built with it starts where no NVIDIA
@@ -136,6 +136,65 @@ class VR_SENSOR_VIDEO_API CudaBufferMapping {
   CUcontext context_;
   CUexternalMemory memory_ = nullptr;
   CUdeviceptr pointer_ = 0;
+};
+
+/// @brief An image made with `core::create_exported_image`, mapped into CUDA
+///        as an array of its format and extent, one level.
+///
+/// CUDA writes, Vulkan reads, as for @ref CudaBufferMapping, and the image's
+/// layout crosses with it. Before CUDA's first write a Vulkan batch hands the
+/// image over to `VK_QUEUE_FAMILY_EXTERNAL` in `GENERAL`, the layout CUDA
+/// writes; once that write has finished, a reader acquires the image from
+/// `VK_QUEUE_FAMILY_EXTERNAL` before it reads.
+///
+/// @code
+/// VKC_ASSIGN(core::ExportedImage exported,
+///            core::create_exported_image(device, allocator, desc));  // R8
+/// VKC_ASSIGN(auto mapping, CudaImageMapping::map(*context, exported));
+/// core::CommandBatch first(device, allocator);
+/// VKC_TRY(first.release(exported.image, VK_QUEUE_FAMILY_EXTERNAL,
+///                       VK_IMAGE_LAYOUT_GENERAL));
+/// VKC_TRY(first.submit());
+/// exported.image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+/// // ... CUDA writes mapping->array() on a stream, which is synchronized
+/// core::CommandBatch batch(device, allocator);
+/// VKC_TRY(batch.acquire(exported.image, VK_QUEUE_FAMILY_EXTERNAL,
+///                       VK_IMAGE_LAYOUT_GENERAL));
+/// // ... the batch reads exported.image
+/// VKC_TRY(batch.submit());
+/// @endcode
+class VR_SENSOR_VIDEO_API CudaImageMapping {
+ public:
+  /// @brief Import @p exported's memory into @p context and map its image.
+  ///
+  /// Takes @p exported's file descriptor, as @ref CudaBufferMapping::map
+  /// does. The image stays the caller's.
+  /// @param context   The context CUDA reaches the image in; it must outlive
+  ///                  the mapping.
+  /// @param exported  The image and its descriptor: 8-bit `UNORM` of one,
+  ///                  two or four channels (`R8`, `R8G8`, `R8G8B8A8`); its
+  ///                  image must outlive the mapping.
+  /// @return The mapping; `Status::Code::InvalidArgument` when the descriptor
+  ///         was taken, there is no image, or its format is not one of
+  ///         those; or `Status::Code::Backend` if CUDA fails.
+  static core::Result<std::unique_ptr<CudaImageMapping>> map(
+      const CudaContext& context, core::ExportedImage& exported);
+
+  ~CudaImageMapping();
+  CudaImageMapping(const CudaImageMapping&) = delete;
+  CudaImageMapping& operator=(const CudaImageMapping&) = delete;
+
+  /// @return Where CUDA sees the image: the array of its one level, which
+  ///         `cuMemcpy2D` writes as `CU_MEMORYTYPE_ARRAY`.
+  CUarray array() const noexcept { return array_; }
+
+ private:
+  explicit CudaImageMapping(CUcontext context) noexcept : context_(context) {}
+
+  CUcontext context_;
+  CUexternalMemory memory_ = nullptr;
+  CUmipmappedArray levels_ = nullptr;
+  CUarray array_ = nullptr;
 };
 
 }  // namespace volumetric_kit::recon::sensor

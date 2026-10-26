@@ -132,7 +132,7 @@ struct Out {
   std::uint64_t depth_us = 0;
   std::uint64_t color_us = 0;
   std::optional<sensor::DecodedPicture> meta;  // its storage let go
-  bool images = false;  // VideoToolbox's images, not a buffer
+  bool images = false;  // NV12's plane images, not a buffer
   VkSharingMode sharing = VK_SHARING_MODE_MAX_ENUM;  // the images'
   std::vector<std::uint8_t> planes[3];
 };
@@ -276,13 +276,15 @@ int check_pair(
   CHECK(p.yuv.width == static_cast<std::uint32_t>(kWidth));
   CHECK(p.yuv.height == static_cast<std::uint32_t>(kHeight));
   CHECK(p.yuv.layout == sensor::YuvLayout::Nv12);
-#if defined(__APPLE__)
   CHECK(o.images);
+#if defined(__APPLE__)
   CHECK(p.yuv.queue_family == sensor::kQueueFamilyIgnored);
 #else
-  CHECK(!o.images);
-  // CUDA wrote it; read_out's readback has since acquired it for Vulkan.
-  CHECK(p.yuv.queue_family == g_device->queue_family());
+  // CUDA wrote it; read_out's readback has since acquired it for Vulkan, for
+  // every family where the images are CONCURRENT.
+  CHECK(p.yuv.queue_family == (o.sharing == VK_SHARING_MODE_CONCURRENT
+                                   ? sensor::kQueueFamilyIgnored
+                                   : g_device->queue_family()));
 #endif
   CHECK(yuv_reference::coded_in(p.yuv, matrix, full_range));
   // Neither clip declares a transfer or primaries ColorEncoding cannot name.
@@ -391,7 +393,6 @@ int test_every_pair_in_order() {
   return 0;
 }
 
-#if defined(__APPLE__)
 // Options::queue_families reach the decoder: its pictures are CONCURRENT
 // across two families, each as the clip was made.
 int test_queue_families() {
@@ -408,7 +409,6 @@ int test_queue_families() {
   }
   return 0;
 }
-#endif
 
 // Frame 1 lost on the way: frames 2 and 3 are predicted from it, so they go
 // too, and decoding picks up at the key frame, 4. The gap in the frame
@@ -820,9 +820,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
   if (test_labelled_stream() != 0) return 1;
   if (test_b_frames() != 0) return 1;
   if (test_open_gop_restart() != 0) return 1;
-#if defined(__APPLE__)
   if (test_queue_families() != 0) return 1;
-#endif
   std::puts("sensor_orbbec_hevc: OK");
   return 0;
 }

@@ -120,7 +120,7 @@ struct OrbbecStreamOptions {
   /// (`YuvImage::image`), as @ref PixelBufferImporter::create takes them:
   /// @ref device's own and, say, a renderer's that draws them. The twin of
   /// `GpuFramePrepConfig::color_queue_families`, for the pictures rather than
-  /// the GPU pass's output; NVDEC and nvJPEG ignore them. Held by value,
+  /// the GPU pass's output; nvJPEG's buffer ignores them. Held by value,
   /// since each start opens the decoders afresh.
   std::uint32_t color_queue_families[kMaxColorQueueFamilies] = {};
   /// Entries in @ref color_queue_families; more than

@@ -56,14 +56,15 @@ struct PictureView {
 /// @brief Copies a set's colour pictures to the host in one submit, wherever
 ///        the decoder left them on the device.
 ///
-/// NV12 plane images, as VideoToolbox's pictures arrive, are copied from
-/// their corner; planes in a buffer, as NVDEC's and nvJPEG's arrive, are
-/// copied where they sit, after the batch takes the buffer over from the
-/// queue family named by `YuvImage::queue_family`. After a successful read,
-/// that field names this device's family for an EXCLUSIVE buffer, or
-/// `kQueueFamilyIgnored` for a CONCURRENT buffer. Pass the updated picture
-/// to subsequent stages, including `GpuFramePrep`; copies made before the
-/// read retain the old ownership metadata. Each read checks
+/// NV12 plane images, as VideoToolbox's and NVDEC's pictures arrive, are
+/// copied from their corner; planes in a buffer, as nvJPEG's arrive, are
+/// copied where they sit; either after the batch takes them over from the
+/// queue family named by `YuvImage::queue_family`, images in the layout they
+/// are in. After a successful read, that field names this device's family
+/// for an EXCLUSIVE buffer or images, or `kQueueFamilyIgnored` for CONCURRENT
+/// ones; images that needed no transfer keep `kQueueFamilyIgnored`. Pass the
+/// updated picture to subsequent stages, including `GpuFramePrep`; copies
+/// made before the read retain the old ownership metadata. Each read checks
 /// every picture before it records anything, records every copy into one
 /// `CommandBatch`, submits it and waits. The copies land in one host
 /// buffer the readback keeps (`MemoryUsage::Staging`, cached for reading),
@@ -114,8 +115,8 @@ class VR_SENSOR_UTILS_API PictureReadback {
   /// the next read or this object's destruction, whatever the frames do:
   /// the frames, and their pictures, may go as soon as this returns.
   /// @param[in,out] frames  One entry per camera, as a `FrameSet` holds them;
-  ///                       each buffer picture's ownership is updated on
-  ///                       success, as described above.
+  ///                       each picture's ownership is updated on success,
+  ///                       as described above.
   /// @param planes   Luma alone, or every plane.
   /// @param metrics  Optional: a `"readback"` row, the call on the host and
   ///                 the copies on the device. `nullptr` measures nothing.
@@ -129,7 +130,7 @@ class VR_SENSOR_UTILS_API PictureReadback {
 
   /// @brief Copy one picture's @p planes to the host: a decoder's
   ///        `DecodedPicture::yuv`, say.
-  /// @param[in,out] picture  On the device, its writer finished; its buffer
+  /// @param[in,out] picture  On the device, its writer finished; its
   ///                        ownership is updated on success, as above.
   /// @param planes   Luma alone, or every plane.
   /// @param metrics  As the other overload.
@@ -140,8 +141,9 @@ class VR_SENSOR_UTILS_API PictureReadback {
   ///         stride shorter than its rows, planes that overlap or lie
   ///         outside their buffer, images that are not NV12's R8 and R8G8
   ///         planes at least the picture's size with `TRANSFER_SRC` usage,
-  ///         in a layout a copy reads, or a `queue_family` the device lacks;
-  ///         or a buffer, submit or `Status::Code::OutOfMemory` failure.
+  ///         in a layout a copy reads, a `queue_family` the device lacks, or
+  ///         `EXCLUSIVE` images from another of its families; or a buffer,
+  ///         submit or `Status::Code::OutOfMemory` failure.
   core::Result<PictureView> read(YuvImage& picture, Planes planes,
                                  core::StageMetrics* metrics = nullptr);
 

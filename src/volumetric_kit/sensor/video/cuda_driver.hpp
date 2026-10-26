@@ -21,27 +21,30 @@ namespace volumetric_kit::recon::sensor::video {
 // The driver entry points used here. Each name goes through cuda.h's macros,
 // so it is the versioned symbol its prototype declares (cuMemFree is
 // cuMemFree_v2).
-#define VR_CUDA_FUNCTIONS(X)         \
-  X(cuInit)                          \
-  X(cuGetErrorName)                  \
-  X(cuDeviceGetCount)                \
-  X(cuDeviceGet)                     \
-  X(cuDeviceGetUuid)                 \
-  X(cuDevicePrimaryCtxRetain)        \
-  X(cuDevicePrimaryCtxRelease)       \
-  X(cuCtxPushCurrent)                \
-  X(cuCtxPopCurrent)                 \
-  X(cuStreamCreate)                  \
-  X(cuStreamDestroy)                 \
-  X(cuStreamSynchronize)             \
-  X(cuEventCreate)                   \
-  X(cuEventDestroy)                  \
-  X(cuEventRecord)                   \
-  X(cuEventSynchronize)              \
-  X(cuImportExternalMemory)          \
-  X(cuExternalMemoryGetMappedBuffer) \
-  X(cuDestroyExternalMemory)         \
-  X(cuMemFree)                       \
+#define VR_CUDA_FUNCTIONS(X)                 \
+  X(cuInit)                                  \
+  X(cuGetErrorName)                          \
+  X(cuDeviceGetCount)                        \
+  X(cuDeviceGet)                             \
+  X(cuDeviceGetUuid)                         \
+  X(cuDevicePrimaryCtxRetain)                \
+  X(cuDevicePrimaryCtxRelease)               \
+  X(cuCtxPushCurrent)                        \
+  X(cuCtxPopCurrent)                         \
+  X(cuStreamCreate)                          \
+  X(cuStreamDestroy)                         \
+  X(cuStreamSynchronize)                     \
+  X(cuEventCreate)                           \
+  X(cuEventDestroy)                          \
+  X(cuEventRecord)                           \
+  X(cuEventSynchronize)                      \
+  X(cuImportExternalMemory)                  \
+  X(cuExternalMemoryGetMappedBuffer)         \
+  X(cuExternalMemoryGetMappedMipmappedArray) \
+  X(cuMipmappedArrayGetLevel)                \
+  X(cuMipmappedArrayDestroy)                 \
+  X(cuDestroyExternalMemory)                 \
+  X(cuMemFree)                               \
   X(cuMemcpy2DAsync)
 
 struct CudaDriver {

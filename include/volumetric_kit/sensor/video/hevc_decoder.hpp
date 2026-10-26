@@ -59,14 +59,14 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
     /// CUDA device elsewhere. Required. Borrowed: it must outlive the decoder
     /// and every picture on it.
     const core::Device* device = nullptr;
-    /// The allocator NVDEC's picture buffers are made through: exported
+    /// The allocator NVDEC's picture images are made through: exported
     /// device-only memory, counted against its heap's budget like any other
     /// allocation. Required with NVDEC; VideoToolbox's pictures need none.
     /// Borrowed: it must outlive the decoder and every picture on it.
     core::Allocator* allocator = nullptr;
     /// The queue families that will read the pictures, as
-    /// @ref PixelBufferImporter::create takes them; NVDEC ignores them. Read
-    /// by @ref create only.
+    /// @ref PixelBufferImporter::create takes them, for VideoToolbox's and
+    /// NVDEC's images alike. Read by @ref create only.
     const std::uint32_t* queue_families = nullptr;
     /// The entries in @ref queue_families.
     std::uint32_t queue_family_count = 0;
@@ -78,7 +78,8 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   ///         hardware path cannot reach, an FFmpeg without NVDEC, or on
   ///         Apple no hardware HEVC decoder;
   ///         `Status::Code::InvalidArgument` for queue families
-  ///         VideoToolbox's importer refuses; or `Status::Code::IoError`,
+  ///         @ref PixelBufferImporter::create would refuse; or
+  ///         `Status::Code::IoError`,
   ///         `Status::Code::OutOfMemory` or `Status::Code::Backend` if FFmpeg
   ///         or CUDA fails.
   static core::Result<HevcDecoder> create(const Options& options);

@@ -66,7 +66,7 @@ struct HevcDecoder::Impl {
   video::CodecContextPtr codec;
   video::PacketPtr packet;
   video::FramePtr decoded;
-  std::unique_ptr<video::CudaPictures> pictures;
+  std::unique_ptr<video::CudaPlanePictures> pictures;
 
   // @p frame handed over on the device; Unsupported for one the device path
   // cannot take.
@@ -96,9 +96,9 @@ struct HevcDecoder::Impl {
   }
 };
 
-// Copied device to device into a buffer Vulkan reads. FFmpeg has taken the
-// right and bottom crop off a hardware picture's size, and left the left and
-// top to whoever reads it.
+// Copied device to device into two plane images Vulkan samples. FFmpeg has
+// taken the right and bottom crop off a hardware picture's size, and left the
+// left and top to whoever reads it.
 core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
   const auto* frames = frame.hw_frames_ctx != nullptr
                            ? reinterpret_cast<const AVHWFramesContext*>(
@@ -146,7 +146,7 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
 #if VR_SENSOR_VIDEO_WITH_CUDA
   if (options.allocator == nullptr) {
     return unsupported(
-        "no allocator to make NVDEC's picture buffers through "
+        "no allocator to make NVDEC's picture images through "
         "(Options::allocator)");
   }
   if (options.configure_ffmpeg_logging) av_log_set_level(AV_LOG_ERROR);
@@ -167,8 +167,6 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   // The hardware device: the primary context of the Vulkan device's GPU and a
   // stream of this decoder's own, which FFmpeg's device holds and lets go
   // with its last reference.
-  // TODO(sensor): Options::queue_families for NVDEC's buffers, which a reader
-  // on any family takes over from outside Vulkan for now.
   VKC_ASSIGN(std::unique_ptr<video::CudaSession> cuda,
              video::CudaSession::open(*options.device, kWho));
   const CudaContext& cuda_context = *cuda->context;
@@ -186,9 +184,11 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
     return unsupported(std::string(kPath) +
                        ": no device opens: " + video::ffmpeg_message(err));
   }
-  VKC_ASSIGN(impl->pictures,
-             video::CudaPictures::create(*options.device, *options.allocator,
-                                         cuda_context, hw_cuda->stream, kWho));
+  VKC_ASSIGN(
+      impl->pictures,
+      video::CudaPlanePictures::create(
+          *options.device, *options.allocator, cuda_context, hw_cuda->stream,
+          options.queue_families, options.queue_family_count, kWho));
 
   AVCodecContext* context = impl->codec.get();
   context->hw_device_ctx = av_buffer_ref(hw);

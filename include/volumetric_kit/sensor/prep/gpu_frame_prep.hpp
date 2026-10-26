@@ -139,11 +139,12 @@ struct GpuFramePrepConfig {
 /// background depth into a point between them.
 ///
 /// Colour comes as I420 or NV12, on the device as a hardware decoder left it:
-/// planes in a buffer, as NVDEC's and nvJPEG's pictures arrive, are read
-/// where they are, after the pass takes them over from the queue family that
-/// wrote them (`YuvImage::queue_family`); NV12's planes as images, as
-/// VideoToolbox's picture arrives, are sampled where they are, with no copy.
-/// The two read the same samples, so give the same frame. A frame's depth,
+/// planes in a buffer, as nvJPEG's pictures arrive, are read where they are,
+/// and NV12's planes as images, as VideoToolbox's and NVDEC's pictures
+/// arrive, are sampled where they are, with no copy, either after the pass
+/// takes them over from the queue family that wrote them
+/// (`YuvImage::queue_family`). The two read the same samples, so give the
+/// same frame. A frame's depth,
 /// and colour a dataset decoded on
 /// the host (@ref RgbdFrame::color_packed), are copied into the pass's
 /// persistent slot (`core::HostRing`), which its batch binds: in place where
@@ -247,7 +248,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         that are not NV12's R8 and R8G8 planes at least the picture's
   ///         size, 2D, of one layer and one sample, with `SAMPLED` usage
   ///         and a view, in `GENERAL` or `SHADER_READ_ONLY_OPTIMAL`, a
-  ///         `queue_family` the device lacks, or an image past a single
+  ///         `queue_family` the device lacks, `EXCLUSIVE` images from
+  ///         another of its families, or an image past a single
   ///         dispatch (16.7 M pixels);
   ///         `Status::Code::Unsupported` for a colour encoding
   ///         @ref is_canonical refuses; `Status::Code::OutOfMemory` for a
