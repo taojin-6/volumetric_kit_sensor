@@ -133,7 +133,7 @@ CudaPlanePictures::make_slot(std::uint32_t width, std::uint32_t height) {
     desc.extent = p == 0 ? VkExtent2D{width, height}
                          : VkExtent2D{(width + 1) / 2, (height + 1) / 2};
     desc.format = p == 0 ? VK_FORMAT_R8_UNORM : VK_FORMAT_R8G8_UNORM;
-    // Sampled where it is (GpuFramePrep, a renderer), copied by readback.
+    // Sampled where it is (GpuFramePrep), copied by readback or a viewer.
     desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     desc.queue_families = families_.empty() ? nullptr : families_.data();
     desc.queue_family_count = static_cast<std::uint32_t>(families_.size());
