@@ -1,86 +1,33 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "hevc_syntax.hpp"
+#include "volumetric_kit/recon/sensor/video/hevc_syntax.hpp"
 
 #include <array>
+#include <string>
 
-namespace volumetric_kit::recon::sensor::video::hevc {
+#include "volumetric_kit/core/base/check.hpp"
+#include "volumetric_kit/core/base/exception_status.hpp"
+
+// The public calls return a host allocation failure (a list grown, a
+// refusal's message) as OutOfMemory through core::exception_status: no
+// exception leaves them.
+
+namespace volumetric_kit::recon::sensor::hevc {
 namespace {
 
-// A NAL unit's payload bits, MSB first, emulation prevention bytes skipped as
-// they are read. A read past the end reads zeros and sets overrun().
-class BitReader {
- public:
-  BitReader(const std::uint8_t* payload, std::size_t size)
-      : data_(payload), size_(size) {}
+// @p what (a parameter set, a slice header) that does not parse, and why.
+core::Status malformed(const char* what, const char* why) {
+  return core::Status::io_error(std::string(what) +
+                                " that does not parse: " + why);
+}
 
-  std::uint32_t bit() {
-    if (left_ == 0 && !load()) {
-      overrun_ = true;
-      return 0;
-    }
-    --left_;
-    return (byte_ >> left_) & 1u;
-  }
-  std::uint32_t bits(int n) {
-    std::uint32_t value = 0;
-    for (; n > 0; --n) value = (value << 1) | bit();
-    return value;
-  }
-  void skip(int n) {
-    for (; n > 0; --n) bit();
-  }
-  bool flag() { return bit() != 0; }
-  std::uint32_t ue() {  // Exp-Golomb, at most 2^32 - 2
-    int zeros = 0;
-    while (bit() == 0) {
-      if (overrun_ || ++zeros > 31) {
-        overrun_ = true;
-        return 0;
-      }
-    }
-    return static_cast<std::uint32_t>((std::uint64_t{1} << zeros) - 1 +
-                                      bits(zeros));
-  }
-  std::int32_t se() {
-    const std::uint32_t k = ue();
-    return (k & 1u) != 0 ? static_cast<std::int32_t>((k + 1) / 2)
-                         : -static_cast<std::int32_t>(k / 2);
-  }
-  bool overrun() const noexcept { return overrun_; }
-  // Whether what is left is rbsp_trailing_bits: a one, then zeros only.
-  bool at_trailing_bits() {
-    if (bit() != 1 || overrun_) return false;
-    while (left_ > 0 || load()) {
-      if (bit() != 0) return false;
-    }
-    return true;
-  }
-
- private:
-  bool load() {
-    if (pos_ >= size_) return false;
-    std::uint8_t b = data_[pos_++];
-    if (zeros_ >= 2 && b == 3) {  // the 03 of 00 00 03
-      zeros_ = 0;
-      if (pos_ >= size_) return false;
-      b = data_[pos_++];
-    }
-    zeros_ = b == 0 ? zeros_ + 1 : 0;
-    byte_ = b;
-    left_ = 8;
-    return true;
-  }
-
-  const std::uint8_t* data_;
-  std::size_t size_;
-  std::size_t pos_ = 0;
-  int zeros_ = 0;
-  std::uint8_t byte_ = 0;
-  int left_ = 0;
-  bool overrun_ = false;
-};
+// @p call handed a NAL unit that is not @p want.
+core::Status wrong_type(const char* call, const char* want, const Nal& nal) {
+  return core::Status::invalid_argument(std::string(call) + ": NAL unit type " +
+                                        std::to_string(nal.type) + " is not " +
+                                        want);
+}
 
 // profile_tier_level(1, max_sub_layers_minus1) (7.3.3).
 void skip_profile_tier_level(BitReader& r,
@@ -295,9 +242,13 @@ bool parse_vui(BitReader& r, std::uint32_t max_sub_layers_minus1,
 
 }  // namespace
 
-bool split_annex_b(const std::uint8_t* data, std::size_t size,
-                   std::vector<Nal>& out) {
+core::Status split_annex_b(const std::uint8_t* data, std::size_t size,
+                           std::vector<Nal>& out) try {
   out.clear();
+  if (data == nullptr && size != 0) {
+    return core::Status::invalid_argument(
+        "split_annex_b: null data with a size");
+  }
   std::size_t begin = 0;  // where the NAL unit being found starts, if any
   bool in_nal = false;
   const auto close = [&](std::size_t end) {
@@ -315,13 +266,17 @@ bool split_annex_b(const std::uint8_t* data, std::size_t size,
     out.push_back(nal);
     return true;
   };
+  const auto bad_header = [] {
+    return core::Status::io_error(
+        "Annex B bytes with a NAL unit header that is not valid");
+  };
   // A byte above 1 starts no start code at itself or the two before it, so
   // the scan steps past all three.
   for (std::size_t i = 0; i + 3 <= size;) {
     if (data[i + 2] > 1) {
       i += 3;
     } else if (data[i + 2] == 1 && data[i] == 0 && data[i + 1] == 0) {
-      if (in_nal && !close(i)) return false;
+      if (in_nal && !close(i)) return bad_header();
       begin = i + 3;
       in_nal = true;
       i += 3;
@@ -329,31 +284,115 @@ bool split_annex_b(const std::uint8_t* data, std::size_t size,
       ++i;
     }
   }
-  return in_nal && close(size);
+  if (!in_nal) {
+    return core::Status::io_error("Annex B bytes with no start code");
+  }
+  if (!close(size)) return bad_header();
+  return {};
+} catch (...) {
+  return core::exception_status("split_annex_b", core::Status::Code::IoError);
 }
 
-std::optional<std::uint32_t> vps_id(const Nal& vps) {
-  if (vps.size < 3) return std::nullopt;
-  return static_cast<std::uint32_t>(vps.data[2] >> 4);
+BitReader::BitReader(const Nal& nal) noexcept
+    : data_(nal.size > 2 ? nal.data + 2 : nullptr),
+      size_(nal.size > 2 ? nal.size - 2 : 0) {}
+
+std::uint32_t BitReader::bit() {
+  if (left_ == 0 && !load()) {
+    overrun_ = true;
+    return 0;
+  }
+  --left_;
+  return (byte_ >> left_) & 1u;
 }
 
-std::optional<Sps> parse_sps(const Nal& nal) {
-  BitReader r(nal.data + 2, nal.size - 2);
+bool BitReader::load() {
+  if (pos_ >= size_) return false;
+  std::uint8_t b = data_[pos_++];
+  if (zeros_ >= 2 && b == 3) {  // the 03 of 00 00 03
+    zeros_ = 0;
+    if (pos_ >= size_) return false;
+    b = data_[pos_++];
+  }
+  zeros_ = b == 0 ? zeros_ + 1 : 0;
+  byte_ = b;
+  left_ = 8;
+  return true;
+}
+
+std::uint32_t BitReader::bits(int n) {
+  VKC_CHECK(n >= 0 && n <= 32, "BitReader::bits reads 0 to 32 bits");
+  std::uint32_t value = 0;
+  for (; n > 0; --n) value = (value << 1) | bit();
+  return value;
+}
+
+bool BitReader::flag() { return bit() != 0; }
+
+void BitReader::skip(int n) {
+  for (; n > 0; --n) bit();
+}
+
+std::uint32_t BitReader::ue() {
+  int zeros = 0;
+  while (bit() == 0) {
+    if (overrun_ || ++zeros > 31) {
+      overrun_ = true;
+      return 0;
+    }
+  }
+  return static_cast<std::uint32_t>((std::uint64_t{1} << zeros) - 1 +
+                                    bits(zeros));
+}
+
+std::int32_t BitReader::se() {
+  const std::uint32_t k = ue();
+  return (k & 1u) != 0 ? static_cast<std::int32_t>((k + 1) / 2)
+                       : -static_cast<std::int32_t>(k / 2);
+}
+
+bool BitReader::at_trailing_bits() {
+  if (bit() != 1 || overrun_) return false;
+  while (left_ > 0 || load()) {
+    if (bit() != 0) return false;
+  }
+  return true;
+}
+
+core::Result<std::uint32_t> vps_id(const Nal& vps) try {
+  if (vps.type != kVps) return wrong_type("vps_id", "a VPS", vps);
+  BitReader r(vps);
+  const std::uint32_t id = r.bits(4);
+  if (r.overrun()) return malformed("a VPS", "cut short");
+  return id;
+} catch (...) {
+  return core::exception_status("vps_id", core::Status::Code::IoError);
+}
+
+core::Result<Sps> parse_sps(const Nal& nal) try {
+  if (nal.type != kSps) return wrong_type("parse_sps", "an SPS", nal);
+  BitReader r(nal);
+  // Why the SPS is refused: cut short, if a read went past its end, since
+  // the values read there are zeros.
+  const auto bad = [&r](const char* why) {
+    return malformed("an SPS", r.overrun() ? "cut short" : why);
+  };
   Sps sps;
   sps.vps_id = r.bits(4);
   const std::uint32_t max_sub_layers_minus1 = r.bits(3);
-  if (max_sub_layers_minus1 > 6) return std::nullopt;
+  if (max_sub_layers_minus1 > 6) return bad("more than 7 sub-layers");
   r.skip(1);  // sps_temporal_id_nesting_flag
   skip_profile_tier_level(r, max_sub_layers_minus1);
   sps.id = r.ue();
   sps.chroma_format_idc = r.ue();
-  if (sps.id > 15 || sps.chroma_format_idc > 3) return std::nullopt;
+  if (sps.id > 15) return bad("an id past 15");
+  if (sps.chroma_format_idc > 3) return bad("a chroma format past 3");
   if (sps.chroma_format_idc == 3) sps.separate_colour_plane = r.flag();
   sps.coded_width = r.ue();
   sps.coded_height = r.ue();
   if (sps.coded_width == 0 || sps.coded_height == 0 ||
       sps.coded_width > 16888 || sps.coded_height > 16888) {
-    return std::nullopt;
+    return bad("a picture size of 0 or past 16888");
   }
   if (r.flag()) {  // conformance_window_flag, offsets in chroma samples
     const bool chroma =
@@ -368,7 +407,7 @@ std::optional<Sps> parse_sps(const Nal& nal) {
     const std::uint32_t bottom = r.ue();
     if (left > sps.coded_width || right > sps.coded_width ||
         top > sps.coded_height || bottom > sps.coded_height) {
-      return std::nullopt;
+      return bad("a conformance window that leaves no picture");
     }
     sps.crop_left = sub_width * left;
     sps.crop_right = sub_width * right;
@@ -376,16 +415,16 @@ std::optional<Sps> parse_sps(const Nal& nal) {
     sps.crop_bottom = sub_height * bottom;
     if (sps.crop_left + sps.crop_right >= sps.coded_width ||
         sps.crop_top + sps.crop_bottom >= sps.coded_height) {
-      return std::nullopt;
+      return bad("a conformance window that leaves no picture");
     }
   }
   sps.bit_depth_luma = r.ue() + 8;
   sps.bit_depth_chroma = r.ue() + 8;
   const std::uint32_t log2_max_poc_lsb = r.ue() + 4;
-  if (sps.bit_depth_luma > 16 || sps.bit_depth_chroma > 16 ||
-      log2_max_poc_lsb > 16) {
-    return std::nullopt;
+  if (sps.bit_depth_luma > 16 || sps.bit_depth_chroma > 16) {
+    return bad("a bit depth past 16");
   }
+  if (log2_max_poc_lsb > 16) return bad("a POC LSB of more than 16 bits");
   sps.log2_max_poc_lsb = log2_max_poc_lsb;
   const bool ordering_per_sub_layer = r.flag();
   for (std::uint32_t i = ordering_per_sub_layer ? 0 : max_sub_layers_minus1;
@@ -394,12 +433,12 @@ std::optional<Sps> parse_sps(const Nal& nal) {
     sps.max_num_reorder = r.ue();
     r.ue();  // sps_max_latency_increase_plus1
     if (buffering > 16 || sps.max_num_reorder >= buffering) {
-      return std::nullopt;
+      return bad("a buffer past 16 pictures, or a reorder depth not below it");
     }
   }
   for (int i = 0; i < 6; ++i) r.ue();  // block sizes, transform depths
   if (r.flag() && r.flag() && !skip_scaling_list_data(r)) {
-    return std::nullopt;  // scaling_list_enabled, sps_scaling_list_data
+    return bad("its scaling lists");  // scaling_list_enabled, sps_..._data
   }
   r.skip(2);       // amp_enabled_flag, sample_adaptive_offset_enabled_flag
   if (r.flag()) {  // pcm_enabled_flag
@@ -409,21 +448,21 @@ std::optional<Sps> parse_sps(const Nal& nal) {
     r.skip(1);
   }
   const std::uint32_t short_term_sets = r.ue();
-  if (short_term_sets > 64) return std::nullopt;
+  if (short_term_sets > 64) return bad("more than 64 short-term sets");
   std::vector<ShortTermSet> sets;
   for (std::uint32_t i = 0; i < short_term_sets; ++i) {
-    if (!parse_short_term_set(r, i, sets)) return std::nullopt;
+    if (!parse_short_term_set(r, i, sets)) return bad("a short-term set");
   }
   if (r.flag()) {  // long_term_ref_pics_present_flag
     const std::uint32_t long_term = r.ue();
-    if (long_term > 32) return std::nullopt;
+    if (long_term > 32) return bad("more than 32 long-term pictures");
     for (std::uint32_t i = 0; i < long_term; ++i) {
       r.skip(static_cast<int>(log2_max_poc_lsb) + 1);
     }
   }
   r.skip(2);  // sps_temporal_mvp_enabled, strong_intra_smoothing_enabled
   if (r.flag() && !parse_vui(r, max_sub_layers_minus1, sps.color)) {
-    return std::nullopt;
+    return bad("its VUI");
   }
   if (r.flag()) {  // sps_extension_present_flag
     const bool range = r.flag();
@@ -435,48 +474,74 @@ std::optional<Sps> parse_sps(const Nal& nal) {
     if (multilayer) r.skip(1);
     // Extensions this reader does not walk: the rest is taken as it is.
     if (three_d || scc || more) {
-      if (r.overrun()) return std::nullopt;
+      if (r.overrun()) return bad("cut short");
       return sps;
     }
   }
-  if (r.overrun() || !r.at_trailing_bits()) return std::nullopt;
+  if (r.overrun() || !r.at_trailing_bits()) {
+    return bad("more than its trailing bits after it");
+  }
   return sps;
+} catch (...) {
+  return core::exception_status("parse_sps", core::Status::Code::IoError);
 }
 
-std::optional<Pps> parse_pps(const Nal& nal) {
-  BitReader r(nal.data + 2, nal.size - 2);
+core::Result<Pps> parse_pps(const Nal& nal) try {
+  if (nal.type != kPps) return wrong_type("parse_pps", "a PPS", nal);
+  BitReader r(nal);
   Pps pps;
   pps.id = r.ue();
   pps.sps_id = r.ue();
-  pps.dependent_slice_segments_enabled = r.flag();
+  r.skip(1);  // dependent_slice_segments_enabled_flag
   pps.output_flag_present = r.flag();
   pps.num_extra_slice_header_bits = r.bits(3);
-  if (r.overrun() || pps.id > 63 || pps.sps_id > 15) return std::nullopt;
+  if (r.overrun()) return malformed("a PPS", "cut short");
+  if (pps.id > 63) return malformed("a PPS", "an id past 63");
+  if (pps.sps_id > 15) return malformed("a PPS", "an SPS id past 15");
   return pps;
+} catch (...) {
+  return core::exception_status("parse_pps", core::Status::Code::IoError);
 }
 
-std::optional<SliceStart> parse_slice_start(
+core::Result<SliceStart> parse_slice_start(
     const Nal& nal, const std::map<std::uint32_t, Pps>& pps,
-    const std::map<std::uint32_t, Sps>& sps) {
-  BitReader r(nal.data + 2, nal.size - 2);
+    const std::map<std::uint32_t, Sps>& sps) try {
+  if (nal.type < 0 || nal.type > 31) {
+    return wrong_type("parse_slice_start", "a VCL NAL unit", nal);
+  }
+  BitReader r(nal);
   SliceStart slice;
   slice.first_slice_segment = r.flag();
   if (is_irap(nal.type)) slice.no_output_of_prior_pics = r.flag();
   slice.pps_id = r.ue();
+  if (r.overrun()) return malformed("a slice header", "cut short");
   const auto p = pps.find(slice.pps_id);
-  if (r.overrun() || p == pps.end()) return std::nullopt;
+  if (p == pps.end()) {
+    return core::Status::io_error("a slice header naming PPS " +
+                                  std::to_string(slice.pps_id) +
+                                  ", which is not given");
+  }
   const auto s = sps.find(p->second.sps_id);
-  if (s == sps.end()) return std::nullopt;
+  if (s == sps.end()) {
+    return core::Status::io_error("a slice header whose PPS " +
+                                  std::to_string(slice.pps_id) + " names SPS " +
+                                  std::to_string(p->second.sps_id) +
+                                  ", which is not given");
+  }
   if (!slice.first_slice_segment) return slice;
   r.skip(static_cast<int>(p->second.num_extra_slice_header_bits));
-  if (r.ue() > 2) return std::nullopt;  // slice_type
+  const std::uint32_t slice_type = r.ue();
   if (p->second.output_flag_present) slice.pic_output = r.flag();
   if (s->second.separate_colour_plane) r.skip(2);  // colour_plane_id
   if (!is_idr(nal.type)) {
     slice.poc_lsb = r.bits(static_cast<int>(s->second.log2_max_poc_lsb));
   }
-  if (r.overrun()) return std::nullopt;
+  if (r.overrun()) return malformed("a slice header", "cut short");
+  if (slice_type > 2) return malformed("a slice header", "a slice type past 2");
   return slice;
+} catch (...) {
+  return core::exception_status("parse_slice_start",
+                                core::Status::Code::IoError);
 }
 
-}  // namespace volumetric_kit::recon::sensor::video::hevc
+}  // namespace volumetric_kit::recon::sensor::hevc

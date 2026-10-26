@@ -72,12 +72,10 @@ if(APPLE)
   add_subdirectory(apple)
 endif()
 
-# The video decoders, on every Apple platform and elsewhere with FFmpeg; see
-# video/CMakeLists.txt. Ahead of the Orbbec driver, which decodes its cameras'
-# colour with them.
-if(APPLE OR VR_WITH_FFMPEG)
-  add_subdirectory(video)
-endif()
+# The H.265 syntax read on the host, on every build, and the video decoders, on
+# every Apple platform and elsewhere with FFmpeg; see video/CMakeLists.txt.
+# Ahead of the Orbbec driver, which decodes its cameras' colour with them.
+add_subdirectory(video)
 
 # The Orbbec driver; see orbbec/CMakeLists.txt.
 if(VR_WITH_ORBBEC)

@@ -3,8 +3,9 @@
 # Copyright (c) 2026 Tao Jin
 #
 # The iOS build check the macOS CI leg runs (.github/workflows/_build.yml):
-# recon_sensor_apple and recon_sensor_video, which every Apple build has,
-# compiled for the iOS floor with the include paths and definitions of a macOS
+# recon_sensor_apple, recon_sensor_video and the H.265 syntax it reads with
+# (recon_sensor_video_syntax), which every Apple build has, compiled for the
+# iOS floor with the include paths and definitions of a macOS
 # build's compile commands, warnings as errors, the importer with ARC and its
 # header as plain C++ too; then linked into an iOS library against the SDK's
 # frameworks, so a symbol iOS does not have fails the link. Only their
@@ -21,18 +22,19 @@ out="$2"
 mkdir -p "$out"
 ios=(xcrun --sdk iphoneos clang++ -target arm64-apple-ios26.0)
 
-# Each source of the two targets, with its own flags, listed as compiled.
+# Each source of the three targets, with its own flags, listed as compiled.
 python3 -I - "$db" "$out" "${ios[@]}" >"$out/objects.txt" <<'EOF'
 import json, os, shlex, subprocess, sys
 
 db, out, ios = sys.argv[1], sys.argv[2], sys.argv[3:]
 ios += ["-std=c++17", "-Wall", "-Wextra", "-Wpedantic", "-Werror"]
 header = b'#include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"\n'
+targets = ("recon_sensor_apple", "recon_sensor_video",
+           "recon_sensor_video_syntax")
 objects = []
 for entry in json.load(open(db)):
     output = entry.get("output", "")
-    if "/recon_sensor_apple.dir/" not in output and \
-            "/recon_sensor_video.dir/" not in output:
+    if not any("/%s.dir/" % target in output for target in targets):
         continue
     args = iter(entry.get("arguments") or shlex.split(entry["command"]))
     flags = []
@@ -52,8 +54,7 @@ for entry in json.load(open(db)):
                        input=header, check=True, stdout=sys.stderr)
     objects.append(obj)
 if not objects:
-    sys.exit("no compile command of recon_sensor_apple or recon_sensor_video "
-             "in " + db)
+    sys.exit("no compile command of " + ", ".join(targets) + " in " + db)
 print("\n".join(objects))
 EOF
 objects=()

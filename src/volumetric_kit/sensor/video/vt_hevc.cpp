@@ -70,15 +70,16 @@ void VtHevc::show_all() {
 }
 
 core::Status VtHevc::store_parameter_set(const hevc::Nal& nal) {
+  // The reader's refusals are IoError: bytes that do not parse.
   if (nal.type == hevc::kVps) {
-    const std::optional<std::uint32_t> id = hevc::vps_id(nal);
-    if (!id) return io_error("a VPS that does not parse");
+    const core::Result<std::uint32_t> id = hevc::vps_id(nal);
+    if (!id) return id.status().with_context(who_);
     if (store(vps_bytes_, *id, nal)) ++params_version_;
   } else if (nal.type == hevc::kSps) {
     // Read whole before it can refuse the stream: bytes that do not parse
     // cost this access unit, not the stream.
-    const std::optional<hevc::Sps> sps = hevc::parse_sps(nal);
-    if (!sps) return io_error("an SPS that does not parse");
+    const core::Result<hevc::Sps> sps = hevc::parse_sps(nal);
+    if (!sps) return sps.status().with_context(who_);
     if (sps->chroma_format_idc != 1 || sps->bit_depth_luma != 8 ||
         sps->bit_depth_chroma != 8) {
       return refuse(unsupported("the device path takes 8-bit 4:2:0 only, not " +
@@ -92,8 +93,8 @@ core::Status VtHevc::store_parameter_set(const hevc::Nal& nal) {
     if (store(sps_bytes_, sps->id, nal)) ++params_version_;
     sps_[sps->id] = *sps;
   } else {
-    const std::optional<hevc::Pps> pps = hevc::parse_pps(nal);
-    if (!pps) return io_error("a PPS that does not parse");
+    const core::Result<hevc::Pps> pps = hevc::parse_pps(nal);
+    if (!pps) return pps.status().with_context(who_);
     if (store(pps_bytes_, pps->id, nal)) ++params_version_;
     pps_[pps->id] = *pps;
   }
@@ -148,13 +149,9 @@ core::Status VtHevc::ready_session(const hevc::Sps& sps) {
 
 core::Status VtHevc::decode(const std::vector<hevc::Nal>& slices,
                             std::int64_t pts) {
-  const std::optional<hevc::SliceStart> slice =
+  const core::Result<hevc::SliceStart> slice =
       hevc::parse_slice_start(slices.front(), pps_, sps_);
-  if (!slice) {
-    return io_error(
-        "a slice header that does not parse or names a parameter set not "
-        "sent");
-  }
+  if (!slice) return slice.status().with_context(who_);
   if (!slice->first_slice_segment) {
     return io_error("an access unit that does not start its picture");
   }
@@ -282,8 +279,8 @@ core::Status VtHevc::send(const std::uint8_t* data, std::size_t size,
     return core::Status::invalid_argument(std::string(who_) +
                                           ": an access unit needs data");
   }
-  if (!hevc::split_annex_b(data, size, nals_)) {
-    return io_error("an access unit that is not Annex B NAL units");
+  if (core::Status split = hevc::split_annex_b(data, size, nals_); !split) {
+    return std::move(split).with_context(who_);
   }
   // In order: the parameter sets first, the picture's slices once all are
   // in, and an end of sequence after them.
