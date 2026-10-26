@@ -49,6 +49,17 @@ core::Status check_images(const YuvImage& image, const char* who,
         y.view() == VK_NULL_HANDLE || c.view() == VK_NULL_HANDLE) {
       return refuse(who, "the colour images need SAMPLED usage and a view");
     }
+    // The pass reads each through its view as a sampler2D, which a 3D, an
+    // arrayed or a multisampled image's view does not match.
+    const auto flat = [](const core::Image& i) {
+      return i.type() == VK_IMAGE_TYPE_2D && i.array_layers() == 1 &&
+             i.samples() == VK_SAMPLE_COUNT_1_BIT;
+    };
+    if (!flat(y) || !flat(c)) {
+      return refuse(who,
+                    "the colour images must be 2D, of one layer and one "
+                    "sample");
+    }
     const auto sampled = [](const core::Image& i) {
       return i.layout() == VK_IMAGE_LAYOUT_GENERAL ||
              i.layout() == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

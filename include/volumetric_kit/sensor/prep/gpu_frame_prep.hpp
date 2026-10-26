@@ -245,8 +245,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         planes that overlap, lie outside their buffer or are in one
   ///         that is empty or without storage usage, plane images
   ///         that are not NV12's R8 and R8G8 planes at least the picture's
-  ///         size with `SAMPLED` usage and a view, in `GENERAL` or
-  ///         `SHADER_READ_ONLY_OPTIMAL`, a
+  ///         size, 2D, of one layer and one sample, with `SAMPLED` usage
+  ///         and a view, in `GENERAL` or `SHADER_READ_ONLY_OPTIMAL`, a
   ///         `queue_family` the device lacks, or an image past a single
   ///         dispatch (16.7 M pixels);
   ///         `Status::Code::Unsupported` for a colour encoding

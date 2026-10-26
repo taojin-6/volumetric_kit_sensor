@@ -30,8 +30,9 @@ enum class ImageRead { Sample, Copy };
 
 // `image`'s planes, checked as `read` takes them: in a buffer or as images,
 // not both. Images are NV12's R8 luma and R8G8 chroma, each at least the
-// picture's size: to sample, with SAMPLED usage and a view, in GENERAL or
-// SHADER_READ_ONLY_OPTIMAL; to copy, with TRANSFER_SRC usage, in GENERAL or
+// picture's size: to sample, 2D, of one layer and one sample, with SAMPLED
+// usage and a view, in GENERAL or SHADER_READ_ONLY_OPTIMAL; to copy, with
+// TRANSFER_SRC usage, in GENERAL or
 // TRANSFER_SRC_OPTIMAL. Planes in YuvImage::device each have a stride at
 // least their rows, lie inside the buffer and overlap no other; the buffer
 // itself (empty, its usage) is the caller's to check first. `who` starts

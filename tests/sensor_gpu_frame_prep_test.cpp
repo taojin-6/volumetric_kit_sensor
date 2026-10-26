@@ -824,7 +824,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
 
   // Refused as images: beside planes in a buffer; I420; either one missing;
   // the two swapped; one smaller than its plane; one the pass cannot sample,
-  // for its usage, its missing view or its layout.
+  // for its usage, its missing view, its layout or its shape.
   sensor::YuvImage bad_images = images;
   bad_images.device = planes;
   CHECK(refused(bad_images, "not both"));
@@ -858,12 +858,43 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   bad_images.image[1] =
       std::make_shared<const vkc::Image>(viewless, nullptr);  // borrowed
   CHECK(refused(bad_images, "SAMPLED usage and a view"));
+  // A view without SAMPLED usage, as the allocator's storage images have.
+  bad_images = images;
+  vkc::ImageInfo unsampled = chroma->info();
+  unsampled.usage =
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  CHECK(unsampled.view != VK_NULL_HANDLE);
+  bad_images.image[1] =
+      std::make_shared<const vkc::Image>(unsampled, nullptr);  // borrowed
+  CHECK(refused(bad_images, "SAMPLED usage and a view"));
   bad_images = images;
   vkc::ImageInfo copied = chroma->info();
   copied.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   bad_images.image[1] =
       std::make_shared<const vkc::Image>(copied, nullptr);  // borrowed
   CHECK(refused(bad_images, "GENERAL or SHADER_READ_ONLY_OPTIMAL"));
+  // Either plane in a shape whose view the pass's sampler2D does not match:
+  // a 3D image of depth 1, two layers, or four samples.
+  const auto reshaped = [&](int plane, void (*shape)(vkc::ImageInfo&)) {
+    vkc::ImageInfo info = images.image[plane]->info();
+    shape(info);
+    sensor::YuvImage out = images;
+    out.image[plane] =
+        std::make_shared<const vkc::Image>(info, nullptr);  // borrowed
+    return out;
+  };
+  for (int plane = 0; plane < 2; ++plane) {
+    CHECK(refused(
+        reshaped(plane, [](vkc::ImageInfo& i) { i.type = VK_IMAGE_TYPE_3D; }),
+        "2D, of one layer and one sample"));
+    CHECK(
+        refused(reshaped(plane, [](vkc::ImageInfo& i) { i.array_layers = 2; }),
+                "2D, of one layer and one sample"));
+    CHECK(refused(
+        reshaped(plane,
+                 [](vkc::ImageInfo& i) { i.samples = VK_SAMPLE_COUNT_4_BIT; }),
+        "2D, of one layer and one sample"));
+  }
 
   // Refused: a plane past the buffer; planes that overlap, as I420's do with
   // its offsets left at zero; a stride shorter than the picture's rows; a
