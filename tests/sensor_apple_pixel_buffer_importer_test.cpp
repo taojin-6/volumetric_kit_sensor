@@ -250,14 +250,14 @@ int test_holds_the_buffer(const Gpu& gpu) {
 }
 
 // The images allocate nothing in Metal beyond the textures on the surface's
-// planes: importing four distinct 1080p surfaces grows the Metal device's
-// allocation by no more than bare textures on the same planes do, plus less
-// than one luma plane. Memory not dedicated to the images would add a heap
-// per plane, 3.6 MB a surface on an M4. A surface imported once more adds
-// nothing.
+// planes: importing four distinct 4K surfaces, a camera's size, grows the
+// Metal device's allocation by no more than bare textures on the same planes
+// do, plus less than one luma plane. Memory not dedicated to the images would
+// add a heap per plane, 13.2 MB a surface on an M4. A surface imported once
+// more adds nothing.
 int test_allocates_only_textures(const Gpu& gpu) {
-  constexpr std::uint32_t kW = 1920;
-  constexpr std::uint32_t kH = 1080;
+  constexpr std::uint32_t kW = 3840;
+  constexpr std::uint32_t kH = 2160;
   constexpr std::int64_t kLuma = std::int64_t{kW} * kH;
   constexpr std::size_t kSurfaces = 4;
   auto importer = PixelBufferImporter::create(gpu.device, "test");
