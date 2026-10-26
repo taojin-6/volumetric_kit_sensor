@@ -2,8 +2,9 @@
 
 // Colour undistortion and Y'CbCr to R'G'B' in one pass (undistort_color.glsl),
 // over NV12's two plane images, read where they are: an Apple picture's
-// IOSurface planes, imported through VK_EXT_metal_objects. The same samples
-// as the buffer entry reads, so the same words.
+// IOSurface planes, imported through VK_EXT_metal_objects, or the images
+// NVDEC's pictures are copied into. The same samples as the buffer entry
+// reads, so the same words.
 
 #extension GL_GOOGLE_include_directive : require
 #include "undistort_color.glsl"
