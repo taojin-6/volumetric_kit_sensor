@@ -470,6 +470,7 @@ core::Result<core::HostSlot> GpuFramePrep::stage(const RgbdFrame& frame,
     desc.slot_bytes = layout.slot_bytes;
     desc.slots = 1;
     desc.name = "sensor.raw_frame";
+    desc.host_access = core::HostAccess::SequentialWrite;
     VKC_ASSIGN(inputs_, core::HostRing::create(*device_, *allocator_, desc));
   }
   VKC_ASSIGN(core::HostSlot slot, inputs_->claim(layout.slot_bytes));
