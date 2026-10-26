@@ -9,7 +9,8 @@
 // never reused, frame prep from the images as from the same samples in a
 // buffer, a stream the hardware refuses, the decoders create refuses, the
 // images shared across queue families, NVDEC's decoders sharing the GPU's
-// primary CUDA context, the argument checks, and moves. On VideoToolbox also:
+// primary CUDA context, NVDEC's pictures changing size within one decoder,
+// the argument checks, and moves. On VideoToolbox also:
 // pictures under NVDEC's smallest to the bit at either range and cropped,
 // parameter sets that change mid-stream, Main 10 refused, and a skipped
 // access unit reported.
@@ -65,6 +66,12 @@ constexpr const char* kCropped = VR_HEVC_DATA "/cropped_240x128.h265";
 constexpr const char* kRefused = VR_HEVC_DATA "/refused_256x144.h265";
 constexpr const char* kUnlabelled = VR_HEVC_DATA "/unlabelled_256x144.h265";
 constexpr const char* kFullRange = VR_HEVC_DATA "/fullrange_256x144.h265";
+// libavcodec's MD5s of the patch clip and, on NVDEC, the cropped one
+// (tools/make_hevc_fixtures.sh prints them).
+constexpr const char* kPatchesMd5 = "63171f05c92c231ab96a389291ba67fe";
+#if !defined(__APPLE__)
+constexpr const char* kCroppedMd5 = "9f217594cf6e432f9aa4021534446fbe";
+#endif
 #if defined(__APPLE__)
 constexpr const char* kTestsrc2 = VR_HEVC_DATA "/testsrc2_128x64.h265";
 constexpr const char* kTestsrc2Full = VR_HEVC_DATA "/testsrc2_full_128x64.h265";
@@ -405,6 +412,29 @@ int test_malformed_cropped_sps(const Gpu& gpu) {
 }
 #endif
 
+// The clip decoded whole, every picture on the device and of the size given,
+// and its pictures' planes, in display order, to the MD5 given.
+int check_md5(const Decoded& decoded, const char* clip, std::uint32_t width,
+              std::uint32_t height, const char* md5) {
+  if (!decoded.status.ok()) {
+    std::fprintf(stderr, "%s: %s\n", clip, decoded.status.message().c_str());
+  }
+  CHECK(decoded.status.ok());
+  CHECK(decoded.pictures.size() == static_cast<std::size_t>(kFrames));
+  vr_test::Md5 sum;
+  for (const Picture& p : decoded.pictures) {
+    if (check_on_device(p.meta) != 0) return 1;
+    CHECK(p.meta.yuv.width == width && p.meta.yuv.height == height);
+    for (const std::vector<std::uint8_t>& plane : p.planes) {
+      sum.update(plane.data(), plane.size());
+    }
+  }
+  const std::string got = sum.hex();
+  if (got != md5) std::fprintf(stderr, "%s: MD5 %s\n", clip, got.c_str());
+  CHECK(got == md5);
+  return 0;
+}
+
 // The MD5 implementation, on RFC 1321's own examples.
 int test_md5() {
   const auto md5 = [](const std::string& text) {
@@ -429,7 +459,6 @@ int test_md5() {
 // full range, each written at its own range; the cropped one is its display
 // window, 8 short at the right and the bottom.
 int test_reference_md5(const Gpu& gpu) {
-  constexpr const char* kPatchesMd5 = "63171f05c92c231ab96a389291ba67fe";
   const struct {
     const char* clip;
     const char* md5;
@@ -450,33 +479,58 @@ int test_reference_md5(const Gpu& gpu) {
       {kTestsrc2Cropped, "4f676ba80eb5db26c2156fde29f72a11", 120, 56,
        sensor::VideoColorMatrix::Bt601, false},
 #else
-      {kCropped, "9f217594cf6e432f9aa4021534446fbe", kWidth - 16, kHeight - 16,
+      {kCropped, kCroppedMd5, kWidth - 16, kHeight - 16,
        sensor::VideoColorMatrix::Bt709, false},
 #endif
   };
   for (const auto& c : clips) {
     const Decoded decoded = decode(gpu, c.clip);
-    if (!decoded.status.ok()) {
-      std::fprintf(stderr, "%s: %s\n", c.clip,
-                   decoded.status.message().c_str());
-    }
-    CHECK(decoded.status.ok());
-    CHECK(decoded.pictures.size() == static_cast<std::size_t>(kFrames));
-    vr_test::Md5 md5;
+    if (check_md5(decoded, c.clip, c.width, c.height, c.md5) != 0) return 1;
     for (const Picture& p : decoded.pictures) {
-      if (check_on_device(p.meta) != 0) return 1;
-      CHECK(p.meta.yuv.width == c.width && p.meta.yuv.height == c.height);
       CHECK(yuv_reference::coded_in(p.meta.yuv, c.matrix, c.full_range));
-      for (const std::vector<std::uint8_t>& plane : p.planes) {
-        md5.update(plane.data(), plane.size());
-      }
     }
-    const std::string got = md5.hex();
-    if (got != c.md5) std::fprintf(stderr, "%s: MD5 %s\n", c.clip, got.c_str());
-    CHECK(got == c.md5);
   }
   return 0;
 }
+
+#if !defined(__APPLE__)
+// One NVDEC decoder hands out pictures of two sizes, the cropped clip's and
+// the patch clip's, a reset() before each change: every picture's images are
+// its own size, and its samples libavcodec's. A set of images is reused only
+// for a picture of its size: the cropped pictures held across the changes
+// keep their samples, and a set let go before a picture of the other size is
+// never handed out with it, larger or smaller.
+int test_size_change(const Gpu& gpu) {
+  const AccessUnits small = vr_test::hevc_access_units(kCropped);
+  const AccessUnits large = vr_test::hevc_access_units(kPatches);
+  constexpr std::uint32_t kSmallWidth = kWidth - 16;
+  constexpr std::uint32_t kSmallHeight = kHeight - 16;
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
+  CHECK(decoder.ok());
+  const Decoded held = decode_clip(decoder.value(), small, gpu);
+  if (check_md5(held, kCropped, kSmallWidth, kSmallHeight, kCroppedMd5) != 0)
+    return 1;
+  // Each clip's pictures are let go once checked, so the sets they leave are
+  // free, and of the size the next clip does not have.
+  for (int round = 0; round < 2; ++round) {
+    CHECK(decoder->reset().ok());
+    if (check_md5(decode_clip(decoder.value(), large, gpu), kPatches, kWidth,
+                  kHeight, kPatchesMd5) != 0)
+      return 1;
+    CHECK(decoder->reset().ok());
+    if (check_md5(decode_clip(decoder.value(), small, gpu), kCropped,
+                  kSmallWidth, kSmallHeight, kCroppedMd5) != 0)
+      return 1;
+  }
+  for (const Picture& p : held.pictures) {
+    sensor::YuvImage again = p.meta.yuv;
+    std::vector<std::uint8_t> planes[3];
+    vr_test::read_device_picture(again, gpu.device, gpu.allocator, planes);
+    for (int i = 0; i < 3; ++i) CHECK(planes[i] == p.planes[i]);
+  }
+  return 0;
+}
+#endif
 
 // A picture held is never reused: the clip decoded with every picture kept,
 // each has images of its own, and the first, read again after the last was
@@ -935,6 +989,9 @@ int gpu_main(Gpu& gpu) {
   if (test_reset(gpu) != 0) return 1;
   if (test_cropped(gpu) != 0) return 1;
   if (test_reference_md5(gpu) != 0) return 1;
+#if !defined(__APPLE__)
+  if (test_size_change(gpu) != 0) return 1;
+#endif
   if (test_held_pictures(gpu) != 0) return 1;
   if (test_frame_prep(gpu) != 0) return 1;
 #if defined(__APPLE__)
