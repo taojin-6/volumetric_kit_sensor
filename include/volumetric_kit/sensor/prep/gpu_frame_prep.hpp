@@ -31,6 +31,8 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/host_ring.hpp"
+#include "volumetric_kit/core/vulkan/unique_handle.hpp"
+#include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/recon/core/camera_params.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
@@ -140,8 +142,9 @@ struct GpuFramePrepConfig {
 /// planes in a buffer, as NVDEC's and nvJPEG's pictures arrive, are read
 /// where they are, after the pass takes them over from the queue family that
 /// wrote them (`YuvImage::queue_family`); NV12's planes as images, as
-/// VideoToolbox's picture arrives, are copied into the pass's input on the
-/// device in the same batch. A frame's depth, and colour a dataset decoded on
+/// VideoToolbox's picture arrives, are sampled where they are, with no copy.
+/// The two read the same samples, so give the same frame. A frame's depth,
+/// and colour a dataset decoded on
 /// the host (@ref RgbdFrame::color_packed), are copied into the pass's
 /// persistent slot (`core::HostRing`), which its batch binds: in place where
 /// the device's mapped memory is cached (Apple, lavapipe), and through one
@@ -242,7 +245,8 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   ///         planes that overlap, lie outside their buffer or are in one
   ///         that is empty or without storage usage, plane images
   ///         that are not NV12's R8 and R8G8 planes at least the picture's
-  ///         size with `TRANSFER_SRC` usage, in a layout a copy reads, a
+  ///         size, 2D, of one layer and one sample, with `SAMPLED` usage
+  ///         and a view, in `GENERAL` or `SHADER_READ_ONLY_OPTIMAL`, a
   ///         `queue_family` the device lacks, or an image past a single
   ///         dispatch (16.7 M pixels);
   ///         `Status::Code::Unsupported` for a colour encoding
@@ -311,14 +315,14 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   core::Result<core::HostSlot> stage(const RgbdFrame& frame,
                                      const Layout& layout);
   // Once the frame's slot is claimed, so the pass's last batch has resolved:
-  // the outputs and the NV12 input made big enough.
+  // the outputs made big enough.
   core::Status ensure_buffers(const RgbdFrame& frame, const Layout& layout);
   // Device planes taken over from their writer's family, the slot bound (one
-  // copy where it is copied), plane images copied and the overlap mask's
-  // parameters written, into `batch`; `*input` is the buffer the passes bind.
+  // copy where it is copied) and the overlap mask's parameters written, into
+  // `batch`; `*input` is the buffer the passes bind.
   core::Status record_inputs(core::CommandBatch& batch, const RgbdFrame& frame,
                              const Layout& layout, const core::HostSlot& slot,
-                             core::GpuStageScope* stage, VkBuffer* input);
+                             VkBuffer* input);
   // Both passes, recorded into `batch` after the inputs; the outputs hold
   // the result once the batch has run.
   core::Status record_passes(core::CommandBatch& batch, const RgbdFrame& frame,
@@ -348,9 +352,16 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   VkDeviceSize max_storage_buffer_range_ = 0;
   VkDeviceSize min_storage_buffer_offset_alignment_ = 0;
 
+  // Outlives the image kernel's set, which names it.
+  core::UniqueHandle<VkSampler, vkDestroySampler> sampler_;
   core::ComputeKernel depth_kernel_;
   core::ComputeKernel color_kernel_;
   core::DescriptorPool pool_;
+  // The colour pass over NV12's plane images, sampled in place: its layout
+  // built by hand (two combined image samplers and the output), its set from
+  // a pool of its own.
+  core::ComputeKernel color_images_kernel_;
+  core::DescriptorPool images_pool_;
   core::GpuTimer gpu_timer_;
 
   // Each frame's depth, and colour a dataset decoded on the host, copied into
@@ -359,9 +370,6 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   // the slot (core::HostAccess::SequentialWrite), so where the ring is
   // copied, as on a discrete GPU, it is write-combined staging.
   std::unique_ptr<core::HostRing> inputs_;
-  // NV12 plane images, copied on the device and kept, grown to the largest
-  // picture seen; colour already in a device buffer is read where it is.
-  core::Buffer color_in_;
   // The colour camera and the depth-to-colour transform the depth pass masks
   // by (GpuFramePrepConfig::depth_within_color), written inline each frame
   // that uses them; bound once, at create.

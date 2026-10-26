@@ -526,11 +526,12 @@ int test_refusals(vr_test::GpuContext& gpu) {
   bad = images;
   bad.width = p.w + 4;  // past the luma image
   CHECK(refused(bad, "at least the picture's size"));
+  // An image GpuFramePrep samples, which no copy reads.
   bad = images;
   const std::vector<std::uint8_t> luma(std::size_t{p.w} * p.h, 1);
-  bad.image[0] =
-      test_image::with_corner(gpu.device, gpu.allocator, VK_FORMAT_R8_UNORM, 1,
-                              p.w, p.h, luma.data(), p.w, p.h, 0);
+  bad.image[0] = test_image::with_corner(
+      gpu.device, gpu.allocator, VK_FORMAT_R8_UNORM, 1, p.w, p.h, luma.data(),
+      p.w, p.h, VK_IMAGE_USAGE_SAMPLED_BIT);
   CHECK(bad.image[0] != nullptr);
   CHECK(refused(bad, "TRANSFER_SRC usage"));
   bad = images;

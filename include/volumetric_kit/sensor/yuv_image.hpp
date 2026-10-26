@@ -119,9 +119,11 @@ struct YuvImage {
   /// Or NV12's planes as images on the device, as Apple's pictures arrive
   /// (`PixelBufferImporter`): `image[0]` the luma (`R8_UNORM`), `image[1]`
   /// the chroma (`R8G8_UNORM`, Cb first), each at least the picture's size,
-  /// chroma halved and rounded up, and read from its corner. The pass copies
-  /// them into its input in its batch, so their writer must have finished,
-  /// as for @ref device, and the frame holds them as it does @ref device.
+  /// chroma halved and rounded up, and read from its corner. `GpuFramePrep`
+  /// samples them where they are when its batch runs, through their views
+  /// (`SAMPLED` usage), and `PictureReadback` copies them (`TRANSFER_SRC`),
+  /// so their writer must have finished, as for @ref device, and the frame
+  /// holds them as it does @ref device.
   std::shared_ptr<const core::Image> image[2];
   std::uint32_t width = 0;   ///< Luma width (pixels).
   std::uint32_t height = 0;  ///< Luma height (pixels).

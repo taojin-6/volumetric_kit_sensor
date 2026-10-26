@@ -1,0 +1,35 @@
+#version 450
+
+// Colour undistortion and Y'CbCr to R'G'B' in one pass (undistort_color.glsl),
+// over NV12's two plane images, read where they are: an Apple picture's
+// IOSurface planes, imported through VK_EXT_metal_objects. The same samples
+// as the buffer entry reads, so the same words.
+
+#extension GL_GOOGLE_include_directive : require
+#include "undistort_color.glsl"
+
+// R8 luma and R8G8 chroma (Cb, Cr), at least the picture's size, read from
+// their corner at integer coordinates: the sampler's filtering is never used.
+layout(set = 0, binding = 0) uniform sampler2D luma_plane;
+layout(set = 0, binding = 1) uniform sampler2D chroma_plane;
+// R | G << 8 | B << 16 | coverage << 24, as the buffer entry writes.
+layout(set = 0, binding = 2, scalar) writeonly buffer Color { uint color[]; };
+
+// An 8-bit UNORM sample reads as code / 255, which round() makes the code
+// again, exactly.
+float luma_at(uint x, uint y) {
+  return round(texelFetch(luma_plane, ivec2(x, y), 0).r * 255.0);
+}
+
+vec2 chroma_at(uint x, uint y) {
+  return round(texelFetch(chroma_plane, ivec2(x, y), 0).rg * 255.0);
+}
+
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  if (gid >= pc.cam.width * pc.cam.height) {
+    return;
+  }
+  vec2 s;
+  color[gid] = source_of(gid, s) ? ycbcr_word(s) : 0u;
+}

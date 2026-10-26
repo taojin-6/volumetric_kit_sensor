@@ -4,8 +4,9 @@
 #pragma once
 
 // An image made and filled by hand and left in GENERAL, as an import hands
-// one to recon, on any GPU: what the tests of the image copy and of colour
-// arriving as images read.
+// one to recon, or in another layout a reader takes, on any GPU: what the
+// tests of the image copy and of colour arriving as images read, copied or
+// sampled.
 
 #include <cstdint>
 #include <cstring>
@@ -28,13 +29,15 @@ namespace test_image {
 
 // A `width` x `height` image of `format` holding `texels`, rows packed, in
 // memory of its own, filled by the core's test::write_image; `usage` beside
-// TRANSFER_DST, which filling it needs.
+// TRANSFER_DST, which filling it needs, and with SAMPLED a view, which a
+// sampler reads it through; left in `layout`, which write_image takes.
 inline volumetric_kit::core::Result<volumetric_kit::core::Image> make(
     const volumetric_kit::core::Device& device,
     volumetric_kit::core::Allocator& allocator, VkFormat format,
     std::uint32_t width, std::uint32_t height,
     const std::vector<std::uint8_t>& texels,
-    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT) {
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+    VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL) {
   namespace vkc = volumetric_kit::core;
   const VkDevice dev = device.handle();
   VkImageCreateInfo info{};
@@ -65,18 +68,34 @@ inline volumetric_kit::core::Result<volumetric_kit::core::Image> make(
     vkDestroyImage(dev, image, nullptr);
     return vkc::Status::out_of_memory("test image: no memory for it");
   }
+  VkImageView view = VK_NULL_HANDLE;
+  if ((usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0) {
+    VkImageViewCreateInfo view_info{};
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image = image;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = format;
+    view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(dev, &view_info, nullptr, &view) != VK_SUCCESS) {
+      vkFreeMemory(dev, backing, nullptr);
+      vkDestroyImage(dev, image, nullptr);
+      return vkc::Status::out_of_memory("test image: no view of it");
+    }
+  }
   vkc::ImageInfo adopted;
   adopted.image = image;
+  adopted.view = view;
   adopted.format = format;
   adopted.extent = info.extent;
   adopted.usage = info.usage;
-  vkc::Image out(adopted, [dev, image, backing] {
+  vkc::Image out(adopted, [dev, image, view, backing] {
+    vkDestroyImageView(dev, view, nullptr);
     vkDestroyImage(dev, image, nullptr);
     vkFreeMemory(dev, backing, nullptr);
   });
 
   VKC_TRY(vkc::test::write_image(device, allocator, out, texels.data(),
-                                 texels.size(), VK_IMAGE_LAYOUT_GENERAL));
+                                 texels.size(), layout));
   return out;
 }
 
@@ -88,13 +107,15 @@ inline std::shared_ptr<const volumetric_kit::core::Image> with_corner(
     volumetric_kit::core::Allocator& allocator, VkFormat format,
     std::uint32_t texel, std::uint32_t width, std::uint32_t height,
     const std::uint8_t* rows, std::uint32_t row_bytes, std::uint32_t count,
-    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT) {
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+    VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL) {
   std::vector<std::uint8_t> texels(std::size_t{width} * height * texel, 0xEE);
   for (std::uint32_t r = 0; r < count; ++r) {
     std::memcpy(&texels[std::size_t{r} * width * texel],
                 rows + std::size_t{r} * row_bytes, row_bytes);
   }
-  auto made = make(device, allocator, format, width, height, texels, usage);
+  auto made =
+      make(device, allocator, format, width, height, texels, usage, layout);
   return made.ok() ? std::make_shared<const volumetric_kit::core::Image>(
                          std::move(made).value())
                    : nullptr;

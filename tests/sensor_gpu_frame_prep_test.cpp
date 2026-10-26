@@ -11,6 +11,9 @@
 //     coverage byte included;
 //   - packed R'G'B' words from the host come through a pinhole as they went
 //     in, and through a lens as the reference samples them;
+//   - NV12's planes as images larger than the picture, sampled in place in
+//     either layout the pass takes, give the words the same samples in a
+//     buffer give, bit for bit;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its depth and colour outputs are shared with the queue families its
@@ -311,15 +314,17 @@ std::vector<std::uint32_t> color_of(const sensor::DeviceFrame& f) {
       *f.color, std::size_t{f.color_camera.width} * f.color_camera.height);
 }
 
+// What the pass needs of a plane image: SAMPLED usage, and with it a view.
+// No TRANSFER_SRC: no copy reads it.
+constexpr VkImageUsageFlags kSampled = VK_IMAGE_USAGE_SAMPLED_BIT;
+
 // test_image::with_corner on the test's device.
-std::shared_ptr<const vkc::Image> image_of(VkFormat format, std::uint32_t texel,
-                                           std::uint32_t iw, std::uint32_t ih,
-                                           const std::uint8_t* rows,
-                                           std::uint32_t row_bytes,
-                                           std::uint32_t count,
-                                           VkImageUsageFlags usage) {
+std::shared_ptr<const vkc::Image> image_of(
+    VkFormat format, std::uint32_t texel, std::uint32_t iw, std::uint32_t ih,
+    const std::uint8_t* rows, std::uint32_t row_bytes, std::uint32_t count,
+    VkImageUsageFlags usage, VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL) {
   return test_image::with_corner(*g_device, *g_allocator, format, texel, iw, ih,
-                                 rows, row_bytes, count, usage);
+                                 rows, row_bytes, count, usage, layout);
 }
 
 // Pinhole: depth is raw * scale exactly, and a colour survives the forward
@@ -464,7 +469,7 @@ Planes patterned(std::uint32_t w, std::uint32_t h) {
 }
 
 // A w x h pinhole frame, its depth held by the frame, its colour patterned
-// NV12 plane images, as VideoToolbox hands them out.
+// NV12 plane images, as VideoToolbox hands them out, which the pass samples.
 sensor::RgbdFrame image_frame(std::uint32_t w, std::uint32_t h) {
   camera::CameraModel cam = pinhole();
   cam.size = {w, h};
@@ -479,7 +484,6 @@ sensor::RgbdFrame image_frame(std::uint32_t w, std::uint32_t h) {
     cbcr[2 * i] = p.cb[i];
     cbcr[2 * i + 1] = p.cr[i];
   }
-  const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   sensor::YuvImage& images = f.color;
   images.layout = sensor::YuvLayout::Nv12;
   images.width = w;
@@ -488,9 +492,9 @@ sensor::RgbdFrame image_frame(std::uint32_t w, std::uint32_t h) {
   images.kb = 0.0722f;
   images.full_range = false;
   images.image[0] =
-      image_of(VK_FORMAT_R8_UNORM, 1, w, h, p.y.data(), w, h, src);
+      image_of(VK_FORMAT_R8_UNORM, 1, w, h, p.y.data(), w, h, kSampled);
   images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch, cbcr.data(),
-                             2 * p.cw, p.ch, src);
+                             2 * p.cw, p.ch, kSampled);
   return f;
 }
 
@@ -789,12 +793,12 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   CHECK(same(word));
 
   // Images, each wider and taller than its plane, the rest of it junk: the
-  // pass copies the picture from their corner.
-  const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  // pass samples the picture from their corner, in place, and its words are
+  // the buffer's, bit for bit.
   const auto luma =
-      image_of(VK_FORMAT_R8_UNORM, 1, w + 3, h + 2, p.y.data(), w, h, src);
+      image_of(VK_FORMAT_R8_UNORM, 1, w + 3, h + 2, p.y.data(), w, h, kSampled);
   const auto chroma = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw + 1, p.ch + 1,
-                               cbcr_tight.data(), 2 * p.cw, p.ch, src);
+                               cbcr_tight.data(), 2 * p.cw, p.ch, kSampled);
   CHECK(luma != nullptr && chroma != nullptr);
   sensor::YuvImage images = i420;
   images.device = nullptr;
@@ -804,10 +808,23 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   images.image[0] = luma;
   images.image[1] = chroma;
   CHECK(same(images));
+  // And in SHADER_READ_ONLY_OPTIMAL, the other layout the pass samples in,
+  // which its sets name.
+  const VkImageLayout read_only = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  sensor::YuvImage read_only_images = images;
+  read_only_images.image[0] = image_of(VK_FORMAT_R8_UNORM, 1, w + 3, h + 2,
+                                       p.y.data(), w, h, kSampled, read_only);
+  read_only_images.image[1] =
+      image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw + 1, p.ch + 1, cbcr_tight.data(),
+               2 * p.cw, p.ch, kSampled, read_only);
+  CHECK(read_only_images.image[0] != nullptr &&
+        read_only_images.image[1] != nullptr);
+  CHECK(read_only_images.image[0]->layout() == read_only);
+  CHECK(same(read_only_images));
 
   // Refused as images: beside planes in a buffer; I420; either one missing;
-  // the two swapped; one smaller than its plane; one the pass cannot copy,
-  // for its usage or its layout.
+  // the two swapped; one smaller than its plane; one the pass cannot sample,
+  // for its usage, its missing view, its layout or its shape.
   sensor::YuvImage bad_images = images;
   bad_images.device = planes;
   CHECK(refused(bad_images, "not both"));
@@ -826,18 +843,58 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   CHECK(refused(bad_images, "at least the picture's size"));
   bad_images = images;
   bad_images.image[0] =
-      image_of(VK_FORMAT_R8_UNORM, 1, w - 1, h, p.y.data(), w - 1, h, src);
+      image_of(VK_FORMAT_R8_UNORM, 1, w - 1, h, p.y.data(), w - 1, h, kSampled);
   CHECK(refused(bad_images, "at least the picture's size"));
+  // What a copy needs, which the pass does not: TRANSFER_SRC, no view.
   bad_images = images;
-  bad_images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch,
-                                 cbcr_tight.data(), 2 * p.cw, p.ch, 0);
-  CHECK(refused(bad_images, "TRANSFER_SRC"));
-  bad_images = images;
-  vkc::ImageInfo shader_read = chroma->info();
-  shader_read.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   bad_images.image[1] =
-      std::make_shared<const vkc::Image>(shader_read, nullptr);  // borrowed
-  CHECK(refused(bad_images, "TRANSFER_SRC_OPTIMAL"));
+      image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch, cbcr_tight.data(), 2 * p.cw,
+               p.ch, VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+  CHECK(bad_images.image[1] != nullptr);
+  CHECK(refused(bad_images, "SAMPLED usage and a view"));
+  bad_images = images;
+  vkc::ImageInfo viewless = chroma->info();
+  viewless.view = VK_NULL_HANDLE;
+  bad_images.image[1] =
+      std::make_shared<const vkc::Image>(viewless, nullptr);  // borrowed
+  CHECK(refused(bad_images, "SAMPLED usage and a view"));
+  // A view without SAMPLED usage, as the allocator's storage images have.
+  bad_images = images;
+  vkc::ImageInfo unsampled = chroma->info();
+  unsampled.usage =
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  CHECK(unsampled.view != VK_NULL_HANDLE);
+  bad_images.image[1] =
+      std::make_shared<const vkc::Image>(unsampled, nullptr);  // borrowed
+  CHECK(refused(bad_images, "SAMPLED usage and a view"));
+  bad_images = images;
+  vkc::ImageInfo copied = chroma->info();
+  copied.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  bad_images.image[1] =
+      std::make_shared<const vkc::Image>(copied, nullptr);  // borrowed
+  CHECK(refused(bad_images, "GENERAL or SHADER_READ_ONLY_OPTIMAL"));
+  // Either plane in a shape whose view the pass's sampler2D does not match:
+  // a 3D image of depth 1, two layers, or four samples.
+  const auto reshaped = [&](int plane, void (*shape)(vkc::ImageInfo&)) {
+    vkc::ImageInfo info = images.image[plane]->info();
+    shape(info);
+    sensor::YuvImage out = images;
+    out.image[plane] =
+        std::make_shared<const vkc::Image>(info, nullptr);  // borrowed
+    return out;
+  };
+  for (int plane = 0; plane < 2; ++plane) {
+    CHECK(refused(
+        reshaped(plane, [](vkc::ImageInfo& i) { i.type = VK_IMAGE_TYPE_3D; }),
+        "2D, of one layer and one sample"));
+    CHECK(
+        refused(reshaped(plane, [](vkc::ImageInfo& i) { i.array_layers = 2; }),
+                "2D, of one layer and one sample"));
+    CHECK(refused(
+        reshaped(plane,
+                 [](vkc::ImageInfo& i) { i.samples = VK_SAMPLE_COUNT_4_BIT; }),
+        "2D, of one layer and one sample"));
+  }
 
   // Refused: a plane past the buffer; planes that overlap, as I420's do with
   // its offsets left at zero; a stride shorter than the picture's rows; a
@@ -938,16 +995,15 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
     cbcr[2 * i] = p3.cb[i];
     cbcr[2 * i + 1] = p3.cr[i];
   }
-  const VkImageUsageFlags src = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   sensor::YuvImage& images = frames[3]->color;
   images.device = nullptr;
   images.offset[0] = images.offset[1] = images.offset[2] = 0;
   images.stride[0] = images.stride[1] = images.stride[2] = 0;
   images.layout = sensor::YuvLayout::Nv12;
-  images.image[0] =
-      image_of(VK_FORMAT_R8_UNORM, 1, p3.w, p3.h, p3.y.data(), p3.w, p3.h, src);
+  images.image[0] = image_of(VK_FORMAT_R8_UNORM, 1, p3.w, p3.h, p3.y.data(),
+                             p3.w, p3.h, kSampled);
   images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p3.cw, p3.ch, cbcr.data(),
-                             2 * p3.cw, p3.ch, src);
+                             2 * p3.cw, p3.ch, kSampled);
   CHECK(images.image[0] != nullptr && images.image[1] != nullptr);
   // Camera 4's as packed words on the host, as a dataset decodes them.
   const std::vector<std::uint32_t> words = packed_words(raws[4].size(), 3);
@@ -1110,9 +1166,9 @@ int test_record(vkc::Device& device, vkc::Allocator& allocator) {
   CHECK(prep.prepare(f).ok());
 
   // That refusal changes no buffer the unresolved batch uses: a small frame
-  // of NV12 plane images, which the pass copies into a buffer of its own,
-  // recorded with its outputs' readback and its frame dropped, then a larger
-  // one refused; the first batch still reads what prepare gives.
+  // recorded with its outputs' readback and its frame dropped, so nothing
+  // holds those outputs but the batch, then a larger one refused, which would
+  // grow them; the first batch still reads what prepare gives.
   {
     auto fresh = sensor::GpuFramePrep::create(device, allocator);
     CHECK(fresh.ok());

@@ -7,9 +7,10 @@
 // read, not when it was imported -- at the picture's size from the buffer's
 // corner, each surface's images made once; the images hold the buffer; what
 // the images allocate in Metal; the picture prepares as a frame's colour by
-// the description its caller gives; the images' sharing across queue
-// families, and a renderer's family copying them on a device shared with
-// recon; what it refuses; and moves.
+// the description its caller gives, sampled in place to the words its buffer
+// form gives; the images' sharing across queue families, and a renderer's
+// family copying them on a device shared with recon; what it refuses; and
+// moves.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -22,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -364,6 +366,91 @@ int test_prepares(const Gpu& gpu) {
   return 0;
 }
 
+// A patterned picture smaller than its IOSurface, sampled where it is through
+// a lens, prepares as its buffer form does, bit for bit: the same planes'
+// bytes, read off the pixel buffer, in a device buffer at their own strides.
+// The planes are larger than the picture, their rows longer than its width.
+int test_samples_as_buffer(const Gpu& gpu) {
+  auto importer = PixelBufferImporter::create(gpu.device, "test");
+  CHECK(importer.ok());
+  auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
+  CHECK(prep.ok());
+  constexpr std::uint32_t kW = 255;
+  constexpr std::uint32_t kH = 143;
+  const Pixels pixels(make_pixels(kW + 2, kH + 3, kVideo));
+  CHECK(pixels.ref != nullptr && fill(pixels.ref, 8));
+  sensor::RgbdFrame raw;
+  raw.depth_camera.size = {kW, kH};
+  raw.depth_camera.intrinsics.fx = 180.0;
+  raw.depth_camera.intrinsics.fy = 175.0;
+  raw.depth_camera.intrinsics.cx = kW / 2.0 - 3.3;
+  raw.depth_camera.intrinsics.cy = kH / 2.0 + 2.1;
+  raw.depth_camera.distortion.k1 = 0.15;  // pincushion: corners uncovered
+  raw.depth_camera.distortion.p1 = 0.002;
+  raw.color_camera = raw.depth_camera;
+  std::vector<std::uint16_t> depth(std::size_t{kW} * kH, 1000);
+  raw.depth = depth.data();
+  raw.min_depth = 0.1f;
+  raw.max_depth = 5.0f;
+  CHECK(importer->import(pixels.ref, kW, kH, raw.color).ok());
+  const sensor::YcbcrWeights weights =
+      sensor::ycbcr_weights(VideoColorMatrix::Bt709);
+  raw.color.kr = weights.kr;
+  raw.color.kb = weights.kb;
+  raw.color.full_range = false;
+  const auto words = [&]() -> std::vector<std::uint32_t> {
+    auto frame = prep->prepare(raw);
+    if (!frame) {
+      std::fprintf(stderr, "%s\n", frame.status().message().c_str());
+      return {};
+    }
+    auto got = vr_test::read_back<std::uint32_t>(gpu.device, gpu.allocator,
+                                                 *frame->color, depth.size());
+    return got.ok() ? std::move(got).value() : std::vector<std::uint32_t>{};
+  };
+  const std::vector<std::uint32_t> sampled = words();
+  CHECK(sampled.size() == depth.size());
+
+  // The buffer form: each plane's rows at the pixel buffer's own stride, the
+  // chroma after the luma, whole words.
+  CHECK(CVPixelBufferLockBaseAddress(pixels.ref, kCVPixelBufferLock_ReadOnly) ==
+        kCVReturnSuccess);
+  std::size_t stride[2] = {};
+  std::size_t offset[2] = {};
+  std::vector<std::uint8_t> bytes;
+  for (std::size_t plane = 0; plane < 2; ++plane) {
+    stride[plane] = CVPixelBufferGetBytesPerRowOfPlane(pixels.ref, plane);
+    const std::size_t rows = CVPixelBufferGetHeightOfPlane(pixels.ref, plane);
+    offset[plane] = bytes.size();
+    const auto* base = static_cast<const std::uint8_t*>(
+        CVPixelBufferGetBaseAddressOfPlane(pixels.ref, plane));
+    bytes.insert(bytes.end(), base, base + stride[plane] * rows);
+  }
+  CVPixelBufferUnlockBaseAddress(pixels.ref, kCVPixelBufferLock_ReadOnly);
+  bytes.resize((bytes.size() + 3) & ~std::size_t{3});
+  auto planes = vr_test::upload_device_buffer(gpu.device, gpu.allocator,
+                                              bytes.data(), bytes.size());
+  CHECK(planes.ok());
+  YuvImage buffer = raw.color;
+  buffer.image[0].reset();
+  buffer.image[1].reset();
+  buffer.device =
+      std::make_shared<const vkc::Buffer>(std::move(planes).value());
+  for (int plane = 0; plane < 2; ++plane) {
+    buffer.offset[plane] = offset[plane];
+    buffer.stride[plane] = stride[plane];
+  }
+  CHECK(stride[0] > kW);  // rows longer than the picture's
+  raw.color = buffer;
+  const std::vector<std::uint32_t> in_buffer = words();
+  CHECK(in_buffer == sampled);
+  // Not a blank: the lens leaves corners uncovered and the rest varies.
+  CHECK(std::count(sampled.begin(), sampled.end(), 0u) > 0);
+  CHECK(std::adjacent_find(sampled.begin(), sampled.end(),
+                           std::not_equal_to<>()) != sampled.end());
+  return 0;
+}
+
 // What it does not take: Unsupported for another format, a buffer on no
 // IOSurface, or one smaller than the picture; InvalidArgument for no buffer.
 // A refused import leaves its image as it was. A device that imports no
@@ -547,6 +634,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
   if (test_holds_the_buffer(gpu) != 0) return 1;
   if (test_allocates_only_textures(gpu) != 0) return 1;
   if (test_prepares(gpu) != 0) return 1;
+  if (test_samples_as_buffer(gpu) != 0) return 1;
   if (test_sharing(gpu) != 0) return 1;
   if (test_cross_family() != 0) return 1;
   if (test_refusals(gpu) != 0) return 1;

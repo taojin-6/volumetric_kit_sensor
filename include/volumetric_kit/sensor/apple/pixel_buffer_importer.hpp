@@ -91,7 +91,9 @@ class VR_SENSOR_APPLE_API PixelBufferImporter {
   /// @param width The picture's width: it sits at the buffer's corner.
   /// @param height The picture's height.
   /// @param out Given its planes: NV12, `image[0]` and `image[1]` in
-  ///        `GENERAL`, @p width x @p height, no @ref YuvImage::device. Its
+  ///        `GENERAL` with views and `SAMPLED` and `TRANSFER_SRC` usage, so
+  ///        `GpuFramePrep` samples them and `PictureReadback` copies them,
+  ///        @p width x @p height, no @ref YuvImage::device. Its
   ///        matrix, range and chroma siting are left as they are, for the
   ///        caller to set: the pixel buffer's format need not say how its
   ///        samples are coded.

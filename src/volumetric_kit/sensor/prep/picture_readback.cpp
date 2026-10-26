@@ -66,7 +66,7 @@ core::Result<Plan> plan(const YuvImage& picture, PictureReadback::Planes planes,
     }
   }
   VKC_ASSIGN(const detail::YuvPlanes shape,
-             detail::check_yuv_planes(picture, kWho));
+             detail::check_yuv_planes(picture, kWho, detail::ImageRead::Copy));
   Plan out;
   out.count = planes == PictureReadback::Planes::Luma ? 1 : shape.count;
   for (int p = 0; p < out.count; ++p) {
