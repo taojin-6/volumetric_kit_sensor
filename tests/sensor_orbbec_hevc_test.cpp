@@ -314,10 +314,11 @@ int check_pair(
 }
 
 // Each picture comes out carried in its frame, which has no pixels of its
-// own, as the frame's colour it is: its planes where the hardware left them,
-// a buffer CUDA wrote taken over from outside Vulkan. It lives as long as its
-// frame, which a copy of the frame does not extend. No camera bytes come with
-// it: an H.265 frame decodes only after the frames before it.
+// own, as the frame's colour it is: NV12's two plane images where the
+// hardware left them, on NVDEC named as outside Vulkan's, as CUDA wrote them.
+// It lives as long as its frame, which a copy of the frame does not extend.
+// No camera bytes come with it: an H.265 frame decodes only after the frames
+// before it.
 int test_hands_on_device_pictures() {
   Run r = run(
       pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}),
@@ -336,18 +337,16 @@ int test_hands_on_device_pictures() {
     CHECK(none.codec == sensor::ColorBitstream::Codec::None);
     CHECK(none.data == nullptr && none.size == 0);
     const sensor::YuvImage& yuv = p->yuv;
-    CHECK((yuv.device != nullptr) != (yuv.image[0] != nullptr));
+    CHECK(yuv.device == nullptr && yuv.image[0] != nullptr &&
+          yuv.image[1] != nullptr);
     CHECK(yuv.layout == sensor::YuvLayout::Nv12);
-    if (yuv.device != nullptr) {
-      CHECK(yuv.queue_family == sensor::kQueueFamilyExternal);
-    } else {
-      CHECK(yuv.image[1] != nullptr);
-    }
+#if defined(__APPLE__)
+    CHECK(yuv.queue_family == sensor::kQueueFamilyIgnored);
+#else
+    CHECK(yuv.queue_family == sensor::kQueueFamilyExternal);
+#endif
     if (f == 7) {
-      if (yuv.device)
-        held = yuv.device;
-      else
-        held = yuv.image[0];
+      held = yuv.image[0];
       // Its bytes, copied into a frame of their own.
       auto* bytes = new std::uint8_t[color->getDataSize()];
       std::memcpy(bytes, color->getData(), color->getDataSize());
