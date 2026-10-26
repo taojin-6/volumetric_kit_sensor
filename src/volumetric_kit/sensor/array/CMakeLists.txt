@@ -4,8 +4,9 @@
 # --- recon_sensor_array: several sensors read as one -------------------------
 # The vendor-neutral array of IRgbdSensors: start order from their rig roles,
 # frames grouped into one set per trigger, each posed by the array's
-# calibration, and each set prepared on the GPU in one batch (the 2026-10-06
-# decisions). A target of its own above the drivers, which never link it.
+# calibration, each set prepared on the GPU in one batch (the 2026-10-06
+# decisions), and a run's sets waited for and cut to its length (RigSets). A
+# target of its own above the drivers, which never link it.
 include(GenerateExportHeader)
 
 set(_vr_sensor_array_generated_inc
@@ -15,7 +16,8 @@ add_library(recon_sensor_array)
 add_library(volumetric_kit::recon_sensor_array ALIAS recon_sensor_array)
 
 # The trigger grouping is internal: no export, no public header.
-target_sources(recon_sensor_array PRIVATE sensor_array.cpp trigger_grouper.cpp)
+target_sources(recon_sensor_array PRIVATE rig_sets.cpp sensor_array.cpp
+                                          trigger_grouper.cpp)
 
 generate_export_header(
   recon_sensor_array
