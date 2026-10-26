@@ -60,9 +60,11 @@ struct Held {
   CVPixelBufferRef pixels;
 };
 
-// @p image bound to memory of its own, or null. MoltenVK binds a texture's
-// own storage, so the memory is a formality: device-local and not
-// host-visible, which it would back with a buffer.
+// @p image bound to memory dedicated to it, or null. MoltenVK binds the
+// texture's own storage, and makes nothing for memory dedicated to an image;
+// other memory it backs with a heap of the allocation's size, which the
+// texture never uses. Device-local and not host-visible, which it would back
+// with a buffer.
 VkDeviceMemory bind_memory(const core::Device& device, VkImage image) {
   const VkDevice dev = device.handle();
   VkMemoryRequirements needs{};
@@ -71,8 +73,12 @@ VkDeviceMemory bind_memory(const core::Device& device, VkImage image) {
       device, needs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
   if (!type) return VK_NULL_HANDLE;
+  VkMemoryDedicatedAllocateInfo dedicated{};
+  dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+  dedicated.image = image;
   VkMemoryAllocateInfo alloc{};
   alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  alloc.pNext = &dedicated;
   alloc.allocationSize = needs.size;
   alloc.memoryTypeIndex = *type;
   VkDeviceMemory out = VK_NULL_HANDLE;
