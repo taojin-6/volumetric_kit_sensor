@@ -12,7 +12,7 @@
 // their corner at integer coordinates: the sampler's filtering is never used.
 layout(set = 0, binding = 0) uniform sampler2D luma_plane;
 layout(set = 0, binding = 1) uniform sampler2D chroma_plane;
-// R | G << 8 | B << 16 | coverage << 24, the tsdf tier's colour layout.
+// R | G << 8 | B << 16 | coverage << 24, as the buffer entry writes.
 layout(set = 0, binding = 2, scalar) writeonly buffer Color { uint color[]; };
 
 // An 8-bit UNORM sample reads as code / 255, which round() makes the code
