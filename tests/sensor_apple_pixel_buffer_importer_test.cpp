@@ -5,10 +5,11 @@
 // with no decoder and no FFmpeg: an NV12 IOSurface's planes reach Vulkan as
 // images without a copy -- they read what the surface holds when they are
 // read, not when it was imported -- at the picture's size from the buffer's
-// corner, each surface's images made once; the images hold the buffer; the
-// picture prepares as a frame's colour by the description its caller gives;
-// the images' sharing across queue families, and a renderer's family copying
-// them on a device shared with recon; what it refuses; and moves.
+// corner, each surface's images made once; the images hold the buffer; what
+// the images allocate in Metal; the picture prepares as a frame's colour by
+// the description its caller gives; the images' sharing across queue
+// families, and a renderer's family copying them on a device shared with
+// recon; what it refuses; and moves.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -30,6 +31,7 @@
 #include "buffer_readback.hpp"
 #include "device_picture_readback.hpp"
 #include "gpu_test.hpp"
+#include "metal_allocation.hpp"
 #include "test_check.hpp"
 #include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
@@ -244,6 +246,61 @@ int test_holds_the_buffer(const Gpu& gpu) {
   CHECK(CFGetRetainCount(pixels.ref) == alone + 1);  // the chroma holds it
   chroma.reset();
   CHECK(CFGetRetainCount(pixels.ref) == alone);
+  return 0;
+}
+
+// The images allocate nothing in Metal beyond the textures on the surface's
+// planes: importing four distinct 4K surfaces, a camera's size, grows the
+// Metal device's allocation by no more than bare textures on the same planes
+// do, plus less than one luma plane. Memory not dedicated to the images would
+// add a heap per plane, 13.2 MB a surface on an M4. A surface imported once
+// more adds nothing.
+int test_allocates_only_textures(const Gpu& gpu) {
+  constexpr std::uint32_t kW = 3840;
+  constexpr std::uint32_t kH = 2160;
+  constexpr std::int64_t kLuma = std::int64_t{kW} * kH;
+  constexpr std::size_t kSurfaces = 4;
+  auto importer = PixelBufferImporter::create(gpu.device, "test");
+  CHECK(importer.ok());
+  // What a first import alone makes is not counted.
+  const Pixels first(make_pixels(64, 48, kFull));
+  CHECK(first.ref != nullptr);
+  YuvImage warm;
+  CHECK(importer->import(first.ref, 64, 48, warm).ok());
+
+  const Pixels pixels[kSurfaces] = {
+      Pixels(make_pixels(kW, kH, kFull)), Pixels(make_pixels(kW, kH, kFull)),
+      Pixels(make_pixels(kW, kH, kFull)), Pixels(make_pixels(kW, kH, kFull))};
+  std::vector<CVPixelBufferRef> refs;
+  for (const Pixels& p : pixels) {
+    CHECK(p.ref != nullptr);
+    refs.push_back(p.ref);
+  }
+  const std::optional<std::int64_t> bare =
+      vr_test::bare_plane_textures_size(gpu.device, refs);
+  CHECK(bare.has_value());
+
+  const std::optional<std::int64_t> before =
+      vr_test::metal_allocated_size(gpu.device);
+  CHECK(before.has_value());
+  YuvImage yuv[kSurfaces];
+  for (std::size_t i = 0; i < kSurfaces; ++i) {
+    CHECK(importer->import(refs[i], kW, kH, yuv[i]).ok());
+  }
+  const std::optional<std::int64_t> imported =
+      vr_test::metal_allocated_size(gpu.device);
+  CHECK(imported.has_value());
+  const std::int64_t grown = *imported - *before;
+  std::printf(
+      "%zu surfaces of %ux%u: imported +%lld B, bare textures +%lld B\n",
+      kSurfaces, kW, kH, static_cast<long long>(grown),
+      static_cast<long long>(*bare));
+  CHECK(grown < *bare + kLuma);
+
+  YuvImage again;
+  CHECK(importer->import(refs[0], kW, kH, again).ok());
+  CHECK(again.image[0] == yuv[0].image[0]);
+  CHECK(vr_test::metal_allocated_size(gpu.device) == imported);
   return 0;
 }
 
@@ -488,6 +545,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
   if (test_planes(gpu) != 0) return 1;
   if (test_sets_only_the_planes(gpu) != 0) return 1;
   if (test_holds_the_buffer(gpu) != 0) return 1;
+  if (test_allocates_only_textures(gpu) != 0) return 1;
   if (test_prepares(gpu) != 0) return 1;
   if (test_sharing(gpu) != 0) return 1;
   if (test_cross_family() != 0) return 1;
