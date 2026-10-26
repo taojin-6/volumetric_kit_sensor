@@ -166,11 +166,18 @@ core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
   if (metrics != nullptr) VKC_TRY(timer_.reserve(device_, copies));
   core::GpuStageScope stage(metrics, timer_, "readback");
   core::CommandBatch batch(device_, allocator_);
-  // Planes in a buffer taken over from the family that wrote them, first, so
-  // a family the device lacks is refused before the staging grows.
+  // Planes taken over from the family that wrote them, images in the layout
+  // they are in, first, so a family the device lacks, or one an EXCLUSIVE
+  // image cannot cross from, is refused before the staging grows.
   for (std::size_t i = 0; i < count; ++i) {
-    if (pictures[i] != nullptr && pictures[i]->device != nullptr) {
-      VKC_TRY(batch.acquire(*pictures[i]->device, pictures[i]->queue_family));
+    if (pictures[i] == nullptr) continue;
+    const YuvImage& picture = *pictures[i];
+    if (picture.device != nullptr) {
+      VKC_TRY(batch.acquire(*picture.device, picture.queue_family));
+    } else {
+      for (const std::shared_ptr<const core::Image>& plane : picture.image) {
+        VKC_TRY(batch.acquire(*plane, picture.queue_family, plane->layout()));
+      }
     }
   }
   if (!staging_.valid() || staging_.size() < staged) {
@@ -216,9 +223,18 @@ core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
     YuvImage& picture = *pictures[i];
     // Publish ownership only after the submit and wait succeed. A later
     // read or GpuFramePrep must not repeat the writer's release/acquire.
+    // Images that needed no transfer keep their kQueueFamilyIgnored.
+    const auto concurrent = [](VkSharingMode mode) {
+      return mode == VK_SHARING_MODE_CONCURRENT;
+    };
     if (picture.device != nullptr) {
+      picture.queue_family = concurrent(picture.device->sharing_mode())
+                                 ? kQueueFamilyIgnored
+                                 : device_.queue_family();
+    } else if (picture.queue_family != kQueueFamilyIgnored) {
       picture.queue_family =
-          picture.device->sharing_mode() == VK_SHARING_MODE_CONCURRENT
+          concurrent(picture.image[0]->sharing_mode()) &&
+                  concurrent(picture.image[1]->sharing_mode())
               ? kQueueFamilyIgnored
               : device_.queue_family();
     }

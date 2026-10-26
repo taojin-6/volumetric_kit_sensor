@@ -28,9 +28,10 @@
 #
 # 256x144: NVDEC's smallest HEVC picture is 144x144.
 #
-# And 8 frames of testsrc2 at 128x64, with B-frames, for VideoToolbox: each
-# decodes to the MD5 of libavcodec's own decode of it, in display order, which
-# the script prints last (tests/sensor_video_hevc_test.cpp holds them).
+# And 8 frames of testsrc2 at 128x64, with B-frames, for VideoToolbox. The
+# patch clip, the cropped one and these decode to the MD5 of libavcodec's own
+# decode of each, in display order, which the script prints last
+# (tests/sensor_video_hevc_test.cpp holds them).
 #   tests/data/hevc/testsrc2_128x64.h265  no colour description: video range.
 #   tests/data/hevc/testsrc2_full_128x64.h265  BT.709, full range.
 #   tests/data/hevc/testsrc2_cropped_120x56.h265  the first, its display
@@ -107,7 +108,8 @@ ffmpeg -hide_banner -loglevel error -y \
   -i "$root/tests/data/hevc/testsrc2_128x64.h265" -c copy \
   -bsf:v hevc_metadata=crop_right=8:crop_bottom=8 -f hevc \
   "$root/tests/data/hevc/testsrc2_cropped_120x56.h265"
-for clip in testsrc2_128x64 testsrc2_full_128x64 testsrc2_cropped_120x56; do
+for clip in patches_256x144 cropped_240x128 testsrc2_128x64 \
+  testsrc2_full_128x64 testsrc2_cropped_120x56; do
   printf '%s ' "$clip"
   ffmpeg -hide_banner -loglevel error \
     -i "$root/tests/data/hevc/$clip.h265" -fps_mode passthrough -f md5 -

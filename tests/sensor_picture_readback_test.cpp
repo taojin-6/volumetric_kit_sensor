@@ -6,8 +6,9 @@
 // buffers at odd sizes, offsets and strides, read back byte for byte, luma
 // alone or every plane, one picture or a set; buffers taken over from the
 // readback's own family, a CONCURRENT buffer's other family and from outside
-// Vulkan; the host memory grown and reused; views that outlive their
-// pictures; every refusal; and the stage row. Skips without a device.
+// Vulkan, and images from outside Vulkan; the host memory grown and reused;
+// views that outlive their pictures; every refusal; and the stage row. Skips
+// without a device.
 
 #include <cstddef>
 #include <cstdint>
@@ -298,7 +299,8 @@ int test_set(const vr_test::Gpu& gpu) {
 
 // Planes in a buffer the readback's own family wrote, named as ignored or as
 // that family; a CONCURRENT buffer another family wrote; and one an API
-// outside Vulkan wrote: the same bytes.
+// outside Vulkan wrote: the same bytes. Plane images likewise, except that
+// another family's EXCLUSIVE images are refused.
 int test_families(const vr_test::Gpu& gpu) {
   const auto readback = readback_on(gpu);
   CHECK(readback != nullptr);
@@ -332,6 +334,30 @@ int test_families(const vr_test::Gpu& gpu) {
       static_cast<std::uint32_t>(gpu.device.caps().queue_families().size());
   CHECK(readback->read(picture, Planes::Luma).status().domain() ==
         vkc::Status::Code::InvalidArgument);
+
+  // EXCLUSIVE images, as NVDEC's are by default: taken over from outside
+  // Vulkan, and named as this family's after; named as that family's, or
+  // needing no transfer, read as they are, the latter left so.
+  YuvImage images = as_images(gpu, p);
+  CHECK(made(images));
+  for (const std::uint32_t family :
+       {sensor::kQueueFamilyExternal, own, sensor::kQueueFamilyIgnored}) {
+    images.queue_family = family;
+    auto view = readback->read(images, Planes::All);
+    CHECK(view.ok());
+    CHECK(check_view(*view, p, YuvLayout::Nv12, Planes::All) == 0);
+    CHECK(images.queue_family == (family == sensor::kQueueFamilyIgnored
+                                      ? sensor::kQueueFamilyIgnored
+                                      : own));
+    CHECK(images.image[0]->layout() == VK_IMAGE_LAYOUT_GENERAL);
+  }
+  // Another family's EXCLUSIVE images cannot cross to this one.
+  if (const auto other = vr_test::other_queue_family(gpu.device)) {
+    images.queue_family = *other;
+    CHECK(readback->read(images, Planes::Luma).status().domain() ==
+          vkc::Status::Code::InvalidArgument);
+    CHECK(images.queue_family == *other);
+  }
   std::printf("  families: own, CONCURRENT and external exact\n");
   return 0;
 }

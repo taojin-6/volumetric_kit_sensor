@@ -118,12 +118,13 @@ if(APPLE)
     PRIVATE recon_sensor_apple "-framework VideoToolbox" "-framework CoreMedia"
             "-framework CoreVideo" "-framework CoreFoundation")
 else()
-  # NVDEC's pictures copied, and nvJPEG's decoded, into Vulkan buffers CUDA has
-  # imported, without a trip through the host (cuda_pictures.cpp), through the
-  # public CUDA interop (cuda_interop.hpp, which includes cuda.h, so the
-  # toolkit's headers are PUBLIC). FFmpeg is PRIVATE. CUDA's headers only:
-  # libcuda and libnvjpeg are loaded at run time (cuda_driver.cpp), so a program
-  # built with CUDA starts where no NVIDIA driver is.
+  # NVDEC's pictures copied into Vulkan plane images, and nvJPEG's decoded into
+  # Vulkan buffers, that CUDA has imported, without a trip through the host
+  # (cuda_pictures.cpp), through the public CUDA interop (cuda_interop.hpp,
+  # which includes cuda.h, so the toolkit's headers are PUBLIC). FFmpeg is
+  # PRIVATE. CUDA's headers only: libcuda and libnvjpeg are loaded at run time
+  # (cuda_driver.cpp), so a program built with CUDA starts where no NVIDIA
+  # driver is.
   target_sources(recon_sensor_video PRIVATE ffmpeg.cpp cuda_driver.cpp
                                             cuda_interop.cpp cuda_pictures.cpp)
   target_include_directories(recon_sensor_video SYSTEM

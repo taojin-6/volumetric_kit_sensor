@@ -3,10 +3,12 @@
 
 // The public CUDA interop on this machine's GPU: cuda_ordinal_of names the
 // CUDA device whose UUID is the Vulkan device's, and CudaContext is that
-// device's primary context; a buffer CUDA writes on a stream reads back
-// through Vulkan with the bytes written, round after round; and an exported
-// buffer whose descriptor was already taken is refused. The checks call
-// libcuda through a loader of their own, so they do not lean on recon's.
+// device's primary context; a buffer, and R8, R8G8 and colour-attachment
+// R8G8B8A8 images, that CUDA writes on a stream read back through Vulkan with
+// the bytes written, round after round; and an exported buffer or image whose
+// descriptor was already taken, or an image of a format CUDA is not given, is
+// refused. The checks call libcuda through a loader of their own, so they do
+// not lean on recon's.
 //
 // Where CUDA does not reach the device's GPU the test skips;
 // VR_TEST_HEVC_BACKEND, which CI sets on the NVIDIA leg, makes it fail
@@ -27,8 +29,10 @@
 #include "test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
+#include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
+#include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/recon/sensor/video/cuda_interop.hpp"
 
@@ -52,6 +56,7 @@ using Gpu = vr_test::GpuContext;
   X(cuCtxPopCurrent)              \
   X(cuCtxGetDevice)               \
   X(cuMemcpyHtoDAsync)            \
+  X(cuMemcpy2DAsync)              \
   X(cuStreamSynchronize)
 
 struct Libcuda {
@@ -194,6 +199,130 @@ int test_taken_descriptor(const Gpu& gpu) {
   return 0;
 }
 
+// An R8 and an R8G8 image, as NVDEC's pictures are, and an R8G8B8A8 one a
+// draw may render into, of odd size, that CUDA writes on a stream of its
+// own, synchronized, read back through Vulkan with the bytes written, round
+// after round: handed over to CUDA once, in GENERAL, before its first write,
+// then taken back from VK_QUEUE_FAMILY_EXTERNAL after each write and never
+// handed back, as NVDEC's pictures are.
+int test_cuda_writes_vulkan_reads_images(const Gpu& gpu, const Libcuda& cu) {
+  constexpr std::uint32_t kWidth = 129;
+  constexpr std::uint32_t kHeight = 65;
+  auto context = sensor::CudaContext::open(gpu.device);
+  CHECK(context.ok());
+  auto stream = sensor::CudaStream::open(*context.value());
+  CHECK(stream.ok());
+  constexpr VkImageUsageFlags kSampled =
+      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  const struct {
+    VkFormat format;
+    std::uint32_t bytes_per;
+    VkImageUsageFlags usage;
+  } images[] = {
+      {VK_FORMAT_R8_UNORM, 1, kSampled},
+      {VK_FORMAT_R8G8_UNORM, 2, kSampled},
+      {VK_FORMAT_R8G8B8A8_UNORM, 4,
+       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
+  };
+  for (const auto& made : images) {
+    const std::uint32_t bytes_per = made.bytes_per;
+    vkc::ImageDesc desc;
+    desc.extent = {kWidth, kHeight};
+    desc.format = made.format;
+    desc.usage = made.usage;
+    auto exported = vkc::create_exported_image(gpu.device, gpu.allocator, desc);
+    CHECK(exported.ok());
+    vkc::Image& image = exported.value().image;
+    auto mapping = sensor::CudaImageMapping::map(*context.value(), *exported);
+    CHECK(mapping.ok() && mapping.value()->array() != nullptr);
+    CHECK(!exported.value().fd.valid());  // CUDA's now
+    CHECK(image.valid());                 // the caller's still
+    {
+      vkc::CommandBatch first(gpu.device, gpu.allocator);
+      CHECK(
+          first
+              .release(image, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL)
+              .ok());
+      CHECK(first.submit().ok());
+      image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
+    }
+    const std::size_t row = std::size_t{kWidth} * bytes_per;
+    const std::size_t bytes = row * kHeight;
+    auto landing = vkc::device_storage_buffer(gpu.allocator,
+                                              (bytes + 3) & ~std::size_t{3});
+    CHECK(landing.ok());
+    for (std::uint32_t round = 0; round < 3; ++round) {
+      const std::vector<std::uint8_t> written =
+          pattern(bytes, round + 4 * bytes_per);
+      CHECK(cu.cuCtxPushCurrent(context.value()->handle()) == CUDA_SUCCESS);
+      CUDA_MEMCPY2D copy{};
+      copy.srcMemoryType = CU_MEMORYTYPE_HOST;
+      copy.srcHost = written.data();
+      copy.srcPitch = row;
+      copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+      copy.dstArray = mapping.value()->array();
+      copy.WidthInBytes = row;
+      copy.Height = kHeight;
+      CUresult r = cu.cuMemcpy2DAsync(&copy, stream.value()->handle());
+      if (r == CUDA_SUCCESS) {
+        r = cu.cuStreamSynchronize(stream.value()->handle());
+      }
+      CUcontext popped = nullptr;
+      CHECK(cu.cuCtxPopCurrent(&popped) == CUDA_SUCCESS);
+      CHECK(r == CUDA_SUCCESS);
+
+      std::vector<std::uint8_t> read(bytes);
+      vkc::CommandBatch batch(gpu.device, gpu.allocator);
+      CHECK(
+          batch
+              .acquire(image, VK_QUEUE_FAMILY_EXTERNAL, VK_IMAGE_LAYOUT_GENERAL)
+              .ok());
+      CHECK(batch.copy(image, kWidth, kHeight, *landing, 0).ok());
+      CHECK(batch.readback(*landing, 0, bytes, read.data()).ok());
+      CHECK(batch.submit().ok());
+      CHECK(read == written);
+    }
+  }
+  return 0;
+}
+
+// An exported image whose descriptor was taken, or that has no image, or
+// whose format CUDA is not given, is refused, and the image stays the
+// caller's, its descriptor too where CUDA never took it.
+int test_taken_image_descriptor(const Gpu& gpu) {
+  auto context = sensor::CudaContext::open(gpu.device);
+  CHECK(context.ok());
+  vkc::ImageDesc desc;
+  desc.extent = {16, 8};
+  desc.format = VK_FORMAT_R8_UNORM;
+  desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+  auto exported = vkc::create_exported_image(gpu.device, gpu.allocator, desc);
+  CHECK(exported.ok());
+  auto first = sensor::CudaImageMapping::map(*context.value(), *exported);
+  CHECK(first.ok());
+  auto again = sensor::CudaImageMapping::map(*context.value(), *exported);
+  CHECK(again.status().domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(exported.value().image.valid());
+
+  auto emptied = vkc::create_exported_image(gpu.device, gpu.allocator, desc);
+  CHECK(emptied.ok());
+  const vkc::Image kept = std::move(emptied.value().image);
+  CHECK(sensor::CudaImageMapping::map(*context.value(), *emptied)
+            .status()
+            .domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(emptied.value().fd.valid());
+
+  desc.format = VK_FORMAT_R16_UNORM;
+  auto wide = vkc::create_exported_image(gpu.device, gpu.allocator, desc);
+  if (wide.ok()) {
+    CHECK(sensor::CudaImageMapping::map(*context.value(), *wide)
+              .status()
+              .domain() == vkc::Status::Code::InvalidArgument);
+    CHECK(wide.value().fd.valid());
+  }
+  return 0;
+}
+
 int gpu_main(Gpu& gpu) {
   const vkc::Result<int> ordinal = sensor::cuda_ordinal_of(gpu.device);
   if (!ordinal) {
@@ -211,6 +340,8 @@ int gpu_main(Gpu& gpu) {
   if (test_ordinal_and_context(gpu, *cu, ordinal.value()) != 0) return 1;
   if (test_cuda_writes_vulkan_reads(gpu, *cu) != 0) return 1;
   if (test_taken_descriptor(gpu) != 0) return 1;
+  if (test_cuda_writes_vulkan_reads_images(gpu, *cu) != 0) return 1;
+  if (test_taken_image_descriptor(gpu) != 0) return 1;
   std::puts("sensor_video_cuda_interop: OK");
   return 0;
 }

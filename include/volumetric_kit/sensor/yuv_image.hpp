@@ -30,7 +30,8 @@ enum class YuvLayout : std::uint8_t {
 
 /// @brief @ref YuvImage::queue_family for device planes that need no
 ///        ownership transfer: written on the queue family that prepares them,
-///        or held in a CONCURRENT buffer. Vulkan's `VK_QUEUE_FAMILY_IGNORED`.
+///        or held in a CONCURRENT buffer or images. Vulkan's
+///        `VK_QUEUE_FAMILY_IGNORED`.
 inline constexpr std::uint32_t kQueueFamilyIgnored = ~std::uint32_t{0};
 /// @brief @ref YuvImage::queue_family for device planes an API outside Vulkan
 ///        wrote, such as CUDA through imported memory. Vulkan's
@@ -84,12 +85,9 @@ constexpr YcbcrWeights ycbcr_weights(VideoColorMatrix matrix) noexcept {
 /// @code
 /// YuvImage image;  // a decoder's NV12 picture, left on the device
 /// image.layout = YuvLayout::Nv12;
-/// image.device = picture_buffer;  // written, and the writer waited on
-/// image.offset[0] = 0;
-/// image.offset[1] = chroma_at;
-/// image.stride[0] = width;
-/// image.stride[1] = (width + 1) / 2 * 2;
-/// image.queue_family = kQueueFamilyExternal;  // CUDA wrote it
+/// image.image[0] = luma;    // R8, written, and the writer waited on
+/// image.image[1] = chroma;  // R8G8
+/// image.queue_family = kQueueFamilyExternal;  // CUDA wrote them
 /// image.width = width;
 /// image.height = height;
 /// @endcode
@@ -107,23 +105,26 @@ struct YuvImage {
   std::shared_ptr<const core::Buffer> device;
   std::uint64_t offset[3] = {};  ///< Each plane's byte offset in @ref device.
   std::size_t stride[3] = {};  ///< Bytes per row of each plane in @ref device.
-  /// The queue family that owns @ref device, initially its writer, which
-  /// the next stage takes it over from: another family of the device, whose
-  /// writer released the whole buffer to the pass's family, or
-  /// @ref kQueueFamilyExternal. @ref kQueueFamilyIgnored when the pass's own
-  /// family wrote it; another Vulkan family's is ignored too for a
-  /// CONCURRENT buffer, which needs no transfer. `PictureReadback::read`
-  /// updates this field after a successful read, so subsequent stages use
-  /// the updated picture rather than a copy with stale ownership metadata.
+  /// The queue family that owns @ref device or @ref image, initially their
+  /// writer, which the next stage takes them over from: another family of
+  /// the device, whose writer released the whole buffer to the pass's
+  /// family, or @ref kQueueFamilyExternal, from which images are taken in
+  /// the layout they are in. @ref kQueueFamilyIgnored when the pass's own
+  /// family wrote them; another Vulkan family's is ignored too for a
+  /// CONCURRENT buffer or images, which need no transfer, and EXCLUSIVE
+  /// images cross only from outside Vulkan. `PictureReadback::read` updates
+  /// this field after a successful read, so subsequent stages use the
+  /// updated picture rather than a copy with stale ownership metadata.
   std::uint32_t queue_family = kQueueFamilyIgnored;
   /// Or NV12's planes as images on the device, as Apple's pictures arrive
-  /// (`PixelBufferImporter`): `image[0]` the luma (`R8_UNORM`), `image[1]`
-  /// the chroma (`R8G8_UNORM`, Cb first), each at least the picture's size,
-  /// chroma halved and rounded up, and read from its corner. `GpuFramePrep`
-  /// samples them where they are when its batch runs, through their views
-  /// (`SAMPLED` usage), and `PictureReadback` copies them (`TRANSFER_SRC`),
-  /// so their writer must have finished, as for @ref device, and the frame
-  /// holds them as it does @ref device.
+  /// (`PixelBufferImporter`) and NVDEC's (`HevcDecoder`): `image[0]` the
+  /// luma (`R8_UNORM`), `image[1]` the chroma (`R8G8_UNORM`, Cb first), each
+  /// at least the picture's size, chroma halved and rounded up, and read
+  /// from its corner. `GpuFramePrep` samples them where they are when its
+  /// batch runs, through their views (`SAMPLED` usage), and
+  /// `PictureReadback` copies them (`TRANSFER_SRC`), so their writer must
+  /// have finished, as for @ref device, and the frame holds them as it does
+  /// @ref device.
   std::shared_ptr<const core::Image> image[2];
   std::uint32_t width = 0;   ///< Luma width (pixels).
   std::uint32_t height = 0;  ///< Luma height (pixels).

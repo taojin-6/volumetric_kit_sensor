@@ -9,6 +9,7 @@
 #include "cuda_driver.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
 namespace volumetric_kit::recon::sensor {
@@ -145,6 +146,89 @@ CudaBufferMapping::~CudaBufferMapping() {
   const CudaDriver* cu = cuda_driver();
   const CudaContextScope scope(context_);
   if (pointer_ != 0) cu->cuMemFree(pointer_);
+  cu->cuDestroyExternalMemory(memory_);
+}
+
+core::Result<std::unique_ptr<CudaImageMapping>> CudaImageMapping::map(
+    const CudaContext& context, core::ExportedImage& exported) {
+  constexpr const char* kWho = "CudaImageMapping";
+  if (!exported.fd.valid()) {
+    return core::Status::invalid_argument(std::string(kWho) +
+                                          ": the image's descriptor was taken");
+  }
+  const core::Image& image = exported.image;
+  if (!image.valid()) {
+    return core::Status::invalid_argument(std::string(kWho) + ": no image");
+  }
+  unsigned channels = 0;
+  switch (image.format()) {
+    case VK_FORMAT_R8_UNORM:
+      channels = 1;
+      break;
+    case VK_FORMAT_R8G8_UNORM:
+      channels = 2;
+      break;
+    case VK_FORMAT_R8G8B8A8_UNORM:
+      channels = 4;
+      break;
+    default:
+      return core::Status::invalid_argument(
+          std::string(kWho) +
+          ": maps 8-bit UNORM images of one, two or four channels only");
+  }
+  // Owned before the import, as the buffer's mapping is.
+  std::unique_ptr<CudaImageMapping> m(new CudaImageMapping(context.handle()));
+  const CudaContextScope scope(context.handle());
+  if (!scope.ok()) {
+    return cuda_error(kWho, scope.result(), "making the CUDA context current");
+  }
+  CUDA_EXTERNAL_MEMORY_HANDLE_DESC handle{};
+  handle.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+  handle.handle.fd = exported.fd.get();
+  handle.size = exported.memory_size;
+  handle.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
+  const CudaDriver* cu = cuda_driver();
+  CUresult r = cu->cuImportExternalMemory(&m->memory_, &handle);
+  if (r != CUDA_SUCCESS) {
+    m->memory_ = nullptr;
+    return cuda_error(kWho, r, "importing a Vulkan image");
+  }
+  static_cast<void>(exported.fd.release());
+  // The image starts at its dedicated memory's first byte, in the layout
+  // CUDA's array of the same format and extent has. CUDA must be told of an
+  // image a draw may render into (cuExternalMemoryGetMappedMipmappedArray).
+  CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mapped{};
+  mapped.offset = 0;
+  mapped.arrayDesc.Width = image.width();
+  mapped.arrayDesc.Height = image.height();
+  mapped.arrayDesc.Depth = 0;
+  mapped.arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
+  mapped.arrayDesc.NumChannels = channels;
+  mapped.arrayDesc.Flags =
+      (image.usage() & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0
+          ? CUDA_ARRAY3D_COLOR_ATTACHMENT
+          : 0u;
+  mapped.numLevels = 1;
+  r = cu->cuExternalMemoryGetMappedMipmappedArray(&m->levels_, m->memory_,
+                                                  &mapped);
+  if (r != CUDA_SUCCESS) {
+    m->levels_ = nullptr;
+    return cuda_error(kWho, r, "mapping a Vulkan image");
+  }
+  r = cu->cuMipmappedArrayGetLevel(&m->array_, m->levels_, 0);
+  if (r != CUDA_SUCCESS) {
+    m->array_ = nullptr;
+    return cuda_error(kWho, r, "mapping a Vulkan image's level");
+  }
+  return m;
+}
+
+CudaImageMapping::~CudaImageMapping() {
+  if (memory_ == nullptr) return;
+  const CudaDriver* cu = cuda_driver();
+  const CudaContextScope scope(context_);
+  // The level's array goes with the levels.
+  if (levels_ != nullptr) cu->cuMipmappedArrayDestroy(levels_);
   cu->cuDestroyExternalMemory(memory_);
 }
 

@@ -164,8 +164,9 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///         open: `Status::Code::Unsupported` where it has no device path
   ///         (no `OrbbecStreamOptions::device`, say), and
   ///         `Status::Code::InvalidArgument` for
-  ///         `OrbbecStreamOptions::color_queue_families` VideoToolbox's
-  ///         importer refuses (@ref PixelBufferImporter::create).
+  ///         `OrbbecStreamOptions::color_queue_families` the decoder refuses
+  ///         for its plane images, by @ref PixelBufferImporter::create's
+  ///         rule (nvJPEG's buffers ignore them).
   core::Status start() override;
   /// @brief As `IRgbdSensor::stop`, letting go of the frames waiting for
   ///        the colour decoder too. The camera stays open, for another

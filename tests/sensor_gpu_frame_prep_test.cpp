@@ -12,8 +12,8 @@
 //   - packed R'G'B' words from the host come through a pinhole as they went
 //     in, and through a lens as the reference samples them;
 //   - NV12's planes as images larger than the picture, sampled in place in
-//     either layout the pass takes, give the words the same samples in a
-//     buffer give, bit for bit;
+//     either layout the pass takes, taken over from outside Vulkan or not,
+//     give the words the same samples in a buffer give, bit for bit;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its depth and colour outputs are shared with the queue families its
@@ -821,6 +821,16 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
         read_only_images.image[1] != nullptr);
   CHECK(read_only_images.image[0]->layout() == read_only);
   CHECK(same(read_only_images));
+  // Taken over from outside Vulkan, as NVDEC's arrive, in either layout, or
+  // named as the pass's own family: the same picture.
+  for (const sensor::YuvImage& form : {images, read_only_images}) {
+    sensor::YuvImage taken_images = form;
+    taken_images.queue_family = sensor::kQueueFamilyExternal;
+    CHECK(same(taken_images));
+    CHECK(taken_images.image[0]->layout() == form.image[0]->layout());
+    taken_images.queue_family = g_device->queue_family();
+    CHECK(same(taken_images));
+  }
 
   // Refused as images: beside planes in a buffer; I420; either one missing;
   // the two swapped; one smaller than its plane; one the pass cannot sample,
@@ -883,6 +893,17 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
         std::make_shared<const vkc::Image>(info, nullptr);  // borrowed
     return out;
   };
+  // EXCLUSIVE images another family wrote, which cross only from outside
+  // Vulkan, and images from a family the device lacks.
+  if (const auto other = vr_test::other_queue_family(*g_device)) {
+    bad_images = images;
+    bad_images.queue_family = *other;
+    CHECK(refused(bad_images, "cross only from outside Vulkan"));
+  }
+  bad_images = images;
+  bad_images.queue_family =
+      static_cast<std::uint32_t>(g_device->caps().queue_families().size());
+  CHECK(refused(bad_images, "which the device does not have"));
   for (int plane = 0; plane < 2; ++plane) {
     CHECK(refused(
         reshaped(plane, [](vkc::ImageInfo& i) { i.type = VK_IMAGE_TYPE_3D; }),

@@ -25,15 +25,15 @@ struct VideoColorDescription {
 ///        stream's timestamp and encoding beside it.
 struct DecodedPicture {
   /// The picture and how it is coded. Its size is the stream's display size,
-  /// after its crop. From NVDEC or nvJPEG (Linux, through CUDA) it is in a
-  /// buffer (`YuvImage::device`), NV12 from @ref HevcDecoder or I420 from
-  /// @ref JpegDecoder; CUDA wrote it, so `YuvImage::queue_family` is
-  /// @ref kQueueFamilyExternal, and the decoder reuses the buffer only once
-  /// nothing holds it. From VideoToolbox (Apple), for either decoder, it is
-  /// NV12 images (`YuvImage::image`) that hold the decoder's picture, which
-  /// VideoToolbox does not reuse while they are held. Either way the decoder
-  /// has finished writing it; drop it before the device it is on is
-  /// destroyed.
+  /// after its crop. Every HEVC picture, and VideoToolbox's JPEG, is NV12's
+  /// two plane images (`YuvImage::image`): from VideoToolbox (Apple) they
+  /// hold the decoder's picture, which VideoToolbox does not reuse while they
+  /// are held; from NVDEC (Linux) CUDA copied the picture into them, so
+  /// `YuvImage::queue_family` is @ref kQueueFamilyExternal, and the decoder
+  /// reuses them only once nothing holds either. From nvJPEG (Linux) it is
+  /// I420 in a buffer (`YuvImage::device`), which CUDA wrote and the decoder
+  /// reuses on the same terms. Either way the decoder has finished writing
+  /// it; drop it before the device it is on is destroyed.
   ///
   /// The matrix and range are the ones it is coded in. A stream that declares
   /// no matrix takes the decoder's `Options::unlabelled_color` when it has
