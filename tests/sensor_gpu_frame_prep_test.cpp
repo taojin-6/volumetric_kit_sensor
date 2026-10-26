@@ -11,8 +11,9 @@
 //     coverage byte included;
 //   - packed R'G'B' words from the host come through a pinhole as they went
 //     in, and through a lens as the reference samples them;
-//   - NV12's planes as images larger than the picture, sampled in place,
-//     give the words the same samples in a buffer give, bit for bit;
+//   - NV12's planes as images larger than the picture, sampled in place in
+//     either layout the pass takes, give the words the same samples in a
+//     buffer give, bit for bit;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its depth and colour outputs are shared with the queue families its
@@ -318,14 +319,12 @@ std::vector<std::uint32_t> color_of(const sensor::DeviceFrame& f) {
 constexpr VkImageUsageFlags kSampled = VK_IMAGE_USAGE_SAMPLED_BIT;
 
 // test_image::with_corner on the test's device.
-std::shared_ptr<const vkc::Image> image_of(VkFormat format, std::uint32_t texel,
-                                           std::uint32_t iw, std::uint32_t ih,
-                                           const std::uint8_t* rows,
-                                           std::uint32_t row_bytes,
-                                           std::uint32_t count,
-                                           VkImageUsageFlags usage) {
+std::shared_ptr<const vkc::Image> image_of(
+    VkFormat format, std::uint32_t texel, std::uint32_t iw, std::uint32_t ih,
+    const std::uint8_t* rows, std::uint32_t row_bytes, std::uint32_t count,
+    VkImageUsageFlags usage, VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL) {
   return test_image::with_corner(*g_device, *g_allocator, format, texel, iw, ih,
-                                 rows, row_bytes, count, usage);
+                                 rows, row_bytes, count, usage, layout);
 }
 
 // Pinhole: depth is raw * scale exactly, and a colour survives the forward
@@ -809,6 +808,19 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   images.image[0] = luma;
   images.image[1] = chroma;
   CHECK(same(images));
+  // And in SHADER_READ_ONLY_OPTIMAL, the other layout the pass samples in,
+  // which its sets name.
+  const VkImageLayout read_only = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  sensor::YuvImage read_only_images = images;
+  read_only_images.image[0] = image_of(VK_FORMAT_R8_UNORM, 1, w + 3, h + 2,
+                                       p.y.data(), w, h, kSampled, read_only);
+  read_only_images.image[1] =
+      image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw + 1, p.ch + 1, cbcr_tight.data(),
+               2 * p.cw, p.ch, kSampled, read_only);
+  CHECK(read_only_images.image[0] != nullptr &&
+        read_only_images.image[1] != nullptr);
+  CHECK(read_only_images.image[0]->layout() == read_only);
+  CHECK(same(read_only_images));
 
   // Refused as images: beside planes in a buffer; I420; either one missing;
   // the two swapped; one smaller than its plane; one the pass cannot sample,
