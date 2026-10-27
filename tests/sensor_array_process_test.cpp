@@ -3,14 +3,15 @@
 
 // A sensor array's sets prepared on the GPU in one batch: each frame comes
 // out as GpuFramePrep::prepare makes it alone, posed by the array's
-// calibration, and an empty slot stays empty, recorded into a caller's batch
-// the same; the prep options reach every
-// pass of an array of any size; a device or an allocator given without the
-// other, an array without a device and a set of another size are refused.
-// Skips where no device is.
+// calibration with its sensor's depth offset, and an empty slot stays empty,
+// recorded into a caller's batch the same; the prep options reach every
+// pass of an array of any size; a depth offset in the prep options, a device
+// or an allocator given without the other, an array without a device and a
+// set of another size are refused. Skips where no device is.
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -145,6 +146,11 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   }
   sensor::SensorArray::Options o;
   o.calibration = posed(ids);
+  // Each sensor's own depth offset: none, reads 4 mm too far, 2 mm too near.
+  const double offsets[] = {0.0, 0.004, -0.002};
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    o.calibration.sensors[i].depth_offset_m = offsets[i];
+  }
   o.device = &device;
   o.allocator = &allocator;
   auto opened = sensor::SensorArray::open(std::move(sensors), o);
@@ -152,8 +158,17 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   sensor::SensorArray array = std::move(opened).value();
   CHECK(array.start().ok());
 
-  auto alone = sensor::GpuFramePrep::create(device, allocator);
-  CHECK(alone.ok());
+  // A pass alone per sensor, with that sensor's offset, and one with none.
+  std::vector<sensor::GpuFramePrep> alone;
+  for (const double offset : offsets) {
+    sensor::GpuFramePrepConfig config;
+    config.depth_offset_m = static_cast<float>(offset);
+    auto made = sensor::GpuFramePrep::create(device, allocator, config);
+    CHECK(made.ok());
+    alone.push_back(std::move(made).value());
+  }
+  auto plain = sensor::GpuFramePrep::create(device, allocator);
+  CHECK(plain.ok());
   const std::size_t n = std::size_t{kW} * kH;
   for (std::uint64_t seq = 0; seq < 3; ++seq) {
     for (std::size_t i = 0; i < recordings.size(); ++i) {
@@ -200,8 +215,8 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
             vr::Mat4f(color_to_world));
       CHECK(device_frame->depth_camera.cam_to_world ==
             vr::Mat4f(color_to_world * frame->depth_to_color));
-      // As GpuFramePrep makes it alone.
-      auto one = alone.value().prepare(*frame);
+      // As GpuFramePrep makes it alone, with the sensor's own offset.
+      auto one = alone[c].prepare(*frame);
       CHECK(one.ok());
       const auto depth =
           read<float>(device, allocator, *device_frame->depth, n);
@@ -212,6 +227,12 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
       CHECK(color.size() == n &&
             color ==
                 read<std::uint32_t>(device, allocator, *one.value().color, n));
+      // And an offset is not a no-op: the depth differs from a pass's with
+      // none exactly where the sensor has one.
+      auto raw = plain.value().prepare(*frame);
+      CHECK(raw.ok());
+      CHECK((depth == read<float>(device, allocator, *raw.value().depth, n)) ==
+            (offsets[c] == 0.0));
     }
   }
   for (Recording* r : recordings) r->done = true;
@@ -329,6 +350,25 @@ int test_prep_options(vkc::Device& device, vkc::Allocator& allocator) {
     CHECK(refused.domain() == vkc::Status::Code::InvalidArgument);
     CHECK(refused.message().find("GpuFramePrep::create, depth:") !=
           std::string::npos);
+  }
+  // A depth offset in the options, for every pass, is refused: each sensor's
+  // comes from the calibration alone. With a device or without, and a NaN.
+  for (const float offset : {0.004f, -0.001f, std::nanf("")}) {
+    for (const bool with_device : {true, false}) {
+      std::vector<std::unique_ptr<sensor::IRgbdSensor>> one;
+      one.push_back(
+          std::make_unique<Recording>("A", 0, sensor::SyncRole::Primary));
+      sensor::SensorArray::Options set;
+      set.calibration = posed({"A"});
+      set.device = with_device ? &device : nullptr;
+      set.allocator = with_device ? &allocator : nullptr;
+      set.prep.depth_offset_m = offset;
+      const vkc::Status refused =
+          sensor::SensorArray::open(std::move(one), set).status();
+      CHECK(refused.domain() == vkc::Status::Code::InvalidArgument);
+      CHECK(refused.message().find("prep.depth_offset_m is set") !=
+            std::string::npos);
+    }
   }
   return 0;
 }

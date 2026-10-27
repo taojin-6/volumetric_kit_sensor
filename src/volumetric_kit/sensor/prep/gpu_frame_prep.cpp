@@ -49,8 +49,11 @@ struct DepthParams {
   LensParams cam;
   float metres_per_unit;
   std::uint32_t within_color;  // mask by OverlapParams
+  float depth_offset_m;        // subtracted from every return
 };
-static_assert(sizeof(DepthParams) == 64, "DepthParams layout drift");
+static_assert(sizeof(DepthParams) == 68, "DepthParams layout drift");
+static_assert(offsetof(DepthParams, depth_offset_m) == 64,
+              "DepthParams layout drift");
 
 // undistort_depth.comp's Overlap block: the colour camera, and the rigid
 // transform from the depth camera's frame into the colour camera's
@@ -420,6 +423,11 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
   VKC_TRY(check_queue_families(device, config.depth_queue_families,
                                config.depth_queue_family_count,
                                "GpuFramePrep::create, depth"));
+  // A NaN would reach every return, and the shader's max of one is undefined.
+  if (!finite(config.depth_offset_m)) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep::create: depth_offset_m is not finite");
+  }
   GpuFramePrep prep;
   prep.device_ = &device;
   prep.allocator_ = &allocator;
@@ -622,7 +630,8 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
                                          depth.out_bytes);
   const bool within_color = config_.depth_within_color && frame.has_color();
   const DepthParams depth_params{lens_params(frame.depth_camera),
-                                 frame.metres_per_unit, within_color ? 1u : 0u};
+                                 frame.metres_per_unit, within_color ? 1u : 0u,
+                                 config_.depth_offset_m};
   VKC_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
                          core::group_count(depth.pixels, kLocalSize),
                          max_workgroup_count_x_, stage));

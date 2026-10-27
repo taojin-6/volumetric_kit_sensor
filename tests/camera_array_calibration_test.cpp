@@ -3,7 +3,8 @@
 
 // The sensor array's calibration file: version 2 read as calib writes it,
 // version 1 (the family's device_calibration layout) still read for its poses,
-// a world at an AprilTag, the refusals, a later version refused, and a
+// a world at an AprilTag, version 3's depth offsets read, checked and written
+// only where a sensor has one, the refusals, a later version refused, and a
 // calibration written and read back with every model and number exact and
 // every pose to round-off, through the core's write_file. Host-only.
 
@@ -225,10 +226,10 @@ int test_refusals() {
   // A later version is refused as unsupported, an earlier one as not this
   // format: a file with no "format" is version 1.
   CHECK(refused(R"({"format": "volumetric_kit.array_calibration",
-                    "version": 3, "device_calibration": {"A": {}}})",
-                Code::Unsupported));
+                    "version": 4, "device_calibration": {"A": {}}})",
+                Code::Unsupported, "knows versions 2 and 3"));
   CHECK(refused(R"({"format": "volumetric_kit.array_calibration",
-                    "version": 3, "sensors": {"A": {}}})",
+                    "version": 4, "sensors": {"A": {}}})",
                 Code::Unsupported));
   CHECK(refused(R"({"format": "volumetric_kit.array_calibration",
                     "version": 1, "device_calibration": {"A": {}}})"));
@@ -516,6 +517,7 @@ int check_same(const camera::ArrayCalibration& written,
     if (w.depth_to_color) {
       CHECK(near(*r.depth_to_color, *w.depth_to_color, 1e-15));
     }
+    CHECK(r.depth_offset_m == w.depth_offset_m);  // exact
   }
   return 0;
 }
@@ -603,6 +605,140 @@ int test_round_trip() {
   return 0;
 }
 
+// Version 3: N reads 4.17 mm too far, B 0.96 mm too near, F has no offset.
+const char* kVersion3 = R"({
+  "format": "volumetric_kit.array_calibration", "version": 3,
+  "world": {"sensor": "N"},
+  "device_calibration": {
+    "N": {"pose": {"rvec": [0, 0, 0], "tvec": [0, 0, 0]},
+          "depth_offset_m": 0.00417},
+    "B": {"pose": {"rvec": [0, 1.5707963267948966, 0], "tvec": [0, 0, 2]},
+          "depth_offset_m": -0.00096},
+    "F": {"pose": {"rvec": [0, 0, 0], "tvec": [1, 0, 0]}}}
+})";
+
+// one_sensor's document at version 3.
+std::string one_sensor_v3(const std::string& body) {
+  return R"({"format": "volumetric_kit.array_calibration", "version": 3, )"
+         R"("device_calibration": {"A": {)" +
+         body + "}}}";
+}
+
+// A sensor's depth offset, the version-3 correction: read from a version-3
+// file, 0 where a sensor has none, refused in a version-2 file and past
+// 0.05 m; written only when it is not 0, and only then as version 3, so a
+// calibration without one is written byte for byte as before.
+int test_depth_offset() {
+  const auto r = camera::parse_array_calibration(kVersion3);
+  if (!r) std::fprintf(stderr, "%s\n", r.status().message().c_str());
+  CHECK(r.ok());
+  const camera::ArrayCalibration& a = r.value();
+  CHECK(a.sensors.size() == 3);
+  if (check_b(a.sensors[0]) != 0) return 1;
+  CHECK(a.sensors[0].depth_offset_m == -0.00096);
+  CHECK(a.sensors[1].id == "F" && a.sensors[1].depth_offset_m == 0.0);
+  CHECK(a.sensors[2].id == "N" && a.sensors[2].depth_offset_m == 0.00417);
+
+  const std::string pose = R"("pose": {"rvec": [0, 0, 0], "tvec": [0, 0, 0]})";
+  const auto offset = [&](const std::string& value) {
+    return pose + R"(, "depth_offset_m": )" + value;
+  };
+  // Version 3 without a correction is read; the bound is inclusive.
+  CHECK(camera::parse_array_calibration(one_sensor_v3(pose)).ok());
+  for (const char* edge : {"0.05", "-0.05", "0"}) {
+    CHECK(camera::parse_array_calibration(one_sensor_v3(offset(edge))).ok());
+  }
+  for (const char* past : {"0.0500001", "-0.06", "1"}) {
+    CHECK(refused(one_sensor_v3(offset(past)), Code::InvalidArgument,
+                  "\"depth_offset_m\" is not a finite offset within 0.05 m"));
+  }
+  for (const char* wrong : {R"("0.004")", "null", "[0.004]"}) {
+    CHECK(refused(one_sensor_v3(offset(wrong)), Code::InvalidArgument,
+                  "missing number \"depth_offset_m\""));
+  }
+  // In a file that says version 2, which a version-2 reader would run
+  // uncorrected; even a 0.
+  for (const char* value : {"0.004", "0"}) {
+    CHECK(refused(one_sensor(offset(value)), Code::InvalidArgument,
+                  "\"depth_offset_m\" is a version-3 field"));
+  }
+  // Version 1 is read for its poses alone.
+  const auto v1 = camera::parse_array_calibration(
+      R"({"device_calibration": {"A": {)" + offset("0.004") + "}}}");
+  CHECK(v1.ok() && v1.value().sensors[0].depth_offset_m == 0.0);
+
+  // What validate refuses, and so format.
+  const double inf = std::numeric_limits<double>::infinity();
+  camera::ArrayCalibration one;
+  one.sensors.resize(1);
+  one.sensors[0].id = "A";
+  for (const double bad : {std::nan(""), inf, -inf, 0.0500001, -0.06}) {
+    one.sensors[0].depth_offset_m = bad;
+    const vkc::Status s = camera::validate_array_calibration(one);
+    CHECK(s.domain() == Code::InvalidArgument &&
+          s.message().find("sensor A: \"depth_offset_m\"") !=
+              std::string::npos);
+    CHECK(camera::format_array_calibration(one).status().domain() ==
+          Code::InvalidArgument);
+  }
+
+  // Written: a bare sensor, as before and with an offset, byte for byte.
+  const auto formatted = [](const camera::ArrayCalibration& c) {
+    const auto t = camera::format_array_calibration(c);
+    return t.ok() ? t.value() : "refused: " + t.status().message();
+  };
+  const std::string head =
+      "{\n  \"format\": \"volumetric_kit.array_calibration\",\n"
+      "  \"version\": ";
+  const std::string bare =
+      head + "2,\n  \"device_calibration\": {\n    \"A\": {}\n  }\n}\n";
+  one.sensors[0].depth_offset_m = 0.0;
+  CHECK(formatted(one) == bare);
+  one.sensors[0].depth_offset_m = -0.0;  // not written either
+  CHECK(formatted(one) == bare);
+  one.sensors[0].depth_offset_m = 0.004;
+  CHECK(formatted(one) ==
+        head +
+            "3,\n  \"device_calibration\": {\n    \"A\": {\n"
+            "      \"depth_offset_m\": 0.004\n    }\n  }\n}\n");
+
+  // Every field and every sensor: offsets come back exactly, and the text
+  // is the uncorrected one's but for the version and the offsets' lines.
+  const camera::ArrayCalibration plain = edge_cases();
+  const auto plain_text = camera::format_array_calibration(plain);
+  CHECK(plain_text.ok());
+  camera::ArrayCalibration corrected = plain;
+  const struct {
+    std::size_t sensor;
+    double offset;
+  } offsets[] = {{1, 1e-3 / 3.0}, {2, 0.00417}, {6, -0.00096}};
+  for (const auto& o : offsets) {
+    corrected.sensors[o.sensor].depth_offset_m = o.offset;
+  }
+  const auto text = camera::format_array_calibration(corrected);
+  CHECK(text.ok());
+  const auto read = camera::parse_array_calibration(text.value());
+  CHECK(read.ok());
+  if (check_same(corrected, read.value()) != 0) return 1;
+  const nlohmann::json doc = nlohmann::json::parse(text.value());
+  CHECK(doc.at("version") == 3);
+  const nlohmann::json& sensors = doc.at("device_calibration");
+  CHECK(sensors.at("2-general").at("depth_offset_m").get<double>() == 0.00417);
+  CHECK(!sensors.at("0-world").contains("depth_offset_m"));
+  std::string stripped = text.value();
+  const std::string version3 = "\"version\": 3,";
+  stripped.replace(stripped.find(version3), version3.size(), "\"version\": 2,");
+  for (const auto& o : offsets) {
+    const std::string line =
+        ",\n      \"depth_offset_m\": " + nlohmann::json(o.offset).dump();
+    const std::size_t at = stripped.find(line);
+    CHECK(at != std::string::npos);
+    stripped.erase(at, line.size());
+  }
+  CHECK(stripped == plain_text.value());
+  return 0;
+}
+
 int test_files() {
   const vr_test::Scratch scratch("recon_array_calibration_");
   const std::string path = (scratch.path / "array_calibration.json").string();
@@ -658,7 +794,7 @@ int test_files() {
   const std::string later = (scratch.path / "later.json").string();
   CHECK(vkc::write_file(later,
                         R"({"format": "volumetric_kit.array_calibration",
-                            "version": 3, "device_calibration": {}})",
+                            "version": 4, "device_calibration": {}})",
                         vkc::WriteMode::CreateNew));
   const auto later_file = camera::read_array_calibration(later);
   CHECK(!later_file.ok() && later_file.status().domain() == Code::Unsupported &&
@@ -674,6 +810,7 @@ int main() {
   if (test_tag_world() != 0) return 1;
   if (test_refusals() != 0) return 1;
   if (test_round_trip() != 0) return 1;
+  if (test_depth_offset() != 0) return 1;
   if (test_files() != 0) return 1;
   std::printf("array calibration tests passed\n");
   return 0;

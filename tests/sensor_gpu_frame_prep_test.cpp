@@ -4,6 +4,8 @@
 // GpuFramePrep on synthetic frames, no camera:
 //   - a pinhole lens leaves depth exactly raw * scale, and colour the matrix's
 //     inverse of a forward-converted RGB, within a code;
+//   - a depth offset leaves depth exactly raw * scale less the offset, for
+//     either sign, 0 where that leaves no return, and a hole a hole;
 //   - a real lens undistorts, not distorts: a pattern drawn in the pinhole
 //     image, then imaged through the lens by an independent iterative
 //     inversion, comes back where it was drawn;
@@ -18,7 +20,8 @@
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its depth and colour outputs are shared with the queue families its
 //     config names for each, and read on another family as on its own;
-//   - with depth_within_color, depth survives only where colour recorded it;
+//   - with depth_within_color, depth survives only where colour recorded it,
+//     at the corrected depth;
 //   - its output fuses through the device-input overloads, and a slanted
 //     plane's field crosses zero within a tenth of a voxel of the plane.
 // Runs on the real driver; exits 0 (skip) where no device is present.
@@ -31,6 +34,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -392,6 +396,68 @@ int test_pinhole(sensor::GpuFramePrep& prep) {
     }
     if (worst > 2) std::fprintf(stderr, "pinhole colour off by %d\n", worst);
     CHECK(worst <= 2);
+  }
+  return 0;
+}
+
+// A power-of-two depth scale: raw * scale is exact, so the one rounding left
+// in a corrected return is the subtraction's, whether or not the compiler
+// fuses the two.
+constexpr float kExactScale = 1.0f / 1024.0f;
+
+// GpuFramePrepConfig::depth_offset_m: every return less the offset, exactly,
+// for a sensor that reads too far (+4.17 mm), one that reads too near
+// (-0.96 mm), and an offset equal to a return (4 units); a return the offset
+// takes to 0 or below is no return, and no return stays one whatever the
+// sign. A non-finite offset is refused at create.
+int test_depth_offset(vkc::Device& device, vkc::Allocator& allocator) {
+  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight);
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    raw[i] = static_cast<std::uint16_t>((i * 7919u) % 6000u);  // 0 among them
+  }
+  // Returns at, near and below each offset, and a hole.
+  for (std::uint16_t u = 0; u <= 6; ++u) raw[u] = u;
+  for (const float offset : {0.00417f, -0.00096f, 4.0f * kExactScale}) {
+    sensor::GpuFramePrepConfig config;
+    config.depth_offset_m = offset;
+    auto prep = sensor::GpuFramePrep::create(device, allocator, config);
+    if (!prep) std::fprintf(stderr, "%s\n", prep.status().message().c_str());
+    CHECK(prep.ok());
+    sensor::RgbdFrame f = frame_of(raw, pinhole());
+    f.metres_per_unit = kExactScale;
+    auto out = prep->prepare(f);
+    if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+    CHECK(out.ok());
+    const std::vector<float> d = depth_of(out.value());
+    CHECK(d.size() == raw.size());
+    std::size_t holes = 0, removed = 0, below = 0;
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+      const float z = static_cast<float>(raw[i]) * kExactScale;
+      if (raw[i] == 0) {
+        CHECK(d[i] == 0.0f);  // a hole stays one, for either sign
+        ++holes;
+        continue;
+      }
+      CHECK(d[i] == std::max(z - offset, 0.0f));
+      removed += d[i] == 0.0f ? 1 : 0;
+      below += z <= offset ? 1 : 0;
+    }
+    // Only a positive offset removes returns: those at or below it.
+    CHECK(holes > 0 && removed == below);
+    CHECK(offset > 0.0f ? removed >= 4 : removed == 0);
+    // 4 units is at or below each positive offset, 5 above it.
+    CHECK(d[4] == (offset > 0.0f ? 0.0f : 4.0f * kExactScale - offset));
+    CHECK(d[5] == 5.0f * kExactScale - offset && d[5] > 0.0f);
+  }
+  const float inf = std::numeric_limits<float>::infinity();
+  for (const float bad : {std::nanf(""), inf, -inf}) {
+    sensor::GpuFramePrepConfig config;
+    config.depth_offset_m = bad;
+    const vkc::Status refused =
+        sensor::GpuFramePrep::create(device, allocator, config).status();
+    CHECK(refused.domain() == vkc::Status::Code::InvalidArgument);
+    CHECK(refused.message().rfind("GpuFramePrep::create: depth_offset_m", 0) ==
+          0);
   }
   return 0;
 }
@@ -1641,6 +1707,8 @@ int test_cross_family() {
 //   - A narrower colour camera 10 cm to the right: the depth kept is the
 //     region a host projection puts inside its image. A mask that ignored the
 //     pose would keep a region 39 px to one side of it.
+//   - The same cameras with a depth offset: the mask tests the corrected
+//     depth, where one testing the raw depth gets pixels wrong in every row.
 //   - A colour principal point a fraction of a pixel off: the image's edges
 //     are where the rounded colour pixel leaves it, not the pixel itself.
 //   - Off, and on a frame without colour, every depth pixel is kept.
@@ -1710,6 +1778,60 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   }
   CHECK(off == 0);
   CHECK(inside > 1000 && inside < std::size_t{kWidth} * kHeight / 2);
+
+  // The mask tests the corrected depth: the same cameras, a return at 1 m
+  // that reads 5 cm too far. At 0.95 m the point lands about 2 px further
+  // left in the colour camera (390 px x 0.1 m x (1 / 0.95 - 1)), so a mask
+  // that tested the raw depth would get a column or two wrong at each side
+  // of the kept region, in every row it spans.
+  sensor::GpuFramePrepConfig offset_on = on;
+  offset_on.depth_offset_m = 0.05f;
+  auto offset_masked =
+      sensor::GpuFramePrep::create(device, allocator, offset_on);
+  CHECK(offset_masked.ok());
+  const std::vector<std::uint16_t> metre(raw.size(), 1024);
+  sensor::RgbdFrame distant = frame_of(metre, pinhole());
+  distant.metres_per_unit = kExactScale;
+  distant.color = planes.image(0.299f, 0.114f, true);
+  distant.color_camera = narrow;
+  distant.color_to_world[3] = glm::dvec4(0.1, 0.0, 0.0, 1.0);
+  distant.depth_to_color[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
+  out = offset_masked->prepare(distant);
+  CHECK(out.ok());
+  const std::vector<float> corrected_depth = depth_of(out.value());
+  const float corrected = 1.0f - 0.05f;
+  // Whether depth pixel (u, v) at depth z lands in the colour image; false
+  // within a hair of a rounding edge, where either answer is the float's.
+  const auto lands_in = [&](std::uint32_t u, std::uint32_t v, float z,
+                            bool* edge) {
+    const float x =
+        (static_cast<float>(u) - f32(dc.cx)) / f32(dc.fx) - 0.1f / z;
+    const float y = (static_cast<float>(v) - f32(dc.cy)) / f32(dc.fy);
+    const float pu = f32(nc.fx) * x + f32(nc.cx) + 0.5f;
+    const float pv = f32(nc.fy) * y + f32(nc.cy) + 0.5f;
+    *edge = std::fmin(std::fabs(pu - std::round(pu)),
+                      std::fabs(pv - std::round(pv))) < 1e-3f;
+    return std::floor(pu) >= 0.0f && std::floor(pu) < kWidth &&
+           std::floor(pv) >= 0.0f && std::floor(pv) < kHeight;
+  };
+  std::size_t off_corrected = 0, raw_would_differ = 0;
+  for (std::uint32_t v = 0; v < kHeight; ++v) {
+    for (std::uint32_t u = 0; u < kWidth; ++u) {
+      bool edge = false, raw_edge = false;
+      const bool in = lands_in(u, v, corrected, &edge);
+      const bool raw_in = lands_in(u, v, 1.0f, &raw_edge);
+      if (edge || raw_edge) continue;
+      raw_would_differ += in != raw_in ? 1 : 0;
+      const float got = corrected_depth[std::size_t{v} * kWidth + u];
+      if (in ? got != corrected : got != 0.0f) ++off_corrected;
+    }
+  }
+  std::printf(
+      "  depth within colour, corrected: %zu off, %zu a raw mask "
+      "gets wrong\n",
+      off_corrected, raw_would_differ);
+  CHECK(off_corrected == 0);
+  CHECK(raw_would_differ > kHeight);
 
   // The bounds are the rounded colour pixel's, as the colour pass marks
   // coverage, not the pixel's own: a colour principal point `shift` px off the
@@ -1939,6 +2061,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
   CHECK(prep.ok());
 
   if (test_pinhole(prep.value()) != 0) return 1;
+  if (test_depth_offset(gpu.device, gpu.allocator) != 0) return 1;
   if (test_undistorts(prep.value()) != 0) return 1;
   if (test_matches_reference(prep.value(), kWidth, kHeight, false) != 0) {
     return 1;

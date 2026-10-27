@@ -171,10 +171,19 @@ core::Result<SensorArray> SensorArray::open(
         "a device and the allocator its passes' buffers come from are "
         "given together");
   }
+  // One source: each pass takes its own sensor's offset from the
+  // calibration, so one for the whole array would be another.
+  if (options.prep.depth_offset_m != 0.0f) {
+    return bad(
+        "prep.depth_offset_m is set; each sensor's comes from the "
+        "calibration (SensorCalibration::depth_offset_m)");
+  }
 
   auto impl = std::make_unique<Impl>();
   impl->queue_depth = options.queue_depth;
   impl->poses.resize(sensors.size());
+  // Each sensor's depth offset from the calibration; 0 without one.
+  std::vector<double> depth_offsets(sensors.size(), 0.0);
   if (!options.calibration.sensors.empty()) {
     const core::Status valid =
         camera::validate_array_calibration(options.calibration);
@@ -189,6 +198,7 @@ core::Result<SensorArray> SensorArray::open(
                    sensors[i]->info().id);
       }
       impl->poses[i] = *s->color_to_world;
+      depth_offsets[i] = s->depth_offset_m;
     }
   }
 
@@ -269,9 +279,12 @@ core::Result<SensorArray> SensorArray::open(
   impl->grouper.emplace(grouping);
   if (options.device != nullptr) {
     for (std::size_t i = 0; i < sensors.size(); ++i) {
-      VKC_ASSIGN(GpuFramePrep prep,
-                 GpuFramePrep::create(*options.device, *options.allocator,
-                                      options.prep));
+      // The options, and the sensor's own offset, narrowed once for the pass.
+      GpuFramePrepConfig config = options.prep;
+      config.depth_offset_m = static_cast<float>(depth_offsets[i]);
+      VKC_ASSIGN(
+          GpuFramePrep prep,
+          GpuFramePrep::create(*options.device, *options.allocator, config));
       impl->preps.push_back(std::move(prep));
     }
   }

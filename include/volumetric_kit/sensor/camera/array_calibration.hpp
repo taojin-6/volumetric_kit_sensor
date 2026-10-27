@@ -4,10 +4,12 @@
 #pragma once
 
 /// @file camera/array_calibration.hpp
-/// @brief A sensor array's calibration file: where each sensor sits, and its
-///        cameras' models, as calib writes it and a capture reads it.
+/// @brief A sensor array's calibration file: where each sensor sits, its
+///        cameras' models and their corrections, as calib writes it and a
+///        capture reads it.
 ///
-/// Version 2, the one @ref write_array_calibration writes:
+/// Version 2, which @ref write_array_calibration writes for a calibration
+/// without a correction:
 ///
 /// @code{.json}
 /// {"format": "volumetric_kit.array_calibration", "version": 2,
@@ -45,6 +47,19 @@
 ///   printed tag (@ref AprilTagWorld). A world of another kind is refused.
 /// - Numbers are written in a form that reads back to the same double. Keys
 ///   this reader does not know are ignored; a later `version` is refused.
+///
+/// Version 3 is version 2 with a correction: a sensor's `depth_offset_m`
+/// (@ref SensorCalibration::depth_offset_m), beside its other fields:
+///
+/// @code{.json}
+///    "CL2A141000N": {"pose": {...}, "depth": {...}, "depth_offset_m": 0.00417}
+/// @endcode
+///
+/// The writer writes version 3 only for a calibration that carries a
+/// correction, so an uncorrected one is written as version 2, byte for byte
+/// as before, and a reader that knows only version 2 refuses a corrected file
+/// rather than run it uncorrected. Both are read; a correction in a file that
+/// says version 2 is refused, since such a reader would ignore it.
 ///
 /// Version 1, the family's earlier layout, has no `format` or `version`: a
 /// `device_calibration` object of sensors by serial, each with a `pose`. It
@@ -96,6 +111,12 @@ struct SensorCalibration {
   /// The depth camera's frame to the colour camera's; only beside
   /// @ref depth.
   std::optional<Mat4d> depth_to_color;
+  /// Metres the depth reads too far (+) or too near (-) along its axis,
+  /// subtracted from every return when the sensor's frames are prepared
+  /// (`sensor::GpuFramePrepConfig::depth_offset_m`); 0, the default, where
+  /// the file has none. Finite, and at most 0.05 m either way. Written as
+  /// `"depth_offset_m"`, a version-3 field, only when it is not 0.
+  double depth_offset_m = 0.0;
 };
 
 /// @brief A printed AprilTag whose frame is the world.
@@ -142,6 +163,7 @@ VR_CAMERA_API const SensorCalibration* find_sensor(
 /// At least one sensor; each id non-empty, UTF-8 and unique; each pose and
 /// `depth_to_color` rigid (@ref check_rigid), and `depth_to_color` only
 /// beside a depth camera; each camera model valid (@ref check_camera_model);
+/// each `depth_offset_m` finite and at most 0.05 m either way;
 /// and at most one world: a sensor that is in the array and posed at the
 /// origin, or a tag with a non-empty UTF-8 family, an id of 0 or more and a
 /// finite size above 0.
@@ -151,12 +173,13 @@ VR_CAMERA_API const SensorCalibration* find_sensor(
 VR_CAMERA_API core::Status validate_array_calibration(
     const ArrayCalibration& array);
 
-/// @brief Parse a calibration document, version 2 or version 1.
+/// @brief Parse a calibration document, version 3, 2 or 1.
 /// @param json  The document's text.
 /// @return The calibration, its sensors in id order;
 ///         `Status::Code::InvalidArgument` naming what is wrong (not JSON,
 ///         another format, a field of the wrong type, a `version` without a
-///         `format`, a version-1 sensor without a pose, or a calibration
+///         `format`, a correction in a version-2 document, a version-1
+///         sensor without a pose, or a calibration
 ///         @ref validate_array_calibration refuses);
 ///         `Status::Code::Unsupported` for a later version, a distortion
 ///         model other than `"rational"`, or a world that is neither a
@@ -172,7 +195,9 @@ VR_CAMERA_API core::Result<ArrayCalibration> parse_array_calibration(
 VR_CAMERA_API core::Result<ArrayCalibration> read_array_calibration(
     const std::string& path);
 
-/// @brief Format @p array as a version-2 document.
+/// @brief Format @p array as a version-3 document if it carries a correction
+///        (a sensor's `depth_offset_m` other than 0), and as a version-2 one
+///        if not.
 ///
 /// Sensors in id order, every number in a form that reads back to the same
 /// double (at most 17 significant digits), so @ref parse_array_calibration
