@@ -140,11 +140,11 @@ class VR_SENSOR_ARRAY_API SensorArray {
     /// Each sensor's pose, by id, stamped on its frames, and its depth
     /// offset, which its pass subtracts (`SensorCalibration::depth_offset_m`,
     /// `GpuFramePrepConfig::depth_offset_m`). Every sensor of the array must
-    /// be posed in it (`SensorCalibration::color_to_world`), and where it
+    /// be posed in it (`SensorCalibration::color_to_world`); no sensors leaves
+    /// each frame where its driver put it, and its depth as read. Where it
     /// names the colour cameras' exposure
-    /// (`camera::ArrayCalibration::color_controls`), every sensor must have
-    /// been opened at it (`SensorInfo::color_controls`); no sensors leaves
-    /// each frame where its driver put it, and its depth as read.
+    /// (`camera::ArrayCalibration::color_controls`), with sensors or without,
+    /// every sensor must have been opened at it (`SensorInfo::color_controls`).
     camera::ArrayCalibration calibration;
     /// The device @ref process prepares sets on, with a pass per sensor;
     /// null for an array whose sets are not prepared here. Borrowed: it must

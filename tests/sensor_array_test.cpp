@@ -469,7 +469,8 @@ int test_world() {
 }
 
 // A calibration that names the colour cameras' exposure takes only sensors
-// opened at it, naming one that is not; one that names none checks nothing.
+// opened at it, naming one that is not, whether it lists sensors or not; one
+// that names none checks nothing.
 int test_color_controls() {
   const camera::ColorControls lock{167, 60};
   auto o = trigger_options();
@@ -501,6 +502,16 @@ int test_color_controls() {
           std::string::npos);
     CHECK(m.find("color_controls (exposure 167, gain 60)") !=
           std::string::npos);
+  }
+  // A calibration that names the controls but lists no sensor checks them
+  // all the same.
+  auto bare = trigger_options();
+  bare.calibration.color_controls = lock;
+  CHECK(refusal(triggered_rig(), bare) == Code::InvalidArgument);
+  {
+    Rig r = triggered_rig();
+    for (Scripted* f : r.fakes) f->mutable_info().color_controls = lock;
+    CHECK(refusal(std::move(r), bare) == Code::Ok);
   }
   return 0;
 }

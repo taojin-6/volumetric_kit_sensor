@@ -206,12 +206,16 @@ core::Result<SensorArray> SensorArray::open(
       }
       impl->poses[i] = *s->color_to_world;
       depth_offsets[i] = s->depth_offset_m;
-      // A calibration made at one exposure holds at it: a sensor opened at
-      // another (without the controls, say) is refused, not miscoloured.
-      const auto& controls = options.calibration.color_controls;
-      const auto& opened = sensors[i]->info().color_controls;
-      if (controls && opened != controls) {
-        return bad("sensor " + sensors[i]->info().id + " runs at " +
+    }
+  }
+  // A calibration made at one exposure holds at it: a sensor opened at
+  // another (without the controls, say) is refused, not miscoloured, whether
+  // the calibration lists sensors or not.
+  if (const auto& controls = options.calibration.color_controls) {
+    for (const auto& sensor : sensors) {
+      const auto& opened = sensor->info().color_controls;
+      if (opened != controls) {
+        return bad("sensor " + sensor->info().id + " runs at " +
                    exposure_text(opened) +
                    ", not the calibration's color_controls (" +
                    exposure_text(controls) + "); open it with them");
