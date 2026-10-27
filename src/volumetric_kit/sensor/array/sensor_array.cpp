@@ -31,6 +31,13 @@ core::Status unsupported(const std::string& what) {
   return core::Status::unsupported("SensorArray: " + what);
 }
 
+// "exposure 167, gain 60", or "auto exposure", for a refusal.
+std::string exposure_text(const std::optional<camera::ColorControls>& c) {
+  return c ? "exposure " + std::to_string(c->exposure) + ", gain " +
+                 std::to_string(c->gain)
+           : std::string("auto exposure");
+}
+
 std::uint64_t now_us() {
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(
@@ -199,6 +206,16 @@ core::Result<SensorArray> SensorArray::open(
       }
       impl->poses[i] = *s->color_to_world;
       depth_offsets[i] = s->depth_offset_m;
+      // A calibration made at one exposure holds at it: a sensor opened at
+      // another (without the controls, say) is refused, not miscoloured.
+      const auto& controls = options.calibration.color_controls;
+      const auto& opened = sensors[i]->info().color_controls;
+      if (controls && opened != controls) {
+        return bad("sensor " + sensors[i]->info().id + " runs at " +
+                   exposure_text(opened) +
+                   ", not the calibration's color_controls (" +
+                   exposure_text(controls) + "); open it with them");
+      }
     }
   }
 
