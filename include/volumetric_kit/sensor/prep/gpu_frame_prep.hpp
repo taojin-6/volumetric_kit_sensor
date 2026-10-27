@@ -54,8 +54,10 @@ namespace volumetric_kit::recon::sensor {
 /// buffers instead; drop a frame once it is fused and the pass reuses them.
 /// The `Allocator` must outlive the frame, as it must the pass.
 struct DeviceFrame {
-  /// Row-major depth in metres, `depth_camera.width * height` floats; 0 where
-  /// the sensor had no return or the lens maps outside its image.
+  /// Row-major depth in metres, less the pass's
+  /// @ref GpuFramePrepConfig::depth_offset_m, `depth_camera.width * height`
+  /// floats; 0 where the sensor had no return, the offset leaves none, or
+  /// the lens maps outside its image.
   std::shared_ptr<const core::Buffer> depth;
   /// Row-major colour, `color_camera.width * height` words: R, G and B in the
   /// low three bytes, and the pixel's coverage in the high one -- 0xFF where
@@ -125,6 +127,19 @@ struct GpuFramePrepConfig {
   /// without colour keeps all its depth. Off (the default) keeps all of it
   /// always, as the pass always did.
   bool depth_within_color = false;
+
+  /// @brief Metres the sensor's depth reads too far (+) or too near (-),
+  ///        subtracted from every return.
+  ///
+  /// The sensor's own, from its calibration
+  /// (`camera::SensorCalibration::depth_offset_m`): `SensorArray` sets it
+  /// per sensor, and refuses one in `SensorArray::Options::prep`. A return
+  /// the offset takes to 0 or below is no return (0), and 0 stays no return
+  /// whatever the sign, so a negative offset never makes a hole a surface.
+  /// It is subtracted before @ref depth_within_color's test, which sees the
+  /// corrected depth. 0, the default, leaves depth as the sensor reported
+  /// it. Finite, or @ref GpuFramePrep::create refuses it.
+  float depth_offset_m = 0.0f;
 };
 
 /// @brief Undistorts a @ref RgbdFrame's depth and colour, and converts its
@@ -165,11 +180,13 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   /// @param allocator  The allocator its buffers come from (must outlive
   ///                   this object and every frame it hands out).
   /// @param config     Which queue families read the colour and the depth
-  ///                   outputs (see @ref GpuFramePrepConfig).
+  ///                   outputs, and how depth is corrected and masked (see
+  ///                   @ref GpuFramePrepConfig).
   /// @return The pass; `Status::Code::InvalidArgument` for a
   ///         `color_queue_family_count` or a `depth_queue_family_count` past
-  ///         `BufferDesc::kMaxQueueFamilies`, or a colour or depth queue
-  ///         family @p device does not have; or a non-OK `Status` if a
+  ///         `BufferDesc::kMaxQueueFamilies`, a colour or depth queue
+  ///         family @p device does not have, or a `depth_offset_m` that is
+  ///         not finite; or a non-OK `Status` if a
   ///         pipeline, descriptor object or buffer fails to build.
   static core::Result<GpuFramePrep> create(
       core::Device& device, core::Allocator& allocator,
