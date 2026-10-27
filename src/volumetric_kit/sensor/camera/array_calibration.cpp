@@ -23,8 +23,15 @@ namespace {
 using nlohmann::json;
 
 constexpr std::string_view kFormat = "volumetric_kit.array_calibration";
+// The version a calibration without a correction is written as, and the one a
+// calibration with one is: a reader of version 2 alone refuses it rather than
+// run it uncorrected.
 constexpr std::uint64_t kVersion = 2;
+constexpr std::uint64_t kCorrectedVersion = 3;
 constexpr std::string_view kRational = "rational";
+// The largest depth offset either way, in metres: a sensor's depth error is
+// millimetres, so more is a unit or sign mistake.
+constexpr double kMaxDepthOffset = 0.05;
 // How far a world sensor's pose may be from the origin: a writer puts it there
 // exactly, so this absorbs only the Rodrigues round trip.
 constexpr double kOriginTolerance = 1e-9;
@@ -183,7 +190,8 @@ core::Result<CameraCalibration> camera_v2(const json& block,
 }
 
 core::Result<SensorCalibration> sensor_v2(const std::string& id,
-                                          const json& block) {
+                                          const json& block,
+                                          std::uint64_t version) {
   SensorCalibration sensor;
   sensor.id = id;
   const std::string where = "sensor " + id + ": ";
@@ -205,6 +213,16 @@ core::Result<SensorCalibration> sensor_v2(const std::string& id,
   if (depth_to_color != nullptr) {
     VKC_ASSIGN(sensor.depth_to_color,
                transform(*depth_to_color, where + "depth_to_color "));
+  }
+  if (block.contains("depth_offset_m")) {
+    // A version-2 reader ignores the key, so a file that says version 2
+    // would run uncorrected there.
+    if (version < kCorrectedVersion) {
+      return bad(where +
+                 "\"depth_offset_m\" is a version-3 field, in a version-2 "
+                 "file");
+    }
+    VKC_ASSIGN(sensor.depth_offset_m, number(block, "depth_offset_m", where));
   }
   return sensor;
 }
@@ -245,11 +263,11 @@ core::Result<ArrayCalibration> parse_v2(const json& doc) {
     return bad("missing whole number \"version\"");
   }
   const std::uint64_t v = version->get<std::uint64_t>();
-  if (v > kVersion) {
+  if (v > kCorrectedVersion) {
     return unsupported("version " + std::to_string(v) +
-                       "; this reader knows version 2");
+                       "; this reader knows versions 2 and 3");
   }
-  if (v != kVersion) {
+  if (v < kVersion) {
     return bad("version " + std::to_string(v) +
                "; a file without \"format\" is version 1");
   }
@@ -261,7 +279,7 @@ core::Result<ArrayCalibration> parse_v2(const json& doc) {
     VKC_ASSIGN(array.world, world_v2(*world));
   }
   for (auto it = sensors->begin(); it != sensors->end(); ++it) {
-    VKC_ASSIGN(SensorCalibration sensor, sensor_v2(it.key(), *it));
+    VKC_ASSIGN(SensorCalibration sensor, sensor_v2(it.key(), *it, v));
     array.sensors.push_back(std::move(sensor));
   }
   return array;
@@ -340,7 +358,16 @@ core::Status check_sensor(const SensorCalibration& sensor) {
     const core::Status rigid = check_rigid(*sensor.depth_to_color);
     if (!rigid.ok()) return bad(who + "depth_to_color: " + rigid.message());
   }
+  if (!std::isfinite(sensor.depth_offset_m) ||
+      std::fabs(sensor.depth_offset_m) > kMaxDepthOffset) {
+    return bad(who + "\"depth_offset_m\" is not a finite offset within 0.05 m");
+  }
   return {};
+}
+
+// Whether a sensor carries a correction, which makes the file version 3.
+bool corrected(const SensorCalibration& sensor) {
+  return sensor.depth_offset_m != 0.0;
 }
 
 // A tag is not in the array, so nothing of it is checked against the poses.
@@ -462,9 +489,13 @@ core::Result<std::string> format_array_calibration(
   }
   std::sort(sorted.begin(), sorted.end(),
             [](const auto* a, const auto* b) { return a->id < b->id; });
+  const bool any_correction =
+      std::any_of(sorted.begin(), sorted.end(),
+                  [](const auto* s) { return corrected(*s); });
 
   std::string out = "{\n  \"format\": " + text(std::string(kFormat)) +
-                    ",\n  \"version\": " + text(kVersion) + ",\n";
+                    ",\n  \"version\": " +
+                    text(any_correction ? kCorrectedVersion : kVersion) + ",\n";
   if (!array.world.sensor.empty()) {
     out += "  \"world\": {\"sensor\": " + text(array.world.sensor) + "},\n";
   }
@@ -491,6 +522,9 @@ core::Result<std::string> format_array_calibration(
     if (s.depth_to_color) {
       fields.push_back("\"depth_to_color\": " +
                        transform_text(*s.depth_to_color));
+    }
+    if (s.depth_offset_m != 0.0) {
+      fields.push_back("\"depth_offset_m\": " + text(s.depth_offset_m));
     }
     out += (i == 0 ? "\n    " : ",\n    ") + text(s.id) + ": {";
     for (std::size_t f = 0; f < fields.size(); ++f) {
