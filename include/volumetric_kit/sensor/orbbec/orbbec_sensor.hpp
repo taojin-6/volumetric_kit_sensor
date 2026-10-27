@@ -228,7 +228,7 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
 ///
 /// @code
 /// OrbbecSensor::Options streams;
-/// streams.color_codec = OrbbecColorCodec::Hevc;
+/// streams.color_controls = calibration.color_controls;  // every camera's
 /// streams.device = &device;
 /// streams.allocator = &allocator;
 /// VKC_ASSIGN(auto sensors, open_orbbec_sensors(sync_path, streams));
