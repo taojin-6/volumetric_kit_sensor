@@ -50,8 +50,7 @@ namespace volumetric_kit::recon::sensor {
 ///
 /// @code
 /// OrbbecSensor::Options options;
-/// options.serial = "CL2A141000N";
-/// options.color_codec = OrbbecColorCodec::Hevc;
+/// options.serial = "CL2A141000N";  // H.265 3840x2160 at 25 fps
 /// options.device = &device;  // decode onto the GPU the pass runs on
 /// options.allocator = &allocator;  // NVDEC's and nvJPEG's pictures
 /// VKC_ASSIGN(OrbbecSensor sensor, OrbbecSensor::open(options));
