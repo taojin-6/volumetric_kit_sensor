@@ -49,9 +49,13 @@
 ///   this reader does not know are ignored; a later `version` is refused.
 ///
 /// Version 3 is version 2 with a correction: a sensor's `depth_offset_m`
-/// (@ref SensorCalibration::depth_offset_m), beside its other fields:
+/// (@ref SensorCalibration::depth_offset_m), beside its other fields, or the
+/// colour cameras' exposure (@ref ArrayCalibration::color_controls), beside
+/// the world:
 ///
 /// @code{.json}
+///  "color_controls": {"exposure": 167, "gain": 60},
+///  "device_calibration": {
 ///    "CL2A141000N": {"pose": {...}, "depth": {...}, "depth_offset_m": 0.00417}
 /// @endcode
 ///
@@ -74,6 +78,7 @@
 #include "volumetric_kit/core/base/file_io.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
+#include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/camera/export.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 
@@ -144,9 +149,16 @@ struct WorldFrame {
   std::optional<AprilTagWorld> apriltag;
 };
 
-/// @brief A sensor array's calibration: its world, and its sensors.
+/// @brief A sensor array's calibration: its world, the exposure its colour
+///        cameras run at, and its sensors.
 struct ArrayCalibration {
-  WorldFrame world;                        ///< What the world frame is.
+  WorldFrame world;  ///< What the world frame is.
+  /// The manual exposure every colour camera of the array is opened with,
+  /// which a driver writes to each camera and reads back; empty, the
+  /// default, for auto exposure. A calibration measured at one exposure holds
+  /// at that exposure, so it is recorded with it. Exposure and gain above 0.
+  /// Written as `"color_controls"`, a version-3 field, only when present.
+  std::optional<ColorControls> color_controls;
   std::vector<SensorCalibration> sensors;  ///< In id order once read.
 };
 
@@ -164,6 +176,7 @@ VR_CAMERA_API const SensorCalibration* find_sensor(
 /// `depth_to_color` rigid (@ref check_rigid), and `depth_to_color` only
 /// beside a depth camera; each camera model valid (@ref check_camera_model);
 /// each `depth_offset_m` finite and at most 0.05 m either way;
+/// `color_controls`, where present, with an exposure and a gain above 0;
 /// and at most one world: a sensor that is in the array and posed at the
 /// origin, or a tag with a non-empty UTF-8 family, an id of 0 or more and a
 /// finite size above 0.
@@ -196,8 +209,8 @@ VR_CAMERA_API core::Result<ArrayCalibration> read_array_calibration(
     const std::string& path);
 
 /// @brief Format @p array as a version-3 document if it carries a correction
-///        (a sensor's `depth_offset_m` other than 0), and as a version-2 one
-///        if not.
+///        (a sensor's `depth_offset_m` other than 0, or `color_controls`),
+///        and as a version-2 one if not.
 ///
 /// Sensors in id order, every number in a form that reads back to the same
 /// double (at most 17 significant digits), so @ref parse_array_calibration

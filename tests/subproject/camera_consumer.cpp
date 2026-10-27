@@ -7,6 +7,7 @@
 
 #include "volumetric_kit/recon/camera/array_calibration.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
+#include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/camera/projection.hpp"
 

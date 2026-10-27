@@ -278,6 +278,19 @@ core::Result<ArrayCalibration> parse_v2(const json& doc) {
   if (world != nullptr) {
     VKC_ASSIGN(array.world, world_v2(*world));
   }
+  VKC_ASSIGN(const json* controls, object_at(doc, "color_controls", ""));
+  if (controls != nullptr) {
+    // As a sensor's depth offset: a version-2 reader would run without them.
+    if (v < kCorrectedVersion) {
+      return bad(
+          "\"color_controls\" is a version-3 field, in a version-2 file");
+    }
+    const std::string where = "color_controls: ";
+    ColorControls c;
+    VKC_ASSIGN(c.exposure, whole_number(*controls, "exposure", where));
+    VKC_ASSIGN(c.gain, whole_number(*controls, "gain", where));
+    array.color_controls = c;
+  }
   for (auto it = sensors->begin(); it != sensors->end(); ++it) {
     VKC_ASSIGN(SensorCalibration sensor, sensor_v2(it.key(), *it, v));
     array.sensors.push_back(std::move(sensor));
@@ -365,9 +378,27 @@ core::Status check_sensor(const SensorCalibration& sensor) {
   return {};
 }
 
-// Whether a sensor carries a correction, which makes the file version 3.
-bool corrected(const SensorCalibration& sensor) {
-  return sensor.depth_offset_m != 0.0;
+// Whether the array carries a correction, which makes the file version 3: the
+// colour cameras' exposure, or a sensor's depth offset.
+bool corrected(const ArrayCalibration& array) {
+  return array.color_controls.has_value() ||
+         std::any_of(array.sensors.begin(), array.sensors.end(),
+                     [](const SensorCalibration& s) {
+                       return s.depth_offset_m != 0.0;
+                     });
+}
+
+// A manual exposure names both values, each above 0, where a camera's range
+// starts.
+core::Status check_color_controls(const ColorControls& controls) {
+  for (const auto& [name, value] : {std::pair{"exposure", controls.exposure},
+                                    std::pair{"gain", controls.gain}}) {
+    if (value == 0) {
+      return bad(std::string("color_controls: \"") + name +
+                 "\" is 0; a manual exposure's is above 0");
+    }
+  }
+  return {};
 }
 
 // A tag is not in the array, so nothing of it is checked against the poses.
@@ -434,6 +465,9 @@ core::Status validate_array_calibration(const ArrayCalibration& array) try {
     }
     VKC_TRY(check_sensor(array.sensors[i]));
   }
+  if (array.color_controls) {
+    VKC_TRY(check_color_controls(*array.color_controls));
+  }
   return check_world(array);
 } catch (...) {
   return core::exception_status("array calibration",
@@ -489,13 +523,9 @@ core::Result<std::string> format_array_calibration(
   }
   std::sort(sorted.begin(), sorted.end(),
             [](const auto* a, const auto* b) { return a->id < b->id; });
-  const bool any_correction =
-      std::any_of(sorted.begin(), sorted.end(),
-                  [](const auto* s) { return corrected(*s); });
-
-  std::string out = "{\n  \"format\": " + text(std::string(kFormat)) +
-                    ",\n  \"version\": " +
-                    text(any_correction ? kCorrectedVersion : kVersion) + ",\n";
+  std::string out =
+      "{\n  \"format\": " + text(std::string(kFormat)) + ",\n  \"version\": " +
+      text(corrected(array) ? kCorrectedVersion : kVersion) + ",\n";
   if (!array.world.sensor.empty()) {
     out += "  \"world\": {\"sensor\": " + text(array.world.sensor) + "},\n";
   }
@@ -503,6 +533,11 @@ core::Result<std::string> format_array_calibration(
     out += "  \"world\": {\"apriltag\": {\"family\": " + text(tag->family) +
            ", \"id\": " + text(static_cast<std::uint64_t>(tag->id)) +
            ", \"size_m\": " + text(tag->size_m) + "}},\n";
+  }
+  if (const auto& controls = array.color_controls) {
+    out += "  \"color_controls\": {\"exposure\": " +
+           text(std::uint64_t{controls->exposure}) +
+           ", \"gain\": " + text(std::uint64_t{controls->gain}) + "},\n";
   }
   out += "  \"device_calibration\": {";
   const std::string indent = "      ";

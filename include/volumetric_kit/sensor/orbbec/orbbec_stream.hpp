@@ -13,8 +13,10 @@
 /// the 2026-09-26 and 2026-09-28 decisions.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
+#include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 
@@ -30,10 +32,12 @@ inline constexpr std::uint32_t kMaxColorQueueFamilies = 4;
 ///        hardware decoder.
 enum class OrbbecColorCodec {
   /// Motion JPEG, decoded by sensor/video's `JpegDecoder`: nvJPEG or
-  /// VideoToolbox. About 185 Mbit/s at 4K.
+  /// VideoToolbox. About 185 Mbit/s at 4K, each frame coded on its own: for
+  /// calibration captures, which want the least compressed frames, and
+  /// diagnostics.
   Mjpeg,
   /// H.265, decoded by sensor/video's `HevcDecoder`: NVDEC or VideoToolbox.
-  /// About 21 Mbit/s at 720p and at 4K.
+  /// About 21 Mbit/s at 720p and at 4K. The default.
   Hevc,
 };
 
@@ -93,12 +97,20 @@ struct OrbbecStreamOptions {
   std::uint32_t depth_width = 640;
   std::uint32_t depth_height = 576;  ///< See @ref depth_width.
   /// Colour stream size.
-  std::uint32_t color_width = 1280;
-  std::uint32_t color_height = 720;  ///< See @ref color_width.
+  std::uint32_t color_width = 3840;
+  std::uint32_t color_height = 2160;  ///< See @ref color_width.
   /// Frame rate of both streams; the camera pairs them only at one rate.
-  std::uint32_t fps = 30;
+  /// The Femto Mega offers 3840x2160 at 25 fps at most.
+  std::uint32_t fps = 25;
   /// How colour crosses the wire.
-  OrbbecColorCodec color_codec = OrbbecColorCodec::Mjpeg;
+  OrbbecColorCodec color_codec = OrbbecColorCodec::Hevc;
+  /// The colour camera's exposure, which open writes where the camera differs
+  /// and reads back: a manual exposure (auto exposure off), or auto exposure
+  /// when empty, the default. Auto white balance is switched on either way.
+  /// Always written, since the camera keeps what was last written to it, in
+  /// another process too: a camera left as it was would keep an earlier
+  /// run's exposure. Exposure and gain above 0.
+  std::optional<camera::ColorControls> color_controls;
   /// Reject depth nearer than this (metres); stamped on every frame as the
   /// fusion gate. Above 0, as the GPU pass requires.
   float min_depth = 0.25f;

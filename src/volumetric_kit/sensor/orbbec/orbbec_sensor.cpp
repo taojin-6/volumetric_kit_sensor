@@ -99,6 +99,10 @@ core::Result<OrbbecSensor> OrbbecSensor::open(const Options& options) {
         "standalone, primary or secondary");
   }
   SensorInfo& info = impl->info;
+  // Last, so a camera refused above gets no write. Always written: a camera
+  // keeps the last exposure written, so leaving it would keep another run's.
+  VKC_ASSIGN(info.color_controls,
+             stream.apply_color_controls(options.color_controls));
   info.id = stream.info().serial;
   info.model = stream.info().name;
   info.color = stream.color_camera();

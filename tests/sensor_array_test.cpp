@@ -7,7 +7,8 @@
 // secondary, the newest set winning, frames with no clock), a set's skew and
 // spread, the default tolerance, an exhausted sensor, a drain that fails
 // partway, poses from the calibration (an unposed sensor refused) whatever
-// its world, and a moved-from array. Host-only.
+// its world, the colour exposure a calibration names (a sensor opened at
+// another refused), and a moved-from array. Host-only.
 
 #include <algorithm>
 #include <chrono>
@@ -467,6 +468,54 @@ int test_world() {
   return 0;
 }
 
+// A calibration that names the colour cameras' exposure takes only sensors
+// opened at it, naming one that is not, whether it lists sensors or not; one
+// that names none checks nothing.
+int test_color_controls() {
+  const camera::ColorControls lock{167, 60};
+  auto o = trigger_options();
+  o.calibration = calibration({"S1", "P", "S2"});
+  {  // None in the calibration: whatever the sensors run at.
+    Rig r = triggered_rig();
+    r.fakes[0]->mutable_info().color_controls = lock;
+    CHECK(refusal(std::move(r), o) == Code::Ok);
+  }
+  o.calibration.color_controls = lock;
+  {  // Every sensor at them.
+    Rig r = triggered_rig();
+    for (Scripted* f : r.fakes) f->mutable_info().color_controls = lock;
+    CHECK(refusal(std::move(r), o) == Code::Ok);
+  }
+  // One at auto exposure, or at another exposure.
+  for (const auto& [other, says] :
+       {std::pair{std::optional<camera::ColorControls>(), "auto exposure"},
+        std::pair{std::optional(camera::ColorControls{167, 61}),
+                  "exposure 167, gain 61"}}) {
+    Rig r = triggered_rig();
+    for (Scripted* f : r.fakes) f->mutable_info().color_controls = lock;
+    r.fakes[2]->mutable_info().color_controls = other;
+    const auto a = sensor::SensorArray::open(std::move(r.sensors), o);
+    CHECK(!a.ok() && a.status().domain() == Code::InvalidArgument);
+    const std::string& m = a.status().message();
+    std::printf("  refused as expected: %s\n", m.c_str());
+    CHECK(m.find(std::string("sensor S2 runs at ") + says) !=
+          std::string::npos);
+    CHECK(m.find("color_controls (exposure 167, gain 60)") !=
+          std::string::npos);
+  }
+  // A calibration that names the controls but lists no sensor checks them
+  // all the same.
+  auto bare = trigger_options();
+  bare.calibration.color_controls = lock;
+  CHECK(refusal(triggered_rig(), bare) == Code::InvalidArgument);
+  {
+    Rig r = triggered_rig();
+    for (Scripted* f : r.fakes) f->mutable_info().color_controls = lock;
+    CHECK(refusal(std::move(r), bare) == Code::Ok);
+  }
+  return 0;
+}
+
 // The default tolerance: 0.4 of the fastest sensor's frame period, 400 us at
 // 1 kHz, or 5000 us when no sensor reports a rate. A secondary just inside it
 // joins the primary's set; one just outside joins none.
@@ -743,6 +792,7 @@ int main() {
   if (test_start_order() != 0) return 1;
   if (test_trigger() != 0) return 1;
   if (test_world() != 0) return 1;
+  if (test_color_controls() != 0) return 1;
   if (test_skew_and_spread() != 0) return 1;
   if (test_default_tolerance() != 0) return 1;
   if (test_failed_drain() != 0) return 1;

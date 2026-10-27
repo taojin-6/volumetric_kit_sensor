@@ -6,8 +6,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <iterator>
+#include <optional>
 #include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 
@@ -156,6 +161,13 @@ core::Status validate_streams(const OrbbecStreamOptions& streams,
         "] m must be finite and non-empty, with min_depth > 0, as the GPU "
         "pass requires");
   }
+  if (streams.color_controls && (streams.color_controls->exposure == 0 ||
+                                 streams.color_controls->gain == 0)) {
+    return core::Status::invalid_argument(
+        who +
+        ": color_controls' exposure and gain must be above 0; leave it "
+        "empty for auto exposure");
+  }
   return core::check_queue_family_count(
       streams.color_queue_family_count,
       (who + ": color_queue_families").c_str());
@@ -244,6 +256,122 @@ std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
            std::to_string(wanted.frames_per_trigger));
   }
   return out;
+}
+
+namespace {
+
+// A colour control as the camera's write and read-back name it.
+struct ColorControl {
+  OBPropertyID id;
+  const char* name;
+};
+constexpr ColorControl kAutoExposure{OB_PROP_COLOR_AUTO_EXPOSURE_BOOL,
+                                     "auto exposure"};
+constexpr ColorControl kExposure{OB_PROP_COLOR_EXPOSURE_INT, "exposure"};
+constexpr ColorControl kGain{OB_PROP_COLOR_GAIN_INT, "gain"};
+constexpr ColorControl kAutoWhiteBalance{OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL,
+                                         "auto white balance"};
+
+const char* on_off(bool on) { return on ? "on" : "off"; }
+
+}  // namespace
+
+core::Result<std::optional<camera::ColorControls>> write_color_controls(
+    CameraProperties& camera,
+    const std::optional<camera::ColorControls>& wanted,
+    const std::string& who) {
+  try {
+    const bool manual = wanted.has_value();
+    // 1. Every control a manual exposure needs, and its values in range,
+    //    before anything is written.
+    if (manual) {
+      for (const ColorControl& c :
+           {kAutoExposure, kExposure, kGain, kAutoWhiteBalance}) {
+        if (!camera.writable(c.id)) {
+          return core::Status::unsupported(
+              who + " has no colour " + c.name +
+              " to read and write, which a manual exposure needs");
+        }
+      }
+      for (const auto& [c, value] : {std::pair{kExposure, wanted->exposure},
+                                     std::pair{kGain, wanted->gain}}) {
+        const OBIntPropertyRange range = camera.int_range(c.id);
+        const std::int64_t v = value;
+        if (v < range.min || v > range.max) {
+          return core::Status::unsupported(
+              who + ": colour " + c.name + " " + std::to_string(value) +
+              " is outside the camera's range [" + std::to_string(range.min) +
+              ", " + std::to_string(range.max) + "]");
+        }
+        if (range.step > 1 && (v - range.min) % range.step != 0) {
+          return core::Status::unsupported(
+              who + ": colour " + c.name + " " + std::to_string(value) +
+              " is off the camera's steps of " + std::to_string(range.step) +
+              " from " + std::to_string(range.min));
+        }
+      }
+    }
+    const bool has_auto_exposure = camera.writable(kAutoExposure.id);
+    const bool has_auto_white_balance = camera.writable(kAutoWhiteBalance.id);
+
+    // 2. Written where the camera differs, in this order.
+    bool was_auto = false;
+    if (has_auto_exposure) {
+      was_auto = camera.get_bool(kAutoExposure.id);
+      if (was_auto == manual) camera.set_bool(kAutoExposure.id, !manual);
+    }
+    if (manual) {
+      for (const auto& [c, value] : {std::pair{kExposure, wanted->exposure},
+                                     std::pair{kGain, wanted->gain}}) {
+        const auto v = static_cast<std::int32_t>(value);  // in range
+        if (was_auto || camera.get_int(c.id) != v) camera.set_int(c.id, v);
+      }
+    }
+    if (has_auto_white_balance && !camera.get_bool(kAutoWhiteBalance.id)) {
+      camera.set_bool(kAutoWhiteBalance.id, true);
+    }
+
+    // 3. Read back.
+    std::vector<std::string> differences;
+    const auto flag = [&](const ColorControl& c, bool want) {
+      const bool have = camera.get_bool(c.id);
+      if (have != want) {
+        differences.push_back(std::string(c.name) + " is " + on_off(have) +
+                              ", configured " + on_off(want));
+      }
+    };
+    if (has_auto_exposure) flag(kAutoExposure, !manual);
+    std::optional<camera::ColorControls> read;
+    if (manual) {
+      camera::ColorControls got;
+      for (const auto& [c, value, out] :
+           {std::tuple{kExposure, wanted->exposure, &got.exposure},
+            std::tuple{kGain, wanted->gain, &got.gain}}) {
+        const std::int32_t have = camera.get_int(c.id);
+        if (std::int64_t{have} != std::int64_t{value}) {
+          differences.push_back(std::string(c.name) + " is " +
+                                std::to_string(have) + ", configured " +
+                                std::to_string(value));
+        }
+        *out = static_cast<std::uint32_t>(have);
+      }
+      read = got;
+    }
+    if (has_auto_white_balance) flag(kAutoWhiteBalance, true);
+    if (!differences.empty()) {
+      std::string fields;
+      for (const std::string& d : differences) {
+        fields += (fields.empty() ? "" : ", ") + d;
+      }
+      return core::Status::unsupported(
+          who +
+          " differs from its colour controls after writing them: " + fields);
+    }
+    return read;
+  } catch (const std::exception& e) {  // ob::Error is one
+    return core::Status::io_error(who +
+                                  ": setting its colour controls: " + e.what());
+  }
 }
 
 }  // namespace volumetric_kit::recon::sensor::orbbec
