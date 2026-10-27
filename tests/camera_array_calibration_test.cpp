@@ -4,7 +4,8 @@
 // The sensor array's calibration file: version 2 read as calib writes it,
 // version 1 (the family's device_calibration layout) still read for its poses,
 // a world at an AprilTag, version 3's depth offsets read, checked and written
-// only where a sensor has one, the refusals, a later version refused, and a
+// only where a sensor has one, its colour controls read, checked and written
+// only where the array has them, the refusals, a later version refused, and a
 // calibration written and read back with every model and number exact and
 // every pose to round-off, through the core's write_file. Host-only.
 
@@ -487,6 +488,7 @@ camera::ArrayCalibration edge_cases() {
 
 int check_same(const camera::ArrayCalibration& written,
                const camera::ArrayCalibration& read) {
+  CHECK(read.color_controls == written.color_controls);
   CHECK(read.world.sensor == written.world.sensor);
   CHECK(read.world.apriltag.has_value() == written.world.apriltag.has_value());
   if (written.world.apriltag) {
@@ -739,6 +741,124 @@ int test_depth_offset() {
   return 0;
 }
 
+// The colour cameras' exposure, the array's version-3 correction: read from a
+// version-3 file, empty where it has none, refused in a version-2 file and at
+// 0; written only when present, and only then as version 3.
+int test_color_controls() {
+  const std::string pose = R"("pose": {"rvec": [0, 0, 0], "tvec": [0, 0, 0]})";
+  // A version-3 document with sensor A posed at the origin and `controls`
+  // beside the world.
+  const auto with = [&](const std::string& controls, int version = 3) {
+    return R"({"format": "volumetric_kit.array_calibration", "version": )" +
+           std::to_string(version) + R"(, "color_controls": )" + controls +
+           R"(, "device_calibration": {"A": {)" + pose + "}}}";
+  };
+  const auto r = camera::parse_array_calibration(
+      with(R"({"exposure": 167, "gain": 60, "later": true})"));
+  if (!r) std::fprintf(stderr, "%s\n", r.status().message().c_str());
+  CHECK(r.ok());
+  CHECK(r.value().color_controls &&
+        *r.value().color_controls == (camera::ColorControls{167, 60}));
+  CHECK(r.value().sensors.size() == 1 && r.value().sensors[0].color_to_world);
+  // None: auto exposure, in either version.
+  CHECK(!camera::parse_array_calibration(kVersion3).value().color_controls);
+  CHECK(!camera::parse_array_calibration(kVersion2).value().color_controls);
+  // The whole 32-bit range is read; the camera's own range is its driver's.
+  const auto widest = camera::parse_array_calibration(
+      with(R"({"exposure": 4294967295, "gain": 1})"));
+  CHECK(widest.ok() && widest.value().color_controls->exposure == 4294967295u);
+
+  // In a file that says version 2, which a version-2 reader would run at
+  // auto exposure.
+  CHECK(refused(with(R"({"exposure": 167, "gain": 60})", 2),
+                Code::InvalidArgument,
+                "\"color_controls\" is a version-3 field"));
+  // 0 is no manual exposure.
+  CHECK(refused(with(R"({"exposure": 0, "gain": 60})"), Code::InvalidArgument,
+                "color_controls: \"exposure\" is 0"));
+  CHECK(refused(with(R"({"exposure": 167, "gain": 0})"), Code::InvalidArgument,
+                "color_controls: \"gain\" is 0"));
+  for (const char* wrong :
+       {R"({"exposure": "167", "gain": 60})", R"({"exposure": -1, "gain": 60})",
+        R"({"exposure": 16.7, "gain": 60})",
+        R"({"exposure": 4294967296, "gain": 60})", R"({"exposure": 167})"}) {
+    CHECK(refused(with(wrong), Code::InvalidArgument,
+                  "is not a 32-bit whole number"));
+  }
+  CHECK(refused(with("[167, 60]"), Code::InvalidArgument,
+                "\"color_controls\" is not an object"));
+  // Version 1 is read for its poses alone.
+  const auto v1 = camera::parse_array_calibration(
+      R"({"color_controls": {"exposure": 167, "gain": 60},
+          "device_calibration": {"A": {)" +
+      pose + "}}}");
+  CHECK(v1.ok() && !v1.value().color_controls);
+
+  // What validate refuses, and so format.
+  camera::ArrayCalibration one;
+  one.sensors.resize(1);
+  one.sensors[0].id = "A";
+  for (const camera::ColorControls bad :
+       {camera::ColorControls{0, 60}, camera::ColorControls{167, 0},
+        camera::ColorControls{}}) {
+    one.color_controls = bad;
+    const vkc::Status s = camera::validate_array_calibration(one);
+    CHECK(s.domain() == Code::InvalidArgument &&
+          s.message().find("color_controls: ") != std::string::npos);
+    CHECK(camera::format_array_calibration(one).status().domain() ==
+          Code::InvalidArgument);
+  }
+
+  // Written byte for byte: beside the world, and version 3 only with them.
+  const auto formatted = [](const camera::ArrayCalibration& c) {
+    const auto t = camera::format_array_calibration(c);
+    return t.ok() ? t.value() : "refused: " + t.status().message();
+  };
+  const std::string head =
+      "{\n  \"format\": \"volumetric_kit.array_calibration\",\n"
+      "  \"version\": ";
+  one.color_controls.reset();
+  CHECK(formatted(one) ==
+        head + "2,\n  \"device_calibration\": {\n    \"A\": {}\n  }\n}\n");
+  one.color_controls = camera::ColorControls{167, 60};
+  CHECK(formatted(one) ==
+        head +
+            "3,\n  \"color_controls\": {\"exposure\": 167, \"gain\": 60},\n"
+            "  \"device_calibration\": {\n    \"A\": {}\n  }\n}\n");
+
+  // Every field and every sensor, with both corrections: the controls come
+  // back, and the text is the depth-offset one's but for their line.
+  camera::ArrayCalibration offsets = edge_cases();
+  offsets.sensors[2].depth_offset_m = 0.00417;
+  const auto offsets_text = camera::format_array_calibration(offsets);
+  CHECK(offsets_text.ok());
+  camera::ArrayCalibration both = offsets;
+  both.color_controls = camera::ColorControls{2000, 240};
+  const auto text = camera::format_array_calibration(both);
+  CHECK(text.ok());
+  const auto read = camera::parse_array_calibration(text.value());
+  CHECK(read.ok());
+  if (check_same(both, read.value()) != 0) return 1;
+  const nlohmann::json doc = nlohmann::json::parse(text.value());
+  CHECK(doc.at("version") == 3);
+  CHECK(doc.at("color_controls") ==
+        nlohmann::json({{"exposure", 2000}, {"gain", 240}}));
+  std::string stripped = text.value();
+  const std::string line =
+      "  \"color_controls\": {\"exposure\": 2000, \"gain\": 240},\n";
+  const std::size_t at = stripped.find(line);
+  CHECK(at != std::string::npos);
+  stripped.erase(at, line.size());
+  CHECK(stripped == offsets_text.value());
+  // The controls alone make the file version 3.
+  camera::ArrayCalibration plain = edge_cases();
+  plain.color_controls = camera::ColorControls{167, 60};
+  const auto plain_text = camera::format_array_calibration(plain);
+  CHECK(plain_text.ok() &&
+        nlohmann::json::parse(plain_text.value()).at("version") == 3);
+  return 0;
+}
+
 int test_files() {
   const vr_test::Scratch scratch("recon_array_calibration_");
   const std::string path = (scratch.path / "array_calibration.json").string();
@@ -811,6 +931,7 @@ int main() {
   if (test_refusals() != 0) return 1;
   if (test_round_trip() != 0) return 1;
   if (test_depth_offset() != 0) return 1;
+  if (test_color_controls() != 0) return 1;
   if (test_files() != 0) return 1;
   std::printf("array calibration tests passed\n");
   return 0;
