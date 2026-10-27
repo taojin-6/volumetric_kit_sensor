@@ -1707,6 +1707,8 @@ int test_cross_family() {
 //   - A narrower colour camera 10 cm to the right: the depth kept is the
 //     region a host projection puts inside its image. A mask that ignored the
 //     pose would keep a region 39 px to one side of it.
+//   - The same cameras with a depth offset: the mask tests the corrected
+//     depth, where one testing the raw depth gets pixels wrong in every row.
 //   - A colour principal point a fraction of a pixel off: the image's edges
 //     are where the rounded colour pixel leaves it, not the pixel itself.
 //   - Off, and on a frame without colour, every depth pixel is kept.
