@@ -7,7 +7,8 @@
 // is written auto exposure first, then exposure and gain, then auto white
 // balance on; auto exposure leaves the stored values alone; auto white
 // balance off and the white-balance temperature are never written; what the
-// camera cannot take is refused before any write; a write that fails, and a
+// camera cannot take (a control it lacks, a value outside its range or off
+// its steps) is refused before any write; a write that fails, and a
 // value read back otherwise, are refused naming it; and a camera its sync
 // check refuses gets no colour write. No camera or SDK context is opened.
 
@@ -160,6 +161,21 @@ int test_refused_before_writing() {
     CHECK(has(m, kSerial) && has(m, "outside the camera's range"));
     CHECK(has(m, bad.exposure > 2000 ? "exposure 2001" : "gain 241"));
     CHECK(fake.color_writes.empty());
+  }
+  // Off the camera's steps: an exposure in steps of 3 from 1 takes 166, not
+  // 167.
+  {
+    orbbec_stub::FakeCamera& fake = attach();
+    fake.exposure.step = 3;
+    fake.auto_white_balance.value = 0;
+    const vkc::Status s = sensor::OrbbecSensor::open(options(kLock)).status();
+    CHECK(s.domain() == Code::Unsupported);
+    CHECK(
+        has(message(s), "exposure 167 is off the camera's steps of 3 from 1"));
+    CHECK(fake.color_writes.empty());
+    const camera::ColorControls on_step{166, 60};
+    const auto opened = sensor::OrbbecSensor::open(options(on_step));
+    CHECK(opened.ok() && opened->info().color_controls == on_step);
   }
   // The edges of the range are taken.
   for (const camera::ColorControls edge :

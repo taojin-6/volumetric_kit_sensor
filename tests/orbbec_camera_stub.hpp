@@ -29,6 +29,7 @@ struct FakeProperty {
   std::int32_t value = 0;
   std::int32_t min = 0;  // its range
   std::int32_t max = 1;
+  std::int32_t step = 1;
 };
 
 // One camera that answers.
@@ -42,11 +43,11 @@ struct FakeCamera {
 
   // The colour properties, as a Femto Mega ships: auto exposure over a stored
   // exposure of 200 and gain of 60, auto white balance, 6500 K stored.
-  FakeProperty auto_exposure{true, 1, 0, 1};
-  FakeProperty exposure{true, 200, 1, 2000};
-  FakeProperty gain{true, 60, 1, 240};
-  FakeProperty auto_white_balance{true, 1, 0, 1};
-  FakeProperty white_balance{true, 6500, 2000, 11000};
+  FakeProperty auto_exposure{true, 1, 0, 1, 1};
+  FakeProperty exposure{true, 200, 1, 2000, 1};
+  FakeProperty gain{true, 60, 1, 240, 1};
+  FakeProperty auto_white_balance{true, 1, 0, 1, 1};
+  FakeProperty white_balance{true, 6500, 2000, 11000, 100};
   // The colour writes asked of it, in order: "auto exposure 0", "exposure
   // 167", ...
   std::vector<std::string> color_writes;

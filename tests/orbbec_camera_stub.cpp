@@ -40,7 +40,7 @@ class FakeProperties final
   bool writable(OBPropertyID id) override { return find(id).second.writable; }
   OBIntPropertyRange int_range(OBPropertyID id) override {
     const FakeProperty& p = use(id).second;
-    return OBIntPropertyRange{p.value, p.max, p.min, 1, p.value};
+    return OBIntPropertyRange{p.value, p.max, p.min, p.step, p.value};
   }
   std::int32_t get_int(OBPropertyID id) override {
     return use(id).second.value;

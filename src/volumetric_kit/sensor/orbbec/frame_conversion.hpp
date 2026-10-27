@@ -114,7 +114,8 @@ class CameraProperties {
 ///
 /// 1. Manual: auto exposure, exposure, gain and auto white balance must all
 ///    be readable and writable, and exposure and gain within the camera's
-///    ranges, or nothing is written (`Unsupported`, naming the control).
+///    ranges and on their steps, or nothing is written (`Unsupported`,
+///    naming the control).
 ///    Automatic: a control the camera lacks is left alone, so a camera
 ///    without these controls still opens.
 /// 2. Manual: auto exposure off, then exposure, then gain. Under auto

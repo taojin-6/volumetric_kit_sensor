@@ -296,12 +296,18 @@ core::Result<std::optional<camera::ColorControls>> write_color_controls(
       for (const auto& [c, value] : {std::pair{kExposure, wanted->exposure},
                                      std::pair{kGain, wanted->gain}}) {
         const OBIntPropertyRange range = camera.int_range(c.id);
-        if (std::int64_t{value} < std::int64_t{range.min} ||
-            std::int64_t{value} > std::int64_t{range.max}) {
+        const std::int64_t v = value;
+        if (v < range.min || v > range.max) {
           return core::Status::unsupported(
               who + ": colour " + c.name + " " + std::to_string(value) +
               " is outside the camera's range [" + std::to_string(range.min) +
               ", " + std::to_string(range.max) + "]");
+        }
+        if (range.step > 1 && (v - range.min) % range.step != 0) {
+          return core::Status::unsupported(
+              who + ": colour " + c.name + " " + std::to_string(value) +
+              " is off the camera's steps of " + std::to_string(range.step) +
+              " from " + std::to_string(range.min));
         }
       }
     }
