@@ -13,8 +13,10 @@
 /// the 2026-09-26 and 2026-09-28 decisions.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
+#include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 
@@ -99,6 +101,13 @@ struct OrbbecStreamOptions {
   std::uint32_t fps = 30;
   /// How colour crosses the wire.
   OrbbecColorCodec color_codec = OrbbecColorCodec::Mjpeg;
+  /// The colour camera's exposure, which open writes where the camera differs
+  /// and reads back: a manual exposure (auto exposure off), or auto exposure
+  /// when empty, the default. Auto white balance is switched on either way.
+  /// Always written, since the camera keeps what was last written to it, in
+  /// another process too: a camera left as it was would keep an earlier
+  /// run's exposure. Exposure and gain above 0.
+  std::optional<camera::ColorControls> color_controls;
   /// Reject depth nearer than this (metres); stamped on every frame as the
   /// fusion gate. Above 0, as the GPU pass requires.
   float min_depth = 0.25f;

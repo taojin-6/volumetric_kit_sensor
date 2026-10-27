@@ -26,7 +26,7 @@ const char* or_empty(const char* s) { return s != nullptr ? s : ""; }
 constexpr std::chrono::milliseconds kDiscoveryRetry{250};
 
 // Pairs in a row read() may skip before it calls the camera broken: about a
-// second at the 30 fps default.
+// second at 30 fps.
 constexpr std::uint32_t kMaxFailedPairsInARow = 30;
 
 std::string join(const std::vector<std::string>& items) {
@@ -157,6 +157,33 @@ core::Result<std::shared_ptr<ob::Device>> discover(ob::Context& context,
     std::this_thread::sleep_for(kDiscoveryRetry);
   }
 }
+
+// A camera's properties through the SDK, for write_color_controls.
+class DeviceProperties final : public CameraProperties {
+ public:
+  explicit DeviceProperties(const ob::Device& device) : device_(device) {}
+  bool writable(OBPropertyID id) override {
+    return device_.isPropertySupported(id, OB_PERMISSION_READ_WRITE);
+  }
+  OBIntPropertyRange int_range(OBPropertyID id) override {
+    return device_.getIntPropertyRange(id);
+  }
+  std::int32_t get_int(OBPropertyID id) override {
+    return device_.getIntProperty(id);
+  }
+  bool get_bool(OBPropertyID id) override {
+    return device_.getBoolProperty(id);
+  }
+  void set_int(OBPropertyID id, std::int32_t value) override {
+    device_.setIntProperty(id, value);
+  }
+  void set_bool(OBPropertyID id, bool value) override {
+    device_.setBoolProperty(id, value);
+  }
+
+ private:
+  const ob::Device& device_;
+};
 
 }  // namespace
 
@@ -536,6 +563,17 @@ core::Status CameraStream::apply_sync(const OrbbecSyncSettings& settings) {
   }
   info_.sync_mode = sync_settings_.mode;
   return {};
+}
+
+core::Result<std::optional<camera::ColorControls>>
+CameraStream::apply_color_controls(
+    const std::optional<camera::ColorControls>& wanted) {
+  if (running_) {
+    return core::Status::invalid_argument(
+        who_ + ": colour controls are written before start");
+  }
+  DeviceProperties properties(*device_);
+  return write_color_controls(properties, wanted, who_);
 }
 
 core::Status CameraStream::use_host_clock() {

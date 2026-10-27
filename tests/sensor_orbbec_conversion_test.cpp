@@ -3,9 +3,9 @@
 
 // The Orbbec driver's arithmetic, with no camera: the SDK's camera models and
 // extrinsic to recon's, the lens models' names, the sync-mode mapping, the
-// option checks open() makes before it touches the SDK, and the colour queue
-// families taken from the options -- each a place the driver can be silently
-// wrong.
+// option checks open() makes before it touches the SDK, colour controls among
+// them, and the colour queue families taken from the options -- each a place
+// the driver can be silently wrong.
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +17,7 @@
 
 #include "frame_conversion.hpp"
 #include "test_check.hpp"
+#include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
@@ -254,6 +255,16 @@ int test_validate_streams() {
   CHECK(check(o).ok());
   o.color_queue_family_count = sensor::kMaxColorQueueFamilies + 1;
   CHECK(invalid(check(o)));
+  // Colour controls: none is auto exposure; a manual exposure's exposure and
+  // gain are above 0.
+  o = Options{};
+  o.color_controls = camera::ColorControls{167, 60};
+  CHECK(check(o).ok());
+  for (const camera::ColorControls zero :
+       {camera::ColorControls{0, 60}, camera::ColorControls{167, 0}}) {
+    o.color_controls = zero;
+    CHECK(invalid(check(o)));
+  }
   return 0;
 }
 
@@ -331,6 +342,10 @@ int test_sensor_open() {
   o = {};
   o.apply_sync = true;
   CHECK(refused(o, "apply_sync needs sync"));
+  // No manual exposure at 0.
+  o = {};
+  o.color_controls = camera::ColorControls{0, 60};
+  CHECK(refused(o, "color_controls' exposure and gain must be above 0"));
   return 0;
 }
 

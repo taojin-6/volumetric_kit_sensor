@@ -104,15 +104,19 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
     bool configure_sdk_logging = true;
   };
 
-  /// @brief Find the camera, check it can stream the requested modes, and
-  ///        read its factory calibration. Does not start streaming.
+  /// @brief Find the camera, check it can stream the requested modes, read
+  ///        its factory calibration, and set its colour exposure
+  ///        (`OrbbecStreamOptions::color_controls`, written where the camera
+  ///        differs and read back into `SensorInfo::color_controls`). Does
+  ///        not start streaming.
   /// @param options  The camera and its streams.
   /// @return The sensor, not yet started; or:
   ///         - `Status::Code::InvalidArgument` for options refused before the
   ///           camera is looked for -- a zero size or rate, a depth range
   ///           that is not finite, empty or starts at 0 (which the GPU pass
   ///           would refuse), a `color_queue_family_count` past
-  ///           @ref kMaxColorQueueFamilies, a @ref Options::color_to_world
+  ///           @ref kMaxColorQueueFamilies, `color_controls` with an exposure
+  ///           or a gain of 0, a @ref Options::color_to_world
   ///           that is not rigid, @ref Options::apply_sync without
   ///           @ref Options::sync --
   ///           an empty @ref Options::serial with more than one camera
@@ -130,10 +134,14 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
   ///           know, reports a lens model the GPU pass cannot undistort,
   ///           has sync settings that differ from @ref Options::sync (each
   ///           field named) without @ref Options::apply_sync or after the SDK
-  ///           applies them, or has no global timestamps for
-  ///           @ref Options::sync_clock_to_host;
+  ///           applies them, has no global timestamps for
+  ///           @ref Options::sync_clock_to_host, lacks a colour control a
+  ///           manual exposure needs or has a range that excludes its value
+  ///           (nothing written then), or reads its colour controls back
+  ///           otherwise than written (each field named);
   ///         - `Status::Code::IoError` for any other SDK failure, writing
-  ///           the sync settings included, with the SDK's message.
+  ///           the sync settings or the colour controls included, with the
+  ///           SDK's message.
   static core::Result<OrbbecSensor> open(const Options& options);
 
   OrbbecSensor(OrbbecSensor&& other) noexcept;

@@ -4,18 +4,21 @@
 #pragma once
 
 // Internal (not installed): the arithmetic between the Orbbec SDK's types and
-// recon's -- the camera models, the extrinsic, the sync settings -- and the
-// option checks, kept out of the driver's .cpp so host tests pin them with no
-// camera attached.
+// recon's -- the camera models, the extrinsic, the sync settings -- the option
+// checks, and the colour controls' write and read-back, kept out of the
+// driver's .cpp so host tests pin them with no camera attached.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <libobsensor/h/ObTypes.h>
+#include <libobsensor/h/Property.h>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
+#include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
@@ -70,9 +73,10 @@ std::vector<std::string> sync_differences(const OrbbecSyncSettings& wanted,
                                           const OrbbecSyncSettings& actual);
 
 /// The streams' checks, refused naming @p who: sizes and rate, a depth range
-/// that is finite, non-empty and starts above 0, as the GPU pass requires, and
-/// a colour queue-family count within its array. The first check a camera's
-/// open makes, before it touches the SDK.
+/// that is finite, non-empty and starts above 0, as the GPU pass requires, a
+/// colour queue-family count within its array, and colour controls with an
+/// exposure and a gain above 0. The first check a camera's open makes, before
+/// it touches the SDK.
 core::Status validate_streams(const OrbbecStreamOptions& streams,
                               const std::string& who);
 
@@ -86,5 +90,50 @@ struct ColorQueueFamilies {
 
 /// @p streams' `color_queue_families` and their count.
 ColorQueueFamilies color_queue_families(const OrbbecStreamOptions& streams);
+
+/// A camera's integer and boolean properties, as @ref write_color_controls
+/// reads and writes them: the SDK's device, or a test's stand-in. Each call
+/// may throw, as the SDK's do.
+class CameraProperties {
+ public:
+  virtual ~CameraProperties() = default;
+  /// Whether the camera has @p id to read and to write.
+  virtual bool writable(OBPropertyID id) = 0;
+  /// @p id's range, an integer property's.
+  virtual OBIntPropertyRange int_range(OBPropertyID id) = 0;
+  virtual std::int32_t get_int(OBPropertyID id) = 0;
+  virtual bool get_bool(OBPropertyID id) = 0;
+  virtual void set_int(OBPropertyID id, std::int32_t value) = 0;
+  virtual void set_bool(OBPropertyID id, bool value) = 0;
+};
+
+/// Set a colour camera's exposure to @p wanted -- a manual exposure, or auto
+/// exposure when empty -- with auto white balance on, writing only where the
+/// camera differs, and read it back. Always applied, since a camera keeps
+/// what was last written to it, in another process too.
+///
+/// 1. Manual: auto exposure, exposure, gain and auto white balance must all
+///    be readable and writable, and exposure and gain within the camera's
+///    ranges, or nothing is written (`Unsupported`, naming the control).
+///    Automatic: a control the camera lacks is left alone, so a camera
+///    without these controls still opens.
+/// 2. Manual: auto exposure off, then exposure, then gain. Under auto
+///    exposure a camera reads its stored values, not the ones it runs at, so
+///    a camera switched from auto exposure has both written; one already at a
+///    manual exposure has only a value that differs written. Automatic: auto
+///    exposure on, exposure and gain untouched. Then auto white balance on.
+///    Auto white balance off and the white-balance temperature are never
+///    written.
+/// 3. Read back: the auto exposure and auto white balance flags, and under a
+///    manual exposure the exposure and gain. A camera that reads back
+///    otherwise, as one whose SDK changed a value would, is refused
+///    (`Unsupported`), naming each field.
+///
+/// @return The manual exposure as read back; empty under auto exposure;
+///         `Unsupported` as above, naming @p who; or `IoError` with the SDK's
+///         message for a call that throws.
+core::Result<std::optional<camera::ColorControls>> write_color_controls(
+    CameraProperties& camera,
+    const std::optional<camera::ColorControls>& wanted, const std::string& who);
 
 }  // namespace volumetric_kit::recon::sensor::orbbec

@@ -29,6 +29,7 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
+#include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/sensor/export.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
@@ -94,6 +95,11 @@ struct SensorInfo {
   ClockDomain clock = ClockDomain::Device;  ///< Its timestamps' clock.
   PoseSource pose = PoseSource::Fixed;      ///< Where its poses come from.
   std::uint32_t fps = 0;  ///< Frames a second it streams at; 0 if unknown.
+  /// The colour camera's manual exposure as the driver read it back after
+  /// writing it at open; empty under auto exposure, and for a sensor whose
+  /// driver sets none. A @ref SensorArray checks it against its
+  /// calibration's (`camera::ArrayCalibration::color_controls`).
+  std::optional<camera::ColorControls> color_controls;
 };
 
 /// @brief Counters a caller reads to see whether it keeps up with a sensor.

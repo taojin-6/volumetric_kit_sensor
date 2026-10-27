@@ -23,6 +23,7 @@
 #include "frame_conversion.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
+#include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
@@ -89,6 +90,12 @@ class CameraStream {
   // effective settings, including its normalization, not the camera: the next
   // open is what reads the camera again.
   core::Status apply_sync(const OrbbecSyncSettings& settings);
+  // Set the colour camera's exposure -- `wanted`, or auto exposure when empty
+  // -- with auto white balance on, writing only where it differs, and read it
+  // back (write_color_controls). Not while running. The manual exposure as
+  // read back; empty under auto exposure.
+  core::Result<std::optional<camera::ColorControls>> apply_color_controls(
+      const std::optional<camera::ColorControls>& wanted);
   // Stamp frames with the SDK's global timestamps -- the camera's clock mapped
   // onto the host's, re-fitted as the two drift -- rather than the camera's
   // own. Before sync_clock_to_host, so that sync re-fits the mapping at once.
