@@ -3,21 +3,24 @@
 
 // Opening a rig from its sync file (open_orbbec_sensors) with camera stubs
 // (orbbec_camera_stub.hpp): every camera of the file opened in its order,
-// with its entry and on the host's clock; a camera that differs from its entry
-// refused and left unwritten unless asked; a camera that does not answer
-// NotFound, the cameras before it closed again; and a file, or options naming
-// a camera, its settings or a pose, refused before any camera is looked for.
-// No camera or SDK context; the executable compiles orbbec_sensor.cpp, as the
-// sync-apply test does.
+// with its entry, on the host's clock and at the options' colour controls; a
+// camera that differs from its entry refused and left unwritten unless asked;
+// a camera that does not answer NotFound, the cameras before it closed again;
+// and a file, or options naming a camera, its settings or a pose, refused
+// before any camera is looked for. No camera or SDK context; the executable
+// compiles orbbec_sensor.cpp, as the sync-apply test does.
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "orbbec_camera_stub.hpp"
 #include "test_check.hpp"
+#include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
 
 namespace vkc = volumetric_kit::core;
+namespace camera = volumetric_kit::recon::camera;
 namespace sensor = volumetric_kit::recon::sensor;
 
 namespace {
@@ -74,6 +77,25 @@ int test_opens_rig() {
   }
   CHECK(writes() == 0);  // the file is the cameras' settings already
   CHECK(orbbec_stub::open_streams == 2);
+  return 0;
+}
+
+// The options' colour controls reach every camera of the rig.
+int test_color_controls() {
+  attach_rig();
+  sensor::OrbbecSensor::Options options;
+  const camera::ColorControls lock{167, 60};
+  options.color_controls = lock;
+  const auto opened = sensor::open_orbbec_sensors(kRig, options);
+  CHECK(opened.ok());
+  for (const auto& s : opened.value()) {
+    CHECK(s->info().color_controls == lock);
+  }
+  for (const auto& camera : orbbec_stub::cameras) {
+    CHECK((camera.second.color_writes ==
+           std::vector<std::string>{"auto exposure 0", "exposure 167",
+                                    "gain 60"}));
+  }
   return 0;
 }
 
@@ -154,6 +176,7 @@ int test_refusals() {
 
 int main() {
   if (test_opens_rig() != 0) return 1;
+  if (test_color_controls() != 0) return 1;
   if (test_difference() != 0) return 1;
   if (test_absent_camera() != 0) return 1;
   if (test_refusals() != 0) return 1;
