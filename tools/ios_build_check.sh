@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 #
-# The iOS build check the macOS CI leg runs (.github/workflows/_build.yml,
-# recon's while the package is in its tree): sensor_apple, sensor_video and the H.265
-# syntax it reads with (sensor_video_syntax), which every Apple build has,
+# The iOS build check the macOS CI leg runs (.github/workflows/_build.yml):
+# sensor_apple, sensor_video and the H.265 syntax it reads with
+# (sensor_video_syntax), which every Apple build has,
 # compiled for the iOS floor with the include paths and definitions of a macOS
 # build's compile commands, warnings as errors, the importer with ARC and its
 # header as plain C++ too; then linked into an iOS library against the SDK's
@@ -12,7 +12,7 @@
 # dependencies' symbols are left unresolved: the core's, the package's other
 # tiers' and Vulkan's.
 #
-#   sensor/tools/ios_build_check.sh <build>/compile_commands.json <out dir>
+#   tools/ios_build_check.sh <build>/compile_commands.json <out dir>
 #
 # Needs an iOS SDK, which only full Xcode has. Runs on macOS's bash 3.2.
 set -euo pipefail

@@ -1,0 +1,48 @@
+name: Install the Orbbec SDK
+description: >-
+  The pinned Orbbec SDK release for this runner, hash-checked and unpacked
+  under RUNNER_TEMP, its root exported as OrbbecSDK_ROOT.
+
+# The build finds the SDK and never fetches it (the 2026-09-24 decision), so
+# CI installs it the way a developer does and hands the build its root through
+# OrbbecSDK_ROOT, the family's convention. The pin is the floor
+# cmake/vs_orbbec.cmake requires (VS_ORBBEC_SDK_MIN_VERSION): keep the two in
+# lockstep, so CI builds against exactly the oldest SDK the module accepts.
+# Every leg that builds VS_WITH_ORBBEC, here or in a consumer's CI (by commit),
+# installs it through this action, so the pin lives here alone. Needs curl.
+runs:
+  using: composite
+  steps:
+    - name: Install the Orbbec SDK
+      shell: bash
+      run: |
+        version=2.10.6
+        case "${RUNNER_OS}-$(uname -m)" in
+          Linux-x86_64)
+            asset=OrbbecSDK_v2.10.6_202609291004_575347c_linux_x86_64.tar.gz
+            sha256=23ec9f7023881cc9061bf0b4ba65735fb16c10e168fd5d62b1548c847e7ddb46
+            ;;
+          macOS-*)
+            # One universal build serves both Mac architectures.
+            asset=OrbbecSDK_v2.10.6_202609291804_575347c_macOS.tar.gz
+            sha256=e6616702332d201b6b467b5b5d522b833e51eea783ad35aae7de37acd522447b
+            ;;
+          *)
+            echo "::error::no Orbbec SDK pinned for ${RUNNER_OS}-$(uname -m)"
+            exit 1
+            ;;
+        esac
+        archive="${RUNNER_TEMP}/${asset}"
+        curl -fsSL --retry 3 -o "${archive}" \
+          "https://github.com/orbbec/OrbbecSDK_v2/releases/download/v${version}/${asset}"
+        actual=$({ sha256sum "${archive}" 2>/dev/null ||
+                   shasum -a 256 "${archive}"; } | cut -d' ' -f1)
+        if [ "${actual}" != "${sha256}" ]; then
+          echo "::error::${asset}: sha256 ${actual}, expected ${sha256}"
+          exit 1
+        fi
+        root="${RUNNER_TEMP}/OrbbecSDK_v${version}"
+        rm -rf "${root}"
+        mkdir -p "${root}"
+        tar xzf "${archive}" -C "${root}" --strip-components=1
+        echo "OrbbecSDK_ROOT=${root}" >> "${GITHUB_ENV}"

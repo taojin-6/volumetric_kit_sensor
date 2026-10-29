@@ -1,0 +1,59 @@
+name: camera-only
+
+# The camera tier alone (VS_CAMERA_ONLY), built and tested in a bare Ubuntu
+# container holding a compiler, CMake, GLM and git, and no Vulkan loader,
+# headers, glslc or driver. find_package(Vulkan) is disabled too, so a
+# configure that reaches for Vulkan fails rather than finds one. The tests are
+# the camera tier's, sensor_package_boundary and sensor_subproject_camera_only.
+# Invoked by ci.yml, which owns the push / pull_request triggers and the
+# concurrency group.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  camera-only:
+    runs-on: ubuntu-24.04
+    # ubuntu:24.04, pinned by digest as ci.yml's build legs are.
+    container: ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # git first, so actions/checkout clones rather than downloads.
+      - name: Install a compiler, CMake, GLM and git
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git \
+            cmake make g++ libglm-dev
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # grep reads all of ldconfig's output: an early exit (-q) could fail the
+      # pipe under pipefail and hide a match.
+      - name: Assert no Vulkan is installed
+        run: |
+          if ldconfig -p | grep libvulkan >/dev/null \
+             || [ -e /usr/include/vulkan/vulkan.h ] \
+             || command -v glslc >/dev/null; then
+            echo "::error::the container has Vulkan; this job proves sensor_camera needs none"
+            exit 1
+          fi
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVS_CAMERA_ONLY=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=ON
+
+      - name: Build
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Test
+        run: |
+          ctest --test-dir build --output-on-failure --no-tests=error \
+            --parallel "$(nproc)"
