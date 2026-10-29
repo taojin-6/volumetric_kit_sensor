@@ -292,6 +292,12 @@ entries relevant to your task; later amendments supersede earlier rules.
   the device by `GpuFramePrep`; librealsense 2.59.1 a prerequisite that CI
   installs; tested against librealsense's own `rsutil.h`, with no camera and
   no virtual one.
+- [**2026-10-29**](#2026-10-29--a-realsenses-infrared-cameras-are-realsensestereo-an-istereosensor-luma-on-the-host-the-projector-off-the-factory-calibration-as-stereoinfo-on-the-camera-realsensesensor-runs-on) —
+  A RealSense's two infrared cameras are `RealSenseStereo`, an
+  `IStereoSensor`: their Y8 as the camera rectifies them, luma on the host,
+  and the colour camera's YUYV, the projector off by default, the factory
+  calibration as `StereoInfo`; both RealSense drivers run on one internal
+  camera; `IStereoSensor` gains `set_frame_notify`.
 
 ## Decision record
 
@@ -4301,3 +4307,78 @@ without, the colour undistorted and true. The hand check found that
 librealsense's context waits forever in its destructor while its
 devices-changed callback holds the device: the driver replaces the callback
 first.
+
+### 2026-10-29 — A RealSense's infrared cameras are `RealSenseStereo`, an `IStereoSensor`: luma on the host, the projector off, the factory calibration as `StereoInfo`, on the camera `RealSenseSensor` runs on.
+
+**The rule.** `RealSenseStereo` (`realsense/realsense_stereo.hpp`, in
+`sensor_realsense`) is one RealSense D400's two infrared cameras as an
+`IStereoSensor`, its SDK behind a pointer:
+- Each stereo frame is both infrared cameras' 8-bit pictures (Y8) as the
+  camera rectifies them, `YuvLayout::Luma` on the host at full range, and
+  the colour camera's YUYV as `RealSenseSensor`'s. The frame holds its
+  frameset: nothing is copied or converted on the host, and
+  `StereoRectifier` uploads the pictures once.
+- `info()` is the factory calibration: each infrared camera a pinhole (a
+  lens on either is refused), `left_to_right` librealsense's extrinsic from
+  the left infrared camera (its index 1) to the right one (index 2), and the
+  colour camera with its lens and `left_to_color`. A frame's time is the
+  left infrared frame's global time, on the host's clock.
+- The projector is off by default (`Options::emitter`).
+- It holds the newest stereo frame; its counters and a disconnect behave as
+  `RealSenseSensor`'s, and `set_frame_notify` wakes a consumer.
+  `IStereoSensor` gains `set_frame_notify`, `Unsupported` by default, as
+  `IRgbdSensor`'s.
+- Both RealSense drivers run on one internal camera
+  (`realsense/camera.hpp`): finding the camera, its modes, the projector,
+  the colour exposure, the pipeline with global time on, the disconnect
+  watch, the frame queue and the counters. A frameset is one moment
+  (`realsense::together`) when it holds a frame of every mode opened, each
+  within half a frame of the first; any other is counted failed.
+  `sensor_realsense` links `sensor_stereo` publicly.
+
+**Why.** The owner's RealSense design (rev 5, 2026-10-29): the camera's own
+depth with the projector on (`RealSenseSensor`), and its infrared cameras
+with the projector off for Fast-FoundationStereo ("FFS does not need the
+dots which adversely affects FFS estimation"); a stereo camera implements
+`IStereoSensor`, and one internal implementation serves both classes (one
+home for each function). The D455 rectifies its infrared cameras itself: on
+the lab camera the factory extrinsic has no rotation and 95.03 mm along x,
+both cameras one pinhole, so `StereoRectifier` only resamples them.
+`set_frame_notify` lets a depth source's own thread wait for a frame
+rather than poll on a timer, the hook `IRgbdSensor` has; the approved
+header did not list it.
+
+**Tests, no hardware and no virtual camera** (the owner's choice):
+- `sensor_realsense_conversion`: the D455's infrared calibration as
+  `StereoInfo`: points at 0.5, 2 and 5 m land within 0.00009 px of
+  `rs2_project_point_to_pixel` in the right camera and within 0.0136 px in
+  the colour camera, on one row in both infrared cameras, `fx * baseline /
+  z` apart; a lens on either infrared camera, an extrinsic that is not
+  rigid and a colour lens model the pass does not undistort are refused,
+  each named; the one-moment rule (a missing mode, an extra frame, a stale
+  colour frame, frames 16 ms a step apart); a stereo frame from a plain
+  view (luma on the host at full range, rows as the camera's, the colour as
+  `RealSenseSensor`'s, nanoseconds), and views that contradict the opened
+  modes refused; the options refused before any camera is looked for;
+- `sensor_realsense_open`: `RealSenseStereo::open` refuses those options
+  before it looks, and an unknown serial as `NotFound`.
+
+**Validation.** RTX 4090, Ubuntu 26.04, librealsense 2.59.1, Release with
+warnings as errors, Orbbec, RealSense, FFmpeg and CUDA, under the
+validation layer: 47 tests passed and the 2 JPEG tests skipped, as on the
+base, of 49. Six planted bugs each fail `sensor_realsense_conversion` (the
+one-moment rule against the previous frame, or blind to a missing mode; a
+lens on the left infrared camera accepted; the two extrinsics swapped;
+luma at limited range; rows shorter than the picture accepted). Checked by
+hand, not a test: the lab D455 (USB 3.2, firmware 5.17.0.10), the
+projector off, 300 stereo frames through `StereoRectifier` (Luma8) at
+960x544 and at 1280x720, waking on `set_frame_notify`: 30 fps (33.37 ms
+median period); 2 framesets failed at the start and none after, none
+dropped; sequence numbers rose by one every frame; a frame reached `poll`
+15.7 ms after its timestamp; `poll` took 0.016 ms; `rectify` 0.38 ms on the
+host and 0.095 ms on the device at 960x544, 0.33 ms and 0.100 ms at
+1280x720. The factory rotation is the identity exactly, so both sizes only
+resample, and at 1280x720 the views are the camera's pictures byte for
+byte. SIFT matches between the views lie 0.14 px apart vertically (median;
+1.4826 MAD 0.25 px, about 420 matches) at 1280x720 and 0.10 px at 960x544,
+as in the camera's own pictures: its factory rectification, unchanged.

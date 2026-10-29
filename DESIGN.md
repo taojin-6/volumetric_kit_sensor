@@ -432,6 +432,26 @@ that keeps the `IRgbdSensor` contract: newest wins, a deeper queue drains
 oldest first, every frame passed over or pushed out counted dropped. Each
 frame holds its frameset, so librealsense's bounded frame pool is the limit
 on how many a consumer may keep.
+**`RealSenseStereo`** (`realsense/realsense_stereo.hpp`) is the same camera's
+two infrared cameras as an `IStereoSensor` (the 2026-10-29 RealSense stereo
+decision), the projector off by default: a stereo matcher sees the scene's
+own texture, which the dots would cover. Each stereo frame is the left and
+right infrared cameras' Y8 as the camera rectifies them, as
+`YuvLayout::Luma` on the host (full range), and the colour camera's YUYV as
+`RealSenseSensor`'s, the frameset held; `StereoRectifier` copies them to the
+device once. `info()` is the factory calibration: both infrared cameras a
+pinhole (a lens on either is refused), `left_to_right` librealsense's
+extrinsic from the left infrared camera to the right one (on the lab D455
+no rotation and 95.03 mm along x, so the rectifier only resamples), and
+the colour camera with its lens and `left_to_color`. Its time is the left
+infrared frame's global time. It holds the newest stereo frame
+(`IStereoSensor` has no queue depth) and wakes a consumer through
+`set_frame_notify`. Both drivers run on one internal camera
+(`realsense/camera.hpp`): finding the camera, the modes, the projector, the
+colour exposure, the pipeline with global time on, the disconnect watch, the
+frame queue and the counters. A frameset is one moment
+(`realsense::together`) when it holds a frame of every mode opened, each
+within half a frame of the first; any other is counted failed.
 **`IRgbdSensor`** (`rgbd_sensor.hpp`) is one sensor: its
 `SensorInfo` from when it opens (id, the cameras' factory models at the
 opened modes, `depth_to_color`, rig role, clock, pose source, rate, the
@@ -604,8 +624,10 @@ consumer of depth never sees it: a depth source built on a stereo camera
   any layout the GPU reads, on the host or in a device buffer; the colour to
   fuse, a third camera's or none when the left is the colour; times as
   `RgbdFrame`'s; `pixels` holding host planes), and `IStereoSensor`, polled
-  for the newest pair as `IRgbdSensor` is, which a RealSense's infrared
-  pair, a Blackmagic pair or a ZED implements.
+  for the newest pair as `IRgbdSensor` is, waking a consumer through
+  `set_frame_notify` where it can (`Unsupported`, the default, where it
+  cannot), which a RealSense's infrared pair (`RealSenseStereo`), a
+  Blackmagic pair or a ZED implements.
 - **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` computes
   the rectification once, on the host, as OpenCV's `stereoRectify` does with
   `CALIB_ZERO_DISPARITY` (Bouguet's method), step for step in double: the
