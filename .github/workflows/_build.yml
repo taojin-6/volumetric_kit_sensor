@@ -154,11 +154,27 @@ jobs:
           # nvjpeg.h and the nvcc FindCUDAToolkit locates it by; the package
           # compiles no CUDA code. libcuda comes from the container toolkit
           # at run time, as for NVDEC, and libnvjpeg from this package.
+          # NVIDIA's repository key comes as a .deb that dpkg installs as
+          # root, so only the file pinned here is installed: per repository,
+          # the SHA256 its signed package index lists for it. Any other
+          # file, or a repository with no pin, fails the leg.
           if [ "${{ inputs.cuda }}" = "true" ]; then
             . /etc/os-release
             repo="ubuntu$(echo "$VERSION_ID" | tr -d .)"
+            case "$repo" in
+              ubuntu2404) keyring_sha256=d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba ;;
+              ubuntu2604) keyring_sha256=f7f474b5f6a4adf987aa587920df00e713285958ef6a913dda1945a544a3099e ;;
+              *)
+                echo "::error::no pinned SHA256 for ${repo}'s cuda-keyring_1.1-1_all.deb"
+                exit 1
+                ;;
+            esac
             curl -fsSL -o /tmp/cuda-keyring.deb \
               "https://developer.download.nvidia.com/compute/cuda/repos/${repo}/x86_64/cuda-keyring_1.1-1_all.deb"
+            if ! echo "${keyring_sha256}  /tmp/cuda-keyring.deb" | sha256sum -c -; then
+              echo "::error::${repo}'s cuda-keyring_1.1-1_all.deb does not match its pinned SHA256"
+              exit 1
+            fi
             sudo dpkg -i /tmp/cuda-keyring.deb
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends cuda-nvcc-13-4 \
