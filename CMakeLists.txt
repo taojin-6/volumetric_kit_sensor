@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(
   volumetric_kit_sensor
-  VERSION 0.3.0
+  VERSION 0.4.0
   DESCRIPTION
     "Cameras, capture and the device-frame contract for the volumetric_kit family"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_sensor"
@@ -43,6 +43,10 @@ option(VS_WARNINGS_AS_ERRORS "Treat first-party compiler warnings as errors"
 option(VS_WITH_ORBBEC
        "Build the Orbbec-SDK-backed driver (requires an installed Orbbec SDK)"
        OFF)
+# OFF by default too: librealsense is a prerequisite you install
+# (cmake/vs_realsense.cmake).
+option(VS_WITH_REALSENSE
+       "Build the RealSense driver (requires an installed librealsense)" OFF)
 # OFF by default: FFmpeg is a prerequisite you install (cmake/vs_ffmpeg.cmake),
 # and Apple takes none: its decoders, built always, use VideoToolbox directly.
 option(
@@ -63,7 +67,8 @@ set(VS_SANITIZE
     CACHE STRING "Sanitizers to enable, e.g. address;undefined (empty = off)")
 
 if(VS_CAMERA_ONLY)
-  foreach(_vs_option VS_WITH_ORBBEC VS_WITH_FFMPEG VS_WITH_CUDA)
+  foreach(_vs_option VS_WITH_ORBBEC VS_WITH_REALSENSE VS_WITH_FFMPEG
+                     VS_WITH_CUDA)
     if(${_vs_option})
       message(FATAL_ERROR "VS_CAMERA_ONLY builds the camera tier alone: "
                           "turn ${_vs_option} OFF")
@@ -89,10 +94,13 @@ if(NOT VS_CAMERA_ONLY)
   find_package(Vulkan REQUIRED)
 endif()
 
-# The Orbbec SDK (ob::OrbbecSDK), FFmpeg and the CUDA toolkit: installed once,
-# outside the repo, and never fetched (the 2026-09-24 decision).
+# The Orbbec SDK (ob::OrbbecSDK), librealsense, FFmpeg and the CUDA toolkit:
+# installed once, outside the repo, and never fetched (the 2026-09-24 decision).
 if(VS_WITH_ORBBEC)
   include(vs_orbbec)
+endif()
+if(VS_WITH_REALSENSE)
+  include(vs_realsense)
 endif()
 if(VS_WITH_FFMPEG)
   include(vs_ffmpeg)

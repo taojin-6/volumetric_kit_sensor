@@ -1,0 +1,46 @@
+name: Install librealsense
+description: >-
+  The pinned librealsense from RealSense's apt repository on the Ubuntu legs,
+  its signing key checked against a pinned SHA256 first. Nothing on macOS,
+  where the self-hosted Mac's Homebrew formula is checked by the build
+  workflow instead.
+
+# The build finds the SDK and never fetches it (the 2026-09-24 decision), so
+# CI installs it the way a developer does. The pin is the floor
+# cmake/vs_realsense.cmake requires (VS_REALSENSE_SDK_MIN_VERSION): keep the
+# two in lockstep. Needs curl and gnupg.
+runs:
+  using: composite
+  steps:
+    - name: Install librealsense
+      shell: bash
+      run: |
+        set -euo pipefail
+        [ "${RUNNER_OS}" = "Linux" ] || exit 0
+        . /etc/os-release
+        case "${VERSION_CODENAME}" in
+          noble) build=20270 ;;
+          resolute) build=20271 ;;
+          *)
+            echo "::error::no librealsense pinned for ${VERSION_CODENAME}"
+            exit 1
+            ;;
+        esac
+        version="2.59.1-0~realsense.${build}"
+        key=/tmp/librealsenseai.asc
+        key_sha256=6c92939ba6a5f541d0d09e650505d3698fa8bd7774097807edfcf975e7e01e7e
+        curl -fsSL --retry 3 -o "${key}" \
+          https://librealsense.realsenseai.com/Debian/librealsenseai.asc
+        if ! echo "${key_sha256}  ${key}" | sha256sum -c -; then
+          echo "::error::RealSense's apt signing key does not match its pinned SHA256"
+          exit 1
+        fi
+        sudo mkdir -p /etc/apt/keyrings
+        gpg --dearmor < "${key}" | sudo tee /etc/apt/keyrings/librealsenseai.gpg > /dev/null
+        echo "deb [signed-by=/etc/apt/keyrings/librealsenseai.gpg] https://librealsense.realsenseai.com/Debian/apt-repo ${VERSION_CODENAME} main" |
+          sudo tee /etc/apt/sources.list.d/librealsense.list > /dev/null
+        sudo apt-get update
+        # The library and its headers alone: the udev rules and tools a
+        # camera on the host needs are recommends, which a container skips.
+        sudo apt-get install -y --no-install-recommends \
+          "librealsense2=${version}" "librealsense2-dev=${version}"
