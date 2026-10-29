@@ -126,7 +126,8 @@ struct GpuFramePrepConfig {
 /// foreground and a background depth into a point between them, nor a hole
 /// into a return.
 ///
-/// Colour comes as I420, NV12 or YUYV, on the device as a decoder left it:
+/// Colour comes as I420, NV12, YUYV or luma alone (`YuvLayout::Luma`, a mono
+/// camera's, which comes out grey), on the device as a decoder left it:
 /// planes in a buffer, as nvJPEG's pictures arrive, are read where they are,
 /// and NV12's planes as images, as VideoToolbox's and NVDEC's pictures
 /// arrive, are sampled where they are, with no copy, either after the pass

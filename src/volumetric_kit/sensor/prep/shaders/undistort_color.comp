@@ -1,45 +1,18 @@
 #version 450
 
 // Colour undistortion and Y'CbCr to R'G'B' in one pass (undistort_color.glsl),
-// over planes in a buffer: a decoder's I420 or NV12, a camera's YUYV staged
-// from the host, or packed R'G'B' words a dataset decoded on the host. For
-// packed words, R, G and B are sampled bilinearly where the lens puts the
-// pixel, through the same coverage test, and kept as they are.
+// over planes in a buffer (color_planes.glsl): a decoder's I420 or NV12, a
+// camera's YUYV or luma staged from the host, or packed R'G'B' words a
+// dataset decoded on the host. For packed words, R, G and B are sampled
+// bilinearly where the lens puts the pixel, through the same coverage test,
+// and kept as they are.
 
 #extension GL_GOOGLE_include_directive : require
 #include "undistort_color.glsl"
+#include "color_planes.glsl"
 
-// The planes, four bytes to a word: luma rows y_stride bytes apart from
-// y_offset, samples y_step bytes apart (2 in YUYV, else 1); Cb and Cr rows
-// cb_stride and cr_stride bytes apart from cb_offset and cr_offset, samples
-// c_step bytes apart: 1 in I420's planes of their own, 2 in NV12's
-// interleaved one, where Cr sits a byte after Cb, 4 in YUYV's Y0 Cb Y1 Cr.
-// With packed_rgb, the picture's own words instead, R | G << 8 | B << 16,
-// from byte 0.
-layout(set = 0, binding = 0, scalar) readonly buffer Planes { uint planes[]; };
 // R | G << 8 | B << 16 | coverage << 24, the tsdf tier's colour layout.
 layout(set = 0, binding = 1, scalar) writeonly buffer Color { uint color[]; };
-
-float byte_at(uint base, uint row_bytes, uint step, uint x, uint y) {
-  uint i = base + y * row_bytes + x * step;
-  return float((planes[i >> 2] >> ((i & 3u) * 8u)) & 0xFFu);
-}
-
-float luma_at(uint x, uint y) {
-  return byte_at(pc.y_offset, pc.y_stride, pc.y_step, x, y);
-}
-
-vec2 chroma_at(uint x, uint y) {
-  return vec2(byte_at(pc.cb_offset, pc.cb_stride, pc.c_step, x, y),
-              byte_at(pc.cr_offset, pc.cr_stride, pc.c_step, x, y));
-}
-
-// A packed word's R, G and B; the high byte is never read.
-vec3 rgb_at(uint x, uint y) {
-  uint word = planes[y * pc.cam.width + x];
-  return vec3(float(word & 0xFFu), float((word >> 8) & 0xFFu),
-              float((word >> 16) & 0xFFu));
-}
 
 void main() {
   uint gid = gl_GlobalInvocationID.x;

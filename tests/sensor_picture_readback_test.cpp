@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Tao Jin
 
 // PictureReadback (sensor_prep) on synthetic pictures, no decoder:
-// NV12 plane images larger than their picture, and NV12 and I420 planes in
-// buffers at odd sizes, offsets and strides, read back byte for byte, luma
+// NV12 plane images larger than their picture, and NV12, I420 and luma-alone
+// planes in buffers at odd sizes, offsets and strides, read back byte for
+// byte (luma alone with no chroma either way), luma
 // alone or every plane, one picture or a set; buffers taken over from the
 // readback's own family, a CONCURRENT buffer's other family and from outside
 // Vulkan, and images from outside Vulkan; the host memory grown and reused;
@@ -119,7 +120,7 @@ int check_view(const PictureView& v, const Packed& want, YuvLayout layout,
   CHECK(v.luma != nullptr && v.stride >= v.width);
   CHECK(rows_equal(v.luma, v.stride, want.y.data(), want.w, want.h));
   CHECK(v.layout == layout);
-  if (planes == Planes::Luma) {
+  if (planes == Planes::Luma || layout == YuvLayout::Luma) {
     CHECK(v.chroma[0] == nullptr && v.chroma[1] == nullptr);
     return 0;
   }
@@ -176,6 +177,7 @@ std::vector<std::uint8_t> laid_out(const Packed& p, YuvLayout layout,
   image.height = p.h;
   image.stride[0] = p.w + 5;
   image.offset[0] = place(p.y.data(), p.w, p.h, image.stride[0]);
+  if (layout == YuvLayout::Luma) return blob;
   if (layout == YuvLayout::Nv12) {
     const std::vector<std::uint8_t> cbcr = p.cbcr();
     image.stride[1] = 2 * std::size_t{p.cw} + 3;
@@ -239,9 +241,9 @@ int test_layouts(const vkc::test::Gpu& gpu) {
   int seed = 0;
   for (const Size size : {Size{37, 21}, Size{64, 48}, Size{1, 1}}) {
     const Packed p = pattern(size.w, size.h, ++seed);
-    YuvImage pictures[3] = {in_buffer(gpu, p, YuvLayout::Nv12),
-                            in_buffer(gpu, p, YuvLayout::I420),
-                            as_images(gpu, p)};
+    YuvImage pictures[4] = {
+        in_buffer(gpu, p, YuvLayout::Nv12), in_buffer(gpu, p, YuvLayout::I420),
+        in_buffer(gpu, p, YuvLayout::Luma), as_images(gpu, p)};
     for (YuvImage& picture : pictures) {
       CHECK(made(picture));
       picture.full_range = seed % 2 == 0;
@@ -259,7 +261,7 @@ int test_layouts(const vkc::test::Gpu& gpu) {
       }
     }
   }
-  std::printf("  layouts: NV12 and I420 buffers and NV12 images exact\n");
+  std::printf("  layouts: NV12, I420 and luma buffers and NV12 images exact\n");
   return 0;
 }
 
