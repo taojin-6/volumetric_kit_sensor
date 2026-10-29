@@ -117,7 +117,7 @@ bare_plane_textures_size}` -> `vs_test::...` (sensor/tests).
 | `cmake/vr_ffmpeg.cmake` | `sensor/cmake/vs_ffmpeg.cmake` |
 | `cmake/vr_cuda.cmake` | `sensor/cmake/vs_cuda.cmake` |
 | `vr_embed_shaders` / `vr_target_warnings` / `VR_SANITIZE` (recon keeps them) | the package's own `vs_embed_shaders` (symbol prefix `vs_`), `vs_target_warnings`, `VS_SANITIZE` |
-| — | recon's `vr_embed_shaders(... EXPORTED_FROM <target>...)`: recon's src/ plus a sibling's exported GLSL |
+| — | recon's `vr_embed_shaders(... INCLUDE_TARGETS <target>... WITH_SRC)`: recon's src/ plus a sibling's exported GLSL |
 
 #### Macros
 
@@ -166,7 +166,7 @@ bare_plane_textures_size}` -> `vs_test::...` (sensor/tests).
 `recon_subproject_apple_ffmpeg` -> `sensor_subproject_apple_ffmpeg`.
 Split: `recon_sensor_gpu_frame_prep`'s fusion half -> `recon_tsdf_prepared_frame`;
 `recon_sensor_orbbec_sync_config`'s committed-rig case -> `recon_example_rig_sync_config`.
-New: `sensor_smoke`, `sensor_recon_free`, `sensor_subproject_{defaults, old_sensor,
+New: `sensor_smoke`, `sensor_package_boundary`, `sensor_subproject_{defaults, old_sensor,
 glsl, old_core, core_without_vulkan}`, `recon_library_sensor_links`.
 
 #### Files

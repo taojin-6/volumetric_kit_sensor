@@ -7,12 +7,13 @@
 # measures allocations core_test_allocation_failure.
 link_libraries(volumetric_kit::core_test_base)
 
-# The package is on the core alone: no file under sensor/ includes recon, so it
-# builds where recon is not and leaves recon's repository with its history
-# (recon_free.cmake). A scan of the sources, so camera-only builds run it too.
-add_test(NAME sensor_recon_free
+# The package boundary (package_boundary.cmake): the package is on the core
+# alone, so no file under sensor/ includes a header or GLSL file of recon or of
+# grid, and it builds where neither is. A scan of the sources, so camera-only
+# builds run it too.
+add_test(NAME sensor_package_boundary
          COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}" -P
-                 "${CMAKE_CURRENT_SOURCE_DIR}/recon_free.cmake")
+                 "${CMAKE_CURRENT_SOURCE_DIR}/package_boundary.cmake")
 
 # camera tier: the camera model (its checks, the lens template against OpenCV's
 # numbers), its geometry (rigid checks, Rodrigues both ways), and the sensor
@@ -93,7 +94,7 @@ if(VS_CAMERA_ONLY)
       "-DGENERATOR=${CMAKE_GENERATOR}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
       ${_vs_fetched_sources} -P
       "${CMAKE_CURRENT_SOURCE_DIR}/subproject/camera_only.cmake")
-  set_tests_properties(sensor_recon_free sensor_subproject_camera_only
+  set_tests_properties(sensor_package_boundary sensor_subproject_camera_only
                        PROPERTIES TIMEOUT 300)
   return()
 endif()
@@ -587,6 +588,12 @@ endif()
 # GLSL, and the package refuses a core the project made available first that is
 # older than VS_CORE_MIN_VERSION or lacks the vulkan tier. The old core is this
 # one stamped 0.0.1, standing in for one below a later floor.
+#
+# TODO(sensor): this harness -- the fetched sources above, the subproject test
+# and message helpers and subproject/'s version stamp -- copies recon's, which
+# grid, gfx and calib repeat too; move it into the core's test support with
+# theirs, as one function each sibling calls with its package and floor (the
+# task recon's tests/CMakeLists.txt names).
 set(_vs_subproject "${CMAKE_CURRENT_BINARY_DIR}/subproject")
 add_test(NAME sensor_subproject_clean COMMAND "${CMAKE_COMMAND}" -E rm -rf
                                               "${_vs_subproject}")
