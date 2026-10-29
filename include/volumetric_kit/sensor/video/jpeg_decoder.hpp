@@ -12,7 +12,7 @@
 #include <memory>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/core/fwd.hpp"
+#include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 #include "volumetric_kit/recon/sensor/video/export.hpp"
 

@@ -24,7 +24,7 @@
 #include <limits>
 #include <vector>
 
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
 #include "volumetric_kit/recon/camera/projection.hpp"
 

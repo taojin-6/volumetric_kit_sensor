@@ -31,8 +31,8 @@
 #include <limits>
 #include <vector>
 
-#include "buffer_readback.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/buffer_readback.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
@@ -41,8 +41,9 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-#include "gpu_test.hpp"
 #include "pinhole_cases_comp.spv.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
@@ -289,7 +290,7 @@ std::vector<float> axis_pixels(std::uint32_t n) {
           f + 6.75f};
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   std::vector<PinholeCase> cases;
   const std::vector<Edge> edge_cases = edges();
   for (const Edge& e : edge_cases) cases.push_back(e.c);
@@ -349,8 +350,8 @@ int gpu_main(vr_test::GpuContext& gpu) {
                  vr_pinhole_cases_comp_spv_size, 7)
             .ok());
   auto pool = builder.build();
-  auto in = vr_test::upload_device_buffer(gpu.device, gpu.allocator,
-                                          cases.data(), n * sizeof(cases[0]));
+  auto in = vkc::test::upload_device_buffer(gpu.device, gpu.allocator,
+                                            cases.data(), n * sizeof(cases[0]));
   auto accepted =
       vkc::device_storage_buffer(gpu.allocator, n * sizeof(std::uint32_t));
   auto projected =
@@ -375,18 +376,18 @@ int gpu_main(vr_test::GpuContext& gpu) {
   CHECK(vkc::dispatch(gpu.device, kernel, nullptr, 0, vkc::group_count(n, 64),
                       gpu.device.caps().limits().maxComputeWorkGroupCount[0])
             .ok());
-  auto got_accepted = vr_test::read_back<std::uint32_t>(
+  auto got_accepted = vkc::test::read_back<std::uint32_t>(
       gpu.device, gpu.allocator, *accepted, n);
   auto got_projected =
-      vr_test::read_back<vr::Vec2f>(gpu.device, gpu.allocator, *projected, n);
+      vkc::test::read_back<vr::Vec2f>(gpu.device, gpu.allocator, *projected, n);
   auto got_nearest =
-      vr_test::read_back<glm::uvec2>(gpu.device, gpu.allocator, *nearest, n);
-  auto got_unprojected =
-      vr_test::read_back<vr::Vec4f>(gpu.device, gpu.allocator, *unprojected, n);
+      vkc::test::read_back<glm::uvec2>(gpu.device, gpu.allocator, *nearest, n);
+  auto got_unprojected = vkc::test::read_back<vr::Vec4f>(
+      gpu.device, gpu.allocator, *unprojected, n);
   auto got_unbounded =
-      vr_test::read_back<vr::Vec4f>(gpu.device, gpu.allocator, *unbounded, n);
+      vkc::test::read_back<vr::Vec4f>(gpu.device, gpu.allocator, *unbounded, n);
   auto got_to_camera =
-      vr_test::read_back<vr::Vec4f>(gpu.device, gpu.allocator, *to_camera, n);
+      vkc::test::read_back<vr::Vec4f>(gpu.device, gpu.allocator, *to_camera, n);
   CHECK(got_accepted.ok() && got_projected.ok() && got_nearest.ok() &&
         got_unprojected.ok() && got_unbounded.ok() && got_to_camera.ok());
 
@@ -507,4 +508,6 @@ int gpu_main(vr_test::GpuContext& gpu) {
 
 }  // namespace
 
-int main() { return vr_test::run_on_gpu(gpu_main); }
+int main() {
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+}

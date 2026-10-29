@@ -21,10 +21,10 @@
 #include <glm/gtc/constants.hpp>
 #include <nlohmann/json.hpp>
 
-#include "scratch_dir.hpp"
-#include "test_check.hpp"
 #include "volumetric_kit/core/base/file_io.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/scratch_dir.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/recon/camera/array_calibration.hpp"
 
 namespace vkc = volumetric_kit::core;
@@ -860,7 +860,7 @@ int test_color_controls() {
 }
 
 int test_files() {
-  const vr_test::Scratch scratch("recon_array_calibration_");
+  const vkc::test::Scratch scratch("recon_array_calibration_");
   const std::string path = (scratch.path / "array_calibration.json").string();
   const camera::ArrayCalibration written = edge_cases();
   CHECK(camera::write_array_calibration(path, written,
@@ -870,7 +870,7 @@ int test_files() {
   if (check_same(written, read.value()) != 0) return 1;
   // The file holds exactly what format gives.
   const auto text = camera::format_array_calibration(written);
-  const auto bytes = vr_test::read_bytes(path);
+  const auto bytes = vkc::test::read_bytes(path);
   CHECK(std::string(bytes.begin(), bytes.end()) == text.value());
 
   // CreateNew refuses the file now there, and leaves it.
@@ -878,12 +878,12 @@ int test_files() {
   other.sensors.push_back(written.sensors[6]);
   CHECK(camera::write_array_calibration(path, other, vkc::WriteMode::CreateNew)
             .domain() == Code::InvalidArgument);
-  CHECK(vr_test::read_bytes(path) == bytes);
+  CHECK(vkc::test::read_bytes(path) == bytes);
   // A refused calibration touches nothing, even under Replace.
   camera::ArrayCalibration none;
   CHECK(camera::write_array_calibration(path, none, vkc::WriteMode::Replace)
             .domain() == Code::InvalidArgument);
-  CHECK(vr_test::read_bytes(path) == bytes);
+  CHECK(vkc::test::read_bytes(path) == bytes);
   const std::string untouched = (scratch.path / "refused.json").string();
   CHECK(!camera::write_array_calibration(untouched, none,
                                          vkc::WriteMode::CreateNew));

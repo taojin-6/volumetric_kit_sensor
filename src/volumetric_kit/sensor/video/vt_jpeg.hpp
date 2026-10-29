@@ -14,7 +14,7 @@
 
 #include "videotoolbox.hpp"
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/core/fwd.hpp"
+#include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
 #include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
 

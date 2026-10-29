@@ -23,13 +23,15 @@
 #include <utility>
 #include <vector>
 
-#include "buffer_readback.hpp"
+#include "decoder_test.hpp"
 #include "device_picture_readback.hpp"
-#include "gpu_test.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/buffer_readback.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 #include "yuv_reference.hpp"
@@ -53,7 +55,7 @@ int patch_y(int p) { return 40 + 24 * p; }
 int patch_u(int p) { return 64 + 16 * ((3 * p) % 8); }
 int patch_v(int p) { return 64 + 16 * ((5 * p) % 8); }
 
-using Gpu = vr_test::GpuContext;
+using Gpu = vkc::test::GpuContext;
 
 // The device and allocator the decoders hand their pictures out on.
 JpegDecoder::Options decoder_options(const Gpu& gpu) {
@@ -165,8 +167,8 @@ int check_preprocessing(const sensor::DecodedPicture& p, const Planes& planes,
   raw.color = p.yuv;
   auto frame = prep.prepare(raw);
   CHECK(frame.ok());
-  auto gpu = vr_test::read_back<std::uint32_t>(device, allocator, *frame->color,
-                                               depth.size());
+  auto gpu = vkc::test::read_back<std::uint32_t>(device, allocator,
+                                                 *frame->color, depth.size());
   CHECK(gpu.ok());
   for (bool centred : {false, true}) {
     int max_error = 0;
@@ -288,7 +290,7 @@ int test_queue_families(const Gpu& gpu) {
   CHECK(JpegDecoder::create(options).status().domain() ==
         vkc::Status::Code::InvalidArgument);
   const std::optional<std::uint32_t> other =
-      vr_test::other_queue_family(gpu.device);
+      vkc::test::other_queue_family(gpu.device);
   if (!other) return 0;
   const std::uint32_t families[] = {gpu.device.queue_family(), *other};
   options.queue_families = families;
@@ -380,5 +382,5 @@ int main() {
     std::fprintf(stderr, "FAIL: cannot read %s\n", k420);
     return 1;
   }
-  return vr_test::run_on_gpu(gpu_main);
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
 }

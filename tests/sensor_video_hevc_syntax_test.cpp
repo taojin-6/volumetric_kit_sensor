@@ -23,9 +23,9 @@
 #include <vector>
 
 #include "hevc_fixture.hpp"
-#include "test_allocation_failure.hpp"
-#include "test_check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/test_allocation_failure.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 
 namespace hevc = volumetric_kit::recon::sensor::hevc;
 namespace vkc = volumetric_kit::core;
@@ -394,7 +394,7 @@ int test_malformed() {
 // OutOfMemory rather than throwing.
 template <typename Call>
 bool contains_allocation_failure(const Call& call) {
-  auto& failure = vr_test::allocation_failure;
+  auto& failure = vkc::test::allocation_failure;
   failure = {};
   failure.measure = true;
   static_cast<void>(call());

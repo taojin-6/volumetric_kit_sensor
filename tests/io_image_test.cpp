@@ -15,10 +15,10 @@
 #include <string>
 #include <vector>
 
-#include "scratch_dir.hpp"
-#include "test_allocation_failure.hpp"
-#include "test_check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/scratch_dir.hpp"
+#include "volumetric_kit/core/testing/test_allocation_failure.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/recon/io/image_io.hpp"
 
 namespace vkc = volumetric_kit::core;
@@ -27,7 +27,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-using vr_test::read_bytes;
+using vkc::test::read_bytes;
 
 template <std::size_t N>
 bool write_fixture(const std::string& path, const std::uint8_t (&data)[N]) {
@@ -227,7 +227,7 @@ int u16_out_of_memory(const fs::path& dir) {
   const auto kept = read_bytes(path);
   // Fail the first allocation of `bytes` in `call`. Returns the OutOfMemory
   // message, or nothing if no such failure was injected and returned.
-  auto& failure = vr_test::allocation_failure;
+  auto& failure = vkc::test::allocation_failure;
   const auto fail = [&](std::size_t bytes, const auto& call) -> std::string {
     failure = {};
     failure.bytes = bytes;
@@ -292,7 +292,7 @@ int rgba8_and_depth_fixtures(const fs::path& dir) {
 }  // namespace
 
 int main() {
-  vr_test::Scratch scratch("recon_io_image_");
+  vkc::test::Scratch scratch("recon_io_image_");
   CHECK(rgba8_and_depth_fixtures(scratch.path) == 0);
   CHECK(u16_round_trip(scratch.path) == 0);
   CHECK(u16_big_endian(scratch.path) == 0);

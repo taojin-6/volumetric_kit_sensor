@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "orbbec_camera_stub.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
 

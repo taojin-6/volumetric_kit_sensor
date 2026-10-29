@@ -25,8 +25,9 @@
 #include <utility>
 #include <vector>
 
-#include "gpu_test.hpp"
-#include "test_check.hpp"
+#include "decoder_test.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
@@ -34,8 +35,10 @@
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/video/cuda_interop.hpp"
 
+namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 
@@ -46,7 +49,7 @@ namespace sensor = volumetric_kit::recon::sensor;
 
 namespace {
 
-using Gpu = vr_test::GpuContext;
+using Gpu = vkc::test::GpuContext;
 
 // The libcuda calls the checks make themselves.
 #define VR_TEST_CUDA_FUNCTIONS(X) \
@@ -348,4 +351,6 @@ int gpu_main(Gpu& gpu) {
 
 }  // namespace
 
-int main() { return vr_test::run_on_gpu(gpu_main); }
+int main() {
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+}

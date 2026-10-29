@@ -16,13 +16,15 @@
 #include <utility>
 #include <vector>
 
-#include "gpu_test.hpp"
-#include "test_check.hpp"
 #include "test_image.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 
+namespace vr = volumetric_kit::recon;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace vkc = volumetric_kit::core;
 
@@ -65,7 +67,7 @@ struct Set {
     return !buffer.expired() && !luma.expired() && !chroma.expired();
   }
 
-  int make(vr_test::GpuContext& gpu) {
+  int make(vkc::test::GpuContext& gpu) {
     for (std::size_t i = 0; i < frames.size(); ++i) {
       auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
       CHECK(prep.ok());
@@ -108,7 +110,7 @@ struct Set {
   }
 };
 
-int refused_submit(vr_test::GpuContext& gpu, VkResult error) {
+int refused_submit(vkc::test::GpuContext& gpu, VkResult error) {
   Set set;
   CHECK(set.make(gpu) == 0);
   submit_failure = error;
@@ -132,7 +134,7 @@ int refused_submit(vr_test::GpuContext& gpu, VkResult error) {
   return 0;
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   CHECK(refused_submit(gpu, VK_ERROR_OUT_OF_HOST_MEMORY) == 0);
   CHECK(refused_submit(gpu, VK_ERROR_OUT_OF_DEVICE_MEMORY) == 0);
   const int result = refused_submit(gpu, VK_ERROR_DEVICE_LOST);
@@ -147,4 +149,6 @@ int gpu_main(vr_test::GpuContext& gpu) {
 
 }  // namespace
 
-int main() { return vr_test::run_on_gpu(gpu_main); }
+int main() {
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+}

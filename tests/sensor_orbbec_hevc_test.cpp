@@ -33,14 +33,16 @@
 
 #include <libobsensor/ObSensor.hpp>
 
+#include "decoder_test.hpp"
 #include "device_picture_readback.hpp"
-#include "gpu_test.hpp"
 #include "hevc_color.hpp"
 #include "hevc_fixture.hpp"
 #include "picture_frames.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "yuv_reference.hpp"
 
 namespace vr = volumetric_kit::recon;
@@ -396,7 +398,7 @@ int test_every_pair_in_order() {
 // across two families, each as the clip was made.
 int test_queue_families() {
   const std::optional<std::uint32_t> other =
-      vr_test::other_queue_family(*g_device);
+      vkc::test::other_queue_family(*g_device);
   if (!other) return 0;
   const Run r = run(pairs(vr_test::hevc_access_units(kUnlabelled), {0, 1}), 0,
                     false, {g_device->queue_family(), *other});
@@ -789,7 +791,7 @@ int test_refused_stream() {
   return 0;
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   g_device = &gpu.device;
   g_allocator = &gpu.allocator;
   {
@@ -834,5 +836,5 @@ int main() {
   if (test_gate() != 0) return 1;
   if (test_start_needs_device() != 0) return 1;
 
-  return vr_test::run_on_gpu(gpu_main);
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
 }

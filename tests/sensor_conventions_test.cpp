@@ -16,7 +16,7 @@
 #include <cstdio>
 #include <limits>
 
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"
 #include "volumetric_kit/recon/sensor/camera_conventions.hpp"
 #include "volumetric_kit/recon/sensor/color_conventions.hpp"

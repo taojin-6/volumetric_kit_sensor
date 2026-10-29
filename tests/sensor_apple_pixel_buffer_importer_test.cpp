@@ -30,11 +30,12 @@
 #include <utility>
 #include <vector>
 
-#include "buffer_readback.hpp"
+#include "decoder_test.hpp"
 #include "device_picture_readback.hpp"
-#include "gpu_test.hpp"
 #include "metal_allocation.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/buffer_readback.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -58,7 +59,7 @@ namespace {
 constexpr OSType kFull = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
 constexpr OSType kVideo = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
 
-using Gpu = vr_test::GpuContext;
+using Gpu = vkc::test::GpuContext;
 
 // A pixel buffer, released with it.
 struct Pixels {
@@ -348,8 +349,8 @@ int test_prepares(const Gpu& gpu) {
     CHECK(yuv_reference::coded_in(raw.color, c.matrix, c.full_range));
     auto frame = prep->prepare(raw);
     CHECK(frame.ok());
-    auto got = vr_test::read_back<std::uint32_t>(gpu.device, gpu.allocator,
-                                                 *frame->color, depth.size());
+    auto got = vkc::test::read_back<std::uint32_t>(gpu.device, gpu.allocator,
+                                                   *frame->color, depth.size());
     CHECK(got.ok());
     const std::array<int, 3> want =
         yuv_reference::rgb(c.y, c.cbcr[0], c.cbcr[1], c.matrix, c.full_range);
@@ -404,8 +405,8 @@ int test_samples_as_buffer(const Gpu& gpu) {
       std::fprintf(stderr, "%s\n", frame.status().message().c_str());
       return {};
     }
-    auto got = vr_test::read_back<std::uint32_t>(gpu.device, gpu.allocator,
-                                                 *frame->color, depth.size());
+    auto got = vkc::test::read_back<std::uint32_t>(gpu.device, gpu.allocator,
+                                                   *frame->color, depth.size());
     return got.ok() ? std::move(got).value() : std::vector<std::uint32_t>{};
   };
   const std::vector<std::uint32_t> sampled = words();
@@ -428,8 +429,8 @@ int test_samples_as_buffer(const Gpu& gpu) {
   }
   CVPixelBufferUnlockBaseAddress(pixels.ref, kCVPixelBufferLock_ReadOnly);
   bytes.resize((bytes.size() + 3) & ~std::size_t{3});
-  auto planes = vr_test::upload_device_buffer(gpu.device, gpu.allocator,
-                                              bytes.data(), bytes.size());
+  auto planes = vkc::test::upload_device_buffer(gpu.device, gpu.allocator,
+                                                bytes.data(), bytes.size());
   CHECK(planes.ok());
   YuvImage buffer = raw.color;
   buffer.image[0].reset();
@@ -538,7 +539,7 @@ int test_sharing(const Gpu& gpu) {
   CHECK(says(refusal(past, 2), "does not have"));
 
   const std::optional<std::uint32_t> other =
-      vr_test::other_queue_family(gpu.device);
+      vkc::test::other_queue_family(gpu.device);
   if (!other) {
     std::puts("one queue family: no CONCURRENT images to check");
     return 0;
@@ -623,7 +624,7 @@ int test_moves(const Gpu& gpu) {
   return check_holds(yuv, gpu, 5);
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   if (!gpu.device.imports_metal_textures()) {
     return vkc::test::no_device_exit_code(
         "the device imports no Metal textures");
@@ -647,5 +648,5 @@ int gpu_main(vr_test::GpuContext& gpu) {
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
-  return vr_test::run_on_gpu(gpu_main);
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
 }

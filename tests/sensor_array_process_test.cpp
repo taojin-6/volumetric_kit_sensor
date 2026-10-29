@@ -21,11 +21,12 @@
 #include <utility>
 #include <vector>
 
-#include "buffer_readback.hpp"
-#include "gpu_test.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/buffer_readback.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/array/sensor_array.hpp"
 
 namespace vr = volumetric_kit::recon;
@@ -63,8 +64,8 @@ class Recording final : public sensor::IRgbdSensor {
     std::fill_n(planes.begin() + luma, chroma, 110 + seed_);
     std::fill_n(planes.begin() + luma + chroma, chroma, 140 - seed_);
     VKC_ASSIGN(vkc::Buffer buffer,
-               vr_test::upload_device_buffer(device, allocator, planes.data(),
-                                             planes.size()));
+               vkc::test::upload_device_buffer(device, allocator, planes.data(),
+                                               planes.size()));
     sensor::RgbdFrame f;
     f.depth = depth->data();
     f.depth_camera = {{kW, kH},
@@ -129,7 +130,7 @@ camera::ArrayCalibration posed(const std::vector<std::string>& ids) {
 template <typename T>
 std::vector<T> read(vkc::Device& device, vkc::Allocator& allocator,
                     const vkc::Buffer& buffer, std::size_t count) {
-  auto out = vr_test::read_back<T>(device, allocator, buffer, count);
+  auto out = vkc::test::read_back<T>(device, allocator, buffer, count);
   return out.ok() ? std::move(out).value() : std::vector<T>{};
 }
 
@@ -289,7 +290,7 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
 int test_prep_options(vkc::Device& device, vkc::Allocator& allocator) {
   const std::uint32_t own = device.queue_family();
   const std::optional<std::uint32_t> other =
-      vr_test::other_queue_family(device);
+      vkc::test::other_queue_family(device);
   const VkSharingMode want =
       other ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
   for (const std::size_t count :
@@ -373,7 +374,7 @@ int test_prep_options(vkc::Device& device, vkc::Allocator& allocator) {
   return 0;
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   if (run(gpu.device, gpu.allocator) != 0) return 1;
   if (test_prep_options(gpu.device, gpu.allocator) != 0) return 1;
   std::printf("sensor_array_process: OK\n");
@@ -382,4 +383,6 @@ int gpu_main(vr_test::GpuContext& gpu) {
 
 }  // namespace
 
-int main() { return vr_test::run_on_gpu(gpu_main); }
+int main() {
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+}

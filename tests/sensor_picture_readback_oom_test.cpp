@@ -14,27 +14,29 @@
 #include <utility>
 #include <vector>
 
-#include "buffer_readback.hpp"
-#include "gpu_test.hpp"
-#include "test_allocation_failure.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/buffer_readback.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_allocation_failure.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/picture_readback.hpp"
 
+namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 using sensor::PictureReadback;
 
 namespace {
 
-int test_create(vr_test::GpuContext& gpu) {
+int test_create(vkc::test::GpuContext& gpu) {
   // Capture the last allocation a create makes, and its call site, so an
   // allocation of the same size elsewhere cannot consume the injected
   // failure. It is the reader's own, after its timer's: the last of the
   // timer's may sit inside a validation layer's vkCreateQueryPool, where a
   // throw would leak the pool the driver had made.
-  auto& failure = vr_test::allocation_failure;
+  auto& failure = vkc::test::allocation_failure;
   failure.measure = true;
   auto measured = PictureReadback::create(gpu.device, gpu.allocator);
   failure.measure = false;
@@ -59,7 +61,7 @@ int test_create(vr_test::GpuContext& gpu) {
   return 0;
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   CHECK(test_create(gpu) == 0);
   auto readback = PictureReadback::create(gpu.device, gpu.allocator);
   CHECK(readback.ok());
@@ -68,8 +70,8 @@ int gpu_main(vr_test::GpuContext& gpu) {
   for (std::size_t i = 0; i < bytes.size(); ++i) {
     bytes[i] = static_cast<std::uint8_t>(i);
   }
-  auto buffer = vr_test::upload_device_buffer(gpu.device, gpu.allocator,
-                                              bytes.data(), bytes.size());
+  auto buffer = vkc::test::upload_device_buffer(gpu.device, gpu.allocator,
+                                                bytes.data(), bytes.size());
   CHECK(buffer.ok());
   sensor::YuvImage picture;
   picture.layout = sensor::YuvLayout::Nv12;
@@ -85,7 +87,7 @@ int gpu_main(vr_test::GpuContext& gpu) {
   CHECK(read().ok());
 
   // The views the read hands out are an allocation of their own size.
-  auto& failure = vr_test::allocation_failure;
+  auto& failure = vkc::test::allocation_failure;
   failure.measure = true;
   std::vector<std::optional<sensor::PictureView>> views(frames.size());
   failure.measure = false;
@@ -114,4 +116,6 @@ int gpu_main(vr_test::GpuContext& gpu) {
 
 }  // namespace
 
-int main() { return vr_test::run_on_gpu(gpu_main); }
+int main() {
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+}

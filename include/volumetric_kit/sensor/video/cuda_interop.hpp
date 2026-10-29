@@ -19,7 +19,7 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
-#include "volumetric_kit/recon/core/fwd.hpp"
+#include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/recon/sensor/video/export.hpp"
 
 namespace volumetric_kit::recon::sensor {

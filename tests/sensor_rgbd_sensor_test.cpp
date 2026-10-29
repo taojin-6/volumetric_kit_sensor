@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
 

@@ -14,7 +14,7 @@
 #include <string>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/core/fwd.hpp"
+#include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/recon/sensor/apple/export.hpp"
 #include "volumetric_kit/recon/sensor/yuv_image.hpp"
 
