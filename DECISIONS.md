@@ -286,7 +286,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   stage such as stereo matching wrote, at any even byte of a storage buffer,
   taken over from its writer's queue family and bound where it is, the
   image's first sample a push constant. No copy and no host round trip; a
-  frame with nothing on the host still binds a word of the pass's slot.
+  frame with nothing on the host still binds a word of the pass's slot. A
+  buffer several depths and pictures share is taken over once a batch.
 
 ## Decision record
 
@@ -4174,8 +4175,20 @@ last batch has resolved before it rewrites the kernels' sets and may
 replace the outputs that batch uses. A frame with nothing on the host would
 claim none, and a second record before its batch resolved would rewrite a
 set the batch still reads. One word bound keeps the refusal: nothing is
-recorded where the slot is bound in place (Apple, lavapipe), a 4-byte copy
-where it is copied (a discrete GPU).
+recorded where the slot is bound in place (Apple, lavapipe); where it is
+copied (a discrete GPU), a 4-byte copy and the barrier that orders it
+before the first dispatch, within the 0.009 ms below.
+
+**A buffer is taken over once a batch.** A buffer may hold several of a
+batch's references: a frame's depth and its planes, or every camera's depth
+when stereo matching runs the cameras as one batch into one output. Its
+writer released it once, so the batch acquires it once, before any frame's
+inputs: `record`, `record_set`, `prepare` and `prepare_batch` gather the
+distinct buffers of the frames' device depth and planes while checking
+them, and refuse references to one buffer that name different writers (the
+pass's own family, `kQueueFamilyIgnored` and, for a CONCURRENT buffer,
+another Vulkan family all mean no transfer, so they agree). Plane images
+are taken over per frame, as before.
 
 **Tests.** `sensor_gpu_frame_prep`, through the barrel test lens with a
 depth offset, the four-pixel mix, edges and holes: depth on the device gives
@@ -4186,11 +4199,22 @@ the words the same samples from the host give, bit for bit,
 - 321 x 241 samples, an odd count, from byte 4096, refused while the buffer
   ends two bytes into their last word and read once it holds the word, and
   from byte 4098, where they end a word, with the buffer ending there;
-- taken over from outside Vulkan, and named as the pass's own family;
+- through a pinhole, as stereo depth comes, so every raw pixel is read:
+  320 x 240 from bytes 0 and 4102 and 321 x 241 from bytes 4098 and 4096,
+  each buffer ending at the samples' last word and the last sample a return;
+- taken over from outside Vulkan, one barrier more than from the pass's own
+  family (`DeviceCounters::barriers`), and named as the pass's own family;
 - beside packed colour from the host, masked by the colour camera's view;
 - in a set of five beside frames whose depth is on the host, one camera
   missing and one with I420 planes in a buffer, prepared and recorded, each
-  as it prepares alone.
+  as it prepares alone;
+- in one buffer with the frame's I420 planes, and three cameras' depth in
+  one buffer 6 bytes apart, from outside Vulkan: one barrier more than from
+  the pass's own family, not one a reference, and what separate buffers
+  give; references naming different writers refused before any work.
+
+`test_layouts` now checks the take-over of colour planes the same way: one
+barrier more for a buffer's from outside Vulkan, two for NV12's images.
 
 A device-only frame's record refuses a second record before its batch
 resolves; fifty warm frames allocate no staging and submit once each; and

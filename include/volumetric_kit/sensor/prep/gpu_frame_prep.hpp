@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
@@ -139,7 +140,10 @@ struct GpuFramePrepConfig {
 /// (@ref RgbdFrame::depth), or from the device, as a GPU stage such as stereo
 /// matching wrote it (@ref RgbdFrame::depth_device): read where it is, at any
 /// even byte of its buffer, after the pass takes it over from its writer's
-/// queue family, with no copy. A frame's host depth and host colour are
+/// queue family, with no copy. A buffer is taken over once a batch, however
+/// many depths and pictures of its frames it holds -- a frame's depth and
+/// planes, or every camera's depth -- so they must all name the family that
+/// wrote it. A frame's host depth and host colour are
 /// copied into the pass's persistent slot (`core::HostRing`), which its batch
 /// binds: in place where the device's mapped memory is cached (Apple,
 /// lavapipe), and through one copy of the used range elsewhere (a discrete
@@ -252,7 +256,8 @@ class VS_PREP_API GpuFramePrep {
   ///         that are not NV12's R8 and R8G8 planes at least the picture's
   ///         size, 2D, of one layer and one sample, with `SAMPLED` usage
   ///         and a view, in `GENERAL` or `SHADER_READ_ONLY_OPTIMAL`, a
-  ///         `queue_family` the device lacks, `EXCLUSIVE` images from
+  ///         `queue_family` the device lacks, depth and planes in one buffer
+  ///         that name different writers' families, `EXCLUSIVE` images from
   ///         another of its families, or an image past a single
   ///         dispatch (16.7 M pixels);
   ///         `Status::Code::Unsupported` for a colour encoding
@@ -274,9 +279,11 @@ class VS_PREP_API GpuFramePrep {
   /// @param metrics  Optional: one `"frame prep"` row for the whole batch,
   ///                 timed by the first pass used.
   /// @return One `DeviceFrame` per present frame, empty where the frame was;
-  ///         `Status::Code::InvalidArgument` for fewer passes than frames or
-  ///         passes made with different `Device`s; what @ref prepare returns
-  ///         for a frame it refuses; otherwise a buffer or submit failure.
+  ///         `Status::Code::InvalidArgument` for fewer passes than frames,
+  ///         passes made with different `Device`s, or frames whose depth or
+  ///         planes share a buffer and name different writers' families;
+  ///         what @ref prepare returns for a frame it refuses; otherwise a
+  ///         buffer or submit failure.
   static core::Result<std::vector<std::optional<DeviceFrame>>> prepare_batch(
       std::vector<GpuFramePrep>& preps,
       const std::vector<std::optional<RgbdFrame>>& frames,
@@ -292,21 +299,25 @@ class VS_PREP_API GpuFramePrep {
   // (gpu_frame_prep.cpp).
   struct Layout;
   struct Output;
+  // A buffer the frames read on the device, and the queue family the batch
+  // takes it over from.
+  using Acquire = std::pair<const core::Buffer*, std::uint32_t>;
   // Every frame checked, `layouts[i]` for `*frames[i]`, a null frame skipped,
   // and every pass on one device: the first pass used, or null for no frame.
+  // `*acquires` gets each distinct buffer the frames read on the device that
+  // needs taking over, once, however many depths or pictures name it.
   static core::Result<GpuFramePrep*> check_frames(
       GpuFramePrep* preps, const RgbdFrame* const* frames, Layout* layouts,
-      std::size_t count);
+      std::size_t count, std::vector<Acquire>* acquires);
   // The one path record, record_set, prepare and prepare_batch take: the
-  // checked frames recorded into `batch`, `preps[i]` recording `*frames[i]`
-  // into `out[i]`, timed under `stage`.
-  static core::Status record_frames(core::CommandBatch& batch,
-                                    GpuFramePrep* preps,
-                                    const RgbdFrame* const* frames,
-                                    const Layout* layouts,
-                                    std::optional<DeviceFrame>* out,
-                                    std::size_t count,
-                                    core::GpuStageScope* stage);
+  // checked frames' buffers taken over (`acquires`), and the frames recorded
+  // into `batch`, `preps[i]` recording `*frames[i]` into `out[i]`, timed
+  // under `stage`.
+  static core::Status record_frames(
+      core::CommandBatch& batch, GpuFramePrep* preps,
+      const RgbdFrame* const* frames, const Layout* layouts,
+      const std::vector<Acquire>& acquires, std::optional<DeviceFrame>* out,
+      std::size_t count, core::GpuStageScope* stage);
   // prepare's and prepare_batch's: record_frames, one submit and its wait.
   static core::Status prepare_frames(GpuFramePrep* preps,
                                      const RgbdFrame* const* frames,
@@ -323,9 +334,10 @@ class VS_PREP_API GpuFramePrep {
   // Once the frame's slot is claimed, so the pass's last batch has resolved:
   // the outputs made big enough.
   core::Status ensure_buffers(const RgbdFrame& frame, const Layout& layout);
-  // Device depth and planes taken over from their writer's family, the slot
-  // bound (one copy where it is copied) and the overlap mask's parameters
-  // written, into `batch`; `*input` is the slot's buffer the passes bind.
+  // Plane images taken over from their writer's family, the slot bound (one
+  // copy where it is copied) and the overlap mask's parameters written, into
+  // `batch`; `*input` is the slot's buffer the passes bind. Buffers are taken
+  // over by record_frames, once each.
   core::Status record_inputs(core::CommandBatch& batch, const RgbdFrame& frame,
                              const Layout& layout, const core::HostSlot& slot,
                              VkBuffer* input);

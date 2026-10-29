@@ -82,7 +82,9 @@ struct DeviceDepth {
   /// @ref kQueueFamilyExternal for a write from outside Vulkan, such as CUDA
   /// through exported memory; another family of the device, whose writer
   /// released the buffer to the pass's; or @ref kQueueFamilyIgnored when the
-  /// pass's own family wrote it, or for a CONCURRENT buffer.
+  /// pass's own family wrote it, or for a CONCURRENT buffer. A buffer that
+  /// also holds the frame's planes, or other frames' depth, is taken over
+  /// once, so each of them names the same family.
   std::uint32_t queue_family = kQueueFamilyIgnored;
 };
 

@@ -504,7 +504,10 @@ is once the batch has taken the buffer over from its writer's queue family:
 bound from its first sample rounded down to the binding alignment, the
 image's first sample in the binding a push constant (`raw_first`), so any
 even offset is read with no copy, and the buffer must hold the word with
-the last sample, which the kernel reads whole. Host depth, and any host
+the last sample, which the kernel reads whole. A buffer that several of a
+batch's depths and planes name (a frame's depth and planes, every camera's
+depth) is taken over once, before any frame's inputs, and references to it
+that name different writers are refused. Host depth, and any host
 colour after it at the binding alignment, is copied into the pass's
 one persistent slot (`core::HostRing`), which the batch binds in place where
 mapped device memory is cached and copies once into its device-only mirror

@@ -14,8 +14,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `depth`; `RgbdFrame::has_depth()` counts either. `GpuFramePrep` reads it
   in place, at any even byte of its buffer, after taking it over from that
   queue family, with no copy; the depth pass's push constants gain
-  `raw_first` (`DepthParams` is 72 bytes) (DECISIONS.md, the 2026-10-29
-  device-depth entry).
+  `raw_first` (`DepthParams` is 72 bytes). A buffer several of a batch's
+  depths and planes share is taken over once, and references to it naming
+  different writers are refused (DECISIONS.md, the 2026-10-29 device-depth
+  entry).
 
 ## [0.2.0] - 2026-10-29
 
