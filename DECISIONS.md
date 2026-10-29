@@ -72,7 +72,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   camera rather than registered. *Amended 2026-10-29:* depth mixes the four
   raw pixels around the source where they are one surface, nearest only at
   an edge or a hole; and a frame with colour keeps depth only inside its
-  colour camera's view, an option since 2026-09-29 (the same-view entry).
+  colour camera's view, no longer an option (an option from 2026-09-29; the
+  same-view entry).
 - [**2026-09-28**](#2026-09-28--a-decoded-colour-frame-never-leaves-the-gpu-the-platforms-hardware-decoder-for-h265-and-mjpeg-alike-hands-its-picture-to-vulkan-in-place-and-gpuframeprep-takes-i420-or-nv12-from-the-host-or-the-device) —
   A decoded colour frame never leaves the GPU: the platform's hardware
   decoder, for H.265 and MJPEG alike, hands its picture to Vulkan in place,

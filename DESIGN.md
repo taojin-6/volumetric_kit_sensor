@@ -559,9 +559,9 @@ plane's queue family included, and `prepare` is `prepare_batch` over a set
 of one. Both return `OutOfMemory` for a host allocation failure,
 preserving previously returned frames.
 A frame with colour has its depth, from the host or the device, zeroed
-outside its colour camera's view, by the colour pass's own coverage test, so
-nothing is fused that its colour camera cannot colour; a frame without colour
-keeps all its depth (the 2026-10-29 same-view decision). `depth_offset_m`
+outside its colour camera's view by the colour pass's own coverage test; a
+frame without colour keeps all its depth (the 2026-10-29 same-view
+decision). `depth_offset_m`
 (0 by default) is subtracted from every raw return in the depth pass, before
 the mix and that test: for `z > 0`, `z = max(z - offset, 0)`, so 0 stays no
 return whatever the sign; a `SensorArray` sets it per sensor from the
