@@ -1,12 +1,26 @@
 # Changelog
 
-## [0.1.0]
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
+follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The package: moved from volumetric_kit_recon at ac1b792e into recon's
-`sensor/`, on volumetric_kit_core alone. Every old name is gone (no aliases,
-no forwarding headers); the renames:
+## [0.1.0] - 2026-10-29
 
-### Headers
+Seeded from `volumetric_kit_recon`'s camera and sensor tiers at `ac1b792e`;
+history in recon's CHANGELOG up to that commit. The tiers, tests, tools and
+fixtures moved into recon's `sensor/`, on volumetric_kit_core alone, and
+took the package's names (DECISIONS.md, the 2026-10-29 package entry);
+recon's design text for them and the decisions that govern them moved with
+them, into DESIGN.md and DECISIONS.md.
+
+### Changed
+
+- **BREAKING for consumers: every name changed**, with no alias, forwarding
+  header or shim left. A consumer renames at its re-pin by the tables below,
+  declares the package by URL, SHA and `SOURCE_SUBDIR sensor`, and checks it
+  with `vkc_require_sibling(volumetric_kit::sensor 0.1.0)`.
+
+#### Headers
 
 | Old (`volumetric_kit/recon/...`) | New (`volumetric_kit/sensor/...`) | Target |
 | --- | --- | --- |
@@ -40,17 +54,16 @@ no forwarding headers); the renames:
 | `sensor/orbbec/orbbec_sensor.hpp`, `orbbec_stream.hpp`, `orbbec_sync_config.hpp`, `export.hpp` | `orbbec/...` | sensor_orbbec |
 | `io/image_io.hpp`, `io/image_io_export.hpp` (generated) | `io/image_io.hpp`, `io/image_io_export.hpp` | sensor_image_io |
 
-recon's mesh I/O (`volumetric_kit/recon/io/mesh_io.hpp`, `ply_writer.hpp`, ...)
-is unchanged.
+Mesh files are grid's `mesh_io` (recon's CHANGELOG, 0.1.0).
 
-### Namespaces
+#### Namespaces
 
 | Old | New |
 | --- | --- |
 | `volumetric_kit::recon::sensor` (and nested: `::hevc`, `::orbbec`, `::video`, `::detail`) | `volumetric_kit::sensor` (nested names kept: `sensor::hevc`, ...) |
 | `volumetric_kit::recon::camera` | `volumetric_kit::sensor::camera` |
 | `volumetric_kit::recon::{DepthCameraParams, ColorCameraParams, ColorEncoding, is_canonical, srgb_to_linear, linear_to_srgb, unpack_srgb_to_linear, pack_linear_to_srgb, primaries_to_working}` | `volumetric_kit::sensor::...` (same names) |
-| `volumetric_kit::recon::io::{load_color_packed, load_depth_u16, write_png_rgba8, encode_png_u16, write_png_u16}` | `volumetric_kit::sensor::io::...` (mesh I/O stays `recon::io`) |
+| `volumetric_kit::recon::io::{load_color_packed, load_depth_u16, write_png_rgba8, encode_png_u16, write_png_u16}` | `volumetric_kit::sensor::io::...` |
 | `volumetric_kit::recon::device_requirements()` for the decoders' extensions | `volumetric_kit::sensor::device_requirements()` (recon's keeps `scalarBlockLayout` only; merge both with `core::merge`) |
 | `volumetric_kit::recon::{Vec2f, Vec3f, Vec4f, Mat3f, Mat4f}` as used by the sensor headers | `volumetric_kit::sensor::{Vec2f, Vec3f, Vec4f, Mat3f, Mat4f}` (recon keeps its own aliases) |
 | `volumetric_kit::recon::Vec3d` (where sensor code used it) | `volumetric_kit::sensor::camera::Vec3d` |
@@ -61,7 +74,7 @@ namespace remains). Test helpers: `vr_test::{no_decoder, no_jpeg_decoder,
 bare_device, read_device_picture, hevc_access_units, Md5, metal_allocated_size,
 bare_plane_textures_size}` -> `vs_test::...` (sensor/tests).
 
-### CMake targets (each with a `volumetric_kit::` alias)
+#### CMake targets (each with a `volumetric_kit::` alias)
 
 | Old | New |
 | --- | --- |
@@ -79,10 +92,7 @@ bare_plane_textures_size}` -> `vs_test::...` (sensor/tests).
 | `INCLUDE_TARGETS volumetric_kit::recon_core` (for pinhole.glsl) | `INCLUDE_TARGETS volumetric_kit::sensor_frame` |
 | `recon_tsan_tests` (sensor members) | `sensor_tsan_tests` |
 
-Consumers declare the package by URL + SHA + `SOURCE_SUBDIR sensor` (stage 1)
-and check `vkc_require_sibling(volumetric_kit::sensor 0.1.0 [TARGETS ...])`.
-
-### Options and cache variables
+#### Options and cache variables
 
 | Old | New |
 | --- | --- |
@@ -99,7 +109,7 @@ and check `vkc_require_sibling(volumetric_kit::sensor 0.1.0 [TARGETS ...])`.
 | `VR_CORE_MIN_VERSION` (recon keeps its own) | `VS_CORE_MIN_VERSION` (0.29.0) |
 | — | `VR_SENSOR_MIN_VERSION` (recon's floor on the package, 0.1.0) |
 
-### CMake functions and modules
+#### CMake functions and modules
 
 | Old | New |
 | --- | --- |
@@ -109,7 +119,7 @@ and check `vkc_require_sibling(volumetric_kit::sensor 0.1.0 [TARGETS ...])`.
 | `vr_embed_shaders` / `vr_target_warnings` / `VR_SANITIZE` (recon keeps them) | the package's own `vs_embed_shaders` (symbol prefix `vs_`), `vs_target_warnings`, `VS_SANITIZE` |
 | — | recon's `vr_embed_shaders(... EXPORTED_FROM <target>...)`: recon's src/ plus a sibling's exported GLSL |
 
-### Macros
+#### Macros
 
 | Old | New |
 | --- | --- |
@@ -127,7 +137,7 @@ and check `vkc_require_sibling(volumetric_kit::sensor 0.1.0 [TARGETS ...])`.
 | `VR_CUDA_*`, `VR_NVJPEG_*` (cuda_driver/nvjpeg internals) | `VS_CUDA_*`, `VS_NVJPEG_*` |
 | test-only: `VR_HEVC_DATA`, `VR_JPEG_DATA`, `VR_SYNC_FIXTURES`, `VR_TEST_*` (cuda tests) | `VS_HEVC_DATA`, `VS_JPEG_DATA`, `VS_SYNC_FIXTURES`, `VS_TEST_*` |
 
-### GLSL
+#### GLSL
 
 | Old | New |
 | --- | --- |
@@ -136,13 +146,13 @@ and check `vkc_require_sibling(volumetric_kit::sensor 0.1.0 [TARGETS ...])`.
 | `vr_world_to_camera`, `vr_unproject_pinhole`, `vr_pinhole_pixel`, `vr_project_pinhole`, `vr_nearest_pixel` | `vs_world_to_camera`, `vs_unproject_pinhole`, `vs_pinhole_pixel`, `vs_project_pinhole`, `vs_nearest_pixel` |
 | `sensor/utils/shaders/{lens.glsl, undistort_color.glsl, undistort_*.comp}` (private) | `sensor/prep/shaders/...` (private to sensor_prep); guards `VR_SENSOR_LENS_GLSL` -> `VS_PREP_LENS_GLSL`, `VR_SENSOR_UNDISTORT_COLOR_GLSL` -> `VS_PREP_UNDISTORT_COLOR_GLSL`; embedded symbols `vr_undistort_*_comp_spv` -> `vs_undistort_*_comp_spv` |
 
-### Environment variables
+#### Environment variables
 
 | Old | New |
 | --- | --- |
 | `VR_TEST_HEVC_BACKEND` | `VS_TEST_HEVC_BACKEND` |
 
-### Tests (ctest names)
+#### Tests (ctest names)
 
 `recon_<name>` -> `sensor_<name>` for the moved tests, with these special cases:
 `recon_core_color_space` -> `sensor_frame_color_space`,
@@ -159,7 +169,7 @@ Split: `recon_sensor_gpu_frame_prep`'s fusion half -> `recon_tsdf_prepared_frame
 New: `sensor_smoke`, `sensor_recon_free`, `sensor_subproject_{defaults, old_sensor,
 glsl, old_core, core_without_vulkan}`, `recon_library_sensor_links`.
 
-### Files
+#### Files
 
 | Old | New |
 | --- | --- |
