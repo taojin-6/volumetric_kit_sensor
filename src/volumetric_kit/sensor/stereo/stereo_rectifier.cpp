@@ -633,7 +633,9 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
     }
   }
   VkBuffer input = VK_NULL_HANDLE;
-  if (slot_bytes != 0) VKC_ASSIGN(input, batch.input(slot, 0, slot_bytes));
+  if (slot_bytes != 0) {
+    VKC_ASSIGN(input, batch.input(slot, 0, slot_bytes));
+  }
   for (int v = 0; v < 2; ++v) {
     const Picture& p = pictures[v];
     const core::DescriptorSet& set = v == 0 ? kernel.set : right_set[0];
