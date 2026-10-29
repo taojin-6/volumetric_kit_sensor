@@ -272,9 +272,11 @@ int test_opencv() {
       "length %.2g px, principal point %.2g px, baseline %.2g m\n",
       sizeof(kOpenCvCases) / sizeof(kOpenCvCases[0]), worst_r, worst_f, worst_c,
       worst_b);
+  // OpenCV undistorts the corners in float, so its principal point and,
+  // through alpha's scale, its focal length carry float's round-off.
   CHECK(worst_r < 1e-12);
-  CHECK(worst_f < 1e-3);
-  CHECK(worst_c < 1e-3);
+  CHECK(worst_f < 1e-4);
+  CHECK(worst_c < 1e-4);
   CHECK(worst_b < 1e-12);
   return 0;
 }
