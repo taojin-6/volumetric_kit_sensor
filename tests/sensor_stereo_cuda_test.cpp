@@ -4,7 +4,8 @@
 // The rectifier's views read through CUDA, as a stereo matcher reads them:
 // each exported view mapped once (CudaBufferMapping), copied to the host by
 // CUDA once rectify has returned, holds the bytes the pass wrote; rectified
-// again, the same mappings read the next pair, the views taken back from
+// again, each pair dropped before the next, the same mappings read the next
+// pair, the views written again with no transfer back from
 // VK_QUEUE_FAMILY_EXTERNAL and handed out there again. The checks call
 // libcuda through a loader of their own.
 //

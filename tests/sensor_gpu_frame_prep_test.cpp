@@ -1594,8 +1594,9 @@ int test_yuyv(sensor::GpuFramePrep& prep) {
 // Luma alone, a mono camera's, from the host, rows padded and from byte 1,
 // through the barrel lens: grey, each word's R, G and B the luma the host
 // reference samples (its range expanded where limited), within a code, the
-// coverage byte exact; the same bytes in a device buffer give the same words.
-// As images it is refused.
+// coverage byte exact; the same bytes in a device buffer give the same words,
+// and so does a picture whose matrix and siting are unset. As images it is
+// refused.
 int test_luma(sensor::GpuFramePrep& prep) {
   const std::uint32_t w = kWidth, h = kHeight;
   std::vector<std::uint8_t> y(std::size_t{w} * h);
@@ -1672,6 +1673,15 @@ int test_luma(sensor::GpuFramePrep& prep) {
     g.color = dev;
     auto from_device = prep.prepare(g);
     CHECK(from_device.ok() && color_of(from_device.value()) == got);
+
+    // Grey reads no matrix and no siting, so a mono driver may leave them
+    // unset.
+    sensor::RgbdFrame unset = f;
+    unset.color.kr = unset.color.kb = 0.0f;
+    unset.color.chroma_location = static_cast<sensor::ChromaLocation>(255);
+    auto grey = prep.prepare(unset);
+    if (!grey) std::fprintf(stderr, "%s\n", grey.status().message().c_str());
+    CHECK(grey.ok() && color_of(grey.value()) == got);
   }
 
   sensor::YuvImage bad = mono;
