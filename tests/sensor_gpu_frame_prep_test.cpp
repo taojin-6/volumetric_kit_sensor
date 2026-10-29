@@ -1157,6 +1157,15 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
     host.device = planes;
     CHECK(refused(host, "one of them"));
   }
+  // Host planes from byte 0 to the last byte 64 bits count, whose span a
+  // word's rounding would wrap to nothing, are refused before any copy.
+  sensor::YuvImage far = dev_i420;
+  far.device = nullptr;
+  far.host = blob.data();
+  far.offset[0] = 0;
+  far.offset[2] = std::numeric_limits<std::uint64_t>::max() -
+                  ((std::uint64_t{p.ch} - 1) * cr_i420 + p.cw);
+  CHECK(refused(far, "more than 4 GiB"));
 
   // The kernel reads whole words: an NV12 picture whose chroma ends two bytes
   // into its buffer's last word is refused while that word runs past the
@@ -1369,10 +1378,14 @@ std::uint32_t librealsense_rgb(int y, int u, int v) {
 }
 
 // A camera's YUYV on the host, as librealsense hands a D400's colour over:
-//   - through a lens, luma at every pixel and the 4:2:2 chroma, sited left and
-//     on every row, match the host reference of that sampling, rows padded
-//     and the picture at an odd offset from its pointer;
+//   - through a lens, luma at every pixel and the 4:2:2 chroma, on every row
+//     and sited left or centred across, match the host reference of that
+//     sampling, rows padded, the picture at an odd offset from its pointer
+//     and its buffer ending at its last byte, so a copy past it shows under
+//     the sanitizers;
 //   - its words in a device buffer give the same, bit for bit;
+//   - its bytes need last only until record returns: freed before the batch
+//     runs, the frame comes out the same;
 //   - flat colours through a pinhole come out as librealsense's own YUY2
 //     conversion makes them, within the 1 code its integers round to plus
 //     the device's float rounding;
@@ -1396,9 +1409,11 @@ int test_yuyv(sensor::GpuFramePrep& prep) {
     }
   }
   // Y0 Cb Y1 Cr, rows 6 bytes longer than the picture's, junk between them,
-  // from byte 3.
+  // from byte 3 to the last row's last pixel, an odd count of bytes.
   const std::size_t lead = 3, stride = 2 * std::size_t{w} + 6;
-  std::vector<std::uint8_t> bytes(lead + stride * h, 0xCD);
+  std::vector<std::uint8_t> bytes(lead + stride * (h - 1) + 2 * std::size_t{w},
+                                  0xCD);
+  CHECK(bytes.size() % 4 != 0);
   for (std::uint32_t r = 0; r < h; ++r) {
     for (std::uint32_t i = 0; i < cw; ++i) {
       std::uint8_t* at = &bytes[lead + r * stride + 4 * std::size_t{i}];
@@ -1423,36 +1438,48 @@ int test_yuyv(sensor::GpuFramePrep& prep) {
   cam.size = {w, h};
   std::vector<std::uint16_t> raw(std::size_t{w} * h, 1500);
   sensor::RgbdFrame f = frame_of(raw, cam);
-  f.color = yuyv;
   f.color_camera = cam;
-  CHECK(f.has_color());
-  auto out = prep.prepare(f);
-  if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
-  CHECK(out.ok());
-  const std::vector<std::uint32_t> got = color_of(out.value());
-  CHECK(got.size() == raw.size());
-  int worst = 0, coverage_off = 0, inside = 0;
-  for (std::uint32_t v = 0; v < h; ++v) {
-    for (std::uint32_t u = 0; u < w; ++u) {
-      const sensor::Vec2f s =
-          source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
-      std::uint32_t ref = 0;
-      if (s.x >= -0.5f && s.y >= -0.5f && s.x <= w - 0.5f && s.y <= h - 0.5f) {
-        ref = reference_word(
-            bilinear(y, w, h, s.x, s.y), bilinear(cb, cw, h, s.x * 0.5f, s.y),
-            bilinear(cr, cw, h, s.x * 0.5f, s.y), 0.299f, 0.114f, false);
-        ++inside;
+  std::vector<std::uint32_t> got;  // sited left, as the D400's is
+  for (const auto location :
+       {sensor::ChromaLocation::Center, sensor::ChromaLocation::Left}) {
+    f.color = yuyv;
+    f.color.chroma_location = location;
+    CHECK(f.has_color());
+    auto out = prep.prepare(f);
+    if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+    CHECK(out.ok());
+    got = color_of(out.value());
+    CHECK(got.size() == raw.size());
+    // Chroma's first sample from luma's, across; on every row, down.
+    const float across = sensor::chroma_offset(location)[0];
+    int worst = 0, coverage_off = 0, inside = 0;
+    for (std::uint32_t v = 0; v < h; ++v) {
+      for (std::uint32_t u = 0; u < w; ++u) {
+        const sensor::Vec2f s =
+            source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
+        std::uint32_t ref = 0;
+        if (s.x >= -0.5f && s.y >= -0.5f && s.x <= w - 0.5f &&
+            s.y <= h - 0.5f) {
+          const float cx = (s.x - across) * 0.5f;
+          ref = reference_word(
+              bilinear(y, w, h, s.x, s.y), bilinear(cb, cw, h, cx, s.y),
+              bilinear(cr, cw, h, cx, s.y), 0.299f, 0.114f, false);
+          ++inside;
+        }
+        const std::uint32_t c = got[std::size_t{v} * w + u];
+        if ((c >> 24) != (ref >> 24)) ++coverage_off;
+        worst = std::max(worst, channel_diff(c, ref));
       }
-      const std::uint32_t c = got[std::size_t{v} * w + u];
-      if ((c >> 24) != (ref >> 24)) ++coverage_off;
-      worst = std::max(worst, channel_diff(c, ref));
     }
+    std::printf(
+        "  yuyv through a lens, chroma %s: %d inside, worst %d, %d coverage "
+        "off\n",
+        location == sensor::ChromaLocation::Left ? "left" : "centred", inside,
+        worst, coverage_off);
+    CHECK(inside > static_cast<int>(w * h / 2));
+    CHECK(worst <= 1);
+    CHECK(coverage_off == 0);
   }
-  std::printf("  yuyv through a lens: %d inside, worst %d, %d coverage off\n",
-              inside, worst, coverage_off);
-  CHECK(inside > static_cast<int>(w * h / 2));
-  CHECK(worst <= 1);
-  CHECK(coverage_off == 0);
 
   // The same words in a device buffer, as a capture could leave them.
   std::vector<std::uint8_t> words(bytes);
@@ -1464,6 +1491,25 @@ int test_yuyv(sensor::GpuFramePrep& prep) {
   f.color = dev;
   auto from_device = prep.prepare(f);
   CHECK(from_device.ok() && color_of(from_device.value()) == got);
+
+  // Recorded from a copy of the bytes, which goes before the batch runs.
+  {
+    auto copy = std::make_unique<std::vector<std::uint8_t>>(bytes);
+    f.color = yuyv;
+    f.color.host = copy->data();
+    vkc::CommandBatch batch(*g_device, *g_allocator);
+    auto recorded = prep.record(batch, f);
+    CHECK(recorded.ok() && recorded->has_color());
+    f.color = yuyv;
+    copy.reset();
+    std::vector<std::uint32_t> color(raw.size());
+    CHECK(batch
+              .readback(*recorded->color, 0,
+                        color.size() * sizeof(std::uint32_t), color.data())
+              .ok());
+    CHECK(batch.submit().ok());
+    CHECK(color == got);
+  }
 
   // Flat colours, one per 8 x 8 block, through a pinhole: every pixel of a
   // block's inner 4 x 4 samples its own colour alone.

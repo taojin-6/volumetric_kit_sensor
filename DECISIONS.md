@@ -4073,19 +4073,25 @@ entry dropped host planes because nothing made them; a UVC camera does.
 Any layout may come from the host: the staging is the same code.
 
 **Tests.** `sensor_gpu_frame_prep`:
-- YUYV from the host, rows padded, from byte 3 of its pointer, through the
-  barrel test lens, matches the host reference of its 4:2:2 sampling within a
-  code at every pixel, no coverage byte off; the same words in a device
-  buffer give the same words, bit for bit;
+- YUYV from the host, rows padded, from byte 3 of its pointer, its buffer
+  ending at its last byte (an odd count), through the barrel test lens,
+  chroma sited left and centred, matches the host reference of its 4:2:2
+  sampling within a code at every pixel, no coverage byte off; the same words
+  in a device buffer give the same words, bit for bit; and recorded from a
+  copy freed before the batch runs, the frame comes out the same;
 - flat colours through a pinhole come out as librealsense's integer YUY2
   conversion makes them (BT.601, limited range) within 2 codes, most of them
-  exactly; the pass's float matrix is within 1 code of librealsense's over
-  the whole legal range, checked on the host;
+  exactly;
 - I420 and NV12 planes from the host give what the same planes in a buffer
   give, bit for bit;
 - refused: planes in more than one of a buffer, the host and images; an
   unknown layout; YUYV of odd width, as images or with rows shorter than its
-  pixels.
+  pixels; host planes spanning to the last byte 64 bits count, whose span a
+  word's rounding would wrap.
+
+The pass's float matrix is within 1 code of librealsense's integers at every
+one of the 11,137,500 legal Y'CbCr triples, 85.9% of them exactly (checked
+offline, not a test).
 
 `sensor_picture_readback` refuses a YUYV picture and a host one.
 

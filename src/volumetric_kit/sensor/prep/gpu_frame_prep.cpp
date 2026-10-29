@@ -301,6 +301,11 @@ core::Result<ColorLayout> check_color(const RgbdFrame& frame,
     // a slot the kernel reads in whole words.
     out.bind_offset = first;
     out.copy_bytes = last - first;
+    // Weighed before it is rounded up to a word, which near 2^64 would wrap.
+    if (out.copy_bytes > std::numeric_limits<std::uint32_t>::max()) {
+      return core::Status::invalid_argument(
+          "GpuFramePrep: the colour planes span more than 4 GiB");
+    }
     out.bind_bytes = round_up4(out.copy_bytes);
   } else {
     // The kernel reads whole words, so the last one must be in the buffer.

@@ -533,7 +533,9 @@ cached for reading), grown to the largest read, and each `PictureView` points
 into it until the next read, so the frames may go at once. A picture is
 checked by the rules `GpuFramePrep` applies to one (`yuv_planes.hpp`), with
 `TRANSFER_SRC` where the pass needs a buffer's storage usage, or images'
-`SAMPLED` usage and views.
+`SAMPLED` usage and views. It reads 4:2:0 only: a YUYV picture, whose luma
+is no plane of its own, is refused, and a frame whose picture is on the host
+has no view.
 An Orbbec frame holds its SDK pair and the SDK
 context, with the models and the depth-to-colour extrinsic from the factory
 calibration (the extrinsic's rotation made one: the Femto Mega's is not, the

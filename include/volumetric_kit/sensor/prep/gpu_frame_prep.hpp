@@ -125,7 +125,7 @@ struct GpuFramePrepConfig {
 /// foreground and a background depth into a point between them, nor a hole
 /// into a return.
 ///
-/// Colour comes as I420 or NV12, on the device as a hardware decoder left it:
+/// Colour comes as I420, NV12 or YUYV, on the device as a decoder left it:
 /// planes in a buffer, as nvJPEG's pictures arrive, are read where they are,
 /// and NV12's planes as images, as VideoToolbox's and NVDEC's pictures
 /// arrive, are sampled where they are, with no copy, either after the pass
@@ -233,7 +233,8 @@ class VS_PREP_API GpuFramePrep {
   ///         its image, an unknown chroma location or colour layout, colour
   ///         both as packed words and as planes, colour planes in more than
   ///         one of a buffer, the host and images, YUYV of odd width, a
-  ///         plane stride shorter than its rows,
+  ///         plane stride shorter than its rows, host planes whose bytes run
+  ///         past 64 bits or span more than 4 GiB,
   ///         planes that overlap, lie outside their buffer or are in one
   ///         that is empty or without storage usage, plane images
   ///         that are not NV12's R8 and R8G8 planes at least the picture's

@@ -2,9 +2,10 @@
 // Copyright (c) 2026 Tao Jin
 
 // The colour pass's body, which its two entries share: undistort_color.comp
-// reads the picture from a buffer (4:2:0 or YUYV's 4:2:2),
-// undistort_color_images.comp from NV12's two plane images where they are. One thread per pixel of the pinhole image:
-// find where the lens puts it in the captured picture, sample luma and chroma
+// reads the picture from a buffer (4:2:0, or YUYV's 4:2:2),
+// undistort_color_images.comp from NV12's two plane images where they are.
+// One thread per pixel of the pinhole image: find where the lens puts it in
+// the captured picture, sample luma and chroma
 // there bilinearly, each at its own siting, and convert by the picture's
 // matrix and range. One pass, so no intermediate R'G'B' image is written at
 // the captured size. The high byte is the pixel's coverage: 0xFF where the
