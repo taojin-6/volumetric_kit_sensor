@@ -81,3 +81,8 @@ add_subdirectory(video)
 if(VS_WITH_ORBBEC)
   add_subdirectory(orbbec)
 endif()
+
+# The RealSense driver; see realsense/CMakeLists.txt.
+if(VS_WITH_REALSENSE)
+  add_subdirectory(realsense)
+endif()
