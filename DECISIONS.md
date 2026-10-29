@@ -4170,5 +4170,17 @@ software device would test a fake more than the camera):
 - `sensor_realsense_sdk_smoke`: the librealsense that loads is the one
   configured, and its context opens.
 
-**Validation.** VALIDATION_TBD
-
+**Validation.** RTX 4090, Ubuntu 26.04, librealsense 2.59.1 from the apt
+repository, Release with warnings as errors, Orbbec, RealSense, FFmpeg and
+CUDA, under the validation layer: 45 tests passed and the 2 JPEG tests
+skipped, as on main, of 47. Checked by hand, not a test: the lab D455 (USB
+3.2, firmware 5.17.0.10), 300 frames through `GpuFramePrep` with the
+projector on and 300 with it off, at 30 fps (33.4 ms median period); 37
+framesets failed in each run's first 1.2 s and none after, none dropped;
+sequence numbers rose by one every frame; a frame reached `poll` 16 ms after
+its timestamp; `poll` took 5 us and `prepare` 0.66 ms on the host and 0.19 ms
+on the device; prepared depth was 84% valid with the projector and 65%
+without, the colour undistorted and true. The hand check found that
+librealsense's context waits forever in its destructor while its
+devices-changed callback holds the device: the driver replaces the callback
+first.
