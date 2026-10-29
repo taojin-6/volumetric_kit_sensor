@@ -1,5 +1,7 @@
 # volumetric_kit_sensor
 
+[![ci](https://github.com/taojin-6/volumetric_kit_sensor/actions/workflows/ci.yml/badge.svg)](https://github.com/taojin-6/volumetric_kit_sensor/actions/workflows/ci.yml)
+
 Cameras, capture and the device-frame contract of the `volumetric_kit`
 family: the camera vocabulary and the rig's calibration file, the RGB-D
 sensor interface, GPU frame preparation, the sensor array, the hardware video
@@ -7,8 +9,8 @@ decoders, Apple's pixel-buffer importer, the Orbbec driver and image files.
 A camera stack is anything that produces `DeviceFrame`s, the posed,
 undistorted RGB-D frames on the device that fusion reads.
 
-It lives in [volumetric_kit_recon](https://github.com/taojin-6/volumetric_kit_recon)'s
-`sensor/` until it moves, with its history, to a repository of its own.
+It was extracted from [volumetric_kit_recon](https://github.com/taojin-6/volumetric_kit_recon)'s
+`sensor/`, with its history (see [CHANGELOG.md](CHANGELOG.md)).
 
 > [AGENTS.md](AGENTS.md) holds the working rules, [DESIGN.md](DESIGN.md) the
 > tiers and their contracts, [DECISIONS.md](DECISIONS.md#decision-index) the
@@ -48,11 +50,10 @@ on Apple). The package fetches the core pinned by commit and checks it is
 0.29.0 or newer.
 
 ```sh
-recon_root="$(git rev-parse --show-toplevel)"
-cmake -S "$recon_root/sensor" -B "$recon_root/build-sensor" \
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build "$recon_root/build-sensor" --parallel
-ctest --test-dir "$recon_root/build-sensor" --output-on-failure
+sensor_root="$(git rev-parse --show-toplevel)"
+cmake -S "$sensor_root" -B "$sensor_root/build" -DCMAKE_BUILD_TYPE=Release
+cmake --build "$sensor_root/build" --parallel
+ctest --test-dir "$sensor_root/build" --output-on-failure
 ```
 
 | Option | Default | Effect |
@@ -71,19 +72,17 @@ The GPU tests follow the core's test policy (its README, "Build and test"):
 
 ## Consuming the package
 
-recon declares it after the core, by `SOURCE_DIR`, so recon's configure
-takes the `VS_WITH_` options; there its tests and `-Werror` follow recon's.
-An application fetches it pinned by commit (the
-package has no install rules), declares it before anything that also does,
-and checks the floor it needs; FetchContent keeps the first declaration:
+An application fetches it pinned by commit (the package has no install
+rules), declares it before anything that also does, and checks the floor it
+needs; FetchContent keeps the first declaration. Its configure takes the
+`VS_WITH_` options; fetched, the package's tests and `-Werror` default off:
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(volumetric_kit_core GIT_REPOSITORY
   https://github.com/taojin-6/volumetric_kit_core.git GIT_TAG <commit>)
 FetchContent_Declare(volumetric_kit_sensor GIT_REPOSITORY
-  https://github.com/taojin-6/volumetric_kit_recon.git GIT_TAG <commit>
-  SOURCE_SUBDIR sensor)
+  https://github.com/taojin-6/volumetric_kit_sensor.git GIT_TAG <commit>)
 set(VKC_WITH_VULKAN ON)
 FetchContent_MakeAvailable(volumetric_kit_core volumetric_kit_sensor)
 vkc_require_sibling(volumetric_kit::sensor 0.1.0)
@@ -123,7 +122,7 @@ convention is `<workspace>/third_party/OrbbecSDK_v<version>`), and point the
 build at its root:
 
 ```sh
-cmake -S "$recon_root/sensor" -B "$recon_root/build-sensor" \
+cmake -S "$sensor_root" -B "$sensor_root/build" \
     -DCMAKE_BUILD_TYPE=Release -DVS_WITH_ORBBEC=ON -DOrbbecSDK_ROOT=<sdk>
 # on Linux, add -DVS_WITH_FFMPEG=ON -DVS_WITH_CUDA=ON
 # or once, for every repo that finds it:  export OrbbecSDK_ROOT=<sdk>
@@ -150,11 +149,11 @@ H.265 syntax the Apple decoder reads (`volumetric_kit::sensor_video_syntax`,
 
 ```sh
 sudo apt install pkg-config libavcodec-dev libavutil-dev
-cmake -S "$recon_root/sensor" -B "$recon_root/build-sensor" \
+cmake -S "$sensor_root" -B "$sensor_root/build" \
     -DCMAKE_BUILD_TYPE=Release -DVS_WITH_FFMPEG=ON -DVS_WITH_CUDA=ON
 # fail, rather than skip, where the decoders find no device path
 # (videotoolbox on a Mac):
-VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$recon_root/build-sensor" -R video
+VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 ```
 
 ## Versions

@@ -6,18 +6,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.1.0] - 2026-10-29
 
-Seeded from `volumetric_kit_recon`'s camera and sensor tiers at `ac1b792e`;
-history in recon's CHANGELOG up to that commit. The tiers, tests, tools and
-fixtures moved into recon's `sensor/`, on volumetric_kit_core alone, and
-took the package's names (DECISIONS.md, the 2026-10-29 package entry);
-recon's design text for them and the decisions that govern them moved with
-them, into DESIGN.md and DECISIONS.md.
+Extracted from `volumetric_kit_recon` at `5eb28085`; earlier history in that
+repository. The commits here are recon's that touched the package's files,
+each file at its path here and each `#N` written as
+`taojin-6/volumetric_kit_recon#N`; a file's history from before an earlier
+move inside recon stays there, and recon's CHANGELOG has the changes up to
+`ac1b792e`. The tiers, tests, tools and fixtures moved into recon's
+`sensor/`, on volumetric_kit_core alone, and took the package's names
+(DECISIONS.md, the 2026-10-29 package entry); recon's design text for them
+and the decisions that govern them moved with them, into DESIGN.md and
+DECISIONS.md.
 
 ### Changed
 
 - **BREAKING for consumers: every name changed**, with no alias, forwarding
   header or shim left. A consumer renames at its re-pin by the tables below,
-  declares the package by URL, SHA and `SOURCE_SUBDIR sensor`, and checks it
+  declares the package by this repository's URL and a SHA, and checks it
   with `vkc_require_sibling(volumetric_kit::sensor 0.1.0)`.
 
 #### Headers
@@ -72,7 +76,7 @@ Mesh files are grid's `mesh_io` (recon's CHANGELOG, 0.1.0).
 recon code writes `sensor::X` / `sensor::camera::X` (no `recon::sensor`
 namespace remains). Test helpers: `vr_test::{no_decoder, no_jpeg_decoder,
 bare_device, read_device_picture, hevc_access_units, Md5, metal_allocated_size,
-bare_plane_textures_size}` -> `vs_test::...` (sensor/tests).
+bare_plane_textures_size}` -> `vs_test::...` (tests/).
 
 #### CMake targets (each with a `volumetric_kit::` alias)
 
@@ -113,9 +117,9 @@ bare_plane_textures_size}` -> `vs_test::...` (sensor/tests).
 
 | Old | New |
 | --- | --- |
-| `cmake/vr_orbbec.cmake`, `vr_link_orbbec_sdk()` | `sensor/cmake/vs_orbbec.cmake`, `vs_link_orbbec_sdk()` |
-| `cmake/vr_ffmpeg.cmake` | `sensor/cmake/vs_ffmpeg.cmake` |
-| `cmake/vr_cuda.cmake` | `sensor/cmake/vs_cuda.cmake` |
+| `cmake/vr_orbbec.cmake`, `vr_link_orbbec_sdk()` | `cmake/vs_orbbec.cmake`, `vs_link_orbbec_sdk()` |
+| `cmake/vr_ffmpeg.cmake` | `cmake/vs_ffmpeg.cmake` |
+| `cmake/vr_cuda.cmake` | `cmake/vs_cuda.cmake` |
 | `vr_embed_shaders` / `vr_target_warnings` / `VR_SANITIZE` (recon keeps them) | the package's own `vs_embed_shaders` (symbol prefix `vs_`), `vs_target_warnings`, `VS_SANITIZE` |
 | — | recon's `vr_embed_shaders(... INCLUDE_TARGETS <target>... WITH_SRC)`: recon's src/ plus a sibling's exported GLSL |
 
@@ -175,7 +179,7 @@ old_sensor, old_core, core_without_vulkan}`, `recon_library_sensor_links`.
 
 | Old | New |
 | --- | --- |
-| `tools/make_hevc_fixtures.sh`, `make_jpeg_fixtures.sh`, `ios_build_check.sh` | `sensor/tools/...` |
-| `tests/data/{hevc, jpeg, orbbec_sync}` | `sensor/tests/data/...` (recon's examples read `patches_256x144.jpg` through `${volumetric_kit_sensor_SOURCE_DIR}`) |
+| `tools/make_hevc_fixtures.sh`, `make_jpeg_fixtures.sh`, `ios_build_check.sh` | `tools/...` here |
+| `tests/data/{hevc, jpeg, orbbec_sync}` | `tests/data/...` here (recon's examples read `patches_256x144.jpg` through `VS_TEST_DATA_DIR`) |
 | `config/femto_mega_sync.json` | unchanged (recon's example configuration) |
-| `.github/actions/install-orbbec-sdk` | unchanged (recon's root, until X1) |
+| `.github/actions/install-orbbec-sdk` | the same path here; a consumer's CI uses it by commit |

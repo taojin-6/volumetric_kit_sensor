@@ -8,7 +8,7 @@
 link_libraries(volumetric_kit::core_test_base)
 
 # The package boundary (package_boundary.cmake): the package is on the core
-# alone, so no file under sensor/ includes a header or GLSL file of recon or of
+# alone, so no file in the package includes a header or GLSL file of recon or of
 # grid, and it builds where neither is. A scan of the sources, so camera-only
 # builds run it too.
 add_test(NAME sensor_package_boundary

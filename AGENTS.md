@@ -2,9 +2,7 @@
 
 The working guide for every agent, Codex and Claude Code alike, on
 `volumetric_kit_sensor`. `CLAUDE.md` imports this file and duplicates none
-of it. While the package lives in volumetric_kit_recon's `sensor/`, recon's
-AGENTS.md covers the repository's Git, CI and formatting practice; the rules
-for this code are here.
+of it.
 
 ## Project and scope
 
@@ -20,7 +18,8 @@ consumers posed, undistorted RGB-D frames on the device (`DeviceFrame`).
 - It never includes recon, which sits above it, or grid, a sibling on the
   core (`sensor_package_boundary`).
   recon's libraries link `sensor_frame` alone, so a change there is a change
-  to recon's contract.
+  to recon's contract. A change a consumer needs too lands as a sensor PR,
+  then the consumer's PR that re-pins sensor.
 - A sensor driver belongs here only if this package can build and test it.
   Platform-only drivers such as ARKit belong with their downstream
   application.
@@ -76,17 +75,19 @@ consumers posed, undistorted RGB-D frames on the device (`DeviceFrame`).
 ## Build and validation
 
 ```sh
-recon_root="$(git rev-parse --show-toplevel)"
-cmake -S "$recon_root/sensor" -B "$recon_root/build-sensor" \
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build "$recon_root/build-sensor" --parallel
-ctest --test-dir "$recon_root/build-sensor" --output-on-failure
+sensor_root="$(git rev-parse --show-toplevel)"
+cmake -S "$sensor_root" -B "$sensor_root/build" -DCMAKE_BUILD_TYPE=Release
+cmake --build "$sensor_root/build" --parallel
+ctest --test-dir "$sensor_root/build" --output-on-failure
+pre-commit run --all-files --show-diff-on-failure
 ```
 
+- Work in a branch and a git worktree under `.worktrees/`; use Conventional
+  Commits.
 - Always set the build type; measure in Release.
-- Build the package alone for a change here, with the options the change
-  touches (README, "Building"), and run recon's suite too when `frame`
-  changes.
+- Build the package for a change here, with the options the change touches
+  (README, "Building"), and when `frame` changes run recon's suite on this
+  checkout too (`-DFETCHCONTENT_SOURCE_DIR_VOLUMETRIC_KIT_SENSOR=<checkout>`).
 - Tests use no real hardware: a camera is checked by hand through recon's
   `fuse_orbbec`. Report such a check as run or not run, never as a test.
 - Tests are `main()`s on the core's test support; GPU tests run on its

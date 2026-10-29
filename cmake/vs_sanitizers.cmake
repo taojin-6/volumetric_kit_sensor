@@ -12,7 +12,7 @@
 # builds are unaffected. A project that adds this package sanitizes it with its
 # own global flags.
 #
-# Example: cmake -S sensor -B build -DCMAKE_BUILD_TYPE=Debug
+# Example: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 # -DVS_SANITIZE="address;undefined"
 if(VS_SANITIZE)
   # address;undefined -> address,undefined (the -fsanitize= argument form).
