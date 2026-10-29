@@ -1880,7 +1880,8 @@ int allocate(vol::VoxelBlockGrid& grid, const vkc::Buffer& depth,
              const vr::DepthCameraParams& camera) {
   for (int round = 0; round < 5; ++round) {
     vol::AllocFailures why;
-    auto failed = grid.map().allocate_from_depth(depth, camera, &why);
+    auto failed = grid.map().allocate_from_depth(
+        depth, tsdf::to_depth_pinhole(camera), &why);
     CHECK(failed.ok() && !why.capacity_limited());
     if (failed.value() == 0) return 0;
   }
