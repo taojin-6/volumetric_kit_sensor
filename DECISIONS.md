@@ -277,6 +277,14 @@ entries relevant to your task; later amendments supersede earlier rules.
   and YUYV (`YuvLayout::Yuyv`, 4:2:2) among the layouts: a UVC camera's
   colour as its SDK hands it over, staged beside the depth as packed words
   are and converted on the device. `PictureReadback` refuses YUYV.
+  *Amended the same day (the stereo entry):* luma alone (`YuvLayout::Luma`)
+  joins the layouts; `ColorParams` is 120 bytes.
+- [**2026-10-29**](#2026-10-29--calibrated-stereo-pairs-are-the-stereo-tiers-and-stereorectifier-rectifies-them-on-the-gpu-as-opencvs-stereorectify-computes-it-sampling-through-the-colour-passs-own-code-amends-the-host-planes-entry-above) —
+  Calibrated stereo pairs are the `stereo` tier's (`IStereoSensor`,
+  `StereoFrame`), and `StereoRectifier` rectifies them: Bouguet's
+  rectification as OpenCV's `stereoRectify` computes it, once, then a
+  Vulkan pass a view that samples through the colour pass's own code, into
+  views CUDA can import. `YuvLayout::Luma` for mono pairs.
 
 ## Decision record
 
@@ -4050,6 +4058,10 @@ this package, fused 100 live frames of the rig's 4 Femtos (25 sets) at
 
 ### 2026-10-29 — `GpuFramePrep` takes Y'CbCr planes from the host too, a camera's YUYV among them: staged beside the depth and converted on the device (amends the 2026-10-06 device-only `GpuFramePrep` and 2026-10-07 packed-colour entries).
 
+*Amended the same day (the stereo entry, below):* luma alone
+(`YuvLayout::Luma`) joins the layouts, grey through `GpuFramePrep` and
+read by `PictureReadback`; `ColorParams` gains `luma_only`, 120 bytes.
+
 **The rule.** `YuvImage` gains `host`, its planes on the host at `offset` and
 `stride` from that pointer, one of `device`, `host` and `image`; and
 `YuvLayout::Yuyv`, 4:2:2 in one plane, Y0 Cb Y1 Cr for each two pixels, of
@@ -4105,3 +4117,104 @@ built on this checkout passes its 40 tests. Six planted bugs each failed
 rows, host planes copied from the pointer rather than the first plane, Cr
 read beside Cb, `has_color()` blind to host planes, and YUYV of odd width
 accepted. The Mac is CI's leg.
+
+### 2026-10-29 — Calibrated stereo pairs are the `stereo` tier's, and `StereoRectifier` rectifies them on the GPU as OpenCV's `stereoRectify` computes it, sampling through the colour pass's own code (amends the host-planes entry above).
+
+**The rule.** A tier of its own, `sensor_stereo`, on the interface, linking
+`prep` privately; no SDK, every platform. `IStereoSensor` is what a stereo
+camera's driver implements (a RealSense's infrared pair, a Blackmagic pair,
+a ZED): `StereoInfo` (the two cameras, lenses included, `left_to_right`,
+and any third colour camera) known at open, and `StereoFrame`s polled, one
+picture from each camera as delivered, in any layout the GPU reads, on the
+host or in a device buffer. A consumer of depth never sees it: depth from a
+pair comes as an `IRgbdSensor` (the design's `StereoDepthSensor`, later).
+`StereoRectifier::create` computes the rectification once on the host, as
+OpenCV's `stereoRectify` does with `CALIB_ZERO_DISPARITY`, step for step in
+double, its five-iteration undistortion of corners and borders included;
+`alpha` in [0, 1], any size; a vertical pair, or one whose right camera is
+on the left's -x side, is refused. A pair that is rectified already (no
+rotation, no lens, one camera, the right one along +x alone, within 1e-9)
+is only resampled, its camera scaled edge to edge. `rectify` records one
+dispatch a view into one batch, submits and waits: each rectified pixel's
+ray turned into its source camera, through the lens (`lens.glsl`), sampled
+and converted by `undistort_color.glsl` and `color_planes.glsl`, the colour
+pass's own code, its planes checked and bound by the colour pass's own
+function (`prep/color_pass.hpp`); `Luma8` (Y', full range, four pixels a
+word) or `Rgba8` (R'G'B' and coverage). The views are leased to each
+`RectifiedPair` as `GpuFramePrep`'s outputs are; where the device exports
+memory they are `create_exported_buffer`'s, handed out released to
+`VK_QUEUE_FAMILY_EXTERNAL`. `YuvLayout::Luma`, a mono camera's luma alone,
+joins the layouts: grey through `GpuFramePrep`, read by `PictureReadback`.
+
+**Why.** The owner's decisions of 2026-10-29: Fast-FoundationStereo takes
+any calibrated stereo input, not the RealSense's alone; GPU rectification
+and undistortion as an interface of its own, on Vulkan; everything fast and
+on the GPU where it can be; and a consumer sees only `IRgbdSensor`, with
+`IStereoSensor` the narrow interface a stereo driver implements. OpenCV's
+numbers are what a calibration made with OpenCV expects, so the rig is
+OpenCV's to round-off rather than a variant of it; and one home for the lens
+and the sampling means a fix to either reaches both passes. Where the code
+made the approved header change (the design's rev 4 "Headers"):
+- `RectifiedPair::left` and `right` are `std::shared_ptr<core::ExportedBuffer>`,
+  not `std::shared_ptr<const core::Buffer>`: `CudaBufferMapping::map` takes
+  an `ExportedBuffer&` and its descriptor, which a `Buffer` cannot reach, so
+  FFS maps each view once, zero copy (`buffer` is the Vulkan view; the
+  descriptor is closed where the device exports nothing).
+- `RectifiedPair::queue_family`: exported views leave released to
+  `VK_QUEUE_FAMILY_EXTERNAL`, as an exported buffer's crossing needs, so a
+  Vulkan reader must know to take them over (and hand them back).
+- `rectify(frame, metrics = nullptr)`: each PR times its per-frame steps,
+  and `GpuFramePrep::prepare` takes the same optional `StageMetrics`.
+- `GpuFramePrep::create` takes a config, not a `SensorInfo`;
+  `depth_info()` is the `SensorInfo` the depth source reports, and the
+  cameras ride on each frame.
+Not taken now, each a `TODO(sensor)`: NV12 plane images (no stereo source
+decodes on the GPU yet) and vertical pairs.
+
+**Tests.** `sensor_stereo_rectifier`, through the public API:
+- OpenCV's `stereoRectify`, its numbers pinned by
+  `tools/stereo_rectify_reference.py` (OpenCV 5.0.0, run once in a virtual
+  environment): five pairs, mild rational and strong barrel lenses, toed in
+  and converging, alpha 0, 0.5 and 1, resized and not; both rotations, the
+  camera and the baseline;
+- blobs on a tilted plane, imaged through the two lensed, rotated cameras by
+  an independent host renderer (each pixel's ray by inverting the lens
+  iteratively), lie on one row in both views within 0.05 px, and within
+  0.1 px of where the rig projects them, at 1280x720 to 960x544;
+- each view matches a host reference of the remap within a code, coverage
+  byte exact: luma as `Luma8`; YUYV, NV12, I420 and luma as `Rgba8`; the
+  same pictures in device buffers give the same views, bit for bit;
+- a pair rectified already comes back byte for byte at its own size, and
+  at 960x544 is its camera scaled edge to edge, whatever alpha;
+- `depth_info()` with no colour camera and with a third one; a pair kept
+  past the next keeps its views, a view no pair holds is written again,
+  exported and from `VK_QUEUE_FAMILY_EXTERNAL` where the device exports;
+- refused: fourteen cases at create, eight per frame, the rectifier working
+  after each; the pass's time, printed.
+
+`sensor_stereo_cuda` (with FFmpeg and CUDA) maps each exported view once
+through `CudaBufferMapping` and reads three pairs through CUDA, byte for
+byte. `sensor_gpu_frame_prep`: luma alone through the barrel lens, from the
+host and from a buffer, is grey within a code of its reference in either
+range, coverage exact; as images it is refused. `sensor_picture_readback`
+reads luma alone from a buffer exactly, with no chroma.
+
+**Validation.** RTX 4090, Ubuntu 26.04, Release with warnings as errors,
+Orbbec, FFmpeg and CUDA, under the validation layer: 43 tests passed and the
+2 JPEG tests skipped, as on main, of 45. OpenCV's numbers: rotations within
+5.2e-15, the focal length within 1.1e-5 px and the principal point within
+7.3e-6 px (OpenCV undistorts the corners in float), the baseline within
+1.4e-17 m. 777 blobs: rows apart by 0.019 px at worst, 0.0056 px rms, and
+0.019 px at worst from the rig's projection. Every view within a code of
+its reference (522,240 pixels a `Luma8` view). recon main (`f794d65f`)
+built on this checkout passes its 42 tests. Six planted bugs each failed
+`sensor_stereo_rectifier`: the half rotations composed in the wrong order,
+the rectified ray turned the wrong way, the lens run backwards, alpha's ends
+swapped, the right view rectified by the left's rotation, and a rectified
+pair scaled from pixel corners rather than edges. Timed on the 4090 with
+the box to itself, 1280x720 to 960x544, both views, a pair over 200: the
+pass alone (luma in device buffers, `Luma8`) 0.015 ms of device time; a
+RealSense pair's luma from the host 0.097 ms (`Luma8` or `Rgba8`), most of
+it the 1.8 MB copy up to the device; YUYV from the host as `Rgba8`
+0.179 ms; on the host 0.04 ms to 0.46 ms a pair, nearly all of it the wait
+for the submit. The Mac is CI's leg.

@@ -15,8 +15,10 @@ set(_vs_sensor_utils_generated_inc
 add_library(sensor_prep)
 add_library(volumetric_kit::sensor_prep ALIAS sensor_prep)
 
-target_sources(sensor_prep PRIVATE gpu_frame_prep.cpp picture_readback.cpp
-                                   yuv_planes.cpp)
+# color_pass.cpp is the colour pass's checks and binding, which the stereo
+# rectifier (sensor_stereo) calls too: exported, behind an internal header.
+target_sources(sensor_prep PRIVATE color_pass.cpp gpu_frame_prep.cpp
+                                   picture_readback.cpp yuv_planes.cpp)
 
 generate_export_header(
   sensor_prep
