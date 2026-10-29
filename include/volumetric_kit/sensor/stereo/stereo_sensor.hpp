@@ -59,7 +59,9 @@ struct StereoInfo {
 struct StereoFrame {
   /// The left camera's picture: any layout the GPU reads (`YuvLayout::Luma`
   /// for a mono pair, YUYV, NV12, I420), its planes on the host or in a
-  /// buffer on the device, at `StereoCalibration::left`'s size.
+  /// buffer on the device, at `StereoCalibration::left`'s size. Pictures
+  /// that share a buffer (a side-by-side frame) name one `queue_family`, the
+  /// one that wrote it.
   YuvImage left;
   YuvImage right;  ///< The right camera's, as @ref left.
   /// A third camera's picture (`StereoInfo::color`); no planes when `left` is

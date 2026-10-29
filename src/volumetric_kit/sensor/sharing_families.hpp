@@ -5,8 +5,10 @@
 
 // The queue families a picture's plane images are shared with, checked as
 // both of their makers check them: Apple's PixelBufferImporter and NVDEC's
-// plane images (sensor/video/cuda_pictures.cpp). Header-only, and internal to
-// the targets whose sources include it.
+// plane images (sensor/video/cuda_pictures.cpp); and the family a buffer is
+// taken over from, as GpuFramePrep and the StereoRectifier take their device
+// inputs over, once a buffer. Header-only, and internal to the targets whose
+// sources include it.
 
 #include <algorithm>
 #include <cstdint>
@@ -15,10 +17,36 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
+#include "volumetric_kit/core/vulkan/vulkan.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace volumetric_kit::sensor::detail {
+
+// The family `buffer`, named as written on `family`, is taken over from, as
+// CommandBatch::acquire decides: kQueueFamilyIgnored where nothing is
+// transferred -- written on `own`, the pass's family, or a CONCURRENT buffer
+// another Vulkan family wrote. References to one buffer name one writer when
+// this is the same for each, since the buffer is taken over once.
+inline std::uint32_t transfer_family(const core::Buffer& buffer,
+                                     std::uint32_t family,
+                                     std::uint32_t own) noexcept {
+  if (family == own) return kQueueFamilyIgnored;
+  if (family != kQueueFamilyExternal &&
+      buffer.sharing_mode() == VK_SHARING_MODE_CONCURRENT) {
+    return kQueueFamilyIgnored;
+  }
+  return family;
+}
+
+// A transfer_family for a message.
+inline std::string family_name(std::uint32_t family) {
+  if (family == kQueueFamilyIgnored) return "the pass's own";
+  if (family == kQueueFamilyExternal) return "kQueueFamilyExternal";
+  return std::to_string(family);
+}
 
 // The families the images are CONCURRENT across: the distinct entries of
 // `families` when two or more, as the core's allocator picks a buffer's
