@@ -456,13 +456,13 @@ truncation band the rig fuses with), else the nearest raw pixel. A slope
 comes out smooth, not in the half-pixel terraces the nearest pixel alone
 leaves, which fusion shades as bands on floors and walls; an edge or a hole
 is never blended (2026-10-29). Colour is sampled bilinearly and converted
-from Y'CbCr in the same pass. The frame carries each camera's `camera::CameraModel`
-in double, narrowed to float once for the passes; the colour camera's pose,
-`color_to_world`, and the sensor's `depth_to_color`, both refused unless
-rigid, pose the outputs; a sequence number; and `pixels`, the owner of its
-depth, any host colour and any `color_bitstream` (the colour as the camera
-coded it, when that decodes on its own), so a consumer may keep frames past
-the next poll and past the capture.
+from Y'CbCr in the same pass. The frame carries each camera's
+`camera::CameraModel` in double, narrowed to float once for the passes; the
+colour camera's pose, `color_to_world`, and the sensor's `depth_to_color`,
+both refused unless rigid, pose the outputs; a sequence number; and
+`pixels`, the owner of its depth, any host colour and any `color_bitstream`
+(the colour as the camera coded it, when that decodes on its own), so a
+consumer may keep frames past the next poll and past the capture.
 `ChromaLocation` travels in the picture's `YuvImage`: JPEG is centred, and
 HEVC keeps the decoded tag with left alignment when unspecified.
 The GPU samples the location consistently for planes in a buffer and NV12

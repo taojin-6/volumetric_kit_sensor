@@ -103,9 +103,11 @@ struct GpuFramePrepConfig {
   /// per sensor, and refuses one in `SensorArray::Options::prep`. A return
   /// the offset takes to 0 or below is no return (0), and 0 stays no return
   /// whatever the sign, so a negative offset never makes a hole a surface.
-  /// It is subtracted before @ref depth_within_color's test, which sees the
-  /// corrected depth. 0, the default, leaves depth as the sensor reported
-  /// it. Finite, or @ref GpuFramePrep::create refuses it.
+  /// It is subtracted from each raw pixel before the depth mix, so a return
+  /// it takes to 0 is a hole the mix skips, and before
+  /// @ref depth_within_color's test, which sees the corrected depth. 0, the
+  /// default, leaves depth as the sensor reported it. Finite, or
+  /// @ref GpuFramePrep::create refuses it.
   float depth_offset_m = 0.0f;
 };
 

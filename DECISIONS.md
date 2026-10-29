@@ -3967,14 +3967,14 @@ constant changes. The colour pass, the crop and fusion are unchanged.
 output pixels and skips others, so a slope comes out in half-pixel steps,
 and fusion's own bilinear sample turns them into terraces: regular bands
 across floors and faceted walls in a lit mesh. recon's edge-quality study
-(2026-10-28, track C, its prep C2(c)) measured the fix on take3, the rig's
-4 Femtos, 300 sets, Dynamic. With today's fusion, interior roughness p90 (the
-angle between neighbouring face normals away from edges) went from 10.3 to
-2.4 degrees, and flipped edge triangles from 1.97 to 1.71%. With the study's
-final fusion set, the same two went from 10.2 to 2.5 degrees and from 1.66
-to 1.44%. Rims, holes and the eviction of a moving object were unchanged,
-and the stream rate fell 3%. Fusing the raw grid
-directly (its C1) did no better and needs the lens in fusion.
+(2026-10-28) measured this rule on take3, the rig's 4 Femtos, 300 sets,
+Dynamic. With today's fusion, interior roughness p90 (the angle between
+neighbouring face normals away from edges) went from 10.3 to 2.4 degrees,
+and flipped edge triangles from 1.97 to 1.71%. With the study's final
+fusion set, the same two went from 10.2 to 2.5 degrees and from 1.66 to
+1.44%. Rims, holes and the eviction of a moving object were unchanged, and
+the stream rate fell 3%. Fusing the raw grid directly did no better and
+needs the lens in fusion.
 
 **The threshold** is a constant of the shader, not a config field. 4 cm is
 the truncation band the rig fuses with, past which fusion's own bilinear
@@ -3984,11 +3984,12 @@ block only when turned more than about 80 degrees from facing the camera.
 The package knows no grid's truncation, and no consumer needs another
 value. A noise-scaled threshold was not tried.
 
-**Cost.** Device time of the depth pass alone (`depth_bench`, a take3
-set: 4 cameras at 640x576 with the colour-view mask; the two builds
-interleaved, 3 runs of 2000 sets): RTX 4090 0.0219 to 0.0255 ms a set
-(+3.7 µs), Apple M5 Max 0.0428 to 0.0506 ms (+8.0 µs), about 1 and 2 µs a
-frame.
+**Cost.** Device time of the depth pass alone, from a standalone bench
+outside the repository (a take3 set: 4 cameras at 640x576 with the
+colour-view mask; the two builds interleaved, 2000 sets a run), medians:
+RTX 4090 0.0219 to 0.0255 ms a set (+3.7 µs, 3 runs), Apple M5 Max 0.0426
+to 0.0505 ms (+7.9 µs, the 2 runs no other GPU work disturbed), about 1 and
+2 µs a frame.
 
 **Tests.** `sensor_gpu_frame_prep`, through the barrel test lens:
 - a plane turned 24 degrees, in 0.1 mm units, comes out within 0.1 mm of
@@ -3997,11 +3998,13 @@ frame.
   pixel leaves 9,235);
 - across a 5 cm step every pixel is the nearest raw pixel's depth, bit for
   bit, and a 3 cm step is mixed;
-- at 2.5-3 cm, where a hole's 0 lies within 4 cm of the returns, a block
+- at 2.5-3.2 cm, where a hole's 0 lies within 4 cm of the returns, a block
   with a hole keeps the nearest pixel, bit for bit, and a 2 mm return is
   mixed until a 4 mm offset makes it a hole;
 - the mask keeps the unmasked pass's mixed depth exactly where the host puts
-  that depth's point in the colour image, and 0 elsewhere;
+  that depth's point in the colour image, and 0 elsewhere, on columns
+  alternating 0.5 and 0.535 m, where a mask tested at the nearest pixel's
+  depth would decide over 100 pixels differently;
 - the host reference follows the rule, half its squares a slope that mixes;
   a mix may differ from it by 1e-4 of the block's range, the two lenses'
   rounding.
@@ -4014,12 +4017,12 @@ the mask tested at the nearest depth.
 (MoltenVK): 35/35. RTX 4090 with Orbbec, FFmpeg and CUDA: 41 passed and the
 2 JPEG tests skipped, as on main, of 43. take3's raw depth through
 `GpuFramePrep` on the 4090 (300 sets, 1,185 frames, the recorded offsets
-and colour-view mask) lies within 10 µm of the study's float32 C2(c) at
+and colour-view mask) lies within 10 µm of the study's float32 output at
 99.99980% of 4.37·10⁸ samples (within 1 µm at 99.965%). 375 samples differ
 in whether they return, float rounding at a pixel or mask boundary; the
 study's nearest-pixel control and the recorded GPU output differ at 6,101.
 Fused, the take's rate is 63.6 Mbps against the recorded depth's 65.6, as
-for C2(c), and lit renders of set 299 lose the floor's bands and the wall's
+in the study, and lit renders of set 299 lose the floor's bands and the wall's
 facets. Checked by hand, not a test: recon main's `fuse_orbbec`, built on
 this package, fused 100 live frames of the rig's 4 Femtos (25 sets) at
 88.7 fps, frame prep 0.40 ms of device time a set.

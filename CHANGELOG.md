@@ -14,9 +14,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the depth offset, within 4 cm of each other, and as the nearest raw pixel,
   as before, otherwise. A slope no longer comes out in half-pixel terraces,
   which fusion shaded as bands on floors and walls; an edge or a hole is
-  never blended. No API or option changes, and the pass takes about 1-2 µs
-  more a frame; a consumer that re-pins gets different prepared depth on
-  slopes (DECISIONS.md, the 2026-10-29 depth-mix entry).
+  never blended. No API or option changes. The pass takes about 1 µs more a
+  frame on an RTX 4090 and 2 µs on an M5 Max; a consumer that re-pins gets
+  different prepared depth on slopes (DECISIONS.md, the 2026-10-29 depth-mix
+  entry).
 
 ## [0.1.0] - 2026-10-29
 
