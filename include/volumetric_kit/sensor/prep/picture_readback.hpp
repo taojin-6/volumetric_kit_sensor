@@ -121,7 +121,7 @@ class VS_PREP_API PictureReadback {
   /// @param metrics  Optional: a `"readback"` row, the call on the host and
   ///                 the copies on the device. `nullptr` measures nothing.
   /// @return One view per frame, empty where the frame is, or has no
-  ///         picture on the device (no colour, or colour as host words);
+  ///         picture on the device (no colour, or colour on the host);
   ///         what the other overload returns for a picture it refuses; or a
   ///         buffer, submit or `Status::Code::OutOfMemory` failure.
   core::Result<std::vector<std::optional<PictureView>>> read(
@@ -135,8 +135,9 @@ class VS_PREP_API PictureReadback {
   /// @param planes   Luma alone, or every plane.
   /// @param metrics  As the other overload.
   /// @return The view, valid as the other overload's;
-  ///         `Status::Code::InvalidArgument` for a picture that is empty or
-  ///         not on the device, planes both in a buffer and as images, a
+  ///         `Status::Code::InvalidArgument` for a picture that is empty,
+  ///         not on the device or YUYV (it reads 4:2:0 only), planes both in
+  ///         a buffer and as images, a
   ///         buffer that is empty or without `TRANSFER_SRC` usage, a plane
   ///         stride shorter than its rows, planes that overlap or lie
   ///         outside their buffer, images that are not NV12's R8 and R8G8

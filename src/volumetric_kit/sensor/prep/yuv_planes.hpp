@@ -15,28 +15,29 @@
 namespace volumetric_kit::sensor::detail {
 
 // A picture's planes: Y, then NV12's CbCr or I420's Cb and Cr, the chroma
-// at half the size, rounded up.
+// at half the size, rounded up; or YUYV's one plane, two bytes a pixel.
 struct YuvPlanes {
-  int count = 0;                    // 2 for NV12, 3 for I420
+  int count = 0;                    // 2 for NV12, 3 for I420, 1 for YUYV
   std::uint64_t rows[3] = {};       // each plane's rows
   std::uint64_t row_bytes[3] = {};  // the bytes of a row the picture uses
-  std::uint64_t begin[3] = {};      // planes in a buffer: the first byte
-  std::uint64_t end[3] = {};        // and one past the last
+  std::uint64_t begin[3] = {};      // planes in a buffer or on the host:
+  std::uint64_t end[3] = {};        // the first byte and one past the last
 };
 
 // How a reader takes plane images: GpuFramePrep samples them where they are,
 // PictureReadback copies them.
 enum class ImageRead { Sample, Copy };
 
-// `image`'s planes, checked as `read` takes them: in a buffer or as images,
-// not both. Images are NV12's R8 luma and R8G8 chroma, each at least the
+// `image`'s planes, checked as `read` takes them: in a buffer, on the host or
+// as images, one of them, in a layout this package knows; YUYV's width is
+// even. Images are NV12's R8 luma and R8G8 chroma, each at least the
 // picture's size: to sample, 2D, of one layer and one sample, with SAMPLED
 // usage and a view, in GENERAL or SHADER_READ_ONLY_OPTIMAL; to copy, with
-// TRANSFER_SRC usage, in GENERAL or
-// TRANSFER_SRC_OPTIMAL. Planes in YuvImage::device each have a stride at
-// least their rows, lie inside the buffer and overlap no other; the buffer
-// itself (empty, its usage) is the caller's to check first. `who` starts
-// every message.
+// TRANSFER_SRC usage, in GENERAL or TRANSFER_SRC_OPTIMAL. Planes in
+// YuvImage::device or from YuvImage::host each have a stride at least their
+// rows and overlap no other; in a buffer they lie inside it, on the host
+// their bytes are counted in 64 bits. The buffer itself (empty, its usage) is
+// the caller's to check first. `who` starts every message.
 core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
                                          ImageRead read);
 

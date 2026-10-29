@@ -472,10 +472,10 @@ resulting `DeviceFrame` feeds the `Buffer` overloads of grid's
 recon's `integrate` (and
 `ColorFrame::buffer`, with `coverage_in_alpha`, since a
 pixel the lens maps outside the picture is a 0 word), so nothing is
-uploaded and nothing registered. Y'CbCr colour comes as I420 or NV12 on the
-device only (the 2026-10-06 device-only `GpuFramePrep` decision): planes in a
-buffer (`YuvImage::device`, with per-plane offsets and strides) are bound
-where they are, from
+uploaded and nothing registered. Y'CbCr colour comes as I420, NV12 or YUYV
+(4:2:2, one plane): on the device (the 2026-10-06 device-only `GpuFramePrep`
+decision), planes in a buffer (`YuvImage::device`, with per-plane offsets
+and strides) are bound where they are, from
 the first plane, once the batch has taken them over from the queue family
 that owns them (`YuvImage::queue_family`; the 2026-09-28 decoded-frame
 decision). NV12's planes may come as images instead (`YuvImage::image`,
@@ -485,13 +485,17 @@ samples where they are, with no copy: a second entry over the same body
 (`undistort_color_images.comp`, `undistort_color.glsl`) binds them as two
 combined image samplers, reads them at integer coordinates and makes each
 sample its 8-bit code again (`round(v * 255)`), so its words are the buffer
-form's, bit for bit (the 2026-10-25 plane-image decision). A dataset decoded
-on the host hands its colour over as packed R'G'B' words instead
-(`RgbdFrame::color_packed`, `io::load_color_packed`'s layout; the
-2026-10-07 packed-colour decision), copied into the pass's slot after the
-depth; the colour pass samples R, G and B as byte planes four bytes apart,
-through the same bilinear sampler and coverage test. The depth, and any
-packed colour after it at the binding alignment, is copied into the pass's
+form's, bit for bit (the 2026-10-25 plane-image decision). On the host, a
+camera's SDK hands its planes over (`YuvImage::host`: a UVC camera's YUYV;
+the 2026-10-29 host-planes decision), copied into the pass's slot after the
+depth from the first plane's first byte and read there by the buffer entry;
+YUYV's luma is every second byte and its chroma every fourth, on every row.
+A dataset decoded on the host hands its colour over as packed R'G'B' words
+instead (`RgbdFrame::color_packed`, `io::load_color_packed`'s layout; the
+2026-10-07 packed-colour decision), copied the same way; the colour pass
+samples R, G and B as byte planes four bytes apart, through the same
+bilinear sampler and coverage test. The depth, and any host colour after it
+at the binding alignment, is copied into the pass's
 one persistent slot (`core::HostRing`), which the batch binds in place where
 mapped device memory is cached and copies once into its device-only mirror
 elsewhere; nothing is allocated per frame (a batch staging per call made VMA

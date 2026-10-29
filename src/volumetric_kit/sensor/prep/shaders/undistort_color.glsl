@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Tao Jin
 
 // The colour pass's body, which its two entries share: undistort_color.comp
-// reads the picture from a buffer, undistort_color_images.comp from NV12's
-// two plane images where they are. One thread per pixel of the pinhole image:
+// reads the picture from a buffer (4:2:0 or YUYV's 4:2:2),
+// undistort_color_images.comp from NV12's two plane images where they are. One thread per pixel of the pinhole image:
 // find where the lens puts it in the captured picture, sample luma and chroma
 // there bilinearly, each at its own siting, and convert by the picture's
 // matrix and range. One pass, so no intermediate R'G'B' image is written at
@@ -20,7 +20,7 @@
 
 layout(local_size_x = 256) in;
 
-// gpu_frame_prep.cpp's ColorParams. The offsets, strides and c_step place the
+// gpu_frame_prep.cpp's ColorParams. The offsets, strides and steps place the
 // planes in a buffer, and only that entry reads them.
 layout(push_constant, scalar) uniform Params {
   LensCamera cam;
@@ -36,7 +36,9 @@ layout(push_constant, scalar) uniform Params {
   uint full_range;
   float chroma_x;
   float chroma_y;
-  uint packed_rgb;  // packed R'G'B' words, not Y'CbCr planes
+  uint packed_rgb;        // packed R'G'B' words, not Y'CbCr planes
+  uint y_step;            // bytes between luma samples
+  uint chroma_full_rows;  // 4:2:2: chroma on every row, halved across only
 } pc;
 
 // Each entry's: the codes, 0 to 255, of the picture's luma and of its chroma
@@ -82,10 +84,15 @@ uint ycbcr_word(vec2 s) {
   uint w = pc.cam.width;
   uint h = pc.cam.height;
   // The decoder's sample positions: JPEG is centred in both axes; HEVC's
-  // default is left-aligned horizontally and centred vertically.
+  // default is left-aligned horizontally and centred vertically. 4:2:2 has
+  // chroma on every row, so only its horizontal siting counts.
   uint cw = (w + 1u) / 2u;
   uint ch = (h + 1u) / 2u;
   vec2 c = (s - vec2(pc.chroma_x, pc.chroma_y)) * 0.5;
+  if (pc.chroma_full_rows != 0u) {
+    ch = h;
+    c.y = s.y;
+  }
   uvec2 lo, hi;
   vec2 f;
   bilinear_taps(w, h, s, lo, hi, f);

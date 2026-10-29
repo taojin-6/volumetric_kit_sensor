@@ -131,8 +131,10 @@ struct GpuFramePrepConfig {
 /// arrive, are sampled where they are, with no copy, either after the pass
 /// takes them over from the queue family that wrote them
 /// (`YuvImage::queue_family`). The two read the same samples, so give the
-/// same frame. A frame's depth, and colour a dataset decoded on the host
-/// (@ref RgbdFrame::color_packed), are copied into the pass's
+/// same frame. Or it comes on the host: planes as a camera's SDK hands them
+/// over (`YuvImage::host`; a UVC camera's YUYV), converted on the device like
+/// a buffer's, or words a dataset decoded (@ref RgbdFrame::color_packed). A
+/// frame's depth and host colour are copied into the pass's
 /// persistent slot (`core::HostRing`), which its batch binds: in place where
 /// the device's mapped memory is cached (Apple, lavapipe), and through one
 /// copy of the used range elsewhere (a discrete GPU). Nothing else goes up
@@ -228,9 +230,10 @@ class VS_PREP_API GpuFramePrep {
   ///         `0 < min_depth < max_depth` (0 being the pass's "no return"),
   ///         a `color_to_world` or `depth_to_color` that is not rigid, a
   ///         camera or picture that is empty, not finite or disagrees with
-  ///         its image, an unknown chroma location, colour both as packed
-  ///         words and as planes, colour planes both in a buffer and as
-  ///         images, a plane stride shorter than its rows,
+  ///         its image, an unknown chroma location or colour layout, colour
+  ///         both as packed words and as planes, colour planes in more than
+  ///         one of a buffer, the host and images, YUYV of odd width, a
+  ///         plane stride shorter than its rows,
   ///         planes that overlap, lie outside their buffer or are in one
   ///         that is empty or without storage usage, plane images
   ///         that are not NV12's R8 and R8G8 planes at least the picture's
@@ -300,7 +303,7 @@ class VS_PREP_API GpuFramePrep {
                                      core::StageMetrics* metrics);
   // The whole frame checked, before anything is recorded.
   core::Result<Layout> check(const RgbdFrame& frame) const;
-  // A slot claimed and filled with the depth and any packed colour; nothing
+  // A slot claimed and filled with the depth and any host colour; nothing
   // recorded and no buffer changed.
   core::Result<core::HostSlot> stage(const RgbdFrame& frame,
                                      const Layout& layout);
@@ -354,7 +357,7 @@ class VS_PREP_API GpuFramePrep {
   core::DescriptorPool images_pool_;
   core::GpuTimer gpu_timer_;
 
-  // Each frame's depth, and colour a dataset decoded on the host, copied into
+  // Each frame's depth, and any colour on the host, copied into
   // its one slot, the colour range at minStorageBufferOffsetAlignment; made
   // at the first record, grown as a larger frame asks. The host only writes
   // the slot (core::HostAccess::SequentialWrite), so where the ring is

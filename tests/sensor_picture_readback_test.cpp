@@ -521,7 +521,16 @@ int test_refusals(vkc::test::GpuContext& gpu) {
   bad = buffer;
   bad.image[0] = images.image[0];
   bad.image[1] = images.image[1];
-  CHECK(refused(bad, "not both"));
+  CHECK(refused(bad, "one of them"));
+  // A YUYV picture, whose luma is no plane of its own; and one on the host.
+  bad = buffer;
+  bad.layout = YuvLayout::Yuyv;
+  CHECK(refused(bad, "YUYV"));
+  YuvImage host;
+  const std::uint8_t byte = 0;
+  host.host = &byte;
+  host.width = host.height = 1;
+  CHECK(refused(host, "not on the device"));
   bad = buffer;
   bad.device = std::make_shared<const vkc::Buffer>();
   CHECK(refused(bad, "buffer is empty"));

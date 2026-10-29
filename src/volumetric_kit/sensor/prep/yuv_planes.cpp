@@ -3,6 +3,7 @@
 
 #include "yuv_planes.hpp"
 
+#include <limits>
 #include <string>
 
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -91,33 +92,53 @@ core::Status check_images(const YuvImage& image, const char* who,
 core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
                                          ImageRead read) {
   const bool on_device = image.device != nullptr;
+  const bool on_host = image.host != nullptr;
   const bool as_images = image.image[0] != nullptr || image.image[1] != nullptr;
-  if (on_device && as_images) {
+  if (int{on_device} + int{on_host} + int{as_images} > 1) {
     return refuse(who,
-                  "the colour planes must be in a buffer or images, not both");
+                  "the colour planes must be in a buffer, on the host or "
+                  "images, one of them");
+  }
+  if (static_cast<unsigned>(image.layout) >
+      static_cast<unsigned>(YuvLayout::Yuyv)) {
+    return refuse(who, "unknown colour layout");
   }
   if (as_images) VKC_TRY(check_images(image, who, read));
-  const bool nv12 = image.layout == YuvLayout::Nv12;
-  const std::uint64_t cw = (std::uint64_t{image.width} + 1) / 2;
-  const std::uint64_t ch = (std::uint64_t{image.height} + 1) / 2;
-  const std::uint64_t c_row = nv12 ? 2 * cw : cw;
   YuvPlanes out;
-  out.count = nv12 ? 2 : 3;
-  out.rows[0] = image.height;
-  out.rows[1] = out.rows[2] = ch;
-  out.row_bytes[0] = image.width;
-  out.row_bytes[1] = out.row_bytes[2] = c_row;
-  if (!on_device) return out;
+  if (image.layout == YuvLayout::Yuyv) {
+    if (image.width % 2 != 0) {
+      return refuse(who, "YUYV pairs pixels, so its width must be even");
+    }
+    out.count = 1;
+    out.rows[0] = image.height;
+    out.row_bytes[0] = 2 * std::uint64_t{image.width};
+  } else {
+    const bool nv12 = image.layout == YuvLayout::Nv12;
+    const std::uint64_t cw = (std::uint64_t{image.width} + 1) / 2;
+    const std::uint64_t ch = (std::uint64_t{image.height} + 1) / 2;
+    out.count = nv12 ? 2 : 3;
+    out.rows[0] = image.height;
+    out.rows[1] = out.rows[2] = ch;
+    out.row_bytes[0] = image.width;
+    out.row_bytes[1] = out.row_bytes[2] = nv12 ? 2 * cw : cw;
+  }
+  if (!on_device && !on_host) return out;
 
   for (int p = 0; p < out.count; ++p) {
     if (image.stride[p] < out.row_bytes[p]) {
       return refuse(who, "a colour plane's stride is shorter than its rows");
     }
   }
+  // A host plane's bytes are the caller's to vouch for; only their count
+  // must fit the 64 bits it is reckoned in.
+  const std::uint64_t size = on_device
+                                 ? image.device->size()
+                                 : std::numeric_limits<std::uint64_t>::max();
   for (int p = 0; p < out.count; ++p) {
     if (!plane_fits(image.offset[p], image.stride[p], out.rows[p],
-                    out.row_bytes[p], image.device->size())) {
-      return refuse(who, "a colour plane runs past its buffer");
+                    out.row_bytes[p], size)) {
+      return refuse(who, on_device ? "a colour plane runs past its buffer"
+                                   : "a colour plane runs past 64 bits");
     }
     out.begin[p] = image.offset[p];
     out.end[p] = image.offset[p] + (out.rows[p] - 1) * image.stride[p] +

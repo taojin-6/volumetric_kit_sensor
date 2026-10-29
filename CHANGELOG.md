@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-29
+
+### Added
+
+- **Colour from the host as Y'CbCr planes, and YUYV.** `YuvImage::host`
+  points at a picture's planes on the host, as a camera's SDK hands them
+  over, and `YuvLayout::Yuyv` is a UVC camera's 4:2:2 (Y0 Cb Y1 Cr, even
+  width). `GpuFramePrep` stages host planes beside the depth, as it stages
+  packed words, and converts them on the device; YUYV reads from a buffer
+  too. `RgbdFrame::has_color()` counts host planes. `PictureReadback`
+  refuses YUYV. A planes-in-several-places refusal now reads "one of them"
+  (DECISIONS.md, the 2026-10-29 host-planes entry).
+
 ## [0.1.1] - 2026-10-29
 
 ### Changed
