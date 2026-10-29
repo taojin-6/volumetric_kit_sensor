@@ -296,6 +296,12 @@ entries relevant to your task; later amendments supersede earlier rules.
   rectification as OpenCV's `stereoRectify` computes it, once, then a
   Vulkan pass a view that samples through the colour pass's own code, into
   views CUDA can import. `YuvLayout::Luma` for mono pairs.
+- [**2026-10-29**](#2026-10-29--the-realsense-d400-driver-is-sensor_realsense-the-cameras-own-depth-and-its-colour-cameras-yuyv-on-the-host-librealsense-a-prerequisite-ci-installs-tested-against-rsutilh-with-no-camera) —
+  The RealSense D400 driver is `sensor_realsense` (`RealSenseSensor`): the
+  camera's own depth and its colour camera's YUYV on the host, converted on
+  the device by `GpuFramePrep`; librealsense 2.59.1 a prerequisite that CI
+  installs; tested against librealsense's own `rsutil.h`, with no camera and
+  no virtual one.
 - [**2026-10-29**](#2026-10-29--stereo-depth-on-nvidia-ffsstereo-runs-fast-foundationstereo-on-tensorrt-between-two-cuda-kernels-from-the-rectifiers-views-straight-into-a-vulkan-depth-buffer-and-stereodepthsensor-makes-any-stereo-camera-an-irgbdsensor) —
   Stereo depth on NVIDIA (`sensor_ffs`, `VS_WITH_FFS`): `FfsStereo` runs an
   FFS export on TensorRT, its plan cached by GPU, TensorRT, model and size,
@@ -4253,7 +4259,9 @@ left unchecked, the binding cut a word short or by its lead (the pinhole
 cases; the review found the barrel lens never read that far), the buffers'
 acquires dropped, the depth's or the planes' buffer not taken over, a
 shared buffer taken over once a reference, and references naming two
-writers let through. The Mac is CI's leg.
+writers let through. With main merged in (the stereo tier), 43 passed and
+the 2 JPEG tests skipped of 45, recon's 41 passed again, and the twelve
+planted bugs each failed again. The Mac is CI's leg.
 
 A depth-only frame's prepare on the RTX 4090, Release, median of 500 each,
 host and device depth interleaved: at 960 x 544, 0.054 ms of device time
@@ -4363,6 +4371,82 @@ RealSense pair's luma from the host 0.097 ms (`Luma8` or `Rgba8`), most of
 it the 1.8 MB copy up to the device; YUYV from the host as `Rgba8`
 0.179 ms; on the host 0.04 ms to 0.46 ms a pair, nearly all of it the wait
 for the submit. The Mac is CI's leg.
+
+### 2026-10-29 — The RealSense D400 driver is `sensor_realsense`: the camera's own depth and its colour camera's YUYV on the host, librealsense a prerequisite CI installs, tested against `rsutil.h` with no camera.
+
+**The rule.** `RealSenseSensor` (`realsense/realsense_sensor.hpp`, target
+`sensor_realsense`, `VS_WITH_REALSENSE`) is one RealSense D400 camera as an
+`IRgbdSensor`, free-running, its SDK behind a pointer:
+- Each frame is the camera's Z16 depth, in the left infrared camera and
+  rectified (its factory model a pinhole; a lens on it is refused), and its
+  colour camera's picture as the camera sends it, YUYV on the host
+  (`YuvImage::host`, BT.601 limited range, chroma sited left), which
+  `GpuFramePrep` converts on the device (the host-planes entry above). The
+  frame holds its frameset; nothing is copied or converted on the host.
+- The factory colour lens, inverse Brown-Conrady, is taken as OpenCV's
+  `k1, k2, p1, p2, k3`, and plain Brown-Conrady too; other models with
+  coefficients are refused. The extrinsic is librealsense's, column-major.
+- Timestamps are librealsense's global time, on the host's
+  `system_clock` (`ClockDomain::Host`); a camera without it is refused.
+  A frameset without depth or colour, or whose colour lies more than half
+  a frame from its depth, is counted failed and never queued.
+- The projector is on by default (`Options::emitter`); `color_controls`
+  writes a manual exposure, checked against the camera's ranges before any
+  write and read back.
+- librealsense 2.59.1 or later is a prerequisite, found through its own
+  CMake package (`cmake/vs_realsense.cmake`), never fetched: Homebrew's
+  formula on macOS (the Mac leg checks it), RealSense's apt repository on
+  Ubuntu, which CI's `install-librealsense` action installs at the floor,
+  its signing key checked against a pinned SHA256 first. Both Ubuntu build
+  legs and the macOS leg build it (not the sanitizer or camera-only jobs).
+
+**Why.** The owner's RealSense design (2026-10-29): the camera's own depth
+with the projector on, beside a later stereo path for Fast-FoundationStereo
+from its infrared pair with the projector off; colour converted on the GPU
+only, so the driver hands over the camera's YUYV, not librealsense's RGB
+(a CPU conversion). The D455's colour lens through OpenCV's model projects
+within 0.016 px of librealsense's own over its picture (the difference is
+the tangential term applied after the radial one), so the GPU pass's one
+lens model serves it. As streaming starts the D455 restarts its depth for
+about 1.2 s, and the pipeline matches its last depth frame with colour up to
+1.3 s newer meanwhile (measured on the lab D455), which the half-frame rule
+keeps out of fusion. With a manual colour exposure the colour camera runs
+out of step with the depth: their timestamps sweep the whole half-frame
+window (exposure 100, gain 64: over 10 s), against 0.04 ms under auto
+exposure, so colour may be up to half a frame from its depth.
+
+**Tests, no hardware and no virtual camera** (the owner: librealsense's
+software device would test a fake more than the camera):
+- `sensor_realsense_conversion`: the D455's colour lens projects within
+  0.0158 px of `rs2_project_point_to_pixel` over its picture, plain
+  Brown-Conrady within 0.00014 px; the depth stream is a pinhole and refused
+  with a lens; other lens models with coefficients are refused, named; bad
+  intrinsics are refused; the extrinsic moves points within 1.5e-7 m of
+  `rs2_transform_point_to_point`, and a scaled one is refused; the half-frame
+  rule; a frame points into its view, YUYV coded as librealsense converts
+  it, stamped in nanoseconds, and a view that contradicts its streams is
+  refused; the option checks;
+- `sensor_realsense_queue`: the frame queue's contract, with a producer
+  thread: every frame taken or dropped once, in order;
+- `sensor_realsense_open`: options refused before any camera is looked
+  for, and a serial no camera has refused as `NotFound`;
+- `sensor_realsense_sdk_smoke`: the librealsense that loads is the one
+  configured, and its context opens.
+
+**Validation.** RTX 4090, Ubuntu 26.04, librealsense 2.59.1 from the apt
+repository, Release with warnings as errors, Orbbec, RealSense, FFmpeg and
+CUDA, under the validation layer: 45 tests passed and the 2 JPEG tests
+skipped, as on main, of 47. Checked by hand, not a test: the lab D455 (USB
+3.2, firmware 5.17.0.10), 300 frames through `GpuFramePrep` with the
+projector on and 300 with it off, at 30 fps (33.4 ms median period); 37
+framesets failed in each run's first 1.2 s and none after, none dropped;
+sequence numbers rose by one every frame; a frame reached `poll` 16 ms after
+its timestamp; `poll` took 5 us and `prepare` 0.66 ms on the host and 0.19 ms
+on the device; prepared depth was 84% valid with the projector and 65%
+without, the colour undistorted and true. The hand check found that
+librealsense's context waits forever in its destructor while its
+devices-changed callback holds the device: the driver replaces the callback
+first.
 
 ### 2026-10-29 — Stereo depth on NVIDIA: `FfsStereo` runs Fast-FoundationStereo on TensorRT between two CUDA kernels, from the rectifier's views straight into a Vulkan depth buffer, and `StereoDepthSensor` makes any stereo camera an `IRgbdSensor`.
 

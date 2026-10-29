@@ -32,6 +32,15 @@ on:
         required: false
         type: boolean
         default: false
+      realsense_sdk:
+        description: >-
+          Install the pinned librealsense (Ubuntu: RealSense's apt
+          repository; macOS: the runner's Homebrew formula, checked) and build
+          with VS_WITH_REALSENSE=ON, so this leg compiles the RealSense driver
+          and runs its tests.
+        required: false
+        type: boolean
+        default: false
       ffmpeg:
         description: >-
           Install FFmpeg and build with VS_WITH_FFMPEG=ON, so this leg builds
@@ -145,10 +154,15 @@ jobs:
             # ("Found no drivers!"), and every GPU test would fail.
             pkgs="$pkgs build-essential libxext6 libegl1"
           fi
-          # curl fetches the Orbbec SDK and the CUDA keyring below; a bare
-          # container image lacks it.
-          if [ "${{ inputs.orbbec_sdk }}" = "true" ] || [ "${{ inputs.cuda }}" = "true" ]; then
+          # curl fetches the Orbbec SDK, the CUDA keyring and RealSense's
+          # signing key below; a bare container image lacks it, and gnupg,
+          # which dearmors that key.
+          if [ "${{ inputs.orbbec_sdk }}" = "true" ] || [ "${{ inputs.cuda }}" = "true" ] ||
+             [ "${{ inputs.realsense_sdk }}" = "true" ]; then
             pkgs="$pkgs curl ca-certificates"
+          fi
+          if [ "${{ inputs.realsense_sdk }}" = "true" ]; then
+            pkgs="$pkgs gnupg"
           fi
           # FFmpeg, found through pkg-config (cmake/vs_ffmpeg.cmake). NVDEC
           # needs nothing more: the toolkit mounts libcuda and libnvcuvid, which
@@ -218,6 +232,10 @@ jobs:
         run: |
           pkgs="cmake glm molten-vk vulkan-headers vulkan-loader vulkan-tools"
           pkgs="$pkgs vulkan-validationlayers shaderc spirv-tools"
+          # librealsense for VS_WITH_REALSENSE (cmake/vs_realsense.cmake).
+          if [ "${{ inputs.realsense_sdk }}" = "true" ]; then
+            pkgs="$pkgs librealsense"
+          fi
           echo "formulae=$pkgs" >> "$GITHUB_OUTPUT"
           # Without brew every formula would look missing.
           command -v brew >/dev/null || {
@@ -256,6 +274,12 @@ jobs:
       - name: Install the Orbbec SDK
         if: inputs.orbbec_sdk
         uses: ./.github/actions/install-orbbec-sdk
+
+      # librealsense, on the Ubuntu legs that build VS_WITH_REALSENSE: the
+      # pinned release from RealSense's apt repository (see the action).
+      - name: Install librealsense
+        if: inputs.realsense_sdk && runner.os == 'Linux'
+        uses: ./.github/actions/install-librealsense
 
       # Report the Vulkan device the runner sees (the real GPU in a container,
       # MoltenVK on macOS). On macOS a missing device is a notice, and the Test
@@ -340,6 +364,7 @@ jobs:
             if cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
                 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                 -DVS_WITH_ORBBEC=${{ inputs.orbbec_sdk && 'ON' || 'OFF' }} \
+                -DVS_WITH_REALSENSE=${{ inputs.realsense_sdk && 'ON' || 'OFF' }} \
                 -DVS_WITH_FFMPEG=${{ inputs.ffmpeg && 'ON' || 'OFF' }} \
                 -DVS_WITH_CUDA=${{ inputs.cuda && 'ON' || 'OFF' }} \
                 -DVS_WITH_FFS=${{ inputs.ffs && 'ON' || 'OFF' }}; then

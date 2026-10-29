@@ -86,6 +86,11 @@ if(VS_WITH_ORBBEC)
   add_subdirectory(orbbec)
 endif()
 
+# The RealSense driver; see realsense/CMakeLists.txt.
+if(VS_WITH_REALSENSE)
+  add_subdirectory(realsense)
+endif()
+
 # Stereo depth by Fast-FoundationStereo, on the stereo tier and the video tier's
 # CUDA, NVIDIA only; see ffs/CMakeLists.txt.
 if(VS_WITH_FFS)

@@ -8,8 +8,9 @@
 # the frame contract recon's libraries link; sensor_interface on camera and
 # frame; sensor_prep and then sensor_array on the interface; sensor_stereo on
 # the interface and, privately, the prep; sensor_apple and sensor_video on
-# frame; sensor_orbbec on the interface and the decoders; sensor_ffs on the
-# stereo tier and, privately, the video tier's CUDA.
+# frame; sensor_orbbec on the interface and the decoders; sensor_realsense on
+# the interface; sensor_ffs on the stereo tier and, privately, the video tier's
+# CUDA.
 add_subdirectory(volumetric_kit/sensor/camera)
 set(_vs_tiers sensor_camera)
 if(NOT VS_CAMERA_ONLY)
@@ -28,7 +29,8 @@ if(NOT VS_CAMERA_ONLY)
     sensor_array
     sensor_stereo
     sensor_video_syntax)
-  foreach(_vs_optional sensor_apple sensor_video sensor_orbbec sensor_ffs)
+  foreach(_vs_optional sensor_apple sensor_video sensor_orbbec sensor_realsense
+                       sensor_ffs)
     if(TARGET ${_vs_optional})
       list(APPEND _vs_tiers ${_vs_optional})
     endif()

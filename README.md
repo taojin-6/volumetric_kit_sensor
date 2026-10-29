@@ -5,7 +5,8 @@
 Cameras, capture and the device-frame contract of the `volumetric_kit`
 family: the camera vocabulary and the rig's calibration file, the RGB-D
 sensor interface, GPU frame preparation, the sensor array, the hardware video
-decoders, Apple's pixel-buffer importer, the Orbbec driver and image files.
+decoders, Apple's pixel-buffer importer, the Orbbec and RealSense drivers
+and image files.
 A camera stack is anything that produces `DeviceFrame`s, the posed,
 undistorted RGB-D frames on the device that fusion reads.
 
@@ -42,6 +43,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, CUDA interop | frame |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, every Apple build | frame |
 | `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video |
+| `sensor_realsense` | `realsense/` | `RealSenseSensor` | interface |
 | `sensor_ffs` | `ffs/` | `FfsStereo` (Fast-FoundationStereo on TensorRT), `StereoDepthSensor` (any stereo camera as an `IRgbdSensor`); NVIDIA only | stereo; video, privately |
 | `sensor_image_io` | `io/` | image files | core base |
 
@@ -64,6 +66,7 @@ ctest --test-dir "$sensor_root/build" --output-on-failure
 | `VS_WARNINGS_AS_ERRORS` | top level | `-Werror` on first-party code |
 | `VS_CAMERA_ONLY` | OFF | `sensor_camera` alone, with no Vulkan; refuses the drivers |
 | `VS_WITH_ORBBEC` | OFF | the Orbbec driver |
+| `VS_WITH_REALSENSE` | OFF | the RealSense driver |
 | `VS_WITH_FFMPEG` | OFF | the video decoders off Apple; needs `VS_WITH_CUDA`, refused on Apple |
 | `VS_WITH_CUDA` | OFF | NVIDIA's hardware for the decoders |
 | `VS_WITH_FFS` | OFF | `sensor_ffs`: stereo depth by FFS; needs `VS_WITH_CUDA` and TensorRT ≥ 11 |
@@ -137,6 +140,25 @@ CUDA). That builds `volumetric_kit::sensor_orbbec` -- `OrbbecSensor`, one
 camera as an `IRgbdSensor` (`orbbec/orbbec_sensor.hpp`), which a
 `SensorArray` reads as a synced rig. recon's `fuse_orbbec` is the live
 example.
+
+## RealSense driver
+
+The RealSense (D400, the D455) driver is off by default and needs
+[librealsense](https://github.com/realsenseai/librealsense) ≥ 2.59.1
+installed from the platform's packages, which carry its CMake package:
+
+```sh
+brew install librealsense                     # macOS
+# Ubuntu 24.04 / 26.04: RealSense's apt repository, librealsense2-dev
+#   (librealsense's doc/distribution_linux.md; CI's install-librealsense action)
+cmake -S "$sensor_root" -B "$sensor_root/build" \
+    -DCMAKE_BUILD_TYPE=Release -DVS_WITH_REALSENSE=ON
+```
+
+That builds `volumetric_kit::sensor_realsense` -- `RealSenseSensor`, one
+camera as an `IRgbdSensor` (`realsense/realsense_sensor.hpp`): the camera's
+own depth and its colour camera's YUYV, which `GpuFramePrep` converts on the
+device.
 
 ## Stereo pairs
 
@@ -226,7 +248,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.5.0), carried by the umbrella as
+The version is `project()`'s (0.6.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

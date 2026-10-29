@@ -477,6 +477,53 @@ vs_target_warnings(sensor_orbbec_decode_worker_test)
 add_test(NAME sensor_orbbec_decode_worker
          COMMAND sensor_orbbec_decode_worker_test)
 
+# The RealSense driver (VS_WITH_REALSENSE only), with no camera: the SDK that
+# loads is the one configured; the driver's arithmetic against librealsense's
+# own rsutil.h, its frame queue, and the options open refuses. conversion.cpp's
+# functions are not exported, so the tests that need them compile it themselves,
+# as the Orbbec tests do.
+if(VS_WITH_REALSENSE)
+  set(_vs_realsense_src
+      ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/realsense)
+
+  add_executable(sensor_realsense_sdk_smoke_test realsense_sdk_smoke_test.cpp)
+  vs_link_realsense_sdk(sensor_realsense_sdk_smoke_test)
+  target_compile_definitions(
+    sensor_realsense_sdk_smoke_test
+    PRIVATE VS_REALSENSE_SDK_VERSION_MAJOR=${VS_REALSENSE_SDK_VERSION_MAJOR}
+            VS_REALSENSE_SDK_VERSION_MINOR=${VS_REALSENSE_SDK_VERSION_MINOR}
+            VS_REALSENSE_SDK_VERSION_PATCH=${VS_REALSENSE_SDK_VERSION_PATCH})
+  vs_target_warnings(sensor_realsense_sdk_smoke_test)
+  add_test(NAME sensor_realsense_sdk_smoke
+           COMMAND sensor_realsense_sdk_smoke_test)
+
+  add_executable(
+    sensor_realsense_conversion_test sensor_realsense_conversion_test.cpp
+                                     ${_vs_realsense_src}/conversion.cpp)
+  target_link_libraries(sensor_realsense_conversion_test
+                        PRIVATE volumetric_kit::sensor_realsense)
+  vs_link_realsense_sdk(sensor_realsense_conversion_test)
+  target_include_directories(sensor_realsense_conversion_test
+                             PRIVATE ${_vs_realsense_src})
+  vs_target_warnings(sensor_realsense_conversion_test)
+  add_test(NAME sensor_realsense_conversion
+           COMMAND sensor_realsense_conversion_test)
+
+  add_executable(sensor_realsense_queue_test sensor_realsense_queue_test.cpp)
+  target_link_libraries(sensor_realsense_queue_test
+                        PRIVATE volumetric_kit::sensor_interface)
+  target_include_directories(sensor_realsense_queue_test
+                             PRIVATE ${_vs_realsense_src})
+  vs_target_warnings(sensor_realsense_queue_test)
+  add_test(NAME sensor_realsense_queue COMMAND sensor_realsense_queue_test)
+
+  add_executable(sensor_realsense_open_test sensor_realsense_open_test.cpp)
+  target_link_libraries(sensor_realsense_open_test
+                        PRIVATE volumetric_kit::sensor_realsense)
+  vs_target_warnings(sensor_realsense_open_test)
+  add_test(NAME sensor_realsense_open COMMAND sensor_realsense_open_test)
+endif()
+
 # The Orbbec SDK prerequisite (VS_WITH_ORBBEC only): the copy the build found is
 # the one that loads -- runtime version == configured version, since the SDK is
 # linked in place from an install outside the repo. It opens no SDK context.

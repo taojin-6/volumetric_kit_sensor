@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2026-10-29
+## [0.6.0] - 2026-10-29
 
 ### Added
 
@@ -27,7 +27,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `vs_target_warnings` gives its flags to C++ and Objective-C++ only, and
   CUDA sources nvcc's equivalents.
 
-## [0.4.0] - 2026-10-29
+## [0.5.0] - 2026-10-29
 
 ### Added
 
@@ -41,6 +41,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   depths and planes share is taken over once, and references to it naming
   different writers are refused (DECISIONS.md, the 2026-10-29 device-depth
   entry).
+
+## [0.4.0] - 2026-10-29
+
+### Added
+
+- **The RealSense driver.** `RealSenseSensor` (`sensor_realsense`,
+  `VS_WITH_REALSENSE`), one RealSense D400 camera as an `IRgbdSensor`: the
+  camera's own depth and its colour camera's YUYV on the host, which
+  `GpuFramePrep` converts on the device, with each camera's factory model
+  and the factory extrinsic, on the host's clock. librealsense 2.59.1 or
+  later is a prerequisite, found through its CMake package; CI installs it
+  (DECISIONS.md, the 2026-10-29 RealSense entry).
 
 ## [0.3.0] - 2026-10-29
 
