@@ -131,14 +131,16 @@ entries relevant to your task; later amendments supersede earlier rules.
   `VR_WITH_FFMPEG` there is a configure error.
 - [**2026-10-06**](#2026-10-06--gpuframeprep-takes-colour-on-the-device-only-and-a-sets-depth-is-staged-on-one-thread-amends-the-2026-09-28-decoded-frame-and-2026-10-06-one-batch-entries) —
   `GpuFramePrep` takes colour on the device only, and a set's depth is
-  staged on one thread. (Packed host colour came back the next day.)
+  staged on one thread. (Packed host colour came back the next day, and
+  host Y'CbCr planes on 2026-10-29.)
 - [**2026-10-06**](#2026-10-06--a-sensor-array-groups-its-frames-by-trigger-only-syncmode-and-sequence-grouping-go-amends-the-2026-10-06-sensorarray-entry) —
   A sensor array groups its frames by trigger only: `SyncMode` and sequence
   grouping go.
 - [**2026-10-07**](#2026-10-07--gpuframeprep-stages-a-host-frames-packed-colour-beside-its-depth-amends-the-2026-10-06-device-only-gpuframeprep-entry) —
   `GpuFramePrep` stages a host frame's packed colour beside its depth
   (`RgbdFrame::color_packed`): one copy in the pass's own batch, no host
-  conversion, no threads.
+  conversion, no threads. *Amended 2026-10-29:* Y'CbCr planes on the host
+  are staged the same way.
 - [**2026-10-07**](#2026-10-07--the-replica-source-is-an-irgbdsensor-and-the-examples-fuse-what-gpuframeprep-prepares-icameracapture-capturedframe-and-ownedframe-go-and-io-loads-depth-as-stored-amends-the-2026-08-02-sensor-tier-2026-09-14-examples-and-2026-10-06-irgbdsensor-entries) —
   The Replica source is an `IRgbdSensor` and the examples fuse what
   `GpuFramePrep` prepares: `ICameraCapture`, `CapturedFrame` and
@@ -270,6 +272,11 @@ entries relevant to your task; later amendments supersede earlier rules.
   pixel otherwise: a slope no longer comes out in half-pixel terraces, which
   fusion shaded as bands on floors and walls, and an edge or a hole is never
   blended. No option; about 1-2 µs of device time a frame.
+- [**2026-10-29**](#2026-10-29--gpuframeprep-takes-ycbcr-planes-from-the-host-too-a-cameras-yuyv-among-them-staged-beside-the-depth-and-converted-on-the-device-amends-the-2026-10-06-device-only-gpuframeprep-and-2026-10-07-packed-colour-entries) —
+  `GpuFramePrep` takes Y'CbCr planes from the host too (`YuvImage::host`),
+  and YUYV (`YuvLayout::Yuyv`, 4:2:2) among the layouts: a UVC camera's
+  colour as its SDK hands it over, staged beside the depth as packed words
+  are and converted on the device. `PictureReadback` refuses YUYV.
 
 ## Decision record
 
@@ -2538,6 +2545,8 @@ H.265 tests on NVDEC, the first run of that path. Not run on a camera.
 *Amended 2026-10-07 (below):* host colour is back, as packed R'G'B' words
 (`RgbdFrame::color_packed`) staged beside the depth on the calling thread
 and copied up in the pass's own batch; Y'CbCr planes stay device-only.
+*Amended 2026-10-29 (the host-planes entry):* Y'CbCr planes come from the
+host too, `YuvImage::host`, staged as the packed words are.
 
 **The rule.** `GpuFramePrep` takes a frame's colour on the device only: I420
 or NV12 planes in a buffer (`YuvImage::device`), or NV12's planes as images
@@ -2600,6 +2609,9 @@ sensors by trigger, one set a poll, the set missing a sensor waited for and
 then handed out without it.
 
 ### 2026-10-07 — `GpuFramePrep` stages a host frame's packed colour beside its depth (amends the 2026-10-06 device-only `GpuFramePrep` entry).
+
+*Amended 2026-10-29 (the host-planes entry):* Y'CbCr planes on the host
+(`YuvImage::host`) are staged the same way; `ColorParams` is 116 bytes.
 
 **The rule.** A frame may carry its colour on the host as packed R'G'B'
 words, `RgbdFrame::color_packed`: the colour camera's size, row-major,
@@ -4035,3 +4047,61 @@ in the study, and lit renders of set 299 lose the floor's bands and the wall's
 facets. Checked by hand, not a test: recon main's `fuse_orbbec`, built on
 this package, fused 100 live frames of the rig's 4 Femtos (25 sets) at
 88.7 fps, frame prep 0.40 ms of device time a set.
+
+### 2026-10-29 — `GpuFramePrep` takes Y'CbCr planes from the host too, a camera's YUYV among them: staged beside the depth and converted on the device (amends the 2026-10-06 device-only `GpuFramePrep` and 2026-10-07 packed-colour entries).
+
+**The rule.** `YuvImage` gains `host`, its planes on the host at `offset` and
+`stride` from that pointer, one of `device`, `host` and `image`; and
+`YuvLayout::Yuyv`, 4:2:2 in one plane, Y0 Cb Y1 Cr for each two pixels, of
+even width, chroma sited by `chroma_location` across and on every row. A
+frame holds host planes through `RgbdFrame::pixels`, and `has_color()`
+counts them. `GpuFramePrep` copies the planes' bytes, the first plane's
+first to the last one's last, into its slot after the depth, as it copies
+packed words, and its buffer entry reads them there; nothing converts on
+the host. YUYV reads through the same entry from a buffer too: luma every
+second byte (`y_step`), Cb and Cr every fourth, and `chroma_full_rows`
+keeps chroma on every row (`ColorParams` is 116 bytes). As images, YUYV is
+refused, as I420 is. `PictureReadback` refuses YUYV, whose luma is no
+plane a view can hand out, and passes over host pictures as before.
+
+**Why.** The owner's RealSense design (2026-10-29): colour converted on the
+GPU only, never on the host. A D400's colour camera sends YUYV alone;
+librealsense's RGB8 and RGBA8 are its own conversions on the CPU. So the
+driver hands over the camera's bytes as they are, half RGBA's upload, and
+the pass converts them in the step that undistorts them. The 2026-10-06
+entry dropped host planes because nothing made them; a UVC camera does.
+Any layout may come from the host: the staging is the same code.
+
+**Tests.** `sensor_gpu_frame_prep`:
+- YUYV from the host, rows padded, from byte 3 of its pointer, its buffer
+  ending at its last byte (an odd count), through the barrel test lens,
+  chroma sited left and centred, matches the host reference of its 4:2:2
+  sampling within a code at every pixel, no coverage byte off; the same words
+  in a device buffer give the same words, bit for bit; and recorded from a
+  copy freed before the batch runs, the frame comes out the same;
+- flat colours through a pinhole come out as librealsense's integer YUY2
+  conversion makes them (BT.601, limited range) within 2 codes, most of them
+  exactly;
+- I420 and NV12 planes from the host give what the same planes in a buffer
+  give, bit for bit;
+- refused: planes in more than one of a buffer, the host and images; an
+  unknown layout; YUYV of odd width, as images or with rows shorter than its
+  pixels; host planes spanning to the last byte 64 bits count, whose span a
+  word's rounding would wrap.
+
+The pass's float matrix is within 1 code of librealsense's integers at every
+one of the 11,137,500 legal Y'CbCr triples, 85.9% of them exactly (checked
+offline, not a test).
+
+`sensor_picture_readback` refuses a YUYV picture and a host one.
+
+**Validation.** RTX 4090, Ubuntu 26.04, Release with warnings as errors,
+Orbbec, FFmpeg and CUDA, under the validation layer: 41 tests passed and the
+2 JPEG tests skipped, as on main, of 43. YUYV through the lens is within a
+code of the reference at every pixel; of 19,200 flat-colour pixels, 18,720
+are librealsense's exactly and the rest within 1. recon main (`b7ef45da`)
+built on this checkout passes its 40 tests. Six planted bugs each failed
+`sensor_gpu_frame_prep`: luma read at every byte, chroma halved down the
+rows, host planes copied from the pointer rather than the first plane, Cr
+read beside Cb, `has_color()` blind to host planes, and YUYV of odd width
+accepted. The Mac is CI's leg.

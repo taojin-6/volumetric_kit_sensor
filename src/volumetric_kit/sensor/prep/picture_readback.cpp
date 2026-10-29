@@ -57,6 +57,10 @@ core::Result<Plan> plan(const YuvImage& picture, PictureReadback::Planes planes,
   if (picture.width == 0 || picture.height == 0) {
     return refuse("the picture is empty");
   }
+  // A view hands out luma as a plane of its own, which YUYV's is not.
+  if (picture.layout == YuvLayout::Yuyv) {
+    return refuse("reads 4:2:0 pictures, and this one is YUYV");
+  }
   if (in_buffer && !as_images) {
     if (!picture.device->valid()) {
       return refuse("the picture's buffer is empty");

@@ -11,7 +11,8 @@
 
 namespace volumetric_kit::sensor {
 
-/// @brief Where each 4:2:0 chroma sample sits within its 2x2 luma group.
+/// @brief Where each chroma sample sits within its luma group: 2x2 for 4:2:0;
+///        4:2:2 has chroma on every row, so only the horizontal half counts.
 enum class ChromaLocation : std::uint8_t {
   Left,        ///< Even luma column, halfway between rows (HEVC's default).
   Center,      ///< Halfway between both columns and rows (JPEG).

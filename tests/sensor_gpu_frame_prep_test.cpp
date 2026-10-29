@@ -19,7 +19,11 @@
 //     in, and through a lens as the reference samples them;
 //   - NV12's planes as images larger than the picture, sampled in place in
 //     either layout the pass takes, taken over from outside Vulkan or not,
-//     give the words the same samples in a buffer give, bit for bit;
+//     and I420 and NV12 planes on the host, give the words the same samples
+//     in a buffer give, bit for bit;
+//   - a camera's YUYV on the host matches the host reference of its 4:2:2
+//     sampling through a lens, its words in a buffer give the same, and flat
+//     colours come out as librealsense's own YUY2 conversion makes them;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its depth and colour outputs are shared with the queue families its
@@ -240,6 +244,19 @@ std::uint32_t code(float x) {
   return static_cast<std::uint32_t>(std::clamp(x, 0.0f, 1.0f) * 255.0f + 0.5f);
 }
 
+// Sampled Y'CbCr through the pass's inverse matrix, each channel rounded to a
+// code, with full coverage.
+std::uint32_t reference_word(float yv, float cbv, float crv, float kr, float kb,
+                             bool full) {
+  const float luma = full ? yv / 255.0f : (yv - 16.0f) / 219.0f;
+  const float pb = (cbv - 128.0f) / (full ? 255.0f : 224.0f);
+  const float pr = (crv - 128.0f) / (full ? 255.0f : 224.0f);
+  const float r = luma + 2.0f * (1.0f - kr) * pr;
+  const float b = luma + 2.0f * (1.0f - kb) * pb;
+  const float g = (luma - kr * r - kb * b) / (1.0f - kr - kb);
+  return code(r) | (code(g) << 8) | (code(b) << 16) | 0xFF000000u;
+}
+
 // The pass's colour sampling, on the host: bilinear luma and chroma at their
 // sitings, the inverse matrix, round to a code; coverage 0xFF in the high
 // byte, and a 0 word where the lens maps outside the picture.
@@ -253,13 +270,7 @@ std::uint32_t reference_color(const Planes& p, const camera::CameraModel& c,
   const float yv = bilinear(p.y, p.w, p.h, s.x, s.y);
   const float cbv = bilinear(p.cb, p.cw, p.ch, s.x * 0.5f, (s.y - 0.5f) * 0.5f);
   const float crv = bilinear(p.cr, p.cw, p.ch, s.x * 0.5f, (s.y - 0.5f) * 0.5f);
-  const float luma = full ? yv / 255.0f : (yv - 16.0f) / 219.0f;
-  const float pb = (cbv - 128.0f) / (full ? 255.0f : 224.0f);
-  const float pr = (crv - 128.0f) / (full ? 255.0f : 224.0f);
-  const float r = luma + 2.0f * (1.0f - kr) * pr;
-  const float b = luma + 2.0f * (1.0f - kb) * pb;
-  const float g = (luma - kr * r - kb * b) / (1.0f - kr - kb);
-  return code(r) | (code(g) << 8) | (code(b) << 16) | 0xFF000000u;
+  return reference_word(yv, cbv, crv, kr, kb, full);
 }
 
 int channel_diff(std::uint32_t a, std::uint32_t b) {
@@ -1134,6 +1145,27 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   dev_i420.stride[1] = c_i420;
   dev_i420.stride[2] = cr_i420;
   CHECK(same(dev_i420));
+  // The same planes on the host, as a camera's SDK hands them over: staged
+  // beside the depth, from the first plane's first byte, and read alike.
+  for (const sensor::YuvImage& form : {dev, dev_i420}) {
+    sensor::YuvImage host = form;
+    host.device = nullptr;
+    host.queue_family = sensor::kQueueFamilyIgnored;
+    host.host = blob.data();
+    CHECK(same(host));
+    // Beside planes in a buffer, or images, it is refused.
+    host.device = planes;
+    CHECK(refused(host, "one of them"));
+  }
+  // Host planes from byte 0 to the last byte 64 bits count, whose span a
+  // word's rounding would wrap to nothing, are refused before any copy.
+  sensor::YuvImage far = dev_i420;
+  far.device = nullptr;
+  far.host = blob.data();
+  far.offset[0] = 0;
+  far.offset[2] = std::numeric_limits<std::uint64_t>::max() -
+                  ((std::uint64_t{p.ch} - 1) * cr_i420 + p.cw);
+  CHECK(refused(far, "more than 4 GiB"));
 
   // The kernel reads whole words: an NV12 picture whose chroma ends two bytes
   // into its buffer's last word is refused while that word runs past the
@@ -1201,7 +1233,10 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   // for its usage, its missing view, its layout or its shape.
   sensor::YuvImage bad_images = images;
   bad_images.device = planes;
-  CHECK(refused(bad_images, "not both"));
+  CHECK(refused(bad_images, "one of them"));
+  bad_images = images;
+  bad_images.host = blob.data();
+  CHECK(refused(bad_images, "one of them"));
   bad_images = images;
   bad_images.layout = sensor::YuvLayout::I420;
   CHECK(refused(bad_images, "NV12's two"));
@@ -1298,6 +1333,9 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   bad.stride[0] = w - 1;
   CHECK(refused(bad, "stride is shorter"));
   bad = dev;
+  bad.layout = static_cast<sensor::YuvLayout>(3);
+  CHECK(refused(bad, "unknown colour layout"));
+  bad = dev;
   bad.device = std::make_shared<const vkc::Buffer>();
   CHECK(refused(bad, "is empty"));
   vkc::BufferDesc desc;
@@ -1323,6 +1361,233 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
       "  layouts: I420 and NV12 in a buffer and NV12 images agree, from byte "
       "%llu of their buffer\n",
       static_cast<unsigned long long>(nv12_y));
+  return 0;
+}
+
+// librealsense's YUY2 to RGB8 (BT.601, limited range, in integers), what its
+// RGB8 stream would have been; the pass's float conversion is within 1 code
+// of it over the whole legal range.
+std::uint32_t librealsense_rgb(int y, int u, int v) {
+  const int c = y - 16, d = u - 128, e = v - 128;
+  const auto clamp = [](int x) {
+    return static_cast<std::uint32_t>(std::clamp(x, 0, 255));
+  };
+  return clamp((298 * c + 409 * e + 128) >> 8) |
+         (clamp((298 * c - 100 * d - 208 * e + 128) >> 8) << 8) |
+         (clamp((298 * c + 516 * d + 128) >> 8) << 16) | 0xFF000000u;
+}
+
+// A camera's YUYV on the host, as librealsense hands a D400's colour over:
+//   - through a lens, luma at every pixel and the 4:2:2 chroma, on every row
+//     and sited left or centred across, match the host reference of that
+//     sampling, rows padded, the picture at an odd offset from its pointer
+//     and its buffer ending at its last byte, so a copy past it shows under
+//     the sanitizers;
+//   - its words in a device buffer give the same, bit for bit;
+//   - its bytes need last only until record returns: freed before the batch
+//     runs, the frame comes out the same;
+//   - flat colours through a pinhole come out as librealsense's own YUY2
+//     conversion makes them, within the 1 code its integers round to plus
+//     the device's float rounding;
+//   - YUYV of odd width, as images, or with rows shorter than its pixels is
+//     refused.
+int test_yuyv(sensor::GpuFramePrep& prep) {
+  const auto invalid = vkc::Status::Code::InvalidArgument;
+  const std::uint32_t w = kWidth, h = kHeight, cw = kWidth / 2;
+  std::vector<std::uint8_t> y(std::size_t{w} * h), cb(std::size_t{cw} * h),
+      cr(std::size_t{cw} * h);
+  for (std::uint32_t r = 0; r < h; ++r) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      y[std::size_t{r} * w + x] =
+          static_cast<std::uint8_t>(128 + 100 * std::sin(0.05 * x + 0.03 * r));
+    }
+    for (std::uint32_t x = 0; x < cw; ++x) {
+      cb[std::size_t{r} * cw + x] =
+          static_cast<std::uint8_t>(128 + 60 * std::cos(0.07 * x + 0.02 * r));
+      cr[std::size_t{r} * cw + x] =
+          static_cast<std::uint8_t>(128 + 60 * std::sin(0.09 * r + 0.01 * x));
+    }
+  }
+  // Y0 Cb Y1 Cr, rows 6 bytes longer than the picture's, junk between them,
+  // from byte 3 to the last row's last pixel, an odd count of bytes.
+  const std::size_t lead = 3, stride = 2 * std::size_t{w} + 6;
+  std::vector<std::uint8_t> bytes(lead + stride * (h - 1) + 2 * std::size_t{w},
+                                  0xCD);
+  CHECK(bytes.size() % 4 != 0);
+  for (std::uint32_t r = 0; r < h; ++r) {
+    for (std::uint32_t i = 0; i < cw; ++i) {
+      std::uint8_t* at = &bytes[lead + r * stride + 4 * std::size_t{i}];
+      at[0] = y[std::size_t{r} * w + 2 * i];
+      at[1] = cb[std::size_t{r} * cw + i];
+      at[2] = y[std::size_t{r} * w + 2 * i + 1];
+      at[3] = cr[std::size_t{r} * cw + i];
+    }
+  }
+  sensor::YuvImage yuyv;
+  yuyv.layout = sensor::YuvLayout::Yuyv;
+  yuyv.host = bytes.data();
+  yuyv.offset[0] = lead;
+  yuyv.stride[0] = stride;
+  yuyv.width = w;
+  yuyv.height = h;
+  yuyv.kr = 0.299f;
+  yuyv.kb = 0.114f;
+  yuyv.full_range = false;
+
+  camera::CameraModel cam = lensed();
+  cam.size = {w, h};
+  std::vector<std::uint16_t> raw(std::size_t{w} * h, 1500);
+  sensor::RgbdFrame f = frame_of(raw, cam);
+  f.color_camera = cam;
+  std::vector<std::uint32_t> got;  // sited left, as the D400's is
+  for (const auto location :
+       {sensor::ChromaLocation::Center, sensor::ChromaLocation::Left}) {
+    f.color = yuyv;
+    f.color.chroma_location = location;
+    CHECK(f.has_color());
+    auto out = prep.prepare(f);
+    if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+    CHECK(out.ok());
+    got = color_of(out.value());
+    CHECK(got.size() == raw.size());
+    // Chroma's first sample from luma's, across; on every row, down.
+    const float across = sensor::chroma_offset(location)[0];
+    int worst = 0, coverage_off = 0, inside = 0;
+    for (std::uint32_t v = 0; v < h; ++v) {
+      for (std::uint32_t u = 0; u < w; ++u) {
+        const sensor::Vec2f s =
+            source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
+        std::uint32_t ref = 0;
+        if (s.x >= -0.5f && s.y >= -0.5f && s.x <= w - 0.5f &&
+            s.y <= h - 0.5f) {
+          const float cx = (s.x - across) * 0.5f;
+          ref = reference_word(
+              bilinear(y, w, h, s.x, s.y), bilinear(cb, cw, h, cx, s.y),
+              bilinear(cr, cw, h, cx, s.y), 0.299f, 0.114f, false);
+          ++inside;
+        }
+        const std::uint32_t c = got[std::size_t{v} * w + u];
+        if ((c >> 24) != (ref >> 24)) ++coverage_off;
+        worst = std::max(worst, channel_diff(c, ref));
+      }
+    }
+    std::printf(
+        "  yuyv through a lens, chroma %s: %d inside, worst %d, %d coverage "
+        "off\n",
+        location == sensor::ChromaLocation::Left ? "left" : "centred", inside,
+        worst, coverage_off);
+    CHECK(inside > static_cast<int>(w * h / 2));
+    CHECK(worst <= 1);
+    CHECK(coverage_off == 0);
+  }
+
+  // The same words in a device buffer, as a capture could leave them.
+  std::vector<std::uint8_t> words(bytes);
+  words.resize((words.size() + 3) & ~std::size_t{3}, 0xCD);
+  sensor::YuvImage dev = yuyv;
+  dev.host = nullptr;
+  dev.device = on_device(words);
+  CHECK(dev.device != nullptr);
+  f.color = dev;
+  auto from_device = prep.prepare(f);
+  CHECK(from_device.ok() && color_of(from_device.value()) == got);
+
+  // Recorded from a copy of the bytes, which goes before the batch runs.
+  {
+    auto copy = std::make_unique<std::vector<std::uint8_t>>(bytes);
+    f.color = yuyv;
+    f.color.host = copy->data();
+    vkc::CommandBatch batch(*g_device, *g_allocator);
+    auto recorded = prep.record(batch, f);
+    CHECK(recorded.ok() && recorded->has_color());
+    f.color = yuyv;
+    copy.reset();
+    std::vector<std::uint32_t> color(raw.size());
+    CHECK(batch
+              .readback(*recorded->color, 0,
+                        color.size() * sizeof(std::uint32_t), color.data())
+              .ok());
+    CHECK(batch.submit().ok());
+    CHECK(color == got);
+  }
+
+  // Flat colours, one per 8 x 8 block, through a pinhole: every pixel of a
+  // block's inner 4 x 4 samples its own colour alone.
+  const int ys[] = {16, 60, 128, 200, 235};
+  const int cs[][2] = {{128, 128}, {16, 128}, {240, 128}, {128, 16},
+                       {128, 240}, {54, 34},  {90, 200},  {200, 60}};
+  camera::CameraModel flat_cam = pinhole();
+  const std::uint32_t blocks_x = kWidth / 8;
+  std::vector<std::uint8_t> flat(stride * h, 0xCD);
+  std::vector<std::uint32_t> want_rs;
+  for (std::uint32_t b = 0; b < (kWidth / 8) * (kHeight / 8); ++b) {
+    const int yv = ys[b % 5];
+    const int u = cs[(b / 5) % 8][0], v = cs[(b / 5) % 8][1];
+    want_rs.push_back(librealsense_rgb(yv, u, v));
+    const std::uint32_t bx = b % blocks_x, by = b / blocks_x;
+    for (std::uint32_t r = by * 8; r < by * 8 + 8; ++r) {
+      for (std::uint32_t i = bx * 4; i < bx * 4 + 4; ++i) {
+        std::uint8_t* at = &flat[r * stride + 4 * std::size_t{i}];
+        at[0] = at[2] = static_cast<std::uint8_t>(yv);
+        at[1] = static_cast<std::uint8_t>(u);
+        at[3] = static_cast<std::uint8_t>(v);
+      }
+    }
+  }
+  sensor::RgbdFrame g = frame_of(raw, flat_cam);
+  g.color = yuyv;
+  g.color.host = flat.data();
+  g.color.offset[0] = 0;
+  g.color_camera = flat_cam;
+  auto flat_out = prep.prepare(g);
+  CHECK(flat_out.ok());
+  const std::vector<std::uint32_t> flat_got = color_of(flat_out.value());
+  CHECK(flat_got.size() == raw.size());
+  int rs_worst = 0, rs_exact = 0, rs_count = 0;
+  for (std::uint32_t b = 0; b < want_rs.size(); ++b) {
+    const std::uint32_t bx = b % blocks_x, by = b / blocks_x;
+    for (std::uint32_t r = by * 8 + 2; r < by * 8 + 6; ++r) {
+      for (std::uint32_t x = bx * 8 + 2; x < bx * 8 + 6; ++x) {
+        const int d =
+            channel_diff(flat_got[std::size_t{r} * kWidth + x], want_rs[b]);
+        rs_worst = std::max(rs_worst, d);
+        rs_exact += d == 0 ? 1 : 0;
+        ++rs_count;
+      }
+    }
+  }
+  std::printf(
+      "  yuyv flat colours against librealsense's YUY2: %d of %d exact, "
+      "worst %d\n",
+      rs_exact, rs_count, rs_worst);
+  CHECK(rs_worst <= 2);
+  CHECK(rs_exact > rs_count / 2);
+
+  const auto refused = [&](const sensor::YuvImage& image, const char* why) {
+    f.color = image;
+    const vkc::Status status = prep.prepare(f).status();
+    if (status.domain() != invalid ||
+        status.message().find(why) == std::string::npos) {
+      std::fprintf(stderr, "%s\n", status.message().c_str());
+      return false;
+    }
+    return true;
+  };
+  sensor::YuvImage bad = yuyv;
+  bad.width = w - 1;
+  f.color_camera.size.width = w - 1;
+  CHECK(refused(bad, "width must be even"));
+  f.color_camera = cam;
+  bad = yuyv;
+  bad.stride[0] = 2 * std::size_t{w} - 1;
+  CHECK(refused(bad, "stride is shorter"));
+  bad = yuyv;
+  bad.host = nullptr;
+  const auto luma =
+      image_of(VK_FORMAT_R8_UNORM, 1, w, h, y.data(), w, h, kSampled);
+  CHECK(luma != nullptr);
+  bad.image[0] = bad.image[1] = luma;
+  CHECK(refused(bad, "NV12's two"));
   return 0;
 }
 
@@ -2250,6 +2515,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
        {sensor::ChromaLocation::Left, sensor::ChromaLocation::Center}) {
     if (test_layouts(prep.value(), location) != 0) return 1;
   }
+  if (test_yuyv(prep.value()) != 0) return 1;
   if (test_coverage(prep.value()) != 0) return 1;
   if (test_poses(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;

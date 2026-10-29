@@ -4,14 +4,14 @@
 #pragma once
 
 /// @file yuv_image.hpp
-/// @brief A Y'CbCr picture on the device and how it is coded: what a decoder
-///        or a platform's capture hands out, and what a frame's colour is.
+/// @brief A Y'CbCr picture and how it is coded: what a decoder, a platform's
+///        capture or a camera's SDK hands out, and what a frame's colour is.
 ///
-/// The one description of a device picture: a decoder's picture carries it
-/// (`DecodedPicture::yuv`), and a frame takes it as its colour
-/// (`RgbdFrame::color`) as it is. It names no camera and reaches no Vulkan,
-/// so the decoders and the Apple importer describe their pictures with it
-/// without linking the camera tier.
+/// The one description of a picture: a decoder's picture carries it
+/// (`DecodedPicture::yuv`), a driver points it at its SDK's bytes, and a frame
+/// takes it as its colour (`RgbdFrame::color`) as it is. It names no camera
+/// and reaches no Vulkan, so the decoders and the Apple importer describe
+/// their pictures with it without linking the camera tier.
 
 #include <cstddef>
 #include <cstdint>
@@ -24,8 +24,11 @@ namespace volumetric_kit::sensor {
 
 /// @brief How a picture's chroma is laid out.
 enum class YuvLayout : std::uint8_t {
-  I420,  ///< Cb and Cr each in a plane of its own.
-  Nv12,  ///< Cb and Cr interleaved in one plane, Cb first.
+  I420,  ///< 4:2:0; Cb and Cr each in a plane of its own.
+  Nv12,  ///< 4:2:0; Cb and Cr interleaved in one plane, Cb first.
+  /// 4:2:2 in one plane, as a UVC camera sends it: Y0 Cb Y1 Cr for each two
+  /// pixels, so the width is even.
+  Yuyv,
 };
 
 /// @brief @ref YuvImage::queue_family for device planes that need no
@@ -71,16 +74,18 @@ constexpr YcbcrWeights ycbcr_weights(VideoColorMatrix matrix) noexcept {
   return {0.2126f, 0.0722f};
 }
 
-/// @brief An 8-bit Y'CbCr 4:2:0 picture on the device, as a hardware decoder
-///        or a platform's capture left it, and the matrix and range it was
-///        coded with.
+/// @brief An 8-bit Y'CbCr picture, 4:2:0 or 4:2:2, on the device, as a
+///        hardware decoder or a platform's capture left it, or on the host, as
+///        a camera's SDK hands it over, and the matrix and range it was coded
+///        with.
 ///
 /// Chroma's position is given by @ref YuvImage::chroma_location, defaulting to
-/// H.265's left alignment. JPEG uses centred chroma. The planes are Y,
-/// then Cb and Cr at half size (rounded up) for I420, or Y then CbCr for
-/// NV12, whose chroma rows hold both samples of each pair. They are ranges of
-/// @ref device that do not overlap, or the @ref image planes; one or the
-/// other.
+/// H.265's left alignment. JPEG uses centred chroma; YUYV's 4:2:2 chroma has
+/// every row, so only its horizontal siting counts. The planes are Y, then Cb
+/// and Cr at half size (rounded up) for I420, or Y then CbCr for NV12, whose
+/// chroma rows hold both samples of each pair, or YUYV's one plane. They are
+/// ranges of @ref device or of @ref host that do not overlap, or the
+/// @ref image planes; one of the three.
 ///
 /// @code
 /// YuvImage image;  // a decoder's NV12 picture, left on the device
@@ -103,8 +108,10 @@ struct YuvImage {
   /// cannot reuse it while the frame is prepared, and a prepare whose wait
   /// fails holds it for good, as the device may still read it.
   std::shared_ptr<const core::Buffer> device;
-  std::uint64_t offset[3] = {};  ///< Each plane's byte offset in @ref device.
-  std::size_t stride[3] = {};  ///< Bytes per row of each plane in @ref device.
+  /// Each plane's byte offset in @ref device or from @ref host.
+  std::uint64_t offset[3] = {};
+  /// Bytes per row of each plane in @ref device or from @ref host.
+  std::size_t stride[3] = {};
   /// The queue family that owns @ref device or @ref image, initially their
   /// writer, which the next stage takes them over from: another family of
   /// the device, whose writer released the whole buffer to the pass's
@@ -126,6 +133,13 @@ struct YuvImage {
   /// have finished, as for @ref device, and the frame holds them as it does
   /// @ref device.
   std::shared_ptr<const core::Image> image[2];
+  /// Or the planes on the host, plane `p` at @ref host `+` @ref offset `[p]`,
+  /// @ref stride `[p]` bytes a row: a camera's YUYV as its SDK hands it over.
+  /// `GpuFramePrep` copies them into its staging buffer as it records the
+  /// frame and converts them on the device like @ref device's planes, so they
+  /// need to last only until it returns; a frame holds them through
+  /// `RgbdFrame::pixels`. @ref queue_family does not apply.
+  const std::uint8_t* host = nullptr;
   std::uint32_t width = 0;   ///< Luma width (pixels).
   std::uint32_t height = 0;  ///< Luma height (pixels).
   /// The matrix's red and blue weights, which @ref ycbcr_weights gives for a

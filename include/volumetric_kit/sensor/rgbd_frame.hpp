@@ -51,7 +51,7 @@ struct ColorBitstream {
 ///
 /// It holds what it points to, so a consumer may keep several -- a sensor
 /// array groups each sensor's frames by trigger before it prepares any: the
-/// depth and any host colour through @ref pixels, the colour picture through
+/// depth and any host colour through @ref pixels, a device picture through
 /// `YuvImage::device` or `YuvImage::image`. A driver's buffers go back to it
 /// once every copy of the frame is gone, so a consumer that keeps frames
 /// keeps the driver's buffers from it.
@@ -82,9 +82,9 @@ struct RgbdFrame {
   float min_depth = 0.0f;
   float max_depth = 0.0f;  ///< Farther samples are dropped (metres).
 
-  /// The colour picture; with none of `color.device`, `color.image` or
-  /// @ref color_packed set, the frame has none. Its size is
-  /// @ref color_camera's.
+  /// The colour picture; with none of `color.device`, `color.image`,
+  /// `color.host` or @ref color_packed set, the frame has none. Its size is
+  /// @ref color_camera's. Host planes (`color.host`) are held by @ref pixels.
   YuvImage color{};
   /// Or the colour on the host, as a dataset decodes it:
   /// `color_camera.size.width * height` row-major words, R | G << 8 | B << 16,
@@ -123,14 +123,16 @@ struct RgbdFrame {
   /// polled.
   std::uint64_t arrival_ns = 0;
 
-  /// What @ref depth, @ref color_packed and @ref color_bitstream point into,
-  /// held for as long as the frame is; null when they need no owner.
+  /// What @ref depth, `color.host`, @ref color_packed and
+  /// @ref color_bitstream point into, held for as long as the frame is; null
+  /// when they need no owner.
   std::shared_ptr<const void> pixels;
 
   /// @return `true` if this frame carries colour.
   bool has_color() const noexcept {
     return color_packed != nullptr || color.device != nullptr ||
-           color.image[0] != nullptr || color.image[1] != nullptr;
+           color.host != nullptr || color.image[0] != nullptr ||
+           color.image[1] != nullptr;
   }
 };
 
