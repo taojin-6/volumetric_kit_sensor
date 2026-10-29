@@ -50,7 +50,7 @@ struct GpuFramePrepConfig {
   /// the pass's own family, which is right for a recon-only consumer and what
   /// the pass always made. A consumer on another queue family -- a renderer
   /// copying the colour into its atlas -- must name both, as
-  /// `mesh::MarchingCubesConfig::queue_families` explains for the mesh:
+  /// `vgrid::mesh::MarchingCubesConfig::queue_families` explains for the mesh:
   /// reading an EXCLUSIVE buffer from a family that does not own it is
   /// undefined, and on Apple, where Metal has no ownership to violate, it is
   /// undefined in the way that appears to work. Duplicates collapse, so both
