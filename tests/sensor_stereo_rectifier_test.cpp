@@ -1125,7 +1125,7 @@ int test_already_rectified() {
 int test_depth_info() {
   sensor::StereoInfo info = mild_pair();
   info.id = "123456789012";
-  info.model = "Intel RealSense D455";
+  info.model = "RealSense D455";
   info.clock = sensor::ClockDomain::Host;
   info.fps = 30;
   info.color_controls = camera::ColorControls{167, 60};

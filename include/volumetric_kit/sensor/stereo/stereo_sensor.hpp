@@ -57,7 +57,7 @@ struct StereoInfo {
   /// A left-camera point in the colour camera; identity when there is none.
   camera::Mat4d left_to_color = camera::Mat4d(1.0);
   std::string id;     ///< Its serial, as `SensorInfo::id`.
-  std::string model;  ///< What it is, e.g. "Intel RealSense D455".
+  std::string model;  ///< What it is, e.g. "RealSense D455".
   ClockDomain clock = ClockDomain::Device;  ///< Its timestamps' clock.
   std::uint32_t fps = 0;  ///< Its rate, frames a second; 0 if unknown.
   /// The colour camera's manual exposure as read back at open, as

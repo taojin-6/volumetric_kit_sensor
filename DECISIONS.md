@@ -4652,10 +4652,12 @@ validation layer: 47 tests passed and the 2 JPEG tests skipped, as on the
 base, of 49. Six planted bugs each fail `sensor_realsense_conversion` (the
 one-moment rule against the previous frame, or blind to a missing mode; a
 lens on the left infrared camera accepted; the two extrinsics swapped;
-luma at limited range; rows shorter than the picture accepted). Checked by
-hand, not a test: the lab D455 (USB 3.2, firmware 5.17.0.10), the
-projector off, 300 stereo frames through `StereoRectifier` (Luma8) at
-960x544 and at 1280x720, waking on `set_frame_notify`: 30 fps (33.37 ms
+luma at limited range; rows shorter than the picture accepted); three more
+each fail `sensor_stereo_rectifier` (`depth_info()` dropping the id, the
+clock or the colour exposure). Checked by hand, not a test: the lab D455
+(USB 3.2, firmware 5.17.0.10), the projector off, 300 stereo frames through
+`StereoRectifier` (Luma8) at 960x544 and at 1280x720, waking on
+`set_frame_notify`: 30 fps (33.37 ms
 median period); 2 framesets failed at the start and none after, none
 dropped; sequence numbers rose by one every frame; a frame reached `poll`
 15.7 ms after its timestamp; `poll` took 0.016 ms; `rectify` 0.38 ms on the
@@ -4665,3 +4667,6 @@ resample, and at 1280x720 the views are the camera's pictures byte for
 byte. SIFT matches between the views lie 0.14 px apart vertically (median;
 1.4826 MAD 0.25 px, about 420 matches) at 1280x720 and 0.10 px at 960x544,
 as in the camera's own pictures: its factory rectification, unchanged.
+Opened again with its colour exposure locked at 167/60, `info()` and
+`depth_info()` both carried the camera's serial, "RealSense D455", the
+host's clock, 30 fps and 167/60 as read back.
