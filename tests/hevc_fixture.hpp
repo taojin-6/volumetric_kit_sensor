@@ -9,7 +9,7 @@
 #include <iterator>
 #include <vector>
 
-namespace vr_test {
+namespace vs_test {
 
 // Committed clips carry access unit delimiters (NAL type 35). Keep both
 // decoder tests on the same split, including the three/four-byte start code.
@@ -35,4 +35,4 @@ inline std::vector<std::vector<std::uint8_t>> hevc_access_units(
   return units;
 }
 
-}  // namespace vr_test
+}  // namespace vs_test

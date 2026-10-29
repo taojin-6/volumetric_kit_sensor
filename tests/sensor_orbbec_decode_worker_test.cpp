@@ -26,7 +26,7 @@
 #include "volumetric_kit/core/testing/test_check.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace orbbec = volumetric_kit::recon::sensor::orbbec;
+namespace orbbec = volumetric_kit::sensor::orbbec;
 
 namespace {
 

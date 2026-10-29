@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// PictureReadback (recon_sensor_utils) on synthetic pictures, no decoder:
+// PictureReadback (sensor_prep) on synthetic pictures, no decoder:
 // NV12 plane images larger than their picture, and NV12 and I420 planes in
 // buffers at odd sizes, offsets and strides, read back byte for byte, luma
 // alone or every plane, one picture or a set; buffers taken over from the
@@ -35,15 +35,14 @@
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
-#include "volumetric_kit/recon/sensor/utils/picture_readback.hpp"
-#include "volumetric_kit/recon/sensor/yuv_image.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/prep/picture_readback.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
-namespace vr = volumetric_kit::recon;
+namespace sensor = volumetric_kit::sensor;
 namespace vkc = volumetric_kit::core;
-namespace sensor = vr::sensor;
 using sensor::PictureReadback;
 using sensor::PictureView;
 using sensor::YuvImage;
@@ -367,7 +366,8 @@ int test_families(const vkc::test::Gpu& gpu) {
 // An EXCLUSIVE buffer released by another family stays usable after either
 // read overload: preparation and a repeated read must not acquire it again.
 int test_read_then_prepare() {
-  auto made = vkc::test::TwoFamilyDevice::create(vr::device_requirements(), {});
+  auto made =
+      vkc::test::TwoFamilyDevice::create(sensor::device_requirements(), {});
   if (!made) std::fprintf(stderr, "%s\n", made.status().message().c_str());
   CHECK(made.ok());
   vkc::test::TwoFamilyDevice& two = **made;
@@ -586,7 +586,7 @@ int test_refusals(vkc::test::GpuContext& gpu) {
   CHECK(check_view(*view, p, YuvLayout::Nv12, Planes::All) == 0);
 
   // An empty device or allocator.
-  auto bare = vr_test::bare_device(gpu);
+  auto bare = vs_test::bare_device(gpu);
   CHECK(bare.ok());
   const vkc::Device taken = std::move(*bare);
   CHECK(PictureReadback::create(*bare, gpu.allocator).status().domain() ==
@@ -641,5 +641,5 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 }  // namespace
 
 int main() {
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

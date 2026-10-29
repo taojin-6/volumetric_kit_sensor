@@ -41,15 +41,14 @@
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/apple/pixel_buffer_importer.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
 #include "yuv_reference.hpp"
 
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 using sensor::PixelBufferImporter;
 using sensor::VideoColorMatrix;
 using sensor::YuvImage;
@@ -142,7 +141,7 @@ bool fill(CVPixelBufferRef pixels, int seed,
 int check_holds(YuvImage& yuv, vkc::Device& device, vkc::Allocator& allocator,
                 int seed) {
   std::vector<std::uint8_t> planes[3];
-  vr_test::read_device_picture(yuv, device, allocator, planes);
+  vs_test::read_device_picture(yuv, device, allocator, planes);
   const std::uint32_t cw = (yuv.width + 1) / 2;
   const std::uint32_t ch = (yuv.height + 1) / 2;
   CHECK(planes[0].size() == std::size_t{yuv.width} * yuv.height);
@@ -280,18 +279,18 @@ int test_allocates_only_textures(const Gpu& gpu) {
     refs.push_back(p.ref);
   }
   const std::optional<std::int64_t> bare =
-      vr_test::bare_plane_textures_size(gpu.device, refs);
+      vs_test::bare_plane_textures_size(gpu.device, refs);
   CHECK(bare.has_value());
 
   const std::optional<std::int64_t> before =
-      vr_test::metal_allocated_size(gpu.device);
+      vs_test::metal_allocated_size(gpu.device);
   CHECK(before.has_value());
   YuvImage yuv[kSurfaces];
   for (std::size_t i = 0; i < kSurfaces; ++i) {
     CHECK(importer->import(refs[i], kW, kH, yuv[i]).ok());
   }
   const std::optional<std::int64_t> imported =
-      vr_test::metal_allocated_size(gpu.device);
+      vs_test::metal_allocated_size(gpu.device);
   CHECK(imported.has_value());
   const std::int64_t grown = *imported - *before;
   std::printf(
@@ -303,7 +302,7 @@ int test_allocates_only_textures(const Gpu& gpu) {
   YuvImage again;
   CHECK(importer->import(refs[0], kW, kH, again).ok());
   CHECK(again.image[0] == yuv[0].image[0]);
-  CHECK(vr_test::metal_allocated_size(gpu.device) == imported);
+  CHECK(vs_test::metal_allocated_size(gpu.device) == imported);
   return 0;
 }
 
@@ -484,7 +483,7 @@ int test_refusals(const Gpu& gpu) {
   CHECK(refused(small.ref, 64, 66) == vkc::Status::Code::Unsupported);
   CHECK(refused(nullptr, 64, 64) == vkc::Status::Code::InvalidArgument);
 
-  vkc::Result<vkc::Device> bare = vr_test::bare_device(gpu);
+  vkc::Result<vkc::Device> bare = vs_test::bare_device(gpu);
   CHECK(bare.ok());
   CHECK(PixelBufferImporter::create(bare.value()).status().domain() ==
         vkc::Status::Code::Unsupported);
@@ -576,7 +575,8 @@ int test_sharing(const Gpu& gpu) {
 // image, so the sharing mode recorded on the image, which is the one the
 // image was created with, is what shows the read is legal.
 int test_cross_family() {
-  auto made = vkc::test::TwoFamilyDevice::create(vr::device_requirements(), {});
+  auto made =
+      vkc::test::TwoFamilyDevice::create(sensor::device_requirements(), {});
   if (!made) std::fprintf(stderr, "%s\n", made.status().message().c_str());
   CHECK(made.ok());
   vkc::test::TwoFamilyDevice& two = **made;
@@ -648,5 +648,5 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

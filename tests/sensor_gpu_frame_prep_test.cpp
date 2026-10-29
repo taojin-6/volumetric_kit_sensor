@@ -21,9 +21,8 @@
 //   - its depth and colour outputs are shared with the queue families its
 //     config names for each, and read on another family as on its own;
 //   - with depth_within_color, depth survives only where colour recorded it,
-//     at the corrected depth;
-//   - its output fuses through the device-input overloads, and a slanted
-//     plane's field crosses zero within a tenth of a voxel of the plane.
+//     at the corrected depth.
+// Fusing its output is recon's test (recon_tsdf_prepared_frame).
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
 #include <algorithm>
@@ -42,7 +41,6 @@
 #include <utility>
 #include <vector>
 
-#include "grid_readback.hpp"
 #include "test_image.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
@@ -52,24 +50,18 @@
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/recon/camera/camera_model.hpp"
-#include "volumetric_kit/recon/camera/geometry.hpp"
-#include "volumetric_kit/recon/camera/projection.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
-#include "volumetric_kit/recon/tsdf/tsdf_integrator.hpp"
-#include "volumetric_kit/recon/volume/voxel_block_grid.hpp"
-#include "volumetric_kit/recon/volume/voxel_hash_map.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/camera/projection.hpp"
+#include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
 
 #include "volumetric_kit/core/testing/gpu_test.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
 
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
-namespace camera = volumetric_kit::recon::camera;
-namespace vol = volumetric_kit::recon::volume;
-namespace tsdf = volumetric_kit::recon::tsdf;
+namespace sensor = volumetric_kit::sensor;
+namespace camera = volumetric_kit::sensor::camera;
 
 namespace {
 
@@ -87,10 +79,10 @@ vkc::Allocator* g_allocator = nullptr;
 float f32(double v) { return static_cast<float>(v); }
 
 // The lens in float: camera::distort_rational, which lens.glsl mirrors.
-vr::Vec2f distort(const camera::RationalDistortion& d, vr::Vec2f p) {
+sensor::Vec2f distort(const camera::RationalDistortion& d, sensor::Vec2f p) {
   const float k[8] = {f32(d.k1), f32(d.k2), f32(d.p1), f32(d.p2),
                       f32(d.k3), f32(d.k4), f32(d.k5), f32(d.k6)};
-  vr::Vec2f out;
+  sensor::Vec2f out;
   camera::distort_rational(k, p.x, p.y, &out.x, &out.y);
   return out;
 }
@@ -110,36 +102,37 @@ camera::CameraModel lensed() {
 }
 
 // Where pinhole pixel (u, v) is imaged, by the host model.
-vr::Vec2f source_pixel(const camera::CameraModel& c, float u, float v) {
+sensor::Vec2f source_pixel(const camera::CameraModel& c, float u, float v) {
   const float fx = f32(c.intrinsics.fx), fy = f32(c.intrinsics.fy);
   const float cx = f32(c.intrinsics.cx), cy = f32(c.intrinsics.cy);
-  const vr::Vec2f d =
-      distort(c.distortion, vr::Vec2f((u - cx) / fx, (v - cy) / fy));
-  return vr::Vec2f(d.x * fx + cx, d.y * fy + cy);
+  const sensor::Vec2f d =
+      distort(c.distortion, sensor::Vec2f((u - cx) / fx, (v - cy) / fy));
+  return sensor::Vec2f(d.x * fx + cx, d.y * fy + cy);
 }
 
 // The pinhole point a captured pixel shows: the lens inverted by fixed-point
 // iteration, independently of the passes' forward sampling.
-vr::Vec2f undistort_pixel(const camera::CameraModel& c, float us, float vs) {
+sensor::Vec2f undistort_pixel(const camera::CameraModel& c, float us,
+                              float vs) {
   const float fx = f32(c.intrinsics.fx), fy = f32(c.intrinsics.fy);
   const float cx = f32(c.intrinsics.cx), cy = f32(c.intrinsics.cy);
-  const vr::Vec2f target((us - cx) / fx, (vs - cy) / fy);
-  vr::Vec2f p = target;
+  const sensor::Vec2f target((us - cx) / fx, (vs - cy) / fy);
+  sensor::Vec2f p = target;
   for (int i = 0; i < 50; ++i) {
     p += target - distort(c.distortion, p);
   }
-  return vr::Vec2f(p.x * fx + cx, p.y * fy + cy);
+  return sensor::Vec2f(p.x * fx + cx, p.y * fy + cy);
 }
 
 // A checkerboard over the pinhole image, 20 px squares: 0 or 1.
-int checker(vr::Vec2f pinhole_px) {
+int checker(sensor::Vec2f pinhole_px) {
   return (static_cast<int>(std::floor(pinhole_px.x / 20.0f)) +
           static_cast<int>(std::floor(pinhole_px.y / 20.0f))) &
          1;
 }
 
 // How far a pinhole pixel is from the nearest checker edge, in pixels.
-float edge_distance(vr::Vec2f p) {
+float edge_distance(sensor::Vec2f p) {
   const float fx = std::fabs(p.x / 20.0f - std::round(p.x / 20.0f)) * 20.0f;
   const float fy = std::fabs(p.y / 20.0f - std::round(p.y / 20.0f)) * 20.0f;
   return std::min(fx, fy);
@@ -248,7 +241,7 @@ std::uint32_t code(float x) {
 // byte, and a 0 word where the lens maps outside the picture.
 std::uint32_t reference_color(const Planes& p, const camera::CameraModel& c,
                               float kr, float kb, bool full, float u, float v) {
-  const vr::Vec2f s = source_pixel(c, u, v);
+  const sensor::Vec2f s = source_pixel(c, u, v);
   if (!(s.x >= -0.5f && s.y >= -0.5f && s.x <= p.w - 0.5f &&
         s.y <= p.h - 0.5f)) {
     return 0;
@@ -350,12 +343,13 @@ int test_pinhole(sensor::GpuFramePrep& prep) {
     Planes p = make_planes();
     // 8x8 solid tiles, one colour each, so chroma is constant under a tile.
     const auto rgb_of = [](std::uint32_t tx, std::uint32_t ty) {
-      return vr::Vec3f(((tx * 37u) % 11u) / 10.0f, ((ty * 53u) % 13u) / 12.0f,
-                       (((tx + ty) * 29u) % 7u) / 6.0f);
+      return sensor::Vec3f(((tx * 37u) % 11u) / 10.0f,
+                           ((ty * 53u) % 13u) / 12.0f,
+                           (((tx + ty) * 29u) % 7u) / 6.0f);
     };
     for (std::uint32_t y = 0; y < kHeight; ++y) {
       for (std::uint32_t x = 0; x < kWidth; ++x) {
-        const vr::Vec3f c = rgb_of(x / 8, y / 8);
+        const sensor::Vec3f c = rgb_of(x / 8, y / 8);
         std::uint8_t yy, cb, cr;
         forward(c.x, c.y, c.z, m.kr, m.kb, m.full, &yy, &cb, &cr);
         p.y[std::size_t{y} * kWidth + x] = yy;
@@ -387,7 +381,7 @@ int test_pinhole(sensor::GpuFramePrep& prep) {
     for (std::uint32_t y = 0; y < kHeight; ++y) {
       for (std::uint32_t x = 0; x < kWidth; ++x) {
         if (x % 8 < 2 || x % 8 > 5 || y % 8 < 2 || y % 8 > 5) continue;
-        const vr::Vec3f want = rgb_of(x / 8, y / 8);
+        const sensor::Vec3f want = rgb_of(x / 8, y / 8);
         const std::uint32_t packed =
             static_cast<std::uint32_t>(std::lround(want.x * 255)) |
             (static_cast<std::uint32_t>(std::lround(want.y * 255)) << 8) |
@@ -493,8 +487,8 @@ int test_undistorts(sensor::GpuFramePrep& prep) {
   int checked = 0, wrong_depth = 0, wrong_color = 0;
   for (std::uint32_t v = 0; v < kHeight; ++v) {
     for (std::uint32_t u = 0; u < kWidth; ++u) {
-      const vr::Vec2f px(static_cast<float>(u), static_cast<float>(v));
-      const vr::Vec2f s = source_pixel(cam, px.x, px.y);
+      const sensor::Vec2f px(static_cast<float>(u), static_cast<float>(v));
+      const sensor::Vec2f s = source_pixel(cam, px.x, px.y);
       if (edge_distance(px) < 2.0f || s.x < 1 || s.y < 1 || s.x > kWidth - 2 ||
           s.y > kHeight - 2) {
         continue;
@@ -592,7 +586,7 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
   for (std::uint32_t v = 0; v < h; ++v) {
     for (std::uint32_t u = 0; u < w; ++u) {
       const std::size_t i = std::size_t{v} * w + u;
-      const vr::Vec2f s =
+      const sensor::Vec2f s =
           source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
       const float rx = std::floor(s.x + 0.5f), ry = std::floor(s.y + 0.5f);
       float want = 0.0f;
@@ -665,7 +659,7 @@ int test_packed(sensor::GpuFramePrep& prep) {
   int worst = 0, outside = 0, coverage_off = 0;
   for (std::uint32_t v = 0; v < kHeight; ++v) {
     for (std::uint32_t u = 0; u < kWidth; ++u) {
-      const vr::Vec2f s =
+      const sensor::Vec2f s =
           source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
       std::uint32_t ref = 0;
       if (s.x >= -0.5f && s.y >= -0.5f && s.x <= kWidth - 0.5f &&
@@ -1131,7 +1125,8 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
             .domain() == vkc::Status::Code::InvalidArgument);
   CHECK(metrics.rows().empty());
   refused = frames;
-  refused[3]->color_encoding.transfer = vr::ColorEncoding::Transfer::Bt2020Pq;
+  refused[3]->color_encoding.transfer =
+      sensor::ColorEncoding::Transfer::Bt2020Pq;
   CHECK(sensor::GpuFramePrep::prepare_batch(preps, refused).status().domain() ==
         vkc::Status::Code::Unsupported);
   std::vector<sensor::GpuFramePrep> too_few;
@@ -1386,8 +1381,8 @@ int test_poses(sensor::GpuFramePrep& prep) {
   f.depth_to_color[3] = glm::dvec4(-0.032, -0.002, 0.004, 1.0);
   auto out = prep.prepare(f);
   CHECK(out.ok());
-  const vr::Mat4f color(f.color_to_world);
-  const vr::Mat4f depth(f.color_to_world * f.depth_to_color);
+  const sensor::Mat4f color(f.color_to_world);
+  const sensor::Mat4f depth(f.color_to_world * f.depth_to_color);
   for (int c = 0; c < 4; ++c) {
     for (int r = 0; r < 4; ++r) {
       CHECK(std::fabs(out->color_camera.cam_to_world[c][r] - color[c][r]) <
@@ -1452,7 +1447,7 @@ int test_refusals(sensor::GpuFramePrep& prep) {
   f.color.chroma_location = static_cast<sensor::ChromaLocation>(255);
   CHECK(prep.prepare(f).status().domain() == invalid);
   f.color = p.image(0.299f, 0.114f, true);
-  f.color_encoding.transfer = vr::ColorEncoding::Transfer::Bt2020Pq;
+  f.color_encoding.transfer = sensor::ColorEncoding::Transfer::Bt2020Pq;
   CHECK(prep.prepare(f).status().domain() == vkc::Status::Code::Unsupported);
   f.color_encoding = {};
   CHECK(prep.prepare(f).ok());
@@ -1478,7 +1473,7 @@ int test_refusals(sensor::GpuFramePrep& prep) {
         refused.message().find("not both") != std::string::npos);
   CHECK(both.rows().empty());
   f.color = {};
-  f.color_encoding.transfer = vr::ColorEncoding::Transfer::Bt2020Pq;
+  f.color_encoding.transfer = sensor::ColorEncoding::Transfer::Bt2020Pq;
   CHECK(prep.prepare(f).status().domain() == vkc::Status::Code::Unsupported);
   return 0;
 }
@@ -1629,7 +1624,8 @@ int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
 // owns an EXCLUSIVE buffer, so the recorded sharing mode is what shows the
 // read is legal. Skipped where the device puts both on one family.
 int test_cross_family() {
-  auto made = vkc::test::TwoFamilyDevice::create(vr::device_requirements(), {});
+  auto made =
+      vkc::test::TwoFamilyDevice::create(sensor::device_requirements(), {});
   if (!made) std::fprintf(stderr, "%s\n", made.status().message().c_str());
   CHECK(made.ok());
   vkc::test::TwoFamilyDevice& two = **made;
@@ -1875,188 +1871,6 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   return 0;
 }
 
-// Allocate `depth`'s band, retrying rounds that only lost bucket-lock races:
-// adjacent pixels dilate into one block, and a round can hand back such
-// failures over a map far from full.
-int allocate(vol::VoxelBlockGrid& grid, const vkc::Buffer& depth,
-             const vr::DepthCameraParams& camera) {
-  for (int round = 0; round < 5; ++round) {
-    vol::AllocFailures why;
-    auto failed = grid.map().allocate_from_depth(
-        depth, tsdf::to_depth_pinhole(camera), &why);
-    CHECK(failed.ok() && !why.capacity_limited());
-    if (failed.value() == 0) return 0;
-  }
-  std::fprintf(stderr, "FAIL: allocation kept losing lock races\n");
-  return 1;
-}
-
-// The pass's output straight into the device-input fusion overloads.
-int test_fuses(vkc::Device& device, vkc::Allocator& allocator,
-               sensor::GpuFramePrep& prep) {
-  // A small depth camera, 80x60, beside the full colour one: the two sizes
-  // differ, as a sensor's do. A tilted surface, 0.7-1.2 m, spreads the band
-  // over many blocks. (A 320x240 flat wall here once ran past NVIDIA's 7 s
-  // watchdog in CI, Xid 109, contending for the hash map's bucket locks while
-  // they were host-visible; PR #81 moved them into device memory.)
-  camera::CameraModel depth_cam = lensed();
-  camera::PinholeIntrinsics& k = depth_cam.intrinsics;
-  k.fx /= 4.0;
-  k.fy /= 4.0;
-  k.cx = (k.cx + 0.5) / 4.0 - 0.5;
-  k.cy = (k.cy + 0.5) / 4.0 - 0.5;
-  depth_cam.size = {kWidth / 4, kHeight / 4};
-  const std::uint32_t dw = depth_cam.size.width, dh = depth_cam.size.height;
-  std::vector<std::uint16_t> raw(std::size_t{dw} * dh);
-  for (std::uint32_t v = 0; v < dh; ++v) {
-    for (std::uint32_t u = 0; u < dw; ++u) {
-      raw[std::size_t{v} * dw + u] =
-          static_cast<std::uint16_t>(700 + 5 * u + 3 * v);
-    }
-  }
-  Planes p = make_planes();
-  std::fill(p.y.begin(), p.y.end(), 180);
-  std::fill(p.cb.begin(), p.cb.end(), 100);
-  std::fill(p.cr.begin(), p.cr.end(), 150);
-  sensor::RgbdFrame f = frame_of(raw, depth_cam);
-  f.color = p.image(0.299f, 0.114f, true);
-  f.color_camera = pinhole();
-  auto out = prep.prepare(f);
-  CHECK(out.ok());
-
-  vol::VoxelGridParams grid{};
-  grid.voxel_size = 0.01f;
-  grid.block_size = 8;
-  grid.voxels_per_block = 512;
-  grid.trunc_dist = 0.04f;
-  grid.bucket_size = 8;
-  grid.num_buckets = 2048;
-  grid.num_blocks = 2048 * 8;
-  grid.max_chain = 128;
-  const vol::AttributeSpec attrs[] = {
-      {vol::kTsdfAttribute, sizeof(float)},
-      {vol::kWeightAttribute, sizeof(float)},
-      {vol::kColorAttribute, sizeof(std::uint32_t)}};
-  auto vbg = vol::VoxelBlockGrid::create(device, allocator, grid, attrs, 3);
-  auto integrator = tsdf::TsdfIntegrator::create(device, allocator);
-  CHECK(vbg.ok() && integrator.ok());
-  CHECK(allocate(vbg.value(), *out->depth, out->depth_camera) == 0);
-  tsdf::ColorFrame color{};
-  color.buffer = out->color.get();
-  color.cam = out->color_camera;
-  color.encoding = out->color_encoding;
-  color.coverage_in_alpha = true;
-  CHECK(integrator
-            ->integrate(vbg.value(), *out->depth, out->depth_camera, 5.0f,
-                        tsdf::IntegrationMode::Classic, &color)
-            .ok());
-  auto active = vbg->map().compact_active_blocks();
-  CHECK(active.ok() && active->size() > 20);
-  return 0;
-}
-
-// The pass's output fuses where the surface is. A plane tilted across both
-// image axes, imaged at every pixel centre of a pinhole camera with an
-// off-centre principal point, prepared, allocated and fused: along every voxel
-// column the camera sees, the fused field crosses zero within a tenth of a
-// voxel of the plane. Sampling half a pixel off the pass's integer centres
-// moves the crossing by the plane's depth change over half a pixel, 1.5 to
-// 7 mm here.
-int test_fuses_at_the_surface(vkc::Device& device, vkc::Allocator& allocator,
-                              sensor::GpuFramePrep& prep) {
-  camera::CameraModel cam = pinhole();
-  camera::PinholeIntrinsics& k = cam.intrinsics;
-  k.fx /= 2.0;
-  k.fy /= 2.0;
-  k.cx = (k.cx + 0.5) / 2.0 - 0.5;
-  k.cy = (k.cy + 0.5) / 2.0 - 0.5;
-  cam.size = {kWidth / 2, kHeight / 2};
-  const std::uint32_t w = cam.size.width, h = cam.size.height;
-  // z = z0 + a x + b y in the camera's frame, which is the world's.
-  constexpr double kZ0 = 1.0, kA = 0.5, kB = 0.3;
-  constexpr float kUnit = 1e-4f;  // a tenth of a millimetre a unit
-  std::vector<std::uint16_t> raw(std::size_t{w} * h);
-  for (std::uint32_t v = 0; v < h; ++v) {
-    for (std::uint32_t u = 0; u < w; ++u) {
-      const double x = (u - k.cx) / k.fx, y = (v - k.cy) / k.fy;
-      const double z = kZ0 / (1.0 - kA * x - kB * y);
-      raw[std::size_t{v} * w + u] =
-          static_cast<std::uint16_t>(std::lround(z / kUnit));
-    }
-  }
-  sensor::RgbdFrame f = frame_of(raw, cam);
-  f.metres_per_unit = kUnit;
-  auto out = prep.prepare(f);
-  CHECK(out.ok());
-  const vr::DepthCameraParams& dc = out->depth_camera;
-
-  vol::VoxelGridParams grid{};
-  grid.voxel_size = 0.01f;
-  grid.block_size = 8;
-  grid.voxels_per_block = 512;
-  grid.trunc_dist = 0.04f;
-  grid.bucket_size = 8;
-  grid.num_buckets = 2048;
-  grid.num_blocks = 2048 * 8;
-  grid.max_chain = 128;
-  const vol::AttributeSpec attrs[] = {{vol::kTsdfAttribute, sizeof(float)},
-                                      {vol::kWeightAttribute, sizeof(float)}};
-  auto vbg = vol::VoxelBlockGrid::create(device, allocator, grid, attrs, 2);
-  auto integrator = tsdf::TsdfIntegrator::create(device, allocator);
-  CHECK(vbg.ok() && integrator.ok());
-  CHECK(allocate(vbg.value(), *out->depth, dc) == 0);
-  CHECK(integrator->integrate(vbg.value(), *out->depth, dc).ok());
-
-  auto active = vbg->map().compact_active_blocks();
-  auto tsdf_values = vr_test::read_attribute<float>(
-      device, allocator, vbg.value(), vol::kTsdfAttribute);
-  auto weights = vr_test::read_attribute<float>(device, allocator, vbg.value(),
-                                                vol::kWeightAttribute);
-  CHECK(active.ok() && tsdf_values.ok() && weights.ok());
-  // Every fused voxel's value, by its global coordinate.
-  std::map<std::array<int, 3>, float> fused;
-  const int bs = grid.block_size;
-  for (const vol::BlockIndex& b : active.value()) {
-    for (int i = 0; i < grid.voxels_per_block; ++i) {
-      const std::size_t at =
-          static_cast<std::size_t>(b.ptr) + static_cast<std::size_t>(i);
-      if (weights.value()[at] > 0.0f) {
-        fused[{b.coord.x * bs + i % bs, b.coord.y * bs + (i / bs) % bs,
-               b.coord.z * bs + i / (bs * bs)}] = tsdf_values.value()[at];
-      }
-    }
-  }
-  // A voxel that projects where all four bilinear taps are inside the image.
-  const auto interior = [&](int x, int y, int z) {
-    const float u =
-        dc.fx * static_cast<float>(x) / static_cast<float>(z) + dc.cx;
-    const float v =
-        dc.fy * static_cast<float>(y) / static_cast<float>(z) + dc.cy;
-    return u >= 0.0f && u < w - 1.0f && v >= 0.0f && v < h - 1.0f;
-  };
-  std::size_t columns = 0;
-  double worst = 0.0;
-  for (const auto& [voxel, front] : fused) {
-    const auto behind = fused.find({voxel[0], voxel[1], voxel[2] + 1});
-    if (behind == fused.end() || !(front > 0.0f && behind->second <= 0.0f) ||
-        !interior(voxel[0], voxel[1], voxel[2]) ||
-        !interior(voxel[0], voxel[1], voxel[2] + 1)) {
-      continue;
-    }
-    const double s = grid.voxel_size;
-    const double crossing =
-        s * (voxel[2] + front / (front - static_cast<double>(behind->second)));
-    const double plane = kZ0 + kA * s * voxel[0] + kB * s * voxel[1];
-    worst = std::max(worst, std::fabs(crossing - plane));
-    ++columns;
-  }
-  std::printf("  slanted plane: %zu columns, worst crossing %.3f mm\n", columns,
-              worst * 1e3);
-  CHECK(columns > 5000);
-  CHECK(worst <= 0.1 * grid.voxel_size);
-  return 0;
-}
-
 int gpu_main(vkc::test::GpuContext& gpu) {
   g_device = &gpu.device;
   g_allocator = &gpu.allocator;
@@ -2085,12 +1899,6 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_poses(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;
   if (test_frames_hold_buffers(prep.value()) != 0) return 1;
-  if (test_fuses(gpu.device, gpu.allocator, prep.value()) != 0) {
-    return 1;
-  }
-  if (test_fuses_at_the_surface(gpu.device, gpu.allocator, prep.value()) != 0) {
-    return 1;
-  }
   if (test_prepare_batch(gpu.device, gpu.allocator) != 0) return 1;
   if (test_record(gpu.device, gpu.allocator) != 0) return 1;
   if (test_batch_timing(gpu.device, gpu.allocator) != 0) return 1;
@@ -2126,5 +1934,5 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 }  // namespace
 
 int main() {
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

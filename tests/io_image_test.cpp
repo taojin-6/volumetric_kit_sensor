@@ -19,10 +19,10 @@
 #include "volumetric_kit/core/testing/scratch_dir.hpp"
 #include "volumetric_kit/core/testing/test_allocation_failure.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/io/image_io.hpp"
+#include "volumetric_kit/sensor/io/image_io.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace vr = volumetric_kit::recon;
+namespace sensor = volumetric_kit::sensor;
 namespace fs = std::filesystem;
 
 namespace {
@@ -112,18 +112,18 @@ int u16_round_trip(const fs::path& dir) {
     const auto samples = depth_pattern(e.w, e.h);
     const auto path =
         (dir / ("depth_" + std::to_string(e.w) + ".png")).string();
-    CHECK(
-        vr::io::write_png_u16(path, samples.data(), samples.size(), e.w, e.h));
-    const auto decoded = vr::io::load_depth_u16(path, e.w, e.h);
+    CHECK(sensor::io::write_png_u16(path, samples.data(), samples.size(), e.w,
+                                    e.h));
+    const auto decoded = sensor::io::load_depth_u16(path, e.w, e.h);
     CHECK(decoded && decoded.value() == samples);
     const auto encoded =
-        vr::io::encode_png_u16(samples.data(), samples.size(), e.w, e.h);
+        sensor::io::encode_png_u16(samples.data(), samples.size(), e.w, e.h);
     CHECK(encoded && encoded.value() == read_bytes(path));
   }
   const std::uint16_t zero = 0;
   const auto path = (dir / "zero.png").string();
-  CHECK(vr::io::write_png_u16(path, &zero, 1, 1, 1));
-  const auto decoded = vr::io::load_depth_u16(path, 1, 1);
+  CHECK(sensor::io::write_png_u16(path, &zero, 1, 1, 1));
+  const auto decoded = sensor::io::load_depth_u16(path, 1, 1);
   CHECK(decoded && decoded.value() == std::vector<std::uint16_t>{0});
   return 0;
 }
@@ -133,11 +133,11 @@ int u16_round_trip(const fs::path& dir) {
 int u16_big_endian(const fs::path& dir) {
   const std::uint16_t samples[] = {0x0102, 0xff00, 0x00ff};
   const auto path = (dir / "order.png").string();
-  CHECK(vr::io::write_png_u16(path, samples, 3, 3, 1));
-  const auto depth = vr::io::load_depth_u16(path, 3, 1);
+  CHECK(sensor::io::write_png_u16(path, samples, 3, 3, 1));
+  const auto depth = sensor::io::load_depth_u16(path, 3, 1);
   CHECK(depth &&
         depth.value() == std::vector<std::uint16_t>(samples, samples + 3));
-  const auto color = vr::io::load_color_packed(path, 3, 1);
+  const auto color = sensor::io::load_color_packed(path, 3, 1);
   CHECK(color &&
         color.value() == std::vector<std::uint32_t>({0x010101, 0xffffff, 0}));
   return 0;
@@ -149,7 +149,7 @@ int u16_header() {
   constexpr std::uint8_t kSignature[] = {0x89, 0x50, 0x4e, 0x47,
                                          0x0d, 0x0a, 0x1a, 0x0a};
   const std::uint16_t samples[6] = {};
-  const auto png = vr::io::encode_png_u16(samples, 6, 3, 2);
+  const auto png = sensor::io::encode_png_u16(samples, 6, 3, 2);
   CHECK(png && png.value().size() > 8 + std::size(kGray16Ihdr3x2));
   const auto& bytes = png.value();
   CHECK(
@@ -165,7 +165,7 @@ int u16_refusals(const fs::path& dir) {
   const std::vector<std::uint16_t> samples(6, 1000);
   const auto refused = [&](const std::uint16_t* p, std::size_t n,
                            std::uint32_t w, std::uint32_t h) {
-    const auto png = vr::io::encode_png_u16(p, n, w, h);
+    const auto png = sensor::io::encode_png_u16(p, n, w, h);
     return !png && has_code(png.status(), Code::InvalidArgument);
   };
   CHECK(refused(nullptr, 6, 3, 2));
@@ -185,28 +185,29 @@ int u16_refusals(const fs::path& dir) {
   const auto message = [](const vkc::Result<std::vector<std::uint8_t>>& png) {
     return png.status().message();
   };
-  CHECK(message(vr::io::encode_png_u16(nullptr, 6, 3, 2)) ==
+  CHECK(message(sensor::io::encode_png_u16(nullptr, 6, 3, 2)) ==
         "encode_png_u16: null buffer");
-  CHECK(message(vr::io::encode_png_u16(samples.data(), 5, 3, 2)) ==
+  CHECK(message(sensor::io::encode_png_u16(samples.data(), 5, 3, 2)) ==
         "encode_png_u16: 5 samples for 3x2");
-  CHECK(message(vr::io::encode_png_u16(row.data(), row.size(), 1u << 23, 1)) ==
+  CHECK(message(
+            sensor::io::encode_png_u16(row.data(), row.size(), 1u << 23, 1)) ==
         "encode_png_u16: 8388608x1 exceeds the encoder's bounds");
 
-  CHECK(has_code(vr::io::write_png_u16("", samples.data(), 6, 3, 2),
+  CHECK(has_code(sensor::io::write_png_u16("", samples.data(), 6, 3, 2),
                  Code::InvalidArgument));
-  CHECK(has_code(vr::io::write_png_u16(std::string("a\0b.png", 7),
-                                       samples.data(), 6, 3, 2),
+  CHECK(has_code(sensor::io::write_png_u16(std::string("a\0b.png", 7),
+                                           samples.data(), 6, 3, 2),
                  Code::InvalidArgument));
   const auto missing = (dir / "missing" / "d.png").string();
   const auto unwritable =
-      vr::io::write_png_u16(missing, samples.data(), 6, 3, 2);
+      sensor::io::write_png_u16(missing, samples.data(), 6, 3, 2);
   CHECK(has_code(unwritable, Code::IoError) &&
         unwritable.message() == "write_png_u16: " + missing + ": cannot write");
   // A refused write leaves the existing file intact.
   const auto path = (dir / "kept.png").string();
-  CHECK(vr::io::write_png_u16(path, samples.data(), 6, 3, 2));
+  CHECK(sensor::io::write_png_u16(path, samples.data(), 6, 3, 2));
   const auto kept = read_bytes(path);
-  CHECK(!vr::io::write_png_u16(path, samples.data(), 5, 3, 2));
+  CHECK(!sensor::io::write_png_u16(path, samples.data(), 5, 3, 2));
   CHECK(read_bytes(path) == kept);
   return 0;
 }
@@ -220,10 +221,11 @@ int u16_out_of_memory(const fs::path& dir) {
   constexpr std::size_t kBigEndian = std::size_t{kW} * kH * 2;
   const auto samples = depth_pattern(kW, kH);
   const auto png =
-      vr::io::encode_png_u16(samples.data(), samples.size(), kW, kH);
+      sensor::io::encode_png_u16(samples.data(), samples.size(), kW, kH);
   CHECK(png && png.value().size() != kBigEndian);
   const auto path = (dir / "oom.png").string();
-  CHECK(vr::io::write_png_u16(path, samples.data(), samples.size(), kW, kH));
+  CHECK(
+      sensor::io::write_png_u16(path, samples.data(), samples.size(), kW, kH));
   const auto kept = read_bytes(path);
   // Fail the first allocation of `bytes` in `call`. Returns the OutOfMemory
   // message, or nothing if no such failure was injected and returned.
@@ -239,11 +241,12 @@ int u16_out_of_memory(const fs::path& dir) {
     return status.message();
   };
   const auto encode = [&] {
-    return vr::io::encode_png_u16(samples.data(), samples.size(), kW, kH)
+    return sensor::io::encode_png_u16(samples.data(), samples.size(), kW, kH)
         .status();
   };
   const auto write = [&] {
-    return vr::io::write_png_u16(path, samples.data(), samples.size(), kW, kH);
+    return sensor::io::write_png_u16(path, samples.data(), samples.size(), kW,
+                                     kH);
   };
   // The big-endian copy of the samples, then the copy of stb's PNG.
   for (const std::size_t bytes : {kBigEndian, png.value().size()}) {
@@ -262,37 +265,38 @@ int rgba8_and_depth_fixtures(const fs::path& dir) {
   const auto depth_path = (dir / "depth.png").string();
   const std::array<std::uint8_t, 16> rgba{128, 19, 231, 0,   9, 241, 17, 127,
                                           255, 0,  128, 255, 1, 2,   3,  64};
-  CHECK(vr::io::write_png_rgba8(color_path, rgba.data(), rgba.size(), 2, 2));
-  auto color = vr::io::load_color_packed(color_path, 2, 2);
+  CHECK(
+      sensor::io::write_png_rgba8(color_path, rgba.data(), rgba.size(), 2, 2));
+  auto color = sensor::io::load_color_packed(color_path, 2, 2);
   CHECK(color &&
         color.value() == std::vector<std::uint32_t>(
                              {0x00e71380, 0x0011f109, 0x008000ff, 0x00030201}));
-  CHECK(!vr::io::load_color_packed(color_path, 1, 2));
+  CHECK(!sensor::io::load_color_packed(color_path, 1, 2));
   // A refused write leaves the existing file intact.
   const auto encoded = read_bytes(color_path);
-  CHECK(
-      !vr::io::write_png_rgba8(color_path, rgba.data(), rgba.size() - 1, 2, 2));
+  CHECK(!sensor::io::write_png_rgba8(color_path, rgba.data(), rgba.size() - 1,
+                                     2, 2));
   // A row too long for stb's int filter score, in a real buffer, so accepting
   // it would encode rather than read out of bounds.
   const std::vector<std::uint8_t> row(std::size_t{4} << 22);
-  CHECK(!vr::io::write_png_rgba8(color_path, row.data(), row.size(), 1u << 22,
-                                 1));
+  CHECK(!sensor::io::write_png_rgba8(color_path, row.data(), row.size(),
+                                     1u << 22, 1));
   CHECK(read_bytes(color_path) == encoded);
 
   CHECK(write_fixture(depth_path, kDepth16));
-  auto depth = vr::io::load_depth_u16(depth_path, 2, 1);
+  auto depth = sensor::io::load_depth_u16(depth_path, 2, 1);
   CHECK(depth && depth.value() == std::vector<std::uint16_t>({0, 65535}));
-  CHECK(!vr::io::load_depth_u16(depth_path, 1, 1));
+  CHECK(!sensor::io::load_depth_u16(depth_path, 1, 1));
   // An 8-bit depth PNG would otherwise decode about 257x too far.
   CHECK(write_fixture(depth_path, kDepth8));
-  CHECK(!vr::io::load_depth_u16(depth_path, 2, 1));
+  CHECK(!sensor::io::load_depth_u16(depth_path, 2, 1));
   return 0;
 }
 
 }  // namespace
 
 int main() {
-  vkc::test::Scratch scratch("recon_io_image_");
+  vkc::test::Scratch scratch("sensor_io_image_");
   CHECK(rgba8_and_depth_fixtures(scratch.path) == 0);
   CHECK(u16_round_trip(scratch.path) == 0);
   CHECK(u16_big_endian(scratch.path) == 0);

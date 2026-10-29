@@ -14,10 +14,10 @@
 #include <vector>
 
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/rgbd_sensor.hpp"
 
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 
 namespace {
 

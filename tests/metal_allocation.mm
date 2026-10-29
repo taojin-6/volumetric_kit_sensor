@@ -12,7 +12,7 @@
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
-namespace vr_test {
+namespace vs_test {
 namespace {
 
 namespace vkc = volumetric_kit::core;
@@ -115,4 +115,4 @@ std::optional<std::int64_t> bare_plane_textures_size(
   }
 }
 
-}  // namespace vr_test
+}  // namespace vs_test

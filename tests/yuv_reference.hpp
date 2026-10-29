@@ -11,14 +11,14 @@
 #include <array>
 #include <cmath>
 
-#include "volumetric_kit/recon/sensor/yuv_image.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace yuv_reference {
 
 // @p m's red and blue luma weights.
 inline std::array<double, 2> weights(
-    volumetric_kit::recon::sensor::VideoColorMatrix m) {
-  using volumetric_kit::recon::sensor::VideoColorMatrix;
+    volumetric_kit::sensor::VideoColorMatrix m) {
+  using volumetric_kit::sensor::VideoColorMatrix;
   switch (m) {
     case VideoColorMatrix::Bt601:
       return {0.299, 0.114};
@@ -35,8 +35,8 @@ inline std::array<double, 2> weights(
 }
 
 // Whether @p image says it is coded in @p m at @p full_range.
-inline bool coded_in(const volumetric_kit::recon::sensor::YuvImage& image,
-                     volumetric_kit::recon::sensor::VideoColorMatrix m,
+inline bool coded_in(const volumetric_kit::sensor::YuvImage& image,
+                     volumetric_kit::sensor::VideoColorMatrix m,
                      bool full_range) {
   const std::array<double, 2> k = weights(m);
   return std::abs(image.kr - k[0]) < 1e-6 && std::abs(image.kb - k[1]) < 1e-6 &&
@@ -44,7 +44,7 @@ inline bool coded_in(const volumetric_kit::recon::sensor::YuvImage& image,
 }
 
 inline std::array<int, 3> rgb(double y, double u, double v,
-                              volumetric_kit::recon::sensor::VideoColorMatrix m,
+                              volumetric_kit::sensor::VideoColorMatrix m,
                               bool full_range) {
   const std::array<double, 2> k = weights(m);
   const double kr = k[0];

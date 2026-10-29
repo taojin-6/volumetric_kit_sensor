@@ -30,12 +30,12 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/sensor/array/rig_sets.hpp"
-#include "volumetric_kit/recon/sensor/array/sensor_array.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
+#include "volumetric_kit/sensor/array/rig_sets.hpp"
+#include "volumetric_kit/sensor/array/sensor_array.hpp"
+#include "volumetric_kit/sensor/rgbd_sensor.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 
 namespace {
 

@@ -34,7 +34,7 @@ std::string opening;
 // A fake camera's colour properties, as the SDK's device would be read and
 // written.
 class FakeProperties final
-    : public volumetric_kit::recon::sensor::orbbec::CameraProperties {
+    : public volumetric_kit::sensor::orbbec::CameraProperties {
  public:
   explicit FakeProperties(FakeCamera& camera) : camera_(camera) {}
   bool writable(OBPropertyID id) override { return find(id).second.writable; }
@@ -95,7 +95,7 @@ class FakeProperties final
 
 }  // namespace orbbec_stub
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     std::shared_ptr<ob::Context>, std::shared_ptr<ob::Device>,
@@ -181,4 +181,4 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
   return std::optional<RgbdFrame>{};
 }
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

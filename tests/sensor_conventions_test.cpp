@@ -17,17 +17,16 @@
 #include <limits>
 
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/core/math/vector_types.hpp"
-#include "volumetric_kit/recon/sensor/camera_conventions.hpp"
-#include "volumetric_kit/recon/sensor/color_conventions.hpp"
+#include "volumetric_kit/sensor/camera_conventions.hpp"
+#include "volumetric_kit/sensor/color_conventions.hpp"
+#include "volumetric_kit/sensor/frame/vector_types.hpp"
 
 // Only two namespaces: the sensor tier's conversions, and core for the camera
 // types and Status/Result. That this test never names the volume or tsdf tier
 // is the point -- it is the same surface an out-of-tree driver compiles
 // against.
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 
 namespace {
 
@@ -35,21 +34,21 @@ bool close(float a, float b, float eps = 1e-5f) {
   return std::fabs(a - b) <= eps;
 }
 
-bool close(const vr::Vec4f& a, float x, float y, float z, float w) {
+bool close(const sensor::Vec4f& a, float x, float y, float z, float w) {
   return close(a.x, x) && close(a.y, y) && close(a.z, z) && close(a.w, w);
 }
 
 // A colour camera shaped like ARKit's: 1920x1440 with a centred principal
 // point, which is what makes the centred-stays-centred property below testable.
-vr::ColorCameraParams arkit_like_color() {
-  vr::ColorCameraParams c{};
+sensor::ColorCameraParams arkit_like_color() {
+  sensor::ColorCameraParams c{};
   c.fx = 1440.0f;
   c.fy = 1440.0f;
   c.width = 1920;
   c.height = 1440;
   c.cx = (static_cast<float>(c.width) - 1.0f) * 0.5f;   // 959.5
   c.cy = (static_cast<float>(c.height) - 1.0f) * 0.5f;  // 719.5
-  c.cam_to_world = vr::Mat4f(1.0f);
+  c.cam_to_world = sensor::Mat4f(1.0f);
   return c;
 }
 
@@ -60,7 +59,7 @@ int main() {
   // Identity in, the basis change out: X kept, Y and Z negated, translation
   // untouched. Columns are basis vectors (GLM is column-major).
   {
-    const vr::Mat4f out = sensor::cv_from_gl_camera(vr::Mat4f(1.0f));
+    const sensor::Mat4f out = sensor::cv_from_gl_camera(sensor::Mat4f(1.0f));
     CHECK(close(out[0], 1.0f, 0.0f, 0.0f, 0.0f));
     CHECK(close(out[1], 0.0f, -1.0f, 0.0f, 0.0f));
     CHECK(close(out[2], 0.0f, 0.0f, -1.0f, 0.0f));
@@ -72,9 +71,9 @@ int main() {
   // diag(1,-1,-1,1) would mirror the camera's *position* through the world
   // origin instead of turning the camera in place.
   {
-    vr::Mat4f pose(1.0f);
-    pose[3] = vr::Vec4f(1.5f, -2.25f, 3.0f, 1.0f);
-    const vr::Mat4f out = sensor::cv_from_gl_camera(pose);
+    sensor::Mat4f pose(1.0f);
+    pose[3] = sensor::Vec4f(1.5f, -2.25f, 3.0f, 1.0f);
+    const sensor::Mat4f out = sensor::cv_from_gl_camera(pose);
     CHECK(close(out[3], 1.5f, -2.25f, 3.0f, 1.0f));
   }
 
@@ -83,12 +82,12 @@ int main() {
   // third column flips from (0,0,1) to (0,0,-1), and +Y down flips likewise.
   // Hand-checked rather than derived, so a sign error cannot cancel out.
   {
-    vr::Mat4f pose(1.0f);
-    pose[0] = vr::Vec4f(0.0f, 0.0f, -1.0f, 0.0f);
-    pose[1] = vr::Vec4f(0.0f, 1.0f, 0.0f, 0.0f);
-    pose[2] = vr::Vec4f(1.0f, 0.0f, 0.0f, 0.0f);
-    pose[3] = vr::Vec4f(0.5f, 0.0f, 0.0f, 1.0f);
-    const vr::Mat4f out = sensor::cv_from_gl_camera(pose);
+    sensor::Mat4f pose(1.0f);
+    pose[0] = sensor::Vec4f(0.0f, 0.0f, -1.0f, 0.0f);
+    pose[1] = sensor::Vec4f(0.0f, 1.0f, 0.0f, 0.0f);
+    pose[2] = sensor::Vec4f(1.0f, 0.0f, 0.0f, 0.0f);
+    pose[3] = sensor::Vec4f(0.5f, 0.0f, 0.0f, 1.0f);
+    const sensor::Mat4f out = sensor::cv_from_gl_camera(pose);
     CHECK(close(out[0], 0.0f, 0.0f, -1.0f, 0.0f));  // X untouched
     CHECK(close(out[1], 0.0f, -1.0f, 0.0f, 0.0f));  // Y negated
     CHECK(close(out[2], -1.0f, 0.0f, 0.0f, 0.0f));  // Z negated
@@ -98,12 +97,12 @@ int main() {
   // Involution: applying the change of basis twice is the identity, so a
   // double-converted pose must equal the original bit for bit.
   {
-    vr::Mat4f pose(1.0f);
-    pose[0] = vr::Vec4f(0.36f, 0.48f, -0.8f, 0.0f);
-    pose[1] = vr::Vec4f(-0.8f, 0.6f, 0.0f, 0.0f);
-    pose[2] = vr::Vec4f(0.48f, 0.64f, 0.6f, 0.0f);
-    pose[3] = vr::Vec4f(-1.0f, 2.0f, 0.75f, 1.0f);
-    const vr::Mat4f round_trip =
+    sensor::Mat4f pose(1.0f);
+    pose[0] = sensor::Vec4f(0.36f, 0.48f, -0.8f, 0.0f);
+    pose[1] = sensor::Vec4f(-0.8f, 0.6f, 0.0f, 0.0f);
+    pose[2] = sensor::Vec4f(0.48f, 0.64f, 0.6f, 0.0f);
+    pose[3] = sensor::Vec4f(-1.0f, 2.0f, 0.75f, 1.0f);
+    const sensor::Mat4f round_trip =
         sensor::cv_from_gl_camera(sensor::cv_from_gl_camera(pose));
     for (int c = 0; c < 4; ++c) {
       CHECK(close(round_trip[c], pose[c].x, pose[c].y, pose[c].z, pose[c].w));
@@ -111,14 +110,14 @@ int main() {
   }
 
   // --- Intrinsics: registered depth derived from colour --------------------
-  const vr::ColorCameraParams color = arkit_like_color();
+  const sensor::ColorCameraParams color = arkit_like_color();
 
   // ARKit's real shape: 1920x1440 colour -> 256x192 depth, both 1/7.5 scale.
   {
-    vkc::Result<vr::DepthCameraParams> r =
+    vkc::Result<sensor::DepthCameraParams> r =
         sensor::depth_from_registered_color(color, 256, 192, 0.1f, 5.0f);
     CHECK(r.ok());
-    const vr::DepthCameraParams& d = r.value();
+    const sensor::DepthCameraParams& d = r.value();
 
     // Focal lengths scale with the size ratio.
     const float s = 256.0f / 1920.0f;
@@ -141,14 +140,14 @@ int main() {
   // Registered means one physical camera: the depth pose is the colour pose,
   // never separately assigned.
   {
-    vr::ColorCameraParams posed = color;
-    posed.cam_to_world[3] = vr::Vec4f(0.25f, -1.5f, 4.0f, 1.0f);
-    posed.cam_to_world[1] = vr::Vec4f(0.0f, 0.0f, 1.0f, 0.0f);
-    vkc::Result<vr::DepthCameraParams> r =
+    sensor::ColorCameraParams posed = color;
+    posed.cam_to_world[3] = sensor::Vec4f(0.25f, -1.5f, 4.0f, 1.0f);
+    posed.cam_to_world[1] = sensor::Vec4f(0.0f, 0.0f, 1.0f, 0.0f);
+    vkc::Result<sensor::DepthCameraParams> r =
         sensor::depth_from_registered_color(posed, 256, 192, 0.1f, 5.0f);
     CHECK(r.ok());
     for (int c = 0; c < 4; ++c) {
-      const vr::Vec4f& want = posed.cam_to_world[c];
+      const sensor::Vec4f& want = posed.cam_to_world[c];
       CHECK(close(r.value().cam_to_world[c], want.x, want.y, want.z, want.w));
     }
   }
@@ -156,8 +155,9 @@ int main() {
   // Rescaling to the same size is the identity -- the half-pixel term cancels
   // at s == 1, so an unscaled camera must come back untouched.
   {
-    vkc::Result<vr::DepthCameraParams> r = sensor::depth_from_registered_color(
-        color, color.width, color.height, 0.1f, 5.0f);
+    vkc::Result<sensor::DepthCameraParams> r =
+        sensor::depth_from_registered_color(color, color.width, color.height,
+                                            0.1f, 5.0f);
     CHECK(r.ok());
     CHECK(close(r.value().fx, color.fx) && close(r.value().fy, color.fy));
     CHECK(close(r.value().cx, color.cx) && close(r.value().cy, color.cy));
@@ -166,7 +166,7 @@ int main() {
   // Non-square scaling: each axis rescales independently, so a size change in
   // one axis must not disturb the other.
   {
-    vkc::Result<vr::DepthCameraParams> r =
+    vkc::Result<sensor::DepthCameraParams> r =
         sensor::depth_from_registered_color(color, 960, 1440, 0.1f, 5.0f);
     CHECK(r.ok());
     CHECK(close(r.value().fx, 720.0f));    // halved
@@ -185,7 +185,7 @@ int main() {
         !sensor::depth_from_registered_color(color, 256, 192, 5.0f, 0.1f).ok());
     CHECK(!sensor::depth_from_registered_color(color, 256, 192, -0.1f, 5.0f)
                .ok());
-    vr::ColorCameraParams empty = color;
+    sensor::ColorCameraParams empty = color;
     empty.width = 0;
     CHECK(
         !sensor::depth_from_registered_color(empty, 256, 192, 0.1f, 5.0f).ok());
@@ -196,11 +196,11 @@ int main() {
     for (const float bad :
          {0.0f, -1440.0f, std::numeric_limits<float>::infinity(),
           std::numeric_limits<float>::quiet_NaN()}) {
-      vr::ColorCameraParams bad_fx = color;
+      sensor::ColorCameraParams bad_fx = color;
       bad_fx.fx = bad;
       CHECK(!sensor::depth_from_registered_color(bad_fx, 256, 192, 0.1f, 5.0f)
                  .ok());
-      vr::ColorCameraParams bad_fy = color;
+      sensor::ColorCameraParams bad_fy = color;
       bad_fy.fy = bad;
       CHECK(!sensor::depth_from_registered_color(bad_fy, 256, 192, 0.1f, 5.0f)
                  .ok());
@@ -215,7 +215,7 @@ int main() {
     // it, so the frame is not walked at all.
     const std::uint32_t src[3] = {0xFF0000FFu, 0xFF00FF00u, 0xFF123456u};
     std::uint32_t dst[3] = {0u, 0u, 0u};
-    CHECK(sensor::to_canonical(src, 3, vr::ColorEncoding{}, dst).ok());
+    CHECK(sensor::to_canonical(src, 3, sensor::ColorEncoding{}, dst).ok());
     CHECK(dst[0] == src[0] && dst[1] == src[1] && dst[2] == src[2]);
     // Zeroed first, and all three checked. Left holding the previous call's
     // output, `dst` already satisfied this, so the assertion could not tell a
@@ -226,15 +226,16 @@ int main() {
     // predicate itself is pinned where it lives, in core_color_space_test.
     dst[0] = dst[1] = dst[2] = 0u;
     CHECK(sensor::to_canonical(src, 3,
-                               {vr::ColorEncoding::Transfer::Bt709,
-                                vr::ColorEncoding::Primaries::Bt709},
+                               {sensor::ColorEncoding::Transfer::Bt709,
+                                sensor::ColorEncoding::Primaries::Bt709},
                                dst)
               .ok());
     CHECK(dst[0] == src[0] && dst[1] == src[1] && dst[2] == src[2]);
 
     // In-place is allowed and is the same identity.
     std::uint32_t inplace[2] = {0xFF804020u, 0xFF010203u};
-    CHECK(sensor::to_canonical(inplace, 2, vr::ColorEncoding{}, inplace).ok());
+    CHECK(sensor::to_canonical(inplace, 2, sensor::ColorEncoding{}, inplace)
+              .ok());
     CHECK(inplace[0] == 0xFF804020u && inplace[1] == 0xFF010203u);
 
     // Alpha is forced to 0xFF on the identity path too, not only where the
@@ -246,12 +247,12 @@ int main() {
     // never 0 -- a source that packs its high byte as 0 is not exotic.
     const std::uint32_t no_alpha[2] = {0x00123456u, 0x00000000u};
     std::uint32_t alpha_dst[2] = {0u, 0u};
-    CHECK(
-        sensor::to_canonical(no_alpha, 2, vr::ColorEncoding{}, alpha_dst).ok());
+    CHECK(sensor::to_canonical(no_alpha, 2, sensor::ColorEncoding{}, alpha_dst)
+              .ok());
     CHECK(alpha_dst[0] == 0xFF123456u);  // colour verbatim, alpha forced
     CHECK(alpha_dst[1] == 0xFF000000u);  // pure black is non-zero: the sentinel
     std::uint32_t alpha_inplace[1] = {0x00654321u};
-    CHECK(sensor::to_canonical(alpha_inplace, 1, vr::ColorEncoding{},
+    CHECK(sensor::to_canonical(alpha_inplace, 1, sensor::ColorEncoding{},
                                alpha_inplace)
               .ok());
     CHECK(alpha_inplace[0] == 0xFF654321u);
@@ -262,8 +263,8 @@ int main() {
     const std::uint32_t linear_src[1] = {0xFF808080u};
     std::uint32_t linear_dst[1] = {0u};
     CHECK(sensor::to_canonical(linear_src, 1,
-                               {vr::ColorEncoding::Transfer::Linear,
-                                vr::ColorEncoding::Primaries::Bt709},
+                               {sensor::ColorEncoding::Transfer::Linear,
+                                sensor::ColorEncoding::Primaries::Bt709},
                                linear_dst)
               .ok());
     CHECK((linear_dst[0] & 0xFFu) >= 186u && (linear_dst[0] & 0xFFu) <= 190u);
@@ -277,8 +278,8 @@ int main() {
     const std::uint32_t p3_green[1] = {0xFF00FF00u};
     std::uint32_t rotated[1] = {0u};
     CHECK(sensor::to_canonical(p3_green, 1,
-                               {vr::ColorEncoding::Transfer::Srgb,
-                                vr::ColorEncoding::Primaries::DisplayP3},
+                               {sensor::ColorEncoding::Transfer::Srgb,
+                                sensor::ColorEncoding::Primaries::DisplayP3},
                                rotated)
               .ok());
     CHECK((rotated[0] & 0xFFu) == 0u);           // R clipped from negative
@@ -287,8 +288,8 @@ int main() {
     // is D65 -- the invariant that catches a transposed matrix.
     const std::uint32_t p3_white[1] = {0xFFFFFFFFu};
     CHECK(sensor::to_canonical(p3_white, 1,
-                               {vr::ColorEncoding::Transfer::Srgb,
-                                vr::ColorEncoding::Primaries::DisplayP3},
+                               {sensor::ColorEncoding::Transfer::Srgb,
+                                sensor::ColorEncoding::Primaries::DisplayP3},
                                rotated)
               .ok());
     CHECK((rotated[0] & 0xFFFFFFu) == 0xFFFFFFu);
@@ -298,8 +299,8 @@ int main() {
     // do. A driver that declares it gets an inspectable error instead of a
     // quietly wrong reconstruction -- the point of declaring at all.
     CHECK(!sensor::to_canonical(src, 3,
-                                {vr::ColorEncoding::Transfer::Bt2020Pq,
-                                 vr::ColorEncoding::Primaries::Bt2020},
+                                {sensor::ColorEncoding::Transfer::Bt2020Pq,
+                                 sensor::ColorEncoding::Primaries::Bt2020},
                                 dst)
                .ok());
     // ...and refused for an EMPTY frame too, ahead of the zero-count shortcut:
@@ -307,14 +308,15 @@ int main() {
     // driver whose first poll returns nothing should not have the label it will
     // be refused for on the next frame validated here.
     CHECK(!sensor::to_canonical(nullptr, 0,
-                                {vr::ColorEncoding::Transfer::Bt2020Pq,
-                                 vr::ColorEncoding::Primaries::Bt2020},
+                                {sensor::ColorEncoding::Transfer::Bt2020Pq,
+                                 sensor::ColorEncoding::Primaries::Bt2020},
                                 nullptr)
                .ok());
 
     // Degenerate arguments.
-    CHECK(sensor::to_canonical(nullptr, 0, vr::ColorEncoding{}, nullptr).ok());
-    CHECK(!sensor::to_canonical(nullptr, 3, vr::ColorEncoding{}, dst).ok());
+    CHECK(sensor::to_canonical(nullptr, 0, sensor::ColorEncoding{}, nullptr)
+              .ok());
+    CHECK(!sensor::to_canonical(nullptr, 3, sensor::ColorEncoding{}, dst).ok());
   }
 
   std::printf(

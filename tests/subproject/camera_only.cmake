@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 
-# recon's camera-only configure (VR_CAMERA_ONLY), with find_package(Vulkan)
-# disabled throughout: run by the recon_subproject_camera_only test
-# (tests/CMakeLists.txt), in BINARY_DIR.
+# The package's camera-only configure (VS_CAMERA_ONLY), with
+# find_package(Vulkan) disabled throughout: run by the
+# sensor_subproject_camera_only test (tests/CMakeLists.txt), in BINARY_DIR.
 #
-# 1. Each option that needs the rest of recon is refused with VR_CAMERA_ONLY.
-# 2. The consumer (CMakeLists.txt here) fetches recon's source from SOURCE_DIR
+# 1. Each option that needs the rest of the package is refused with
+#    VS_CAMERA_ONLY.
+# 2. The consumer (CMakeLists.txt here) adds the package's source from SOURCE_DIR
 #    camera-only, checks that nothing reaches Vulkan and builds against the
-#    umbrella, which reaches recon_camera alone.
+#    umbrella, which reaches sensor_camera alone.
 #
 # GENERATOR and CXX_COMPILER repeat the calling build's; the build is Release.
 # Every FETCHCONTENT_SOURCE_DIR_<NAME> given is passed on, so it needs no
@@ -19,7 +20,7 @@ foreach(_var SOURCE_DIR BINARY_DIR GENERATOR CXX_COMPILER)
   endif()
 endforeach()
 
-set(_fetch "-DVR_SOURCE_DIR=${SOURCE_DIR}" -DVR_CAMERA_ONLY=ON)
+set(_fetch "-DVS_SOURCE_DIR=${SOURCE_DIR}" -DVS_CAMERA_ONLY=ON)
 get_cmake_property(_vars VARIABLES)
 foreach(_var IN LISTS _vars)
   if(_var MATCHES "^FETCHCONTENT_SOURCE_DIR_")
@@ -28,7 +29,7 @@ foreach(_var IN LISTS _vars)
 endforeach()
 
 # Runs `cmake <ARGN>`, into _result and _output.
-function(_vr_cmake)
+function(_vs_cmake)
   execute_process(
     COMMAND "${CMAKE_COMMAND}" ${ARGN}
     RESULT_VARIABLE _result
@@ -44,8 +45,8 @@ endfunction()
 
 # Configures the consumer into BINARY_DIR/<dir>, with Vulkan hidden and ARGN,
 # into _result and _output.
-macro(_vr_configure dir)
-  _vr_cmake(
+macro(_vs_configure dir)
+  _vs_cmake(
     -S
     "${CMAKE_CURRENT_LIST_DIR}"
     -B
@@ -55,12 +56,12 @@ macro(_vr_configure dir)
     "-DCMAKE_CXX_COMPILER=${CXX_COMPILER}"
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=ON
-    -DVR_EXPECT_CAMERA_ONLY=ON
+    -DVS_EXPECT_CAMERA_ONLY=ON
     ${ARGN})
 endmacro()
 
 # Fails unless the last command succeeded.
-function(_vr_succeeded what)
+function(_vs_succeeded what)
   if(NOT _result EQUAL 0)
     message(FATAL_ERROR "${what} failed:\n${_output}")
   endif()
@@ -68,20 +69,19 @@ endfunction()
 
 file(REMOVE_RECURSE "${BINARY_DIR}")
 
-foreach(_option VR_BUILD_EXAMPLES VR_WITH_ORBBEC VR_WITH_FFMPEG VR_WITH_CUDA
-                VR_WITH_ASSIMP)
-  _vr_configure(refuse_${_option} ${_fetch} "-D${_option}=ON")
+foreach(_option VS_WITH_ORBBEC VS_WITH_FFMPEG VS_WITH_CUDA)
+  _vs_configure(refuse_${_option} ${_fetch} "-D${_option}=ON")
   # CMake wraps a message's lines: match it with each run of blanks as one.
   string(REGEX REPLACE "[ \n]+" " " _flat "${_output}")
   set(_refusal
-      "VR_CAMERA_ONLY builds the camera tier alone: turn ${_option} OFF")
+      "VS_CAMERA_ONLY builds the camera tier alone: turn ${_option} OFF")
   if(_result EQUAL 0 OR NOT _flat MATCHES "${_refusal}")
-    message(FATAL_ERROR "VR_CAMERA_ONLY with ${_option} ON was not refused "
+    message(FATAL_ERROR "VS_CAMERA_ONLY with ${_option} ON was not refused "
                         "with '${_refusal}':\n${_output}")
   endif()
 endforeach()
 
-_vr_configure(fetched ${_fetch})
-_vr_succeeded("Configuring recon's source camera-only")
-_vr_cmake(--build "${BINARY_DIR}/fetched" --config Release)
-_vr_succeeded("Building against recon's source")
+_vs_configure(fetched ${_fetch})
+_vs_succeeded("Configuring the package's source camera-only")
+_vs_cmake(--build "${BINARY_DIR}/fetched" --config Release)
+_vs_succeeded("Building against the package's source")

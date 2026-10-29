@@ -20,12 +20,12 @@
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/video/jpeg_decoder.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace vr = volumetric_kit::recon;
-using vr::sensor::JpegDecoder;
+namespace sensor = volumetric_kit::sensor;
+using sensor::JpegDecoder;
 
 namespace {
 
@@ -79,9 +79,9 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   options.device = &gpu.device;
   if (auto probe = JpegDecoder::create(options); !probe) {
     CHECK(probe.status().domain() == vkc::Status::Code::Unsupported);
-    return vr_test::no_jpeg_decoder(probe.status().message());
+    return vs_test::no_jpeg_decoder(probe.status().message());
   }
-  std::ifstream in(VR_JPEG_DATA "/patches_256x144.jpg", std::ios::binary);
+  std::ifstream in(VS_JPEG_DATA "/patches_256x144.jpg", std::ios::binary);
   const std::vector<std::uint8_t> jpeg((std::istreambuf_iterator<char>(in)),
                                        std::istreambuf_iterator<char>());
   CHECK(!jpeg.empty());
@@ -134,5 +134,5 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 }  // namespace
 
 int main() {
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

@@ -13,8 +13,8 @@
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "yuv_reference.hpp"
 
-namespace sensor = volumetric_kit::recon::sensor;
-namespace video = volumetric_kit::recon::sensor::video;
+namespace sensor = volumetric_kit::sensor;
+namespace video = volumetric_kit::sensor::video;
 using sensor::ChromaLocation;
 using sensor::VideoColorMatrix;
 
@@ -61,9 +61,9 @@ int test_resolve_matrix() {
 }
 
 int test_resolve_encoding() {
-  using Transfer = volumetric_kit::recon::ColorEncoding::Transfer;
-  using Primaries = volumetric_kit::recon::ColorEncoding::Primaries;
-  const auto is = [](std::optional<volumetric_kit::recon::ColorEncoding> e,
+  using Transfer = volumetric_kit::sensor::ColorEncoding::Transfer;
+  using Primaries = volumetric_kit::sensor::ColorEncoding::Primaries;
+  const auto is = [](std::optional<volumetric_kit::sensor::ColorEncoding> e,
                      Transfer t, Primaries p) {
     return e.has_value() && e->transfer == t && e->primaries == p;
   };

@@ -12,7 +12,7 @@
 // type, and noise -- without a read out of bounds; and a host allocation
 // failure in each call, returned as OutOfMemory.
 
-#include "volumetric_kit/recon/sensor/video/hevc_syntax.hpp"
+#include "volumetric_kit/sensor/video/hevc_syntax.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -27,7 +27,7 @@
 #include "volumetric_kit/core/testing/test_allocation_failure.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 
-namespace hevc = volumetric_kit::recon::sensor::hevc;
+namespace hevc = volumetric_kit::sensor::hevc;
 namespace vkc = volumetric_kit::core;
 using Code = vkc::Status::Code;
 
@@ -36,7 +36,7 @@ namespace {
 using Units = std::vector<std::vector<std::uint8_t>>;
 
 std::string clip(const char* name) {
-  return std::string(VR_HEVC_DATA) + "/" + name + ".h265";
+  return std::string(VS_HEVC_DATA) + "/" + name + ".h265";
 }
 
 // @p payload behind a two-byte header of NAL unit @p type, in @p storage.
@@ -64,7 +64,7 @@ struct Read {
 
 Read read_clip(const char* name) {
   Read out;
-  const Units units = vr_test::hevc_access_units(clip(name).c_str());
+  const Units units = vs_test::hevc_access_units(clip(name).c_str());
   out.ok = !units.empty();
   std::vector<hevc::Nal> nals;
   for (const auto& unit : units) {
@@ -304,7 +304,7 @@ int test_picture_order() {
 // header is read without a read out of bounds.
 int test_malformed() {
   const Units units =
-      vr_test::hevc_access_units(clip("testsrc2_full_128x64").c_str());
+      vs_test::hevc_access_units(clip("testsrc2_full_128x64").c_str());
   CHECK(!units.empty());
   std::vector<hevc::Nal> nals;
   CHECK(hevc::split_annex_b(units[0].data(), units[0].size(), nals).ok());
@@ -414,7 +414,7 @@ bool contains_allocation_failure(const Call& call) {
 // growing its list, and each parser building a refusal.
 int test_allocation_failure() {
   const Units units =
-      vr_test::hevc_access_units(clip("testsrc2_full_128x64").c_str());
+      vs_test::hevc_access_units(clip("testsrc2_full_128x64").c_str());
   CHECK(!units.empty());
   const std::vector<std::uint8_t>& au = units[0];
   std::vector<hevc::Nal> nals;

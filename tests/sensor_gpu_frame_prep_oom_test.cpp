@@ -20,12 +20,11 @@
 #include "volumetric_kit/core/testing/test_allocation_failure.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace vr = volumetric_kit::recon;
-namespace sensor = vr::sensor;
+namespace sensor = volumetric_kit::sensor;
 
 int staging_failure_case(vkc::test::Gpu ctx, bool single) {
   auto prep = sensor::GpuFramePrep::create(ctx.device, ctx.allocator);
@@ -107,5 +106,5 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 }
 
 int main() {
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

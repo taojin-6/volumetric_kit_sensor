@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// core/shaders/pinhole.glsl on the device (shaders/pinhole_cases.comp)
+// sensor/frame/shaders/pinhole.glsl on the device (shaders/pinhole_cases.comp)
 // against the host's pinhole in double: the camera tier's conventions
 // (camera/camera_model.hpp: pixel centres at integers, x = (u - cx) z / fx, a
 // rigid cam_to_world) under the file's rules. Every case has a camera of its
@@ -10,9 +10,9 @@
 //   * edges, in exact arithmetic, against the expected answers written out:
 //     the image's first pixel and its last half pixel, the right and bottom
 //     edges, round half up, a 1 x 1 image, behind the camera, and NaN or
-//     infinite points and intrinsics; and, for vr_pinhole_pixel, pixels past
+//     infinite points and intrinsics; and, for vs_pinhole_pixel, pixels past
 //     the image it must extrapolate to and a NaN it must pass through;
-//   * rigid poses, for vr_world_to_camera: two in exact arithmetic, written
+//   * rigid poses, for vs_world_to_camera: two in exact arithmetic, written
 //     out, and a general rotation against the host's R^T (world - t);
 //   * a grid of pixels in and around five cameras of different intrinsics and
 //     sizes, a 3840 x 2160 one among them, at four depths, against the host's
@@ -36,18 +36,19 @@
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
-#include "volumetric_kit/recon/camera/camera_model.hpp"
-#include "volumetric_kit/recon/core/math/vector_types.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/frame/vector_types.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "pinhole_cases_comp.spv.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
 
-namespace vr = volumetric_kit::recon;
+namespace sensor = volumetric_kit::sensor;
 namespace vkc = volumetric_kit::core;
-namespace cam = volumetric_kit::recon::camera;
+namespace cam = volumetric_kit::sensor::camera;
 
 namespace {
 
@@ -55,12 +56,12 @@ constexpr std::uint32_t kRefused = ~0u;
 
 // Mirrors Case in shaders/pinhole_cases.comp under std430.
 struct PinholeCase {
-  vr::Vec4f k;      // fx, fy, cx, cy
-  vr::Vec4f point;  // xyz projected; w the depth `pixel` is unprojected at
-  vr::Vec2f pixel;
+  sensor::Vec4f k;      // fx, fy, cx, cy
+  sensor::Vec4f point;  // xyz projected; w the depth `pixel` is unprojected at
+  sensor::Vec2f pixel;
   glm::uvec2 size;
-  vr::Mat4f pose;  // cam_to_world, which `world` is moved through
-  vr::Vec4f world;
+  sensor::Mat4f pose;  // cam_to_world, which `world` is moved through
+  sensor::Vec4f world;
 };
 static_assert(sizeof(PinholeCase) == 128 &&
                   offsetof(PinholeCase, point) == 16 &&
@@ -71,40 +72,41 @@ static_assert(sizeof(PinholeCase) == 128 &&
               "mirrors Case in shaders/pinhole_cases.comp");
 
 // A case with no pose to test: the identity, and the origin.
-PinholeCase make_case(const vr::Vec4f& k, const vr::Vec4f& point,
-                      const vr::Vec2f& pixel, const glm::uvec2& size) {
-  return {k, point, pixel, size, vr::Mat4f(1.0f), vr::Vec4f(0.0f)};
+PinholeCase make_case(const sensor::Vec4f& k, const sensor::Vec4f& point,
+                      const sensor::Vec2f& pixel, const glm::uvec2& size) {
+  return {k, point, pixel, size, sensor::Mat4f(1.0f), sensor::Vec4f(0.0f)};
 }
 
 // A camera of the camera tier, narrowed to the float values a kernel passes.
-vr::Vec4f k_of(const cam::PinholeIntrinsics& k) {
-  return vr::Vec4f(static_cast<float>(k.fx), static_cast<float>(k.fy),
-                   static_cast<float>(k.cx), static_cast<float>(k.cy));
+sensor::Vec4f k_of(const cam::PinholeIntrinsics& k) {
+  return sensor::Vec4f(static_cast<float>(k.fx), static_cast<float>(k.fy),
+                       static_cast<float>(k.cx), static_cast<float>(k.cy));
 }
 
 // What the host computes for a case, in double from its float values.
 struct Reference {
-  bool in_front = false;  // vr_pinhole_pixel's answer, and its pixel
+  bool in_front = false;  // vs_pinhole_pixel's answer, and its pixel
   double pu = 0.0;
   double pv = 0.0;
-  bool accepted = false;  // vr_project_pinhole's, and its pixel
+  bool accepted = false;  // vs_project_pinhole's, and its pixel
   double u = 0.0;
   double v = 0.0;
   glm::uvec2 nearest{kRefused};
-  vr::Vec3d unprojected{0.0};
-  vr::Vec3d to_camera{0.0};
+  cam::Vec3d unprojected{0.0};
+  cam::Vec3d to_camera{0.0};
 };
 
 Reference reference(const PinholeCase& c) {
   const double fx = c.k.x, fy = c.k.y, cx = c.k.z, cy = c.k.w;
   const double depth = c.point.w;
   Reference r;
-  r.unprojected = vr::Vec3d((c.pixel.x - cx) * depth / fx,
-                            (c.pixel.y - cy) * depth / fy, depth);
+  r.unprojected = cam::Vec3d((c.pixel.x - cx) * depth / fx,
+                             (c.pixel.y - cy) * depth / fy, depth);
   // R^T (world - t): row i of R^T is column i of R.
-  const vr::Vec3d d = vr::Vec3d(vr::Vec3f(c.world)) - vr::Vec3d(c.pose[3]);
+  const cam::Vec3d d =
+      cam::Vec3d(sensor::Vec3f(c.world)) - cam::Vec3d(c.pose[3]);
   for (int i = 0; i < 3; ++i) {
-    r.to_camera[i] = glm::dot(vr::Vec3d(c.pose[i]), d);
+    r.to_camera[i] = glm::dot(cam::Vec3d(c.pose[i]), d);
   }
   const double z = c.point.z;
   if (!(z > 0.0)) return r;
@@ -144,10 +146,11 @@ std::vector<Edge> edges() {
   const float nan = std::numeric_limits<float>::quiet_NaN();
   const float inf = std::numeric_limits<float>::infinity();
   // fx 32, fy 16, principal point (32, 8), 64 x 16: u = 32 x / z + 32.
-  const vr::Vec4f k(32.0f, 16.0f, 32.0f, 8.0f);
+  const sensor::Vec4f k(32.0f, 16.0f, 32.0f, 8.0f);
   const glm::uvec2 size(64, 16);
   const auto at = [&](float x, float y, float z) {
-    return make_case(k, vr::Vec4f(x, y, z, 1.0f), vr::Vec2f(0.0f), size);
+    return make_case(k, sensor::Vec4f(x, y, z, 1.0f), sensor::Vec2f(0.0f),
+                     size);
   };
   const glm::uvec2 no(kRefused);
   std::vector<Edge> e = {
@@ -186,9 +189,9 @@ std::vector<Edge> edges() {
     e.push_back(n);
   }
   // A 1 x 1 image: its one pixel takes [0, 1) x [0, 1).
-  const vr::Vec4f one(1.0f, 1.0f, 0.0f, 0.0f);
+  const sensor::Vec4f one(1.0f, 1.0f, 0.0f, 0.0f);
   const auto at_one = [&](float x, float y) {
-    return make_case(one, vr::Vec4f(x, y, 1.0f, 1.0f), vr::Vec2f(0.0f),
+    return make_case(one, sensor::Vec4f(x, y, 1.0f, 1.0f), sensor::Vec2f(0.0f),
                      glm::uvec2(1, 1));
   };
   e.push_back({"1 x 1, (0.25, 0.25)", at_one(0.25f, 0.25f), true, {0, 0}});
@@ -199,13 +202,13 @@ std::vector<Edge> edges() {
   return e;
 }
 
-// vr_pinhole_pixel in exact arithmetic, on edges()' camera: in front of it,
+// vs_pinhole_pixel in exact arithmetic, on edges()' camera: in front of it,
 // wherever the pixel lands, its pixel; behind it or at a NaN depth, refused.
 struct UnboundedEdge {
   const char* what;
-  vr::Vec3f point;
+  sensor::Vec3f point;
   bool in_front;
-  vr::Vec2f pixel;  // NaN where the pixel must be NaN
+  sensor::Vec2f pixel;  // NaN where the pixel must be NaN
 };
 std::vector<UnboundedEdge> unbounded_edges() {
   const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -225,32 +228,32 @@ std::vector<UnboundedEdge> unbounded_edges() {
   };
 }
 
-// Rigid poses for vr_world_to_camera: {what, cam_to_world, the world point,
+// Rigid poses for vs_world_to_camera: {what, cam_to_world, the world point,
 // the camera point}, in exact arithmetic.
 struct PoseEdge {
   const char* what;
-  vr::Mat4f pose;
-  vr::Vec3f world;
-  vr::Vec3f camera;
+  sensor::Mat4f pose;
+  sensor::Vec3f world;
+  sensor::Vec3f camera;
 };
 std::vector<PoseEdge> pose_edges() {
   // 90 degrees about Z, so R^T is not R, and a translation: R (1, 2, 3) is
   // (-2, 1, 3), and t moves it to (-1.75, 0.5, 5).
-  const vr::Mat4f turned(0.0f, 1.0f, 0.0f, 0.0f,     // column 0
-                         -1.0f, 0.0f, 0.0f, 0.0f,    // column 1
-                         0.0f, 0.0f, 1.0f, 0.0f,     // column 2
-                         0.25f, -0.5f, 2.0f, 1.0f);  // column 3
+  const sensor::Mat4f turned(0.0f, 1.0f, 0.0f, 0.0f,     // column 0
+                             -1.0f, 0.0f, 0.0f, 0.0f,    // column 1
+                             0.0f, 0.0f, 1.0f, 0.0f,     // column 2
+                             0.25f, -0.5f, 2.0f, 1.0f);  // column 3
   return {
-      {"identity", vr::Mat4f(1.0f), {1.0f, 2.0f, 3.0f}, {1.0f, 2.0f, 3.0f}},
+      {"identity", sensor::Mat4f(1.0f), {1.0f, 2.0f, 3.0f}, {1.0f, 2.0f, 3.0f}},
       {"turned and moved", turned, {-1.75f, 0.5f, 5.0f}, {1.0f, 2.0f, 3.0f}},
   };
 }
 
 // Unprojections in exact arithmetic: {pixel, depth, the point}.
 struct ExactUnprojection {
-  vr::Vec2f pixel;
+  sensor::Vec2f pixel;
   float depth;
-  vr::Vec3f point;
+  sensor::Vec3f point;
 };
 const ExactUnprojection kExactUnprojections[] = {
     {{32.0f, 8.0f}, 3.0f, {0.0f, 0.0f, 3.0f}},   // the principal point
@@ -295,23 +298,24 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   const std::vector<Edge> edge_cases = edges();
   for (const Edge& e : edge_cases) cases.push_back(e.c);
   const std::size_t unproject_first = cases.size();
-  const vr::Vec4f edge_k(32.0f, 16.0f, 32.0f, 8.0f);
+  const sensor::Vec4f edge_k(32.0f, 16.0f, 32.0f, 8.0f);
   const glm::uvec2 edge_size(64, 16);
   for (const ExactUnprojection& x : kExactUnprojections) {
-    cases.push_back(make_case(edge_k, vr::Vec4f(0.0f, 0.0f, -1.0f, x.depth),
+    cases.push_back(make_case(edge_k, sensor::Vec4f(0.0f, 0.0f, -1.0f, x.depth),
                               x.pixel, edge_size));
   }
   const std::size_t unbounded_first = cases.size();
   const std::vector<UnboundedEdge> unbounded_cases = unbounded_edges();
   for (const UnboundedEdge& e : unbounded_cases) {
-    cases.push_back(make_case(edge_k, vr::Vec4f(e.point, 1.0f), vr::Vec2f(0.0f),
-                              edge_size));
+    cases.push_back(make_case(edge_k, sensor::Vec4f(e.point, 1.0f),
+                              sensor::Vec2f(0.0f), edge_size));
   }
   const std::size_t pose_first = cases.size();
   const std::vector<PoseEdge> pose_cases = pose_edges();
   for (const PoseEdge& e : pose_cases) {
-    cases.push_back({edge_k, vr::Vec4f(0.0f, 0.0f, 1.0f, 1.0f), vr::Vec2f(0.0f),
-                     edge_size, e.pose, vr::Vec4f(e.world, 1.0f)});
+    cases.push_back({edge_k, sensor::Vec4f(0.0f, 0.0f, 1.0f, 1.0f),
+                     sensor::Vec2f(0.0f), edge_size, e.pose,
+                     sensor::Vec4f(e.world, 1.0f)});
   }
   // A general rotation, so no entry of R is 0 or 1, against the host's
   // R^T (world - t) on the same float pose.
@@ -321,13 +325,14 @@ int gpu_main(vkc::test::GpuContext& gpu) {
                                   glm::normalize(glm::dvec3(1.0, 2.0, 3.0)));
     pose[3] = glm::dvec4(0.3, -1.2, 2.5, 1.0);
     const glm::dvec4 world = pose * glm::dvec4(0.4, -0.3, 1.7, 1.0);
-    cases.push_back({edge_k, vr::Vec4f(0.0f, 0.0f, 1.0f, 1.0f), vr::Vec2f(0.0f),
-                     edge_size, vr::Mat4f(pose), vr::Vec4f(world)});
+    cases.push_back({edge_k, sensor::Vec4f(0.0f, 0.0f, 1.0f, 1.0f),
+                     sensor::Vec2f(0.0f), edge_size, sensor::Mat4f(pose),
+                     sensor::Vec4f(world)});
   }
   const std::size_t grid_first = cases.size();
   const float depths[] = {0.37f, 1.0f, 2.5f, 7.25f};
   for (const Camera& c : kCameras) {
-    const vr::Vec4f k = k_of(c.k);
+    const sensor::Vec4f k = k_of(c.k);
     for (const float v : axis_pixels(c.size.height)) {
       for (const float u : axis_pixels(c.size.width)) {
         for (const float z : depths) {
@@ -335,8 +340,9 @@ int gpu_main(vkc::test::GpuContext& gpu) {
           const double x = (u - c.k.cx) * z / c.k.fx;
           const double y = (v - c.k.cy) * z / c.k.fy;
           cases.push_back(make_case(
-              k, vr::Vec4f(static_cast<float>(x), static_cast<float>(y), z, z),
-              vr::Vec2f(u, v), glm::uvec2(c.size.width, c.size.height)));
+              k,
+              sensor::Vec4f(static_cast<float>(x), static_cast<float>(y), z, z),
+              sensor::Vec2f(u, v), glm::uvec2(c.size.width, c.size.height)));
         }
       }
     }
@@ -346,8 +352,8 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   vkc::ComputeKernel kernel;
   vkc::KernelSetBuilder builder(gpu.device);
   CHECK(builder
-            .add(kernel, "pinhole_cases", vr_pinhole_cases_comp_spv,
-                 vr_pinhole_cases_comp_spv_size, 7)
+            .add(kernel, "pinhole_cases", vs_pinhole_cases_comp_spv,
+                 vs_pinhole_cases_comp_spv_size, 7)
             .ok());
   auto pool = builder.build();
   auto in = vkc::test::upload_device_buffer(gpu.device, gpu.allocator,
@@ -355,15 +361,15 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   auto accepted =
       vkc::device_storage_buffer(gpu.allocator, n * sizeof(std::uint32_t));
   auto projected =
-      vkc::device_storage_buffer(gpu.allocator, n * sizeof(vr::Vec2f));
+      vkc::device_storage_buffer(gpu.allocator, n * sizeof(sensor::Vec2f));
   auto nearest =
       vkc::device_storage_buffer(gpu.allocator, n * sizeof(glm::uvec2));
   auto unprojected =
-      vkc::device_storage_buffer(gpu.allocator, n * sizeof(vr::Vec4f));
+      vkc::device_storage_buffer(gpu.allocator, n * sizeof(sensor::Vec4f));
   auto unbounded =
-      vkc::device_storage_buffer(gpu.allocator, n * sizeof(vr::Vec4f));
+      vkc::device_storage_buffer(gpu.allocator, n * sizeof(sensor::Vec4f));
   auto to_camera =
-      vkc::device_storage_buffer(gpu.allocator, n * sizeof(vr::Vec4f));
+      vkc::device_storage_buffer(gpu.allocator, n * sizeof(sensor::Vec4f));
   CHECK(pool.ok() && in.ok() && accepted.ok() && projected.ok() &&
         nearest.ok() && unprojected.ok() && unbounded.ok() && to_camera.ok());
   kernel.set.write_storage_buffer(0, in->handle(), 0, VK_WHOLE_SIZE);
@@ -378,16 +384,16 @@ int gpu_main(vkc::test::GpuContext& gpu) {
             .ok());
   auto got_accepted = vkc::test::read_back<std::uint32_t>(
       gpu.device, gpu.allocator, *accepted, n);
-  auto got_projected =
-      vkc::test::read_back<vr::Vec2f>(gpu.device, gpu.allocator, *projected, n);
+  auto got_projected = vkc::test::read_back<sensor::Vec2f>(
+      gpu.device, gpu.allocator, *projected, n);
   auto got_nearest =
       vkc::test::read_back<glm::uvec2>(gpu.device, gpu.allocator, *nearest, n);
-  auto got_unprojected = vkc::test::read_back<vr::Vec4f>(
+  auto got_unprojected = vkc::test::read_back<sensor::Vec4f>(
       gpu.device, gpu.allocator, *unprojected, n);
-  auto got_unbounded =
-      vkc::test::read_back<vr::Vec4f>(gpu.device, gpu.allocator, *unbounded, n);
-  auto got_to_camera =
-      vkc::test::read_back<vr::Vec4f>(gpu.device, gpu.allocator, *to_camera, n);
+  auto got_unbounded = vkc::test::read_back<sensor::Vec4f>(
+      gpu.device, gpu.allocator, *unbounded, n);
+  auto got_to_camera = vkc::test::read_back<sensor::Vec4f>(
+      gpu.device, gpu.allocator, *to_camera, n);
   CHECK(got_accepted.ok() && got_projected.ok() && got_nearest.ok() &&
         got_unprojected.ok() && got_unbounded.ok() && got_to_camera.ok());
 
@@ -406,12 +412,12 @@ int gpu_main(vkc::test::GpuContext& gpu) {
     }
   };
 
-  // vr_pinhole_pixel against the host: its answer exactly, and its pixel
+  // vs_pinhole_pixel against the host: its answer exactly, and its pixel
   // within `tolerance`, NaN for NaN.
   const auto unbounded_ok = [&](std::size_t i, const Reference& r,
                                 double tolerance) {
-    const vr::Vec4f got = got_unbounded.value()[i];
-    if (!r.in_front) return got == vr::Vec4f(-1.0f, -1.0f, 0.0f, 0.0f);
+    const sensor::Vec4f got = got_unbounded.value()[i];
+    if (!r.in_front) return got == sensor::Vec4f(-1.0f, -1.0f, 0.0f, 0.0f);
     return got.z == 1.0f && matches(got.x, r.pu, tolerance) &&
            matches(got.y, r.pv, tolerance);
   };
@@ -421,7 +427,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
     const Edge& e = edge_cases[i];
     const Reference r = reference(e.c);
     const bool ok = got_accepted.value()[i] == 1u;
-    const vr::Vec2f px = got_projected.value()[i];
+    const sensor::Vec2f px = got_projected.value()[i];
     if (ok != e.accepted || got_nearest.value()[i] != e.nearest ||
         r.accepted != e.accepted ||
         (ok && (px.x != static_cast<float>(r.u) ||
@@ -434,7 +440,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
     const std::size_t i = unbounded_first + j;
     const UnboundedEdge& e = unbounded_cases[j];
     const Reference r = reference(cases[i]);
-    const vr::Vec4f got = got_unbounded.value()[i];
+    const sensor::Vec4f got = got_unbounded.value()[i];
     const bool written = e.in_front ? got.z == 1.0f &&
                                           matches(got.x, e.pixel.x, 0.0) &&
                                           matches(got.y, e.pixel.y, 0.0)
@@ -446,25 +452,25 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   for (std::size_t j = 0; j < pose_cases.size(); ++j) {
     const std::size_t i = pose_first + j;
     const Reference r = reference(cases[i]);
-    const vr::Vec3f got(got_to_camera.value()[i]);
-    if (got != pose_cases[j].camera || vr::Vec3d(got) != r.to_camera) {
+    const sensor::Vec3f got(got_to_camera.value()[i]);
+    if (got != pose_cases[j].camera || cam::Vec3d(got) != r.to_camera) {
       fail(i, pose_cases[j].what);
     }
   }
   {
     const Reference r = reference(cases[general_pose]);
-    const vr::Vec3d got(vr::Vec3f(got_to_camera.value()[general_pose]));
+    const cam::Vec3d got(sensor::Vec3f(got_to_camera.value()[general_pose]));
     // Near the camera point the pose was built from, and the host's formula
     // on the float pose within a few float roundings.
-    if (!(glm::length(got - vr::Vec3d(0.4, -0.3, 1.7)) < 1e-5 &&
+    if (!(glm::length(got - cam::Vec3d(0.4, -0.3, 1.7)) < 1e-5 &&
           glm::length(got - r.to_camera) < 2e-6)) {
       fail(general_pose, "a general rotation");
     }
   }
   for (std::size_t j = 0; j < std::size(kExactUnprojections); ++j) {
     const std::size_t i = unproject_first + j;
-    const vr::Vec4f p = got_unprojected.value()[i];
-    if (vr::Vec3f(p) != kExactUnprojections[j].point ||
+    const sensor::Vec4f p = got_unprojected.value()[i];
+    if (sensor::Vec3f(p) != kExactUnprojections[j].point ||
         got_accepted.value()[i] != 0u) {
       fail(i, "exact unprojection");
     }
@@ -477,7 +483,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
     const Reference r = reference(cases[i]);
     const bool ok = got_accepted.value()[i] == 1u;
     accepted_count += ok ? 1 : 0;
-    const vr::Vec2f px = got_projected.value()[i];
+    const sensor::Vec2f px = got_projected.value()[i];
     if (ok != r.accepted || got_nearest.value()[i] != r.nearest ||
         (ok &&
          !(std::fabs(px.x - r.u) <= 2e-3 && std::fabs(px.y - r.v) <= 2e-3)) ||
@@ -487,7 +493,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
     const auto near = [](double got, double want) {
       return std::fabs(got - want) <= 2e-6 * (1.0 + std::fabs(want));
     };
-    const vr::Vec4f p = got_unprojected.value()[i];
+    const sensor::Vec4f p = got_unprojected.value()[i];
     if (!(near(p.x, r.unprojected.x) && near(p.y, r.unprojected.y) &&
           p.z == static_cast<float>(r.unprojected.z))) {
       fail(i, "grid unprojection");
@@ -509,5 +515,5 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 }  // namespace
 
 int main() {
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

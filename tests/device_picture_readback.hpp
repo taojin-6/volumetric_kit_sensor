@@ -12,31 +12,31 @@
 
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/recon/sensor/utils/picture_readback.hpp"
-#include "volumetric_kit/recon/sensor/yuv_image.hpp"
+#include "volumetric_kit/sensor/prep/picture_readback.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
-namespace vr_test {
+namespace vs_test {
 
-namespace vr = volumetric_kit::recon;
+namespace sensor = volumetric_kit::sensor;
 namespace vkc = volumetric_kit::core;
 
 // Fills `planes` and updates `p`'s ownership, or leaves them empty on failure.
-inline void read_device_picture(vr::sensor::YuvImage& p, vkc::Device& device,
+inline void read_device_picture(sensor::YuvImage& p, vkc::Device& device,
                                 vkc::Allocator& allocator,
                                 std::vector<std::uint8_t> (&planes)[3]) {
-  using vr::sensor::PictureReadback;
+  using sensor::PictureReadback;
   auto readback = PictureReadback::create(device, allocator);
   if (!readback) return;
   auto read = (*readback)->read(p, PictureReadback::Planes::All);
   if (!read) return;
-  const vr::sensor::PictureView& v = *read;
+  const sensor::PictureView& v = *read;
   const std::uint32_t cw = (v.width + 1) / 2, ch = (v.height + 1) / 2;
   for (std::uint32_t r = 0; r < v.height; ++r) {
     const std::uint8_t* line = v.luma + r * v.stride;
     planes[0].insert(planes[0].end(), line, line + v.width);
   }
   for (std::uint32_t r = 0; r < ch; ++r) {
-    if (v.layout == vr::sensor::YuvLayout::Nv12) {
+    if (v.layout == sensor::YuvLayout::Nv12) {
       const std::uint8_t* line = v.chroma[0] + r * v.chroma_stride[0];
       for (std::uint32_t x = 0; x < cw; ++x) {
         planes[1].push_back(line[2 * x]);
@@ -51,4 +51,4 @@ inline void read_device_picture(vr::sensor::YuvImage& p, vkc::Device& device,
   }
 }
 
-}  // namespace vr_test
+}  // namespace vs_test
