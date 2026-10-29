@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/camera/array_calibration.hpp"
+#include "volumetric_kit/sensor/camera/array_calibration.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -16,7 +16,7 @@
 
 #include "volumetric_kit/core/base/exception_status.hpp"
 
-namespace volumetric_kit::recon::camera {
+namespace volumetric_kit::sensor::camera {
 
 namespace {
 
@@ -581,4 +581,4 @@ core::Status write_array_calibration(const std::string& path,
   return core::write_file(path, text, mode);
 }
 
-}  // namespace volumetric_kit::recon::camera
+}  // namespace volumetric_kit::sensor::camera

@@ -12,7 +12,7 @@
 // a decoder slower than the camera skips pairs rather than falling behind;
 // and the pictures are shared with the queue families it is given.
 //
-// Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
+// Where no device path opens the test skips; VS_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one, makes it fail instead.
 
 #include <algorithm>
@@ -45,12 +45,11 @@
 
 #include "decoder_test.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
 
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
-namespace orbbec = volumetric_kit::recon::sensor::orbbec;
+namespace sensor = volumetric_kit::sensor;
+namespace orbbec = volumetric_kit::sensor::orbbec;
 
 namespace {
 
@@ -58,8 +57,8 @@ constexpr std::uint32_t kWidth = 256;
 constexpr std::uint32_t kHeight = 144;
 constexpr std::uint64_t kStartUs = 1000000;
 constexpr std::uint64_t kPeriodUs = 33333;  // 30 fps
-constexpr const char* kJpeg = VR_JPEG_DATA "/patches_256x144.jpg";
-constexpr const char* k422 = VR_JPEG_DATA "/patches_422_256x144.jpg";
+constexpr const char* kJpeg = VS_JPEG_DATA "/patches_256x144.jpg";
+constexpr const char* k422 = VS_JPEG_DATA "/patches_422_256x144.jpg";
 
 // The device the decoders run on, set by main.
 vkc::Device* g_device = nullptr;
@@ -166,7 +165,7 @@ struct Planes {
 Planes from_device(sensor::DecodedPicture& p, vkc::Device& device,
                    vkc::Allocator& allocator) {
   std::vector<std::uint8_t> planes[3];
-  vr_test::read_device_picture(p.yuv, device, allocator, planes);
+  vs_test::read_device_picture(p.yuv, device, allocator, planes);
   return {std::move(planes[0]), std::move(planes[1]), std::move(planes[2])};
 }
 
@@ -417,7 +416,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
         std::fprintf(stderr, "FAIL: %s\n", probe.status().message().c_str());
         return 1;
       }
-      return vr_test::no_jpeg_decoder(probe.status().message());
+      return vs_test::no_jpeg_decoder(probe.status().message());
     }
   }
 
@@ -441,5 +440,5 @@ int main() {
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
   if (test_start_needs_device() != 0) return 1;
 
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

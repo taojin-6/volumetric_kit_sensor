@@ -16,7 +16,7 @@
 
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 static_assert(kMaxColorQueueFamilies == core::BufferDesc::kMaxQueueFamilies,
               "kMaxColorQueueFamilies mirrors BufferDesc::kMaxQueueFamilies");
@@ -374,4 +374,4 @@ core::Result<std::optional<camera::ColorControls>> write_color_controls(
   }
 }
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

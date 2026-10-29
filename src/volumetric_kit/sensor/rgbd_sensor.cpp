@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
+#include "volumetric_kit/sensor/rgbd_sensor.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 const char* to_string(SyncRole role) noexcept {
   switch (role) {
@@ -30,4 +30,4 @@ core::Status IRgbdSensor::set_frame_notify(std::function<void()> /*notify*/) {
       "IRgbdSensor::set_frame_notify: this sensor notifies nothing; poll it");
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

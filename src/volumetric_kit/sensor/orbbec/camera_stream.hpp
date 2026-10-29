@@ -22,14 +22,14 @@
 
 #include "frame_conversion.hpp"
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/camera/camera_model.hpp"
-#include "volumetric_kit/recon/camera/color_controls.hpp"
-#include "volumetric_kit/recon/camera/geometry.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/color_controls.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_stream.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sync_config.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 class HevcColorDecoder;
 class JpegColorDecoder;
@@ -217,4 +217,4 @@ core::Result<std::unique_ptr<CameraStream>> open_camera(
     bool configure_logging, const OrbbecStreamOptions& streams,
     const camera::Mat4d& color_to_world, const std::string& who);
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

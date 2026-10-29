@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/video/hevc_decoder.hpp
+/// @file video/hevc_decoder.hpp
 /// @brief An H.265/HEVC decoder on the GPU's hardware, handing out pictures on
 ///        the device only.
 ///
@@ -18,16 +18,16 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/fwd.hpp"
-#include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
-#include "volumetric_kit/recon/sensor/video/export.hpp"
+#include "volumetric_kit/sensor/video/decoded_picture.hpp"
+#include "volumetric_kit/sensor/video/export.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief Decodes an H.265 elementary stream (Annex B), one access unit at a
 ///        time in decode order, on the hardware of the device it is given:
 ///        VideoToolbox, directly, on Apple, where hardware decoding is
 ///        required and there is no software fallback; NVDEC through FFmpeg in
-///        a build with VR_WITH_CUDA (Linux). Pictures come out in display
+///        a build with VS_WITH_CUDA (Linux). Pictures come out in display
 ///        order, NV12, on that device (@ref DecodedPicture), and never cross
 ///        to the host.
 ///
@@ -37,7 +37,7 @@ namespace volumetric_kit::recon::sensor {
 /// @ref receive instead.
 ///
 /// @warning Not thread-safe: use from one thread.
-class VR_SENSOR_VIDEO_API HevcDecoder {
+class VS_VIDEO_API HevcDecoder {
  public:
   /// @brief How @ref create opens a decoder.
   struct Options {
@@ -131,4 +131,4 @@ class VR_SENSOR_VIDEO_API HevcDecoder {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

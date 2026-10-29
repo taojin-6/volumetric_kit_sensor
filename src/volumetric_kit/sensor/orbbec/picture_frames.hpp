@@ -17,10 +17,10 @@
 
 #include <libobsensor/ObSensor.hpp>
 
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/video/decoded_picture.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 // A frame that keeps @p picture, and with it its device buffer or images,
 // until the frame is freed: a 0x0 video frame of a compressed format whose
@@ -46,4 +46,4 @@ std::shared_ptr<ob::FrameSet> rebuilt_pair(std::shared_ptr<ob::Frame> depth,
                                            const ob::Frame& source,
                                            std::shared_ptr<ob::Frame> decoded);
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

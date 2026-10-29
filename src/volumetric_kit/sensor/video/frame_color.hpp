@@ -9,11 +9,11 @@
 
 #include <optional>
 
-#include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/sensor/video/color_codes.hpp"
-#include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
+#include "volumetric_kit/sensor/frame/color_space.hpp"
+#include "volumetric_kit/sensor/video/color_codes.hpp"
+#include "volumetric_kit/sensor/video/decoded_picture.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 
 /// @return The matrix @p matrix names; an unspecified one by @p height, as
 ///         @ref DecodedPicture::yuv describes.
@@ -32,4 +32,4 @@ void describe_color(
     const std::optional<VideoColorDescription>& unlabelled_color,
     DecodedPicture& picture);
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

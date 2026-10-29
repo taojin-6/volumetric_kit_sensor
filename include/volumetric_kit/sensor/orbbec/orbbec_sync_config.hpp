@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/orbbec/orbbec_sync_config.hpp
+/// @file orbbec/orbbec_sync_config.hpp
 /// @brief A rig's hardware sync configuration: which cameras, which is the
 ///        primary, and each one's sync settings.
 ///
@@ -23,9 +23,9 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/export.hpp"
+#include "volumetric_kit/sensor/orbbec/export.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief A camera's role in a hardware-synchronised rig, as the camera itself
 ///        reports it.
@@ -57,11 +57,11 @@ enum class OrbbecSyncMode {
 ///         poll keeps returning no frame, as if it were merely slow. `false`
 ///         for @ref OrbbecSyncMode::SoftwareTriggering, which waits for the
 ///         host and which a camera's open refuses.
-VR_SENSOR_ORBBEC_API bool waits_for_primary(OrbbecSyncMode mode) noexcept;
+VS_ORBBEC_API bool waits_for_primary(OrbbecSyncMode mode) noexcept;
 
 /// @return A stable lowercase name for @p mode (`"primary"`,
 ///         `"secondary-synced"`, ...), for logs.
-VR_SENSOR_ORBBEC_API const char* to_string(OrbbecSyncMode mode) noexcept;
+VS_ORBBEC_API const char* to_string(OrbbecSyncMode mode) noexcept;
 
 /// @brief One camera's sync settings: the SDK's `OBMultiDeviceSyncConfig`.
 struct OrbbecSyncSettings {
@@ -91,14 +91,14 @@ struct OrbbecRigSyncConfig {
 ///         `syncConfig` whose fields are all present and typed, a `syncMode`
 ///         this driver does not name, a negative delay, a repeated serial, or
 ///         a `master_serial` that is not the one primary.
-VR_SENSOR_ORBBEC_API core::Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(
+VS_ORBBEC_API core::Result<OrbbecRigSyncConfig> parse_orbbec_sync_config(
     const std::string& json);
 
 /// @brief Read and parse the sync configuration file at @p path.
 /// @return As @ref parse_orbbec_sync_config, messages naming the file; or
 ///         `core::read_file`'s error when it cannot be read
 ///         (`Status::Code::NotFound` for a missing file).
-VR_SENSOR_ORBBEC_API core::Result<OrbbecRigSyncConfig> read_orbbec_sync_config(
+VS_ORBBEC_API core::Result<OrbbecRigSyncConfig> read_orbbec_sync_config(
     const std::string& path);
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

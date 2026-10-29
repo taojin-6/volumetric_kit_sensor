@@ -17,7 +17,7 @@
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace video = volumetric_kit::recon::sensor::video;
+namespace video = volumetric_kit::sensor::video;
 
 int main() {
   const vkc::Status jpeg = video::nvjpeg_error(

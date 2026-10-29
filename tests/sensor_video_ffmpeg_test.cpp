@@ -15,7 +15,7 @@
 #include "volumetric_kit/core/testing/test_check.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace video = volumetric_kit::recon::sensor::video;
+namespace video = volumetric_kit::sensor::video;
 using Code = vkc::Status::Code;
 
 namespace {
@@ -49,7 +49,7 @@ int test_other_domains() {
 int test_color_codes() {
   video::FramePtr frame(av_frame_alloc());
   CHECK(frame != nullptr);
-  volumetric_kit::recon::sensor::ColorCodes codes = video::color_codes(*frame);
+  volumetric_kit::sensor::ColorCodes codes = video::color_codes(*frame);
   CHECK(codes.matrix == 2 && codes.transfer == 2 && codes.primaries == 2);
   CHECK(!codes.full_range && codes.chroma_location == 0);
   frame->colorspace = AVCOL_SPC_BT2020_NCL;

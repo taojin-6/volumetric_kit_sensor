@@ -7,7 +7,7 @@
 #include <memory>
 #include <utility>
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 namespace {
 
@@ -182,4 +182,4 @@ void HevcColorDecoder::hand_on(const DecodedPicture& picture) {
                      picture_frame(picture)));
 }
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

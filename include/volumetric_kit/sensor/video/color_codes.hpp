@@ -3,10 +3,10 @@
 
 #pragma once
 
-/// @file sensor/video/color_codes.hpp
+/// @file video/color_codes.hpp
 /// @brief The colour a video stream declares, as ITU-T H.273 code points.
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief The ITU-T H.273 code points a stream declares: its YCbCr matrix,
 ///        transfer and primaries, its range and its chroma siting.
@@ -22,4 +22,4 @@ struct ColorCodes {
   int chroma_location = 0;  ///< ChromaSampleLocType, 0 to 5.
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

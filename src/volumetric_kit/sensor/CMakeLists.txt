@@ -1,67 +1,67 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 
-# --- recon_sensor: the sensor interface -------------------------------------
+# --- sensor_interface: the sensor interface ----------------------------------
 # IRgbdSensor, the RgbdFrame it hands out, and the camera- and colour-convention
 # conversions. The calibration file is the camera tier's
 # (camera/array_calibration.hpp). Carries no driver itself: one ships in this
-# repo only if this repo can build *and* test it (the 2026-08-02 decision), and
-# the one that does, Orbbec, is its own target (orbbec/, below).
+# package only if it can build *and* test it (the 2026-08-02 decision), and the
+# one that does, Orbbec, is its own target (orbbec/, below).
 #
-# Depends on recon_camera and recon_core alone -- the whole tier is host types
-# and arithmetic, so it needs neither the volume nor the tsdf tier. That is what
-# makes the interface implementable from outside: an ARKit driver in
-# volumetric_kit_ios is Objective-C++, and it compiles and links against the
-# camera and core tiers rather than preprocessing the Vulkan surface to fill in
-# an intrinsics struct. It is also why the tests need no device.
+# Depends on sensor_camera and sensor_frame alone -- the whole tier is host
+# types and arithmetic. That is what makes the interface implementable from
+# outside: an ARKit driver in volumetric_kit_ios is Objective-C++, and it
+# compiles and links against the camera and frame tiers rather than
+# preprocessing the Vulkan surface to fill in an intrinsics struct. It is also
+# why the tests need no device.
 include(GenerateExportHeader)
 
-set(_vr_sensor_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
+set(_vs_interface_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 
-add_library(recon_sensor)
-add_library(volumetric_kit::recon_sensor ALIAS recon_sensor)
+add_library(sensor_interface)
+add_library(volumetric_kit::sensor_interface ALIAS sensor_interface)
 
-target_sources(recon_sensor PRIVATE camera_conventions.cpp
-                                    color_conventions.cpp rgbd_sensor.cpp)
+target_sources(sensor_interface PRIVATE camera_conventions.cpp
+                                        color_conventions.cpp rgbd_sensor.cpp)
 
-# Per-tier export header (VR_SENSOR_API / VR_SENSOR_STATIC_DEFINE), isolated so
-# the macros never collide with another tier's on one include path.
+# Per-tier export header (VS_INTERFACE_API / VS_INTERFACE_STATIC_DEFINE),
+# isolated so the macros never collide with another tier's on one include path.
 generate_export_header(
-  recon_sensor
+  sensor_interface
   BASE_NAME
-  VR_SENSOR
+  VS_INTERFACE
   EXPORT_MACRO_NAME
-  VR_SENSOR_API
+  VS_INTERFACE_API
   EXPORT_FILE_NAME
-  "${_vr_sensor_generated_inc}/volumetric_kit/recon/sensor/export.hpp")
+  "${_vs_interface_generated_inc}/volumetric_kit/sensor/export.hpp")
 
 set_target_properties(
-  recon_sensor
+  sensor_interface
   PROPERTIES CXX_VISIBILITY_PRESET hidden
              VISIBILITY_INLINES_HIDDEN ON
              POSITION_INDEPENDENT_CODE ON)
 
-get_target_property(_vr_sensor_type recon_sensor TYPE)
-if(_vr_sensor_type STREQUAL "STATIC_LIBRARY")
-  target_compile_definitions(recon_sensor PUBLIC VR_SENSOR_STATIC_DEFINE)
+get_target_property(_vs_interface_type sensor_interface TYPE)
+if(_vs_interface_type STREQUAL "STATIC_LIBRARY")
+  target_compile_definitions(sensor_interface PUBLIC VS_INTERFACE_STATIC_DEFINE)
 endif()
 
-target_compile_features(recon_sensor PUBLIC cxx_std_17)
+target_compile_features(sensor_interface PUBLIC cxx_std_17)
 
-# PUBLIC: the sensor public headers expose core types (DepthCameraParams /
-# ColorCameraParams / Result) and the camera tier's projection, which the lens
-# delegates to, so a consumer compiles against recon_core and recon_camera.
-target_link_libraries(recon_sensor PUBLIC recon_camera recon_core)
+# PUBLIC: the headers expose the frame tier's cameras and colour encoding, the
+# core's Result, and the camera tier's model and projection, which the lens
+# delegates to.
+target_link_libraries(sensor_interface PUBLIC sensor_camera sensor_frame)
 
 target_include_directories(
-  recon_sensor PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-                      "$<BUILD_INTERFACE:${_vr_sensor_generated_inc}>")
+  sensor_interface PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+                          "$<BUILD_INTERFACE:${_vs_interface_generated_inc}>")
 
-vr_target_warnings(recon_sensor)
+vs_target_warnings(sensor_interface)
 
 # The GPU pre-processing (Vulkan and shaders, so a target of its own); see
-# utils/CMakeLists.txt.
-add_subdirectory(utils)
+# prep/CMakeLists.txt.
+add_subdirectory(prep)
 
 # Several sensors read as one, above every driver; see array/CMakeLists.txt.
 add_subdirectory(array)
@@ -78,6 +78,6 @@ endif()
 add_subdirectory(video)
 
 # The Orbbec driver; see orbbec/CMakeLists.txt.
-if(VR_WITH_ORBBEC)
+if(VS_WITH_ORBBEC)
   add_subdirectory(orbbec)
 endif()

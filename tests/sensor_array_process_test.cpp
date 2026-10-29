@@ -26,13 +26,12 @@
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/array/sensor_array.hpp"
+#include "volumetric_kit/sensor/array/sensor_array.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
 
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace camera = volumetric_kit::recon::camera;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace camera = volumetric_kit::sensor::camera;
+namespace sensor = volumetric_kit::sensor;
 
 namespace {
 
@@ -213,9 +212,9 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
       const camera::Mat4d& color_to_world =
           *o.calibration.sensors[c].color_to_world;
       CHECK(device_frame->color_camera.cam_to_world ==
-            vr::Mat4f(color_to_world));
+            sensor::Mat4f(color_to_world));
       CHECK(device_frame->depth_camera.cam_to_world ==
-            vr::Mat4f(color_to_world * frame->depth_to_color));
+            sensor::Mat4f(color_to_world * frame->depth_to_color));
       // As GpuFramePrep makes it alone, with the sensor's own offset.
       auto one = alone[c].prepare(*frame);
       CHECK(one.ok());
@@ -384,5 +383,5 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 }  // namespace
 
 int main() {
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

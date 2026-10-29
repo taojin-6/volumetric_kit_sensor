@@ -16,7 +16,7 @@
 
 #include "volumetric_kit/core/vulkan/device.hpp"
 
-namespace vr_test {
+namespace vs_test {
 
 // The bytes the Metal device under `device` has allocated; empty where
 // `device` names none.
@@ -31,4 +31,4 @@ std::optional<std::int64_t> bare_plane_textures_size(
     const volumetric_kit::core::Device& device,
     const std::vector<CVPixelBufferRef>& pixels);
 
-}  // namespace vr_test
+}  // namespace vs_test

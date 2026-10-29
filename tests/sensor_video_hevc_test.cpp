@@ -15,7 +15,7 @@
 // parameter sets that change mid-stream, Main 10 refused, and a skipped
 // access unit reported.
 //
-// Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
+// Where no device path opens the test skips; VS_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one (NVDEC on the NVIDIA containers,
 // VideoToolbox on macOS), makes it fail instead.
 
@@ -41,11 +41,11 @@
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
-#include "volumetric_kit/recon/camera/camera_model.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
-#include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/video/hevc_decoder.hpp"
 #include "yuv_reference.hpp"
 
 #if !defined(__APPLE__)
@@ -53,9 +53,8 @@
 #include <dlfcn.h>
 #endif
 
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 using sensor::HevcDecoder;
 
 namespace {
@@ -63,11 +62,11 @@ namespace {
 constexpr int kWidth = 256;
 constexpr int kHeight = 144;
 constexpr int kFrames = 8;
-constexpr const char* kPatches = VR_HEVC_DATA "/patches_256x144.h265";
-constexpr const char* kCropped = VR_HEVC_DATA "/cropped_240x128.h265";
-constexpr const char* kRefused = VR_HEVC_DATA "/refused_256x144.h265";
-constexpr const char* kUnlabelled = VR_HEVC_DATA "/unlabelled_256x144.h265";
-constexpr const char* kFullRange = VR_HEVC_DATA "/fullrange_256x144.h265";
+constexpr const char* kPatches = VS_HEVC_DATA "/patches_256x144.h265";
+constexpr const char* kCropped = VS_HEVC_DATA "/cropped_240x128.h265";
+constexpr const char* kRefused = VS_HEVC_DATA "/refused_256x144.h265";
+constexpr const char* kUnlabelled = VS_HEVC_DATA "/unlabelled_256x144.h265";
+constexpr const char* kFullRange = VS_HEVC_DATA "/fullrange_256x144.h265";
 // libavcodec's MD5s of the patch clip and, on NVDEC, the cropped one
 // (tools/make_hevc_fixtures.sh prints them).
 constexpr const char* kPatchesMd5 = "63171f05c92c231ab96a389291ba67fe";
@@ -75,12 +74,12 @@ constexpr const char* kPatchesMd5 = "63171f05c92c231ab96a389291ba67fe";
 constexpr const char* kCroppedMd5 = "9f217594cf6e432f9aa4021534446fbe";
 #endif
 #if defined(__APPLE__)
-constexpr const char* kTestsrc2 = VR_HEVC_DATA "/testsrc2_128x64.h265";
-constexpr const char* kTestsrc2Full = VR_HEVC_DATA "/testsrc2_full_128x64.h265";
+constexpr const char* kTestsrc2 = VS_HEVC_DATA "/testsrc2_128x64.h265";
+constexpr const char* kTestsrc2Full = VS_HEVC_DATA "/testsrc2_full_128x64.h265";
 constexpr const char* kTestsrc2Cropped =
-    VR_HEVC_DATA "/testsrc2_cropped_120x56.h265";
+    VS_HEVC_DATA "/testsrc2_cropped_120x56.h265";
 constexpr const char* kTestsrc2Main10 =
-    VR_HEVC_DATA "/testsrc2_main10_128x64.h265";
+    VS_HEVC_DATA "/testsrc2_main10_128x64.h265";
 // libavcodec's MD5s of the first two (tools/make_hevc_fixtures.sh prints them).
 constexpr const char* kTestsrc2Md5 = "e743e90ae47cb276844495b286c98b0f";
 constexpr const char* kTestsrc2FullMd5 = "4fe199a7b1bcc80dd1aec3f87b6a9af0";
@@ -131,7 +130,7 @@ Decoded decode_clip(HevcDecoder& decoder, const AccessUnits& units,
       if (!picture) return {};
       Picture p;
       p.meta = *picture;
-      vr_test::read_device_picture(picture->yuv, gpu.device, gpu.allocator,
+      vs_test::read_device_picture(picture->yuv, gpu.device, gpu.allocator,
                                    p.planes);
       if (p.planes[0].size() !=
           std::size_t{picture->yuv.width} * picture->yuv.height) {
@@ -158,7 +157,7 @@ Decoded decode(
   options.unlabelled_color = unlabelled;
   auto decoder = HevcDecoder::create(options);
   if (!decoder) return {{}, decoder.status()};
-  return decode_clip(decoder.value(), vr_test::hevc_access_units(clip), gpu);
+  return decode_clip(decoder.value(), vs_test::hevc_access_units(clip), gpu);
 }
 
 // On the device as NV12's two plane images, R8 and R8G8: VideoToolbox's, or
@@ -205,8 +204,8 @@ int check_clip_shape(const Decoded& decoded) {
                                   false));
     CHECK(meta.yuv.chroma_location == sensor::ChromaLocation::Left);
     CHECK(meta.encoding.has_value() &&
-          meta.encoding->transfer == vr::ColorEncoding::Transfer::Bt709 &&
-          meta.encoding->primaries == vr::ColorEncoding::Primaries::Bt709);
+          meta.encoding->transfer == sensor::ColorEncoding::Transfer::Bt709 &&
+          meta.encoding->primaries == sensor::ColorEncoding::Primaries::Bt709);
     CHECK(pic.planes[0].size() == static_cast<std::size_t>(kWidth * kHeight));
   }
   return 0;
@@ -282,8 +281,8 @@ int test_unlabelled_color(const Gpu& gpu) {
 // reset(): the pictures held for display are dropped, a stream ended with
 // size 0 takes data again, and the next key frame decodes as the first.
 int test_reset(const Gpu& gpu) {
-  const AccessUnits b_frames = vr_test::hevc_access_units(kRefused);
-  const AccessUnits patches = vr_test::hevc_access_units(kPatches);
+  const AccessUnits b_frames = vs_test::hevc_access_units(kRefused);
+  const AccessUnits patches = vs_test::hevc_access_units(kPatches);
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   int out = 0;
@@ -318,12 +317,12 @@ int test_cropped(const Gpu& gpu) {
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   const Decoded cropped =
-      decode_clip(decoder.value(), vr_test::hevc_access_units(kCropped), gpu);
+      decode_clip(decoder.value(), vs_test::hevc_access_units(kCropped), gpu);
 #if defined(__APPLE__)
   CHECK(cropped.pictures.empty());
   CHECK(cropped.status.domain() == vkc::Status::Code::Unsupported);
   CHECK(decoder->reset().ok());
-  const AccessUnits units = vr_test::hevc_access_units(kCropped);
+  const AccessUnits units = vs_test::hevc_access_units(kCropped);
   CHECK(decoder->send(units[0].data(), units[0].size(), 0).domain() ==
         vkc::Status::Code::Unsupported);
 #else
@@ -365,8 +364,8 @@ int test_cropped(const Gpu& gpu) {
 // Check recovery both with and without reset, and with the rest of the access
 // unit still present. No rejected bytes may latch a permanent refusal.
 int test_malformed_cropped_sps(const Gpu& gpu) {
-  const AccessUnits cropped = vr_test::hevc_access_units(kCropped);
-  const AccessUnits patches = vr_test::hevc_access_units(kPatches);
+  const AccessUnits cropped = vs_test::hevc_access_units(kCropped);
+  const AccessUnits patches = vs_test::hevc_access_units(kPatches);
   CHECK(!cropped.empty());
   const auto& unit = cropped[0];
   std::size_t sps = 0;
@@ -423,7 +422,7 @@ int check_md5(const Decoded& decoded, const char* clip, std::uint32_t width,
   }
   CHECK(decoded.status.ok());
   CHECK(decoded.pictures.size() == static_cast<std::size_t>(kFrames));
-  vr_test::Md5 sum;
+  vs_test::Md5 sum;
   for (const Picture& p : decoded.pictures) {
     if (check_on_device(p.meta) != 0) return 1;
     CHECK(p.meta.yuv.width == width && p.meta.yuv.height == height);
@@ -440,7 +439,7 @@ int check_md5(const Decoded& decoded, const char* clip, std::uint32_t width,
 // The MD5 implementation, on RFC 1321's own examples.
 int test_md5() {
   const auto md5 = [](const std::string& text) {
-    vr_test::Md5 m;
+    vs_test::Md5 m;
     m.update(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
     return m.hex();
   };
@@ -503,8 +502,8 @@ int test_reference_md5(const Gpu& gpu) {
 // keep their samples, and a set let go before a picture of the other size is
 // never handed out with it, larger or smaller.
 int test_size_change(const Gpu& gpu) {
-  const AccessUnits small = vr_test::hevc_access_units(kCropped);
-  const AccessUnits large = vr_test::hevc_access_units(kPatches);
+  const AccessUnits small = vs_test::hevc_access_units(kCropped);
+  const AccessUnits large = vs_test::hevc_access_units(kPatches);
   constexpr std::uint32_t kSmallWidth = kWidth - 16;
   constexpr std::uint32_t kSmallHeight = kHeight - 16;
   auto decoder = HevcDecoder::create(decoder_options(gpu));
@@ -527,7 +526,7 @@ int test_size_change(const Gpu& gpu) {
   for (const Picture& p : held.pictures) {
     sensor::YuvImage again = p.meta.yuv;
     std::vector<std::uint8_t> planes[3];
-    vr_test::read_device_picture(again, gpu.device, gpu.allocator, planes);
+    vs_test::read_device_picture(again, gpu.device, gpu.allocator, planes);
     for (int i = 0; i < 3; ++i) CHECK(planes[i] == p.planes[i]);
   }
   return 0;
@@ -551,12 +550,12 @@ int test_held_pictures(const Gpu& gpu) {
   }
   sensor::YuvImage first = held.pictures[0].meta.yuv;
   std::vector<std::uint8_t> again[3];
-  vr_test::read_device_picture(first, gpu.device, gpu.allocator, again);
+  vs_test::read_device_picture(first, gpu.device, gpu.allocator, again);
   for (int i = 0; i < 3; ++i) CHECK(again[i] == held.pictures[0].planes[i]);
 #if !defined(__APPLE__)
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
-  const AccessUnits units = vr_test::hevc_access_units(kPatches);
+  const AccessUnits units = vs_test::hevc_access_units(kPatches);
   std::vector<VkImage> luma;
   for (std::size_t i = 0; i <= units.size(); ++i) {
     const bool end = i == units.size();
@@ -585,7 +584,7 @@ int test_held_pictures(const Gpu& gpu) {
 int test_frame_prep(const Gpu& gpu) {
   auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
   CHECK(prep.ok());
-  vr::camera::CameraModel cam;
+  sensor::camera::CameraModel cam;
   cam.size = {kWidth, kHeight};
   cam.intrinsics = {200.0f, 198.0f, 127.3f, 71.6f};
   cam.distortion = {-0.28f, 0.09f, 0.0012f, -0.0009f,
@@ -613,7 +612,7 @@ int test_frame_prep(const Gpu& gpu) {
   };
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
-  const AccessUnits units = vr_test::hevc_access_units(kPatches);
+  const AccessUnits units = vs_test::hevc_access_units(kPatches);
   int prepared = 0;
   for (std::size_t i = 0; i <= units.size(); ++i) {
     const bool end = i == units.size();
@@ -632,7 +631,7 @@ int test_frame_prep(const Gpu& gpu) {
                           [](std::uint32_t w) { return (w >> 24) == 0xFFu; }) >
             static_cast<std::ptrdiff_t>(pixels / 2));
       std::vector<std::uint8_t> planes[3];
-      vr_test::read_device_picture(yuv, gpu.device, gpu.allocator, planes);
+      vs_test::read_device_picture(yuv, gpu.device, gpu.allocator, planes);
       CHECK(planes[0].size() == pixels);
 #if defined(__APPLE__)
       CHECK(yuv.queue_family == sensor::kQueueFamilyIgnored);
@@ -687,7 +686,7 @@ int test_queue_families(const Gpu& gpu) {
   auto decoder = HevcDecoder::create(options);
   CHECK(decoder.ok());
   const Decoded decoded =
-      decode_clip(decoder.value(), vr_test::hevc_access_units(kPatches), gpu);
+      decode_clip(decoder.value(), vs_test::hevc_access_units(kPatches), gpu);
   if (check_clip_shape(decoded) != 0) return 1;
   for (const Picture& p : decoded.pictures) {
     CHECK(p.meta.yuv.image[0]->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
@@ -695,7 +694,7 @@ int test_queue_families(const Gpu& gpu) {
   }
   sensor::YuvImage read = decoded.pictures[0].meta.yuv;
   std::vector<std::uint8_t> planes[3];
-  vr_test::read_device_picture(read, gpu.device, gpu.allocator, planes);
+  vs_test::read_device_picture(read, gpu.device, gpu.allocator, planes);
   CHECK(planes[0] == decoded.pictures[0].planes[0]);
   CHECK(read.queue_family == sensor::kQueueFamilyIgnored);
   return 0;
@@ -731,7 +730,7 @@ int test_parameter_change(const Gpu& gpu) {
   };
   AccessUnits units;
   for (const auto& part : parts) {
-    const AccessUnits more = vr_test::hevc_access_units(part.clip);
+    const AccessUnits more = vs_test::hevc_access_units(part.clip);
     CHECK(more.size() == static_cast<std::size_t>(kFrames));
     units.insert(units.end(), more.begin(), more.end());
   }
@@ -745,7 +744,7 @@ int test_parameter_change(const Gpu& gpu) {
   CHECK(decoded.pictures.size() == units.size());
   std::size_t next = 0;
   for (const auto& part : parts) {
-    vr_test::Md5 md5;
+    vs_test::Md5 md5;
     for (int f = 0; f < kFrames; ++f, ++next) {
       const Picture& p = decoded.pictures[next];
       if (check_on_device(p.meta) != 0) return 1;
@@ -769,7 +768,7 @@ int test_parameter_change(const Gpu& gpu) {
 
 // Main 10 is refused before any picture comes out, and stays refused.
 int test_main10(const Gpu& gpu) {
-  const AccessUnits units = vr_test::hevc_access_units(kTestsrc2Main10);
+  const AccessUnits units = vs_test::hevc_access_units(kTestsrc2Main10);
   CHECK(units.size() == static_cast<std::size_t>(kFrames));
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
@@ -788,7 +787,7 @@ int test_main10(const Gpu& gpu) {
 // key frame, as the clip was made. A decoder that starts at frame 2 reports
 // it too.
 int test_skipped_access_unit(const Gpu& gpu) {
-  const AccessUnits units = vr_test::hevc_access_units(kPatches);
+  const AccessUnits units = vs_test::hevc_access_units(kPatches);
   for (const int first : {0, 2}) {
     auto decoder = HevcDecoder::create(decoder_options(gpu));
     CHECK(decoder.ok());
@@ -810,7 +809,7 @@ int test_skipped_access_unit(const Gpu& gpu) {
         if (!picture.value()) break;
         Picture p;
         p.meta = *picture.value();
-        vr_test::read_device_picture(p.meta.yuv, gpu.device, gpu.allocator,
+        vs_test::read_device_picture(p.meta.yuv, gpu.device, gpu.allocator,
                                      p.planes);
         shown.push_back(std::move(p));
       }
@@ -838,7 +837,7 @@ int test_skipped_access_unit(const Gpu& gpu) {
 // display order, each a distinct pts sent before it; then the refusal, which
 // stands after a reset.
 int test_refused(const Gpu& gpu) {
-  const AccessUnits units = vr_test::hevc_access_units(kRefused);
+  const AccessUnits units = vs_test::hevc_access_units(kRefused);
   CHECK(units.size() == static_cast<std::size_t>(kFrames + 2));
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
@@ -868,7 +867,7 @@ int test_refused(const Gpu& gpu) {
 int test_create_refusals(const Gpu& gpu) {
   CHECK(HevcDecoder::create({}).status().domain() ==
         vkc::Status::Code::Unsupported);
-  vkc::Result<vkc::Device> bare = vr_test::bare_device(gpu);
+  vkc::Result<vkc::Device> bare = vs_test::bare_device(gpu);
   CHECK(bare.ok());
   HevcDecoder::Options options = decoder_options(gpu);
   options.device = &bare.value();
@@ -928,7 +927,7 @@ int test_primary_context(const Gpu& gpu) {
     auto b = HevcDecoder::create(decoder_options(gpu));
     CHECK(a.ok() && b.ok());
     CHECK(active_primary_contexts() == 1);
-    const AccessUnits units = vr_test::hevc_access_units(kPatches);
+    const AccessUnits units = vs_test::hevc_access_units(kPatches);
     CHECK(check_clip_shape(decode_clip(a.value(), units, gpu)) == 0);
     CHECK(check_clip_shape(decode_clip(b.value(), units, gpu)) == 0);
   }
@@ -974,7 +973,7 @@ int test_moves(const Gpu& gpu) {
   HevcDecoder* alias = &c;
   c = std::move(*alias);  // self-move
   return check_clip_shape(
-      decode_clip(c, vr_test::hevc_access_units(kPatches), gpu));
+      decode_clip(c, vs_test::hevc_access_units(kPatches), gpu));
 }
 
 int gpu_main(Gpu& gpu) {
@@ -983,7 +982,7 @@ int gpu_main(Gpu& gpu) {
       std::fprintf(stderr, "FAIL: %s\n", probe.status().message().c_str());
       return 1;
     }
-    return vr_test::no_decoder(probe.status().message());
+    return vs_test::no_decoder(probe.status().message());
   }
 
   if (test_pattern(gpu) != 0) return 1;
@@ -1021,11 +1020,11 @@ int main() {
   // it was on.
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   if (test_md5() != 0) return 1;
-  if (vr_test::hevc_access_units(kPatches).size() !=
+  if (vs_test::hevc_access_units(kPatches).size() !=
       static_cast<std::size_t>(kFrames)) {
     std::fprintf(stderr, "FAIL: cannot split %s into %d access units\n",
                  kPatches, kFrames);
     return 1;
   }
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

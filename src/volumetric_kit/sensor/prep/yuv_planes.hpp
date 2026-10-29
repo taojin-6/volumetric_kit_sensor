@@ -5,14 +5,14 @@
 
 // A device picture's planes and the checks every reader of one makes:
 // GpuFramePrep, which converts it, and PictureReadback, which copies it to
-// the host. Internal to recon_sensor_utils.
+// the host. Internal to sensor_prep.
 
 #include <cstdint>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/sensor/yuv_image.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
-namespace volumetric_kit::recon::sensor::detail {
+namespace volumetric_kit::sensor::detail {
 
 // A picture's planes: Y, then NV12's CbCr or I420's Cb and Cr, the chroma
 // at half the size, rounded up.
@@ -40,4 +40,4 @@ enum class ImageRead { Sample, Copy };
 core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
                                          ImageRead read);
 
-}  // namespace volumetric_kit::recon::sensor::detail
+}  // namespace volumetric_kit::sensor::detail

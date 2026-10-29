@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// Orbbec SDK smoke: the prerequisite VR_WITH_ORBBEC finds is the one that
+// Orbbec SDK smoke: the prerequisite VS_WITH_ORBBEC finds is the one that
 // loads.
 //
 // The SDK is installed once, outside the repo, and linked in place (the
@@ -22,10 +22,10 @@ int main() {
   const int minor = ob::Version::getMinor();
   const int patch = ob::Version::getPatch();
   std::printf("Orbbec SDK %d.%d.%d (configured %d.%d.%d)\n", major, minor,
-              patch, VR_ORBBEC_SDK_VERSION_MAJOR, VR_ORBBEC_SDK_VERSION_MINOR,
-              VR_ORBBEC_SDK_VERSION_PATCH);
-  CHECK(major == VR_ORBBEC_SDK_VERSION_MAJOR);
-  CHECK(minor == VR_ORBBEC_SDK_VERSION_MINOR);
-  CHECK(patch == VR_ORBBEC_SDK_VERSION_PATCH);
+              patch, VS_ORBBEC_SDK_VERSION_MAJOR, VS_ORBBEC_SDK_VERSION_MINOR,
+              VS_ORBBEC_SDK_VERSION_PATCH);
+  CHECK(major == VS_ORBBEC_SDK_VERSION_MAJOR);
+  CHECK(minor == VS_ORBBEC_SDK_VERSION_MINOR);
+  CHECK(patch == VS_ORBBEC_SDK_VERSION_PATCH);
   return 0;
 }

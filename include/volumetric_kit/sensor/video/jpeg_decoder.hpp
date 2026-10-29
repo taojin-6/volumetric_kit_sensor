@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/video/jpeg_decoder.hpp
+/// @file video/jpeg_decoder.hpp
 /// @brief A baseline JPEG decoder for MJPEG colour, on the GPU's hardware,
 ///        handing out pictures on the device only.
 
@@ -13,16 +13,16 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/fwd.hpp"
-#include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
-#include "volumetric_kit/recon/sensor/video/export.hpp"
+#include "volumetric_kit/sensor/video/decoded_picture.hpp"
+#include "volumetric_kit/sensor/video/export.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief Decodes one baseline 8-bit 4:2:0 JPEG at a time, as an MJPEG camera
 ///        sends them, on the hardware of the device it is given, and hands
 ///        the picture out there.
 ///
-/// In a build with VR_WITH_CUDA (Linux), on an NVIDIA GPU with a hardware
+/// In a build with VS_WITH_CUDA (Linux), on an NVIDIA GPU with a hardware
 /// JPEG engine, nvJPEG decodes straight into a Vulkan buffer CUDA has
 /// imported: I420 (`Yuv420`). libcuda and libnvjpeg are loaded at run time.
 /// On Apple, VideoToolbox's hardware decoder decodes into NV12 on an
@@ -30,7 +30,7 @@ namespace volumetric_kit::recon::sensor {
 /// BT.601 full range as JFIF defines it, its chroma centred.
 ///
 /// @warning Not thread-safe: use from one thread.
-class VR_SENSOR_VIDEO_API JpegDecoder {
+class VS_VIDEO_API JpegDecoder {
  public:
   /// @brief How @ref create opens a decoder.
   struct Options {
@@ -91,4 +91,4 @@ class VR_SENSOR_VIDEO_API JpegDecoder {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

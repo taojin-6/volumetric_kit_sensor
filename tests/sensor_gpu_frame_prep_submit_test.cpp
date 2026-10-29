@@ -21,11 +21,10 @@
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 
-namespace vr = volumetric_kit::recon;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 namespace vkc = volumetric_kit::core;
 
 namespace {
@@ -150,5 +149,5 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 }  // namespace
 
 int main() {
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

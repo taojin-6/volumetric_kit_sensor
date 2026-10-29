@@ -25,10 +25,10 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/scratch_dir.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/camera/array_calibration.hpp"
+#include "volumetric_kit/sensor/camera/array_calibration.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace camera = volumetric_kit::recon::camera;
+namespace camera = volumetric_kit::sensor::camera;
 namespace fs = std::filesystem;
 
 namespace {
@@ -860,7 +860,7 @@ int test_color_controls() {
 }
 
 int test_files() {
-  const vkc::test::Scratch scratch("recon_array_calibration_");
+  const vkc::test::Scratch scratch("sensor_array_calibration_");
   const std::string path = (scratch.path / "array_calibration.json").string();
   const camera::ArrayCalibration written = edge_cases();
   CHECK(camera::write_array_calibration(path, written,

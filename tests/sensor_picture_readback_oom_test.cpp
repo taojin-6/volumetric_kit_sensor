@@ -19,13 +19,12 @@
 #include "volumetric_kit/core/testing/test_allocation_failure.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/utils/picture_readback.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/prep/picture_readback.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
 
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 using sensor::PictureReadback;
 
 namespace {
@@ -117,5 +116,5 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 }  // namespace
 
 int main() {
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

@@ -14,7 +14,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 namespace {
 
 core::Status no_export(const char* who) {
@@ -228,4 +228,4 @@ core::Status CudaPlanePictures::copy(CUdeviceptr luma, std::size_t luma_stride,
   return {};
 }
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

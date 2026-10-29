@@ -11,7 +11,7 @@
 // not lean on recon's.
 //
 // Where CUDA does not reach the device's GPU the test skips;
-// VR_TEST_HEVC_BACKEND, which CI sets on the NVIDIA leg, makes it fail
+// VS_TEST_HEVC_BACKEND, which CI sets on the NVIDIA leg, makes it fail
 // instead, as for the decoders.
 
 #include <cuda.h>
@@ -35,24 +35,23 @@
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/video/cuda_interop.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/video/cuda_interop.hpp"
 
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 
 // A macro's expansion as a string: the versioned symbol a cuda.h name stands
 // for (cuMemcpyHtoDAsync is cuMemcpyHtoDAsync_v2).
-#define VR_TEST_STRING(name) VR_TEST_STRING_(name)
-#define VR_TEST_STRING_(name) #name
+#define VS_TEST_STRING(name) VS_TEST_STRING_(name)
+#define VS_TEST_STRING_(name) #name
 
 namespace {
 
 using Gpu = vkc::test::GpuContext;
 
 // The libcuda calls the checks make themselves.
-#define VR_TEST_CUDA_FUNCTIONS(X) \
+#define VS_TEST_CUDA_FUNCTIONS(X) \
   X(cuDeviceGet)                  \
   X(cuDeviceGetUuid)              \
   X(cuCtxPushCurrent)             \
@@ -63,9 +62,9 @@ using Gpu = vkc::test::GpuContext;
   X(cuStreamSynchronize)
 
 struct Libcuda {
-#define VR_TEST_DECLARE(name) decltype(&::name) name = nullptr;
-  VR_TEST_CUDA_FUNCTIONS(VR_TEST_DECLARE)
-#undef VR_TEST_DECLARE
+#define VS_TEST_DECLARE(name) decltype(&::name) name = nullptr;
+  VS_TEST_CUDA_FUNCTIONS(VS_TEST_DECLARE)
+#undef VS_TEST_DECLARE
 };
 
 // libcuda, loaded once and kept; null where it does not load or lacks a
@@ -76,12 +75,12 @@ const Libcuda* libcuda() {
     if (lib == nullptr) return std::unique_ptr<Libcuda>();
     auto l = std::make_unique<Libcuda>();
     bool ok = true;
-#define VR_TEST_LOAD(name)                                                   \
+#define VS_TEST_LOAD(name)                                                   \
   l->name =                                                                  \
-      reinterpret_cast<decltype(l->name)>(dlsym(lib, VR_TEST_STRING(name))); \
+      reinterpret_cast<decltype(l->name)>(dlsym(lib, VS_TEST_STRING(name))); \
   ok = ok && l->name != nullptr;
-    VR_TEST_CUDA_FUNCTIONS(VR_TEST_LOAD)
-#undef VR_TEST_LOAD
+    VS_TEST_CUDA_FUNCTIONS(VS_TEST_LOAD)
+#undef VS_TEST_LOAD
     return ok ? std::move(l) : std::unique_ptr<Libcuda>();
   }();
   return loaded.get();
@@ -333,10 +332,10 @@ int gpu_main(Gpu& gpu) {
       std::fprintf(stderr, "FAIL: %s\n", ordinal.status().message().c_str());
       return 1;
     }
-    return vr_test::no_decoder(ordinal.status().message());
+    return vs_test::no_decoder(ordinal.status().message());
   }
   if (!gpu.device.exports_memory()) {
-    return vr_test::no_decoder("the device does not export memory");
+    return vs_test::no_decoder("the device does not export memory");
   }
   const Libcuda* cu = libcuda();
   CHECK(cu != nullptr);
@@ -352,5 +351,5 @@ int gpu_main(Gpu& gpu) {
 }  // namespace
 
 int main() {
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

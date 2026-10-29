@@ -24,10 +24,10 @@
 #include "frame_conversion.hpp"
 #include "picture_frames.hpp"
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
+#include "volumetric_kit/sensor/frame/color_space.hpp"
+#include "volumetric_kit/sensor/video/hevc_decoder.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 // Whether an Annex B access unit holds a key frame: an IRAP slice (BLA, IDR
 // or CRA; NAL types 16-23), from which decoding can start.
@@ -151,4 +151,4 @@ class HevcColorDecoder {
   Worker worker_;  // last: its thread uses the rest
 };
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

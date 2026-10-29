@@ -5,7 +5,7 @@
 
 #include <algorithm>
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 namespace {
 
 // Stores @p nal's bytes under @p id: whether they differ from what was there.
@@ -341,4 +341,4 @@ void VtHevc::reset() noexcept {
   session_.reset();
 }
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
+#include "volumetric_kit/sensor/video/jpeg_decoder.hpp"
 
 #include <string>
 #include <utility>
 
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
 #include <dlfcn.h>
 
 #include <optional>
@@ -16,10 +16,10 @@
 #elif defined(__APPLE__)
 #include "vt_jpeg.hpp"
 #else
-#error "JpegDecoder decodes on nvJPEG (VR_WITH_CUDA) or VideoToolbox only"
+#error "JpegDecoder decodes on nvJPEG (VS_WITH_CUDA) or VideoToolbox only"
 #endif
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 namespace {
 
 constexpr const char* kWho = "JpegDecoder";
@@ -38,10 +38,10 @@ void describe_jfif(YuvImage& yuv) noexcept {
   yuv.chroma_location = ChromaLocation::Center;
 }
 
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
 
 // The nvJPEG entry points used here, loaded at run time as libcuda is.
-#define VR_NVJPEG_FUNCTIONS(X)            \
+#define VS_NVJPEG_FUNCTIONS(X)            \
   X(nvjpegCreateEx)                       \
   X(nvjpegDestroy)                        \
   X(nvjpegDecoderCreate)                  \
@@ -70,25 +70,25 @@ void describe_jfif(YuvImage& yuv) noexcept {
   X(nvjpegDecodeJpegDevice)
 
 struct Nvjpeg {
-#define VR_NVJPEG_DECLARE(name) decltype(&::name) name = nullptr;
-  VR_NVJPEG_FUNCTIONS(VR_NVJPEG_DECLARE)
-#undef VR_NVJPEG_DECLARE
+#define VS_NVJPEG_DECLARE(name) decltype(&::name) name = nullptr;
+  VS_NVJPEG_FUNCTIONS(VS_NVJPEG_DECLARE)
+#undef VS_NVJPEG_DECLARE
 };
 
 // libnvjpeg of the major version compiled against, loaded once and kept;
 // null where it does not load or lacks an entry point.
 const Nvjpeg* nvjpeg() {
   static const std::optional<Nvjpeg> loaded = []() -> std::optional<Nvjpeg> {
-    void* lib = dlopen("libnvjpeg.so." VR_CUDA_STRING(NVJPEG_VER_MAJOR),
+    void* lib = dlopen("libnvjpeg.so." VS_CUDA_STRING(NVJPEG_VER_MAJOR),
                        RTLD_NOW | RTLD_LOCAL);
     if (lib == nullptr) return std::nullopt;
     Nvjpeg n;
     bool ok = true;
-#define VR_NVJPEG_LOAD(name)                                      \
+#define VS_NVJPEG_LOAD(name)                                      \
   n.name = reinterpret_cast<decltype(n.name)>(dlsym(lib, #name)); \
   ok = ok && n.name != nullptr;
-    VR_NVJPEG_FUNCTIONS(VR_NVJPEG_LOAD)
-#undef VR_NVJPEG_LOAD
+    VS_NVJPEG_FUNCTIONS(VS_NVJPEG_LOAD)
+#undef VS_NVJPEG_LOAD
     if (!ok) {
       dlclose(lib);
       return std::nullopt;
@@ -302,12 +302,12 @@ core::Result<DecodedPicture> NvjpegDecoder::decode(const std::uint8_t* data,
   return picture;
 }
 
-#endif  // VR_SENSOR_VIDEO_WITH_CUDA
+#endif  // VS_VIDEO_WITH_CUDA
 
 }  // namespace
 
 struct JpegDecoder::Impl {
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
   std::unique_ptr<NvjpegDecoder> gpu;
 #else
   std::unique_ptr<video::VtJpeg> vt;
@@ -319,7 +319,7 @@ core::Result<JpegDecoder> JpegDecoder::create(const Options& options) {
     return unsupported("no device to decode onto (Options::device)");
   }
   auto impl = std::make_unique<Impl>();
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
   if (options.allocator == nullptr) {
     return unsupported(
         "no allocator to make nvJPEG's picture buffers through "
@@ -351,7 +351,7 @@ core::Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
   if (data == nullptr || size == 0) {
     return core::Status::invalid_argument(std::string(kWho) + ": no JPEG");
   }
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
   VKC_ASSIGN(DecodedPicture picture, impl_->gpu->decode(data, size));
 #else
   VKC_ASSIGN(DecodedPicture picture, impl_->vt->decode(data, size));
@@ -360,4 +360,4 @@ core::Result<DecodedPicture> JpegDecoder::decode(const std::uint8_t* data,
   return picture;
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

@@ -12,8 +12,8 @@
 // black and which fusion then skips (ColorFrame::coverage_in_alpha) rather
 // than fusing as colour.
 
-#ifndef VR_SENSOR_UNDISTORT_COLOR_GLSL
-#define VR_SENSOR_UNDISTORT_COLOR_GLSL
+#ifndef VS_PREP_UNDISTORT_COLOR_GLSL
+#define VS_PREP_UNDISTORT_COLOR_GLSL
 
 #extension GL_GOOGLE_include_directive : require
 #include "lens.glsl"
@@ -114,4 +114,4 @@ uint ycbcr_word(vec2 s) {
   return code(r) | (code(g) << 8) | (code(b) << 16) | 0xFF000000u;
 }
 
-#endif  // VR_SENSOR_UNDISTORT_COLOR_GLSL
+#endif  // VS_PREP_UNDISTORT_COLOR_GLSL

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/io/image_io.hpp"
+#include "volumetric_kit/sensor/io/image_io.hpp"
 
 #include <cstring>
 #include <fstream>
@@ -14,7 +14,7 @@
 #include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/core/base/file_io.hpp"
 
-namespace volumetric_kit::recon::io {
+namespace volumetric_kit::sensor::io {
 namespace {
 
 namespace stb = detail::stb;
@@ -287,4 +287,4 @@ core::Status write_png_u16(const std::string& path,
   return core::exception_status("write_png_u16", core::Status::Code::IoError);
 }
 
-}  // namespace volumetric_kit::recon::io
+}  // namespace volumetric_kit::sensor::io

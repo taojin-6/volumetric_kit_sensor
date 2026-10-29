@@ -13,10 +13,10 @@
 
 #include "orbbec_camera_stub.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sensor.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 
 namespace {
 

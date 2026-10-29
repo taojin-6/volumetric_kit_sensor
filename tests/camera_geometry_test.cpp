@@ -13,10 +13,10 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/camera/geometry.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace camera = volumetric_kit::recon::camera;
+namespace camera = volumetric_kit::sensor::camera;
 
 namespace {
 

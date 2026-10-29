@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-namespace volumetric_kit::recon::camera {
+namespace volumetric_kit::sensor::camera {
 
 /// @brief A colour camera's manual exposure: auto exposure off, at this
 ///        exposure time and gain, with auto white balance on.
@@ -41,4 +41,4 @@ inline bool operator!=(const ColorControls& a, const ColorControls& b) {
   return !(a == b);
 }
 
-}  // namespace volumetric_kit::recon::camera
+}  // namespace volumetric_kit::sensor::camera

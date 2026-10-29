@@ -12,7 +12,7 @@
 #include <cstdio>
 #include <string>
 
-namespace vr_test {
+namespace vs_test {
 
 class Md5 {
  public:
@@ -119,4 +119,4 @@ class Md5 {
   std::uint64_t bytes_ = 0;
 };
 
-}  // namespace vr_test
+}  // namespace vs_test

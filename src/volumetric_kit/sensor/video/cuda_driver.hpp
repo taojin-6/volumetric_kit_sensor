@@ -3,7 +3,7 @@
 
 #pragma once
 
-// libcuda's driver API as this target calls it (VR_WITH_CUDA, Linux): loaded
+// libcuda's driver API as this target calls it (VS_WITH_CUDA, Linux): loaded
 // at run time, as FFmpeg loads it, so a build with CUDA starts without it.
 // Internal.
 
@@ -13,15 +13,15 @@
 
 // A macro's expansion as a string: a cuda.h name's versioned symbol, or
 // nvjpeg.h's major version.
-#define VR_CUDA_STRING(name) VR_CUDA_STRING_(name)
-#define VR_CUDA_STRING_(name) #name
+#define VS_CUDA_STRING(name) VS_CUDA_STRING_(name)
+#define VS_CUDA_STRING_(name) #name
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 
 // The driver entry points used here. Each name goes through cuda.h's macros,
 // so it is the versioned symbol its prototype declares (cuMemFree is
 // cuMemFree_v2).
-#define VR_CUDA_FUNCTIONS(X)                 \
+#define VS_CUDA_FUNCTIONS(X)                 \
   X(cuInit)                                  \
   X(cuGetErrorName)                          \
   X(cuDeviceGetCount)                        \
@@ -48,9 +48,9 @@ namespace volumetric_kit::recon::sensor::video {
   X(cuMemcpy2DAsync)
 
 struct CudaDriver {
-#define VR_CUDA_DECLARE(name) decltype(&::name) name = nullptr;
-  VR_CUDA_FUNCTIONS(VR_CUDA_DECLARE)
-#undef VR_CUDA_DECLARE
+#define VS_CUDA_DECLARE(name) decltype(&::name) name = nullptr;
+  VS_CUDA_FUNCTIONS(VS_CUDA_DECLARE)
+#undef VS_CUDA_DECLARE
 };
 
 // libcuda, loaded once and kept; null where it does not load or lacks an
@@ -80,4 +80,4 @@ class CudaContextScope {
   CUresult result_;
 };
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

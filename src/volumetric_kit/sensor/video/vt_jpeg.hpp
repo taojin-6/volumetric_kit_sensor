@@ -15,10 +15,10 @@
 #include "videotoolbox.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/fwd.hpp"
-#include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
-#include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
+#include "volumetric_kit/sensor/apple/pixel_buffer_importer.hpp"
+#include "volumetric_kit/sensor/video/decoded_picture.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 
 class VtJpeg {
  public:
@@ -57,4 +57,4 @@ class VtJpeg {
   std::uint32_t height_ = 0;
 };
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

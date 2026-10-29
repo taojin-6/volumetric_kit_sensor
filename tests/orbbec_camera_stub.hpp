@@ -17,7 +17,7 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sync_config.hpp"
 
 namespace orbbec_stub {
 
@@ -35,7 +35,7 @@ struct FakeProperty {
 // One camera that answers.
 struct FakeCamera {
   // The sync settings it reads back, as SDK 2.10.6 leaves them after a write.
-  volumetric_kit::recon::sensor::OrbbecSyncSettings stored;
+  volumetric_kit::sensor::OrbbecSyncSettings stored;
   volumetric_kit::core::Status write_status;  // what a sync write returns
   int writes = 0;                             // sync writes asked of it
   bool host_clock = false;                    // global timestamps asked of it

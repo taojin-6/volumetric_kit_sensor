@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/array/rig_sets.hpp
+/// @file array/rig_sets.hpp
 /// @brief A run of N frames read from a started array: each set waited for on
 ///        the sensors' notifications and cut to the frames the run still
 ///        takes.
@@ -15,10 +15,10 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
-#include "volumetric_kit/recon/sensor/array/export.hpp"
-#include "volumetric_kit/recon/sensor/array/sensor_array.hpp"
+#include "volumetric_kit/sensor/array/export.hpp"
+#include "volumetric_kit/sensor/array/sensor_array.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief A started array's sets, each waited for on its sensors'
 ///        notifications (@ref SensorArray::wait_set) and cut to the run's
@@ -40,7 +40,7 @@ namespace volumetric_kit::recon::sensor {
 ///   // the set's fusion and frame, recorded into front after its prep
 /// }
 /// @endcode
-class VR_SENSOR_ARRAY_API RigSets {
+class VS_ARRAY_API RigSets {
  public:
   /// How long @ref next waits for a set before calling the sensors silent.
   /// A streaming camera delivers one every ~33 ms; a secondary with no
@@ -96,4 +96,4 @@ class VR_SENSOR_ARRAY_API RigSets {
   std::chrono::steady_clock::time_point last_set_;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

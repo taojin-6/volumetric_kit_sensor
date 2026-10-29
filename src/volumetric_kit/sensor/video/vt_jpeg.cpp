@@ -10,7 +10,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 namespace {
 
 // A JPEG's frame header: its size, and whether it is baseline or extended
@@ -149,4 +149,4 @@ core::Result<DecodedPicture> VtJpeg::decode(const std::uint8_t* data,
   return out;
 }
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

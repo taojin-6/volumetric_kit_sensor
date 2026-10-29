@@ -15,18 +15,18 @@
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
 
-namespace vr_test {
+namespace vs_test {
 
-namespace vr = volumetric_kit::recon;
+namespace sensor = volumetric_kit::sensor;
 namespace vkc = volumetric_kit::core;
 
 // What a decoder test returns when the decoders have no device path here (no
 // GPU this build's hardware path reaches): it skips, or fails where CI sets
-// VR_TEST_HEVC_BACKEND, as on every leg that promises one.
+// VS_TEST_HEVC_BACKEND, as on every leg that promises one.
 inline int no_decoder(const std::string& why) {
-  const char* promise = std::getenv("VR_TEST_HEVC_BACKEND");
+  const char* promise = std::getenv("VS_TEST_HEVC_BACKEND");
   const bool required = promise != nullptr && *promise != '\0';
   std::fprintf(stderr, "no device path for the decoders (%s); %s\n",
                why.c_str(), required ? "failing" : "skipping");
@@ -59,7 +59,7 @@ inline vkc::Result<vkc::Device> bare_device(const vkc::test::GpuContext& gpu) {
   view.submit_mutex = gpu.device.submit_mutex();
   view.enabled_features.timeline_semaphore = true;
   view.enabled_features.scalar_block_layout = true;
-  return vkc::Device::adopt(view, vr::device_requirements());
+  return vkc::Device::adopt(view, sensor::device_requirements());
 }
 
-}  // namespace vr_test
+}  // namespace vs_test

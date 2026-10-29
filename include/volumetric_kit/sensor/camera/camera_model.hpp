@@ -7,7 +7,7 @@
 /// @brief A camera as it captures: its image size, pinhole intrinsics, and
 ///        OpenCV's rational lens.
 ///
-/// Conventions, the same everywhere in this repo:
+/// Conventions, the same everywhere in this package:
 /// - The camera looks down **+Z** with **+X right** and **+Y down**.
 /// - Pixel centres sit at integer coordinates, so a W-pixel-wide image spans
 ///   `[-0.5, W - 0.5]`. Normalized coordinates are the pinhole's:
@@ -20,9 +20,9 @@
 #include <cstdint>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/camera/export.hpp"
+#include "volumetric_kit/sensor/camera/export.hpp"
 
-namespace volumetric_kit::recon::camera {
+namespace volumetric_kit::sensor::camera {
 
 /// @brief An image's size in pixels.
 struct ImageSize {
@@ -65,6 +65,6 @@ struct CameraModel {
 ///        coefficient finite.
 /// @param camera  The model.
 /// @return OK; or `Status::Code::InvalidArgument` naming the field.
-VR_CAMERA_API core::Status check_camera_model(const CameraModel& camera);
+VS_CAMERA_API core::Status check_camera_model(const CameraModel& camera);
 
-}  // namespace volumetric_kit::recon::camera
+}  // namespace volumetric_kit::sensor::camera

@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/color_conventions.hpp"
+#include "volumetric_kit/sensor/color_conventions.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 core::Status to_canonical(const std::uint32_t* src, std::size_t count,
                           const ColorEncoding& enc, std::uint32_t* dst) {
-  // Ahead of the empty-frame shortcut: a declaration this repo cannot convert
-  // is wrong however many pixels carry it, and reporting OK for a zero-length
-  // PQ frame would let a driver's first (empty) poll validate a label its next
-  // frame is refused for.
+  // Ahead of the empty-frame shortcut: a declaration this package cannot
+  // convert is wrong however many pixels carry it, and reporting OK for a
+  // zero-length PQ frame would let a driver's first (empty) poll validate a
+  // label its next frame is refused for.
   if (enc.transfer == ColorEncoding::Transfer::Bt2020Pq) {
     // PQ is an absolute-luminance HDR curve; landing it in an 8-bit SDR
     // canonical form is a tone-mapping problem, not a transfer conversion.
@@ -76,4 +76,4 @@ core::Status to_canonical(const std::uint32_t* src, std::size_t count,
   return core::Status{};
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/video/cuda_interop.hpp"
+#include "volumetric_kit/sensor/video/cuda_interop.hpp"
 
 #include <cstring>
 #include <string>
@@ -12,7 +12,7 @@
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 using video::cuda_driver;
 using video::cuda_error;
@@ -232,4 +232,4 @@ CudaImageMapping::~CudaImageMapping() {
   cu->cuDestroyExternalMemory(memory_);
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

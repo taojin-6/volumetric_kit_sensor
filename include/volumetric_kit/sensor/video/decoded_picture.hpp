@@ -3,16 +3,16 @@
 
 #pragma once
 
-/// @file sensor/video/decoded_picture.hpp
+/// @file video/decoded_picture.hpp
 /// @brief A decoded picture, on the device and held by the picture.
 
 #include <cstdint>
 #include <optional>
 
-#include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/sensor/yuv_image.hpp"
+#include "volumetric_kit/sensor/frame/color_space.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief A stream's YCbCr matrix and range.
 struct VideoColorDescription {
@@ -44,8 +44,8 @@ struct DecodedPicture {
   YuvImage yuv;
   std::int64_t pts = 0;  ///< The one sent with its access unit.
   /// The transfer function and primaries the stream declares, as a capture
-  /// source declares them (`core/color_space.hpp`); a stream that declares
-  /// neither is taken as BT.709. Empty when the stream declares one
+  /// source declares them (`sensor/frame/color_space.hpp`); a stream that
+  /// declares neither is taken as BT.709. Empty when the stream declares one
   /// @ref ColorEncoding cannot name (HLG, the SD primaries of BT.601, a
   /// gamma curve), so a driver has nothing true to declare and refuses the
   /// picture rather than fusing it through the wrong curve or basis.
@@ -53,4 +53,4 @@ struct DecodedPicture {
       ColorEncoding::Transfer::Bt709, ColorEncoding::Primaries::Bt709};
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

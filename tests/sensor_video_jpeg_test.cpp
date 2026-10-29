@@ -9,7 +9,7 @@
 // the decoders create refuses; VideoToolbox's images shared across queue
 // families; and moves.
 //
-// Where no device path opens the test skips; VR_TEST_HEVC_BACKEND, which CI
+// Where no device path opens the test skips; VS_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one (nvJPEG on the NVIDIA containers,
 // VideoToolbox on macOS), makes it fail instead.
 
@@ -31,23 +31,22 @@
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
-#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
-#include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/video/jpeg_decoder.hpp"
 #include "yuv_reference.hpp"
 
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 using sensor::JpegDecoder;
 using sensor::YuvLayout;
 
 namespace {
 
-constexpr const char* k420 = VR_JPEG_DATA "/patches_256x144.jpg";
-constexpr const char* kOdd = VR_JPEG_DATA "/patches_255x143.jpg";
-constexpr const char* k422 = VR_JPEG_DATA "/patches_422_256x144.jpg";
-constexpr const char* kWide = VR_JPEG_DATA "/patches_16400x72.jpg";
+constexpr const char* k420 = VS_JPEG_DATA "/patches_256x144.jpg";
+constexpr const char* kOdd = VS_JPEG_DATA "/patches_255x143.jpg";
+constexpr const char* k422 = VS_JPEG_DATA "/patches_422_256x144.jpg";
+constexpr const char* kWide = VS_JPEG_DATA "/patches_16400x72.jpg";
 
 // The pattern: patch p = (column + 3 * row) mod 8 over 32x72 luma patches;
 // Y = 40 + 24p, U = 64 + 16 (3p mod 8), V = 64 + 16 (5p mod 8).
@@ -86,7 +85,7 @@ struct Planes {
 Planes from_device(sensor::DecodedPicture& p, vkc::Device& device,
                    vkc::Allocator& allocator) {
   Planes out{p.yuv.width, p.yuv.height, {}};
-  vr_test::read_device_picture(p.yuv, device, allocator, out.plane);
+  vs_test::read_device_picture(p.yuv, device, allocator, out.plane);
   return out;
 }
 
@@ -266,7 +265,7 @@ int test_device(const Gpu& gpu) {
 int test_create_refusals(const Gpu& gpu) {
   CHECK(JpegDecoder::create({}).status().domain() ==
         vkc::Status::Code::Unsupported);
-  vkc::Result<vkc::Device> bare = vr_test::bare_device(gpu);
+  vkc::Result<vkc::Device> bare = vs_test::bare_device(gpu);
   CHECK(bare.ok());
   JpegDecoder::Options options = decoder_options(gpu);
   options.device = &bare.value();
@@ -360,7 +359,7 @@ int gpu_main(Gpu& gpu) {
       std::fprintf(stderr, "FAIL: %s\n", probe.status().message().c_str());
       return 1;
     }
-    return vr_test::no_jpeg_decoder(probe.status().message());
+    return vs_test::no_jpeg_decoder(probe.status().message());
   }
 
   if (test_device(gpu) != 0) return 1;
@@ -382,5 +381,5 @@ int main() {
     std::fprintf(stderr, "FAIL: cannot read %s\n", k420);
     return 1;
   }
-  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

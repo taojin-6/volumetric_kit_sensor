@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/array/rig_sets.hpp"
+#include "volumetric_kit/sensor/array/rig_sets.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -13,7 +13,7 @@
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/exception_status.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 namespace {
 
 // Keep @p set's first @p frames frames, in the array's order, and drop the
@@ -86,4 +86,4 @@ core::Result<FrameSet> RigSets::next(core::StageMetrics* metrics) try {
                                 core::Status::Code::OutOfMemory);
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

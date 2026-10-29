@@ -16,7 +16,7 @@
 #include "trigger_grouper.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 
-namespace sensor = volumetric_kit::recon::sensor;
+namespace sensor = volumetric_kit::sensor;
 
 namespace {
 

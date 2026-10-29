@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/array/sensor_array.hpp"
+#include "volumetric_kit/sensor/array/sensor_array.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -19,7 +19,7 @@
 #include "trigger_grouper.hpp"
 #include "volumetric_kit/core/base/check.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 namespace {
 
@@ -542,4 +542,4 @@ bool SensorArray::exhausted() const noexcept {
                      [](const auto& s) { return s->exhausted(); });
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

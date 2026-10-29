@@ -26,7 +26,7 @@
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 template <typename Item>
 class DecodeWorker {
@@ -195,4 +195,4 @@ class DecodeWorker {
   std::thread thread_;
 };
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

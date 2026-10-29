@@ -7,7 +7,7 @@
 
 #include "picture_frames.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 JpegColorDecoder::JpegColorDecoder(const Options& options, Sink sink)
     : options_(options),
@@ -73,4 +73,4 @@ void JpegColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair) {
   sink_(rebuilt_pair(depth, *color, picture_frame(picture.value(), color)));
 }
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

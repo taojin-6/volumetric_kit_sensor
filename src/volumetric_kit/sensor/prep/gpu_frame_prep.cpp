@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -24,10 +24,10 @@
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/shader.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
-#include "volumetric_kit/recon/core/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "yuv_planes.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 namespace {
 
 // Both kernels' local_size_x.
@@ -382,8 +382,8 @@ core::Status build_images_kernel(const core::Device& device,
       core::ShaderModule::create(device.handle(),
                                  // NOLINTNEXTLINE(*-reinterpret-cast)
                                  reinterpret_cast<const std::uint32_t*>(
-                                     vr_undistort_color_images_comp_spv),
-                                 vr_undistort_color_images_comp_spv_size));
+                                     vs_undistort_color_images_comp_spv),
+                                 vs_undistort_color_images_comp_spv_size));
   const VkDescriptorSetLayout layout = kernel.layout.handle();
   core::ComputePipelineDesc desc;
   desc.shader = &module;
@@ -443,10 +443,10 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
   core::KernelSetBuilder kb(device);
   // Depth: raw in, depth out, and the overlap it masks by.
   VKC_TRY(kb.add(prep.depth_kernel_, "undistort_depth",
-                 vr_undistort_depth_comp_spv, vr_undistort_depth_comp_spv_size,
+                 vs_undistort_depth_comp_spv, vs_undistort_depth_comp_spv_size,
                  3, &depth_push));
   VKC_TRY(kb.add(prep.color_kernel_, "undistort_color",
-                 vr_undistort_color_comp_spv, vr_undistort_color_comp_spv_size,
+                 vs_undistort_color_comp_spv, vs_undistort_color_comp_spv_size,
                  2, &color_push));
   VKC_ASSIGN(prep.pool_, kb.build());
   // Colour from NV12's plane images, sampled where they are.
@@ -941,4 +941,4 @@ core::Status GpuFramePrep::ensure_output(std::shared_ptr<Output>& output,
   return {};
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

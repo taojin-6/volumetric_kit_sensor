@@ -17,17 +17,16 @@
 
 #include "frame_conversion.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/camera/color_controls.hpp"
-#include "volumetric_kit/recon/camera/geometry.hpp"
-#include "volumetric_kit/recon/core/math/vector_types.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
+#include "volumetric_kit/sensor/camera/color_controls.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/frame/vector_types.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sensor.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_stream.hpp"
 
-namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
-namespace sensor = volumetric_kit::recon::sensor;
-namespace orbbec = volumetric_kit::recon::sensor::orbbec;
-namespace camera = volumetric_kit::recon::camera;
+namespace sensor = volumetric_kit::sensor;
+namespace orbbec = volumetric_kit::sensor::orbbec;
+namespace camera = volumetric_kit::sensor::camera;
 
 namespace {
 
@@ -178,8 +177,8 @@ int test_transform_from() {
   e.trans[2] = 4.0f;
   const auto quarter = orbbec::transform_from(e, kWho);
   CHECK(quarter.ok());
-  const vr::Mat4f m(quarter.value());
-  const vr::Vec4f p = m * vr::Vec4f(1.0f, 2.0f, 3.0f, 1.0f);
+  const sensor::Mat4f m(quarter.value());
+  const sensor::Vec4f p = m * sensor::Vec4f(1.0f, 2.0f, 3.0f, 1.0f);
   // R (1, 2, 3) = (-2, 1, 3), plus t.
   CHECK(std::fabs(p.x - (-2.0f + 0.032f)) < 1e-6f);
   CHECK(std::fabs(p.y - (1.0f - 0.0015f)) < 1e-6f);

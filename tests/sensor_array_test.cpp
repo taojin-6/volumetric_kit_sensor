@@ -26,12 +26,12 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/camera/array_calibration.hpp"
-#include "volumetric_kit/recon/sensor/array/sensor_array.hpp"
+#include "volumetric_kit/sensor/array/sensor_array.hpp"
+#include "volumetric_kit/sensor/camera/array_calibration.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace camera = volumetric_kit::recon::camera;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace camera = volumetric_kit::sensor::camera;
+namespace sensor = volumetric_kit::sensor;
 
 namespace {
 

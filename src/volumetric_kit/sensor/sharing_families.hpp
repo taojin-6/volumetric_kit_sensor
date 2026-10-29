@@ -18,15 +18,15 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 
-namespace volumetric_kit::recon::sensor::detail {
+namespace volumetric_kit::sensor::detail {
 
 // The families the images are CONCURRENT across: the distinct entries of
 // `families` when two or more, as the core's allocator picks a buffer's
 // sharing; none, for EXCLUSIVE, otherwise. `who` starts every message.
 // TODO(sensor): everything but the own-family check repeats the core
 // allocator's internal sharing_for (allocator.cpp), behind its buffers and
-// images. Call it instead once the core makes it public and recon's core pin
-// reaches that.
+// images. Call it instead once the core makes it public and this package's
+// core pin reaches that.
 inline core::Result<std::vector<std::uint32_t>> sharing_families(
     const core::Device& device, const std::uint32_t* families,
     std::uint32_t count, const std::string& who) {
@@ -66,4 +66,4 @@ inline core::Result<std::vector<std::uint32_t>> sharing_families(
   return distinct;
 }
 
-}  // namespace volumetric_kit::recon::sensor::detail
+}  // namespace volumetric_kit::sensor::detail

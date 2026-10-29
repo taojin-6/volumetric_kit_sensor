@@ -3,8 +3,8 @@
 
 # FFmpeg (libavcodec, libavutil), for the video decoders off Apple, where NVDEC
 # decodes through it: a prerequisite, found and never fetched, like the Orbbec
-# SDK. Included from the root CMakeLists only when VR_WITH_FFMPEG is ON; defines
-# the imported target PkgConfig::VR_FFMPEG.
+# SDK. Included from the root CMakeLists only when VS_WITH_FFMPEG is ON; defines
+# the imported target PkgConfig::VS_FFMPEG.
 #
 # Install it from the platform: `apt install libavcodec-dev libavutil-dev
 # pkg-config` on Ubuntu. The floor is Ubuntu 24.04's FFmpeg 6.1 (libavcodec
@@ -15,31 +15,31 @@
 if(APPLE)
   message(
     FATAL_ERROR
-      "VR_WITH_FFMPEG is ON, but on Apple the video decoders use VideoToolbox "
+      "VS_WITH_FFMPEG is ON, but on Apple the video decoders use VideoToolbox "
       "directly and need no FFmpeg. Configure this build with "
-      "-DVR_WITH_FFMPEG=OFF.")
+      "-DVS_WITH_FFMPEG=OFF.")
 endif()
 # The decoders hand out pictures on the device only: NVDEC's and nvJPEG's
 # through CUDA (the 2026-10-06 device-only decoder decision).
-if(NOT VR_WITH_CUDA)
+if(NOT VS_WITH_CUDA)
   message(
     FATAL_ERROR
-      "VR_WITH_FFMPEG needs VR_WITH_CUDA: off Apple, the decoders hand their "
-      "pictures out on the device only through CUDA (cmake/vr_cuda.cmake).")
+      "VS_WITH_FFMPEG needs VS_WITH_CUDA: off Apple, the decoders hand their "
+      "pictures out on the device only through CUDA (cmake/vs_cuda.cmake).")
 endif()
 
 find_package(PkgConfig)
 if(PkgConfig_FOUND)
-  pkg_check_modules(VR_FFMPEG IMPORTED_TARGET libavcodec>=60.31
+  pkg_check_modules(VS_FFMPEG IMPORTED_TARGET libavcodec>=60.31
                     libavutil>=58.29)
 endif()
-if(NOT VR_FFMPEG_FOUND)
+if(NOT VS_FFMPEG_FOUND)
   message(
     FATAL_ERROR
-      "VR_WITH_FFMPEG is ON but FFmpeg >= 6.1 (libavcodec, libavutil) was not "
+      "VS_WITH_FFMPEG is ON but FFmpeg >= 6.1 (libavcodec, libavutil) was not "
       "found through pkg-config. Install it (Ubuntu: apt install "
       "libavcodec-dev libavutil-dev pkg-config), or point PKG_CONFIG_PATH at "
       "an FFmpeg build.")
 endif()
 
-message(STATUS "FFmpeg: libavcodec ${VR_FFMPEG_libavcodec_VERSION}")
+message(STATUS "FFmpeg: libavcodec ${VS_FFMPEG_libavcodec_VERSION}")

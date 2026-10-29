@@ -15,7 +15,7 @@
 #include "jpeg_color.hpp"
 #include "picture_frames.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 namespace {
 
@@ -97,7 +97,7 @@ core::Status check_orientation(ob::Device& device, const std::string& who) {
   return {};
 }
 
-// The SDK reports every failure as a thrown ob::Error; this repo returns
+// The SDK reports every failure as a thrown ob::Error; this package returns
 // Status across its API. `who` names the caller ("OrbbecSensor", ...).
 core::Status sdk_error(const std::string& who, const std::string& what,
                        const std::exception& e) {
@@ -707,4 +707,4 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
   return std::optional<RgbdFrame>(std::move(frame));
 }
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

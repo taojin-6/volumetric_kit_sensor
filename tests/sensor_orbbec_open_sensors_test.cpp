@@ -16,17 +16,17 @@
 
 #include "orbbec_camera_stub.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/recon/camera/color_controls.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
+#include "volumetric_kit/sensor/camera/color_controls.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sensor.hpp"
 
 namespace vkc = volumetric_kit::core;
-namespace camera = volumetric_kit::recon::camera;
-namespace sensor = volumetric_kit::recon::sensor;
+namespace camera = volumetric_kit::sensor::camera;
+namespace sensor = volumetric_kit::sensor;
 
 namespace {
 
 // A primary and a secondary 160 us behind it.
-const std::string kRig = VR_SYNC_FIXTURES "/rig.json";
+const std::string kRig = VS_SYNC_FIXTURES "/rig.json";
 constexpr const char* kPrimary = "TEST-PRIMARY";
 constexpr const char* kSecondary = "TEST-SECONDARY";
 
@@ -158,11 +158,11 @@ int test_refusals() {
 
   // A file that cannot be read (core::read_file's error), or holds no rig,
   // named.
-  const std::string missing = VR_SYNC_FIXTURES "/missing.json";
+  const std::string missing = VS_SYNC_FIXTURES "/missing.json";
   s = sensor::open_orbbec_sensors(missing, {}).status();
   CHECK(s.domain() == vkc::Status::Code::NotFound);
   CHECK(mentions(s, missing));
-  const std::string empty = VR_SYNC_FIXTURES "/no_devices.json";
+  const std::string empty = VS_SYNC_FIXTURES "/no_devices.json";
   s = sensor::open_orbbec_sensors(empty, {}).status();
   CHECK(s.domain() == vkc::Status::Code::InvalidArgument);
   CHECK(mentions(s, empty));

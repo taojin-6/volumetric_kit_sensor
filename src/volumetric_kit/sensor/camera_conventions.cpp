@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/camera_conventions.hpp"
+#include "volumetric_kit/sensor/camera_conventions.hpp"
 
 #include <cmath>
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 namespace {
 
 // Rescale one axis of a pinhole camera for a resized image.
@@ -87,4 +87,4 @@ core::Result<DepthCameraParams> depth_from_registered_color(
   return depth;
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor
