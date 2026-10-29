@@ -4376,7 +4376,7 @@ libraries shared, privately. No CUDA or TensorRT type reaches a header.
 and `depth_info()`), an FFS ONNX and a plan cache directory: the network is
 the rig's size rounded up to multiples of 32, checked on the parsed network
 before the build; the plan is named for the GPU, the TensorRT version, the
-model's bytes and that size, loaded if TensorRT takes it and built (and
+model's bytes and that size; loaded if TensorRT takes it, else built (and
 written whole, by rename) if not. `depth` maps each view into CUDA once,
 pads and normalises it into the network's input with one kernel, runs
 TensorRT, and writes `fx * baseline / d` with another, 16-bit in
@@ -4400,7 +4400,7 @@ commercial ONNX works only to ~1 Mpx and lacks the changes); the 23-36-37
 checkpoint by measurement on the D455 takes; and every per-frame step on the
 GPU, which here means no host round trip between the rectifier, the network
 and `GpuFramePrep` at all. The plan is cached because a build takes minutes
-(about 160 s at 960 x 544 on the 4090) and a load seconds; it is keyed by
+(153 s at 960 x 544 on the 4090) and a load about a second; it is keyed by
 everything a plan is good for only. Where the code made the approved header
 (the design's rev 4 and 5) change:
 - `FfsStereo::create` takes the `StereoRectifier`, not its `StereoRig`: the
@@ -4450,6 +4450,34 @@ passed over; stop and restart; drain oldest first; a camera failure
 reported by poll and drain after a notification; the camera polled on the
 thread alone and never called from two threads at once.
 
-**Validation.** VALIDATION_TBD
+**Validation.** RTX 4090, Ubuntu 26.04, Release with warnings as errors,
+Orbbec, FFmpeg, CUDA 13.4 and FFS (TensorRT 11.4.0), under the validation
+layer with synchronization validation: 45 tests passed and the 2 JPEG tests
+skipped (the 4090 has no JPEG engine), of 47. Six planted bugs each failed
+a test: a disparity past its column kept, the padded network's row length
+read as the view's, a depth buffer a frame holds written again, R and B
+swapped in `Rgba8`, the plan cache never read, and a refused pair ending
+the sensor. The Mac builds no `sensor_ffs`.
 
-**Hand check (not a test).** HAND_CHECK_TBD
+**Hand check (not a test).** The FFS study's D455 take with the projector
+off (30 frames, the camera-rectified 1280 x 720 infrared pair) as `Luma`
+host pairs through `StereoRectifier`, `FfsStereo` on this tool's export of
+23-36-37 and `GpuFramePrep`, on the lab 4090. At 1280 x 720 (a 1280 x 736
+network) against the study's PyTorch AMP output of the same checkpoint:
+disparity within 0.0078 px at the median and 0.032 px at the 90th
+percentile, 99.6% within 0.25 px, depth within 0.30 mm at the median, and
+the same fill, 94.4%. Against the D455's own depth (the study's measure:
+per-pixel medians over the take, where both return in every frame): median
+|dZ| 7.40 mm, -1.80 mm signed, 92.9% within 2% (the study: 7.40 mm, 92.5%).
+At 960 x 544, against the D455 at its pixels: 7.70 mm, 92.7% within 2%, and
+2.3 mm (0.15%) at the median from PyTorch's 1280 x 720 depth. Building the
+plans took 153 s (960 x 544, 468 MB) and 161 s (1280 x 736, 815 MB); a
+cached plan loads in 0.9 s and 1.2 s. Per frame, median of 90 on an idle
+4090 (the box to itself), at 960 x 544 and 1280 x 720: the network 27.51
+and 53.19 ms of device time; the input kernel 0.008 and 0.013 ms, the depth
+kernel 0.004 and 0.005 ms; `depth` on the host 27.60 and 53.28 ms, its wait
+included, so under 0.1 ms of host work; the rectifier 0.095 and 0.100 ms of
+device time; and the handoff no copy: `GpuFramePrep` reads the depth where
+CUDA wrote it, 0.057 and 0.060 ms of device time for its depth and grey
+colour passes. Rectifier, FFS and prep together: 28.4 and 54.1 ms a frame
+on the host.
