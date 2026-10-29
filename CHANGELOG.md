@@ -8,12 +8,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **BREAKING: a frame with colour keeps depth only inside its colour
-  camera's view.** `GpuFramePrep` zeroes every depth pixel whose point its
-  colour camera does not record, from the host or the device; a frame
-  without colour keeps all its depth. `GpuFramePrepConfig::depth_within_color`
-  is gone: a consumer that set it drops the line, and one that left it off
-  gets the mask (DECISIONS.md, the 2026-10-29 same-view entry).
+- **BREAKING: a frame with colour keeps only what both its cameras see.**
+  `GpuFramePrep` zeroes every depth pixel whose point its colour camera does
+  not record, from the host or the device, and makes every colour pixel
+  whose ray its depth camera does not see over the frame's depth range a 0
+  word (coverage 0); a frame without colour keeps all its depth.
+  `GpuFramePrepConfig::depth_within_color` is gone: a consumer that set it
+  drops the line, and one that left it off gets the mask (DECISIONS.md, the
+  2026-10-29 same-view entry).
 
 ## [0.6.0] - 2026-10-29
 

@@ -129,16 +129,22 @@ struct GpuFramePrepConfig {
 /// planes, or every camera's depth -- so they must all name the family that
 /// wrote it.
 ///
-/// A frame with colour keeps depth only inside its colour camera's view,
-/// wherever the depth came from: a depth sensor's field of view and its colour
-/// camera's rarely match, and depth past the colour's view fuses into surfaces
-/// that camera never records. Every depth pixel whose point, moved into the
-/// colour camera by the two poses, is behind it or lands on a pixel the colour
-/// pass marks uncovered (@ref DeviceFrame::color's coverage byte, 0 where the
-/// lens saw nothing) is zeroed, the pass's "no return". The test is the
-/// colour camera's view, not its line of sight: a point inside the view that
-/// a nearer surface hides from it is kept. A frame without colour keeps all
-/// its depth.
+/// A frame with colour keeps only what both its cameras see, so each pixel
+/// handed out is in both views: a depth sensor's field of view and its colour
+/// camera's rarely match, and the overlap is each sensor's own, from its
+/// intrinsics and extrinsic.
+/// - Depth, wherever it came from, is zeroed, the pass's "no return", where
+///   its point, moved into the colour camera by the two poses, is behind it
+///   or lands on a pixel its lens did not record.
+/// - Colour is a 0 word, coverage and all, where the depth camera does not
+///   see its ray over the frame's whole depth range: the ray's points at
+///   @ref RgbdFrame::min_depth and @ref RgbdFrame::max_depth along the colour
+///   camera's axis must both lie in front of the depth camera, on pixels the
+///   depth pass covers.
+///
+/// Both test a camera's view, not its line of sight: a point inside the view
+/// that a nearer surface hides from it is kept. A frame without colour keeps
+/// all its depth (every frame has depth).
 ///
 /// A frame's host depth and host colour are copied into the pass's persistent
 /// slot (`core::HostRing`), which its batch binds: in place where the device's
@@ -385,9 +391,8 @@ class VS_PREP_API GpuFramePrep {
   // the slot (core::HostAccess::SequentialWrite), so where the ring is
   // copied, as on a discrete GPU, it is write-combined staging.
   std::unique_ptr<core::HostRing> inputs_;
-  // The colour camera and the depth-to-colour transform the depth pass masks
-  // a frame with colour by, written inline each such frame; bound once, at
-  // create.
+  // The two cameras and the depth range both passes mask a frame with colour
+  // by, written inline each such frame; bound once, at create.
   core::Buffer overlap_;
   // The outputs the fusion tiers read, device-local, leased to the
   // DeviceFrames handed out; reused only once no frame holds the lease.

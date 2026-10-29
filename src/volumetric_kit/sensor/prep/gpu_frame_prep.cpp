@@ -26,6 +26,7 @@
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/shader.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 
 namespace volumetric_kit::sensor {
@@ -54,15 +55,24 @@ static_assert(offsetof(DepthParams, depth_offset_m) == 64,
 static_assert(offsetof(DepthParams, raw_first) == 68,
               "DepthParams layout drift");
 
-// undistort_depth.comp's Overlap block: the colour camera, and the rigid
-// transform from the depth camera's frame into the colour camera's
-// (column-major, as the shader's mat4).
+// shaders/rgbd_overlap.glsl's RgbdOverlap, which both passes bind: the two
+// cameras, the rigid transforms between their frames (column-major, as the
+// shader's mat4), and the frame's depth range.
 struct OverlapParams {
   LensParams color;
   Mat4f depth_to_color;
+  LensParams depth;
+  Mat4f color_to_depth;
+  float near_m;
+  float far_m;
 };
-static_assert(sizeof(OverlapParams) == 56 + 64, "OverlapParams layout drift");
+static_assert(sizeof(OverlapParams) == 2 * (56 + 64) + 8,
+              "OverlapParams layout drift");
 static_assert(offsetof(OverlapParams, depth_to_color) == 56,
+              "OverlapParams layout drift");
+static_assert(offsetof(OverlapParams, color_to_depth) == 176,
+              "OverlapParams layout drift");
+static_assert(offsetof(OverlapParams, near_m) == 240,
               "OverlapParams layout drift");
 
 // rgbd_frame.hpp spells Vulkan's special queue families without Vulkan.
@@ -282,14 +292,14 @@ core::Result<core::UniqueHandle<VkSampler, vkDestroySampler>> make_sampler(
 
 // The colour pass's image entry, built by hand, since KernelSetBuilder binds
 // storage buffers only: two combined image samplers, NV12's planes, then the
-// output, with a pool of its own for the kernel's one set. `out` is replaced
-// only once everything is built.
+// output and the overlap, with a pool of its own for the kernel's one set.
+// `out` is replaced only once everything is built.
 core::Status build_images_kernel(const core::Device& device,
                                  const VkPushConstantRange& push,
                                  core::ComputeKernel& out,
                                  core::DescriptorPool& pool) {
-  VkDescriptorSetLayoutBinding bindings[3]{};
-  for (std::uint32_t i = 0; i < 3; ++i) {
+  VkDescriptorSetLayoutBinding bindings[4]{};
+  for (std::uint32_t i = 0; i < 4; ++i) {
     bindings[i].binding = i;
     bindings[i].descriptorType = i < 2
                                      ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
@@ -300,9 +310,9 @@ core::Status build_images_kernel(const core::Device& device,
   core::ComputeKernel kernel;
   kernel.name = "undistort_color_images";
   kernel.push_bytes = push.size;
-  kernel.bindings = 1;  // the storage buffers among them
+  kernel.bindings = 2;  // the storage buffers among them
   VKC_ASSIGN(kernel.layout,
-             core::DescriptorSetLayout::create(device.handle(), bindings, 3));
+             core::DescriptorSetLayout::create(device.handle(), bindings, 4));
   // The module is transient: the pipeline does not retain it. SPIR-V is a
   // stream of words, and vkc_embed_shaders aligns its arrays to 4.
   VKC_ASSIGN(
@@ -324,7 +334,7 @@ core::Status build_images_kernel(const core::Device& device,
              core::ComputePipeline::create(device.handle(), desc));
   const VkDescriptorPoolSize sizes[2] = {
       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
   VKC_ASSIGN(core::DescriptorPool made,
              core::DescriptorPool::create(device.handle(), sizes, 2, 1));
   VKC_ASSIGN(kernel.set, made.allocate(layout));
@@ -369,13 +379,13 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
   VkPushConstantRange color_push = depth_push;
   color_push.size = sizeof(detail::ColorParams);
   core::KernelSetBuilder kb(device);
-  // Depth: raw in, depth out, and the overlap it masks by.
+  // Each pass: its input, its output, and the overlap it masks by.
   VKC_TRY(kb.add(prep.depth_kernel_, "undistort_depth",
                  vs_undistort_depth_comp_spv, vs_undistort_depth_comp_spv_size,
                  3, &depth_push));
   VKC_TRY(kb.add(prep.color_kernel_, "undistort_color",
                  vs_undistort_color_comp_spv, vs_undistort_color_comp_spv_size,
-                 2, &color_push));
+                 3, &color_push));
   VKC_ASSIGN(prep.pool_, kb.build());
   // Colour from NV12's plane images, sampled where they are.
   VKC_ASSIGN(prep.sampler_, make_sampler(device));
@@ -390,15 +400,19 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
   prep.min_storage_buffer_offset_alignment_ =
       props.limits.minStorageBufferOffsetAlignment;
   VKC_ASSIGN(prep.gpu_timer_, core::GpuTimer::create(device));
-  // Always bound, so the set is complete whether or not the mask runs; the
-  // kernel reads it only when it does.
+  // Bound once, to every kernel, and written for each frame with colour: the
+  // depth pass reads it only then, and the colour passes run only then.
   VKC_ASSIGN(prep.overlap_,
              core::device_storage_buffer(allocator, sizeof(OverlapParams)));
   device.set_object_name(VK_OBJECT_TYPE_BUFFER,
                          core::debug_object_handle(prep.overlap_.handle()),
-                         "sensor.depth_overlap");
+                         "sensor.rgbd_overlap");
   prep.depth_kernel_.set.write_storage_buffer(2, prep.overlap_.handle(), 0,
                                               VK_WHOLE_SIZE);
+  prep.color_kernel_.set.write_storage_buffer(2, prep.overlap_.handle(), 0,
+                                              VK_WHOLE_SIZE);
+  prep.color_images_kernel_.set.write_storage_buffer(3, prep.overlap_.handle(),
+                                                     0, VK_WHOLE_SIZE);
   return prep;
 }
 
@@ -559,11 +573,16 @@ core::Status GpuFramePrep::record_inputs(core::CommandBatch& batch,
   // joins the open tile, the frame prep's. Bound even when it holds only the
   // word a frame with nothing on the host claims, so the batch holds it.
   VKC_ASSIGN(*input, batch.input(slot, 0, layout.slot_bytes));
-  // The colour-view mask, for a frame with colour: the colour camera and the
-  // depth-to-colour transform, written inline.
+  // The overlap both passes mask a frame with colour by, written inline: the
+  // two cameras, the transforms each way, and the depth range.
   if (frame.has_color()) {
-    const OverlapParams overlap{lens_params(frame.color_camera),
-                                Mat4f(frame.depth_to_color)};
+    const OverlapParams overlap{
+        lens_params(frame.color_camera),
+        Mat4f(frame.depth_to_color),
+        lens_params(frame.depth_camera),
+        Mat4f(camera::rigid_inverse(frame.depth_to_color)),
+        frame.min_depth,
+        frame.max_depth};
     VKC_TRY(batch.upload(overlap_, 0, &overlap, sizeof(overlap)));
   }
   return {};

@@ -49,8 +49,9 @@ struct DeviceFrame {
   /// Row-major colour, `color_camera.width * height` words: R, G and B in the
   /// low three bytes, and the pixel's coverage in the high one -- 0xFF where
   /// the lens maps inside the captured picture, 0 (and black) where it maps
-  /// outside, which a consumer skips rather than reads as black. Null when
-  /// the frame has no colour.
+  /// outside or the producer drops the pixel (`GpuFramePrep`: outside the
+  /// depth camera's view), which a consumer skips rather than reads as black.
+  /// Null when the frame has no colour.
   std::shared_ptr<const core::Buffer> color;
   DepthCameraParams depth_camera{};  ///< The undistorted depth camera.
   ColorCameraParams color_camera{};  ///< The undistorted colour camera.

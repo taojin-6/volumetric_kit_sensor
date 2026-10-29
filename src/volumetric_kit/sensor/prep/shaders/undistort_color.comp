@@ -5,14 +5,20 @@
 // camera's YUYV or luma staged from the host, or packed R'G'B' words a
 // dataset decoded on the host. For packed words, R, G and B are sampled
 // bilinearly where the lens puts the pixel, through the same coverage test,
-// and kept as they are.
+// and kept as they are. A pixel whose ray the frame's depth camera does not
+// see over its depth range (rgbd_overlap.glsl's depth_sees) is 0 too.
 
 #extension GL_GOOGLE_include_directive : require
 #include "undistort_color.glsl"
 #include "color_planes.glsl"
+#include "rgbd_overlap.glsl"
 
 // R | G << 8 | B << 16 | coverage << 24, the tsdf tier's colour layout.
 layout(set = 0, binding = 1, scalar) writeonly buffer Color { uint color[]; };
+// The frame's two cameras.
+layout(set = 0, binding = 2, scalar) readonly buffer Overlap {
+  RgbdOverlap overlap;
+};
 
 void main() {
   uint gid = gl_GlobalInvocationID.x;
@@ -22,7 +28,8 @@ void main() {
     return;
   }
   vec2 s;
-  if (!source_of(gid, s)) {
+  if (!source_of(gid, s) ||
+      !depth_sees(overlap, vec2(float(gid % w), float(gid / w)))) {
     color[gid] = 0u;
     return;
   }
