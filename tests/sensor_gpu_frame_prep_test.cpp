@@ -739,11 +739,12 @@ int test_depth_steps(sensor::GpuFramePrep& prep) {
   return 0;
 }
 
-// A tap with no return is never mixed. A plane 2.5-3 cm away, near enough that
-// 0 lies within kBlendSpanM of every return, so only the no-return rule keeps
-// a hole out of the mix, with holes (0) and weak returns (2 mm) scattered
-// through it. Every block with a hole is the nearest raw pixel's depth, bit
-// for bit: 0 where that pixel is the hole, a return where not; the rest mix.
+// A tap with no return is never mixed. A plane 2.5-3.2 cm away, near enough
+// that 0 lies within kBlendSpanM of every return, so only the no-return rule
+// keeps a hole out of the mix, with holes (0) and weak returns (2 mm)
+// scattered through it. Every block with a hole is the nearest raw pixel's
+// depth, bit for bit: 0 where that pixel is the hole, a return where not; the
+// rest mix.
 // A weak return is a return, and mixed, until a 4 mm depth offset takes it
 // to 0, when it is a hole too.
 int test_depth_holes(vkc::Device& device, vkc::Allocator& allocator) {
@@ -2162,41 +2163,54 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
     CHECK(wrong_edge == 0);
   }
 
-  // The mask tests the depth the pass writes, mixed: the tilted plane through
-  // the barrel lens (the same intrinsics), the narrower colour camera 10 cm
-  // aside. Masked, each pixel is the unmasked pass's depth where the host
-  // puts that depth's point in the colour image, and 0 where not.
+  // The mask tests the depth the pass writes, mixed: raw columns alternating
+  // 0.5 and 0.535 m through the barrel lens (the same intrinsics), so every
+  // block mixes, up to 17.5 mm from its nearest pixel's depth, and the
+  // narrower colour camera 10 cm aside. Masked, each pixel is the unmasked
+  // pass's depth where the host puts that depth's point in the colour image,
+  // and 0 where not. A mask that tested the nearest pixel's depth would decide
+  // pixels along both sides of the kept region differently, about 190 of them.
   {
     const camera::CameraModel lens = lensed();
-    const std::vector<std::uint16_t> plane = plane_raw(lens);
-    sensor::RgbdFrame tilted = frame_of(plane, lens);
-    tilted.metres_per_unit = kFineScale;
-    tilted.color = planes.image(0.299f, 0.114f, true);
-    tilted.color_camera = narrow;
-    tilted.color_to_world[3] = glm::dvec4(0.1, 0.0, 0.0, 1.0);
-    tilted.depth_to_color[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
-    auto all = plain->prepare(tilted);
+    std::vector<std::uint16_t> stripes(std::size_t{kWidth} * kHeight);
+    for (std::size_t i = 0; i < stripes.size(); ++i) {
+      stripes[i] = (i % kWidth) % 2 == 0 ? 5000 : 5350;
+    }
+    sensor::RgbdFrame striped = frame_of(stripes, lens);
+    striped.metres_per_unit = kFineScale;
+    striped.color = planes.image(0.299f, 0.114f, true);
+    striped.color_camera = narrow;
+    striped.color_to_world[3] = glm::dvec4(0.1, 0.0, 0.0, 1.0);
+    striped.depth_to_color[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
+    auto all = plain->prepare(striped);
     CHECK(all.ok());
     const std::vector<float> unmasked = depth_of(all.value());
-    out = masked->prepare(tilted);
+    out = masked->prepare(striped);
     CHECK(out.ok());
     const std::vector<float> m = depth_of(out.value());
     CHECK(m.size() == unmasked.size());
-    std::size_t kept_mixed = 0, off_mixed = 0;
+    std::size_t kept_mixed = 0, off_mixed = 0, nearest_would_differ = 0;
     for (std::uint32_t v = 0; v < kHeight; ++v) {
       for (std::uint32_t u = 0; u < kWidth; ++u) {
         const std::size_t i = std::size_t{v} * kWidth + u;
-        bool edge = false;
+        bool edge = false, nearest_edge = false;
         const bool in = lands_in(u, v, unmasked[i], &edge);
         if (edge || unmasked[i] == 0.0f) continue;
         kept_mixed += in ? 1 : 0;
         if (in ? m[i] != unmasked[i] : m[i] != 0.0f) ++off_mixed;
+        const DepthSample ref =
+            reference_depth(stripes, lens, kFineScale, 0.0f, u, v);
+        const bool nearest_in = lands_in(u, v, ref.nearest, &nearest_edge);
+        nearest_would_differ += !nearest_edge && nearest_in != in ? 1 : 0;
       }
     }
-    std::printf("  depth within colour, mixed: %zu kept, %zu off\n", kept_mixed,
-                off_mixed);
+    std::printf(
+        "  depth within colour, mixed: %zu kept, %zu off, %zu a "
+        "nearest-pixel mask gets wrong\n",
+        kept_mixed, off_mixed, nearest_would_differ);
     CHECK(off_mixed == 0);
     CHECK(kept_mixed > 1000 && kept_mixed < std::size_t{kWidth} * kHeight / 2);
+    CHECK(nearest_would_differ > 100);
   }
 
   // Off, and a frame with no colour: nothing zeroed.
