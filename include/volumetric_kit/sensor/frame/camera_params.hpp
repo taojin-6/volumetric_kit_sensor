@@ -10,21 +10,23 @@
 /// These live in `core`, next to the GLM vocabulary they are built from, rather
 /// than in the tiers that consume them, because **they are vocabulary, not
 /// capability.** A posed pinhole camera is pure math over @ref Mat4f: no
-/// Vulkan, no voxels, no fusion. Four tiers take one (`volume` allocates blocks
-/// from a depth frame, `tsdf` fuses depth and color, `texture` projects a mesh
-/// into a camera, `sensor`'s GPU pass hands out a prepared frame's), so keeping
-/// the types where they are *used* meant splitting a matched pair across two
-/// tiers -- `DepthCameraParams` in `volume`, its color counterpart in `tsdf`,
-/// because that is where each was first needed. Consumers see them as one
+/// Vulkan, no voxels, no fusion. Three tiers take one (`tsdf` fuses depth and
+/// color, `texture` projects a mesh into a camera, `sensor`'s GPU pass hands
+/// out a prepared frame's), and keeping the types where each was first needed
+/// split a matched pair across tiers (`DepthCameraParams` first lived in
+/// `volume`, its color counterpart in `tsdf`). Consumers see them as one
 /// concept; `sensor::DeviceFrame` carries one of each side by side. A driver
 /// describes its cameras as captured, lens included, in `camera::CameraModel`
-/// instead; these are the pinhole cameras fusion reads.
+/// instead; these are the pinhole cameras fusion reads. `volume`, which
+/// allocates blocks from a depth frame, takes a camera of its own,
+/// `volume::DepthPinhole`, which `tsdf::to_depth_pinhole` fills from a
+/// `DepthCameraParams`.
 ///
 /// Both structs are uploaded verbatim to compute kernels that read them through
 /// **scalar block layout** (the 2026-07-05 ABI), so the `static_assert`s below
 /// pin the host packing byte-for-byte against the GLSL mirrors in
-/// `volume/shaders/`, `tsdf/shaders/` and `texture/shaders/`. A drift is a
-/// compile error here, not a silent misprojection there.
+/// `tsdf/shaders/` and `texture/shaders/`. A drift is a compile error here,
+/// not a silent misprojection there.
 
 #include <cstddef>
 #include <cstdint>
@@ -36,12 +38,11 @@ namespace volumetric_kit::recon {
 
 /// @brief Pinhole depth-camera intrinsics, image size, valid range and pose.
 ///
-/// Consumed by `volume::VoxelHashMap::allocate_from_depth` (which unprojects a
-/// posed depth frame to decide which blocks to allocate), by
-/// `tsdf::TsdfIntegrator::integrate`, and by
-/// `texture::ProjectiveTexturer::texture`. Packs to the shader's
-/// `CameraParams`: the scalars at their natural 4-byte offsets, the `mat4` at
-/// offset 32.
+/// Consumed by `tsdf::TsdfIntegrator::integrate` and `tsdf::Fuser`, whose
+/// allocation takes it through `tsdf::to_depth_pinhole`, and by
+/// `texture::ProjectiveTexturer::texture`. Packs to the shaders'
+/// `DepthCameraParams`: the scalars at their natural 4-byte offsets, the
+/// `mat4` at offset 32.
 struct DepthCameraParams {
   float fx;              ///< Focal length x (pixels).
   float fy;              ///< Focal length y (pixels).
