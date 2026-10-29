@@ -2,16 +2,18 @@
 // Copyright (c) 2026 Tao Jin
 
 // The colour pass's body, which its two entries share: undistort_color.comp
-// reads the picture from a buffer (4:2:0, or YUYV's 4:2:2),
-// undistort_color_images.comp from NV12's two plane images where they are.
-// One thread per pixel of the pinhole image: find where the lens puts it in
-// the captured picture, sample luma and chroma
+// reads the picture from a buffer (4:2:0, YUYV's 4:2:2 or luma alone,
+// color_planes.glsl), undistort_color_images.comp from NV12's two plane
+// images where they are. One thread per pixel of the pinhole image: find
+// where the lens puts it in the captured picture, sample luma and chroma
 // there bilinearly, each at its own siting, and convert by the picture's
 // matrix and range. One pass, so no intermediate R'G'B' image is written at
 // the captured size. The high byte is the pixel's coverage: 0xFF where the
 // lens maps inside the captured picture, 0 where it maps outside, which is
 // black and which fusion then skips (ColorFrame::coverage_in_alpha) rather
-// than fusing as colour.
+// than fusing as colour. The stereo rectifier's kernel
+// (stereo/shaders/rectify.comp) samples and converts through the same
+// functions, from a buffer, where its own rays put each pixel.
 
 #ifndef VS_PREP_UNDISTORT_COLOR_GLSL
 #define VS_PREP_UNDISTORT_COLOR_GLSL
@@ -21,7 +23,7 @@
 
 layout(local_size_x = 256) in;
 
-// gpu_frame_prep.cpp's ColorParams. The offsets, strides and steps place the
+// color_pass.hpp's ColorParams. The offsets, strides and steps place the
 // planes in a buffer, and only that entry reads them.
 layout(push_constant, scalar) uniform Params {
   LensCamera cam;
@@ -40,6 +42,7 @@ layout(push_constant, scalar) uniform Params {
   uint packed_rgb;        // packed R'G'B' words, not Y'CbCr planes
   uint y_step;            // bytes between luma samples
   uint chroma_full_rows;  // 4:2:2: chroma on every row, halved across only
+  uint luma_only;         // luma alone: no chroma is read, and it is grey
 } pc;
 
 // Each entry's: the codes, 0 to 255, of the picture's luma and of its chroma
@@ -79,9 +82,29 @@ bool source_of(uint gid, out vec2 s) {
          s.y <= float(h) - 0.5;
 }
 
+// The picture's luma code at `s`, sampled bilinearly.
+float luma_sample(vec2 s) {
+  uvec2 lo, hi;
+  vec2 f;
+  bilinear_taps(pc.cam.width, pc.cam.height, s, lo, hi, f);
+  return bilinear(luma_at(lo.x, lo.y), luma_at(hi.x, lo.y),
+                  luma_at(lo.x, hi.y), luma_at(hi.x, hi.y), f);
+}
+
+// A luma code as Y', 0 to 1, by the picture's range.
+float luma_level(float y) {
+  return pc.full_range != 0u ? y / 255.0 : (y - 16.0) / 219.0;
+}
+
 // The picture's Y'CbCr at `s`, converted, as an R'G'B' word with full
-// coverage.
+// coverage; luma alone is grey.
 uint ycbcr_word(vec2 s) {
+  float y = luma_sample(s);
+  float luma = luma_level(y);
+  if (pc.luma_only != 0u) {
+    uint grey = code(luma);
+    return grey | (grey << 8) | (grey << 16) | 0xFF000000u;
+  }
   uint w = pc.cam.width;
   uint h = pc.cam.height;
   // The decoder's sample positions: JPEG is centred in both axes; HEVC's
@@ -96,22 +119,16 @@ uint ycbcr_word(vec2 s) {
   }
   uvec2 lo, hi;
   vec2 f;
-  bilinear_taps(w, h, s, lo, hi, f);
-  float y = bilinear(luma_at(lo.x, lo.y), luma_at(hi.x, lo.y),
-                     luma_at(lo.x, hi.y), luma_at(hi.x, hi.y), f);
   bilinear_taps(cw, ch, c, lo, hi, f);
   vec2 cbcr = bilinear(chroma_at(lo.x, lo.y), chroma_at(hi.x, lo.y),
                        chroma_at(lo.x, hi.y), chroma_at(hi.x, hi.y), f);
 
-  float luma;
   float pb;
   float pr;
   if (pc.full_range != 0u) {
-    luma = y / 255.0;
     pb = (cbcr.x - 128.0) / 255.0;
     pr = (cbcr.y - 128.0) / 255.0;
   } else {
-    luma = (y - 16.0) / 219.0;
     pb = (cbcr.x - 128.0) / 224.0;
     pr = (cbcr.y - 128.0) / 224.0;
   }
