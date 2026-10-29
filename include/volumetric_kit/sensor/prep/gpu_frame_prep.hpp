@@ -116,9 +116,12 @@ struct GpuFramePrepConfig {
 /// of the pinhole image is sampled from where `camera::distort_rational` puts
 /// it in the captured one. Colour is sampled bilinearly, luma and chroma each
 /// at its own siting (@ref YuvImage::chroma_location), and converted by the
-/// picture's matrix and range; depth is
-/// sampled at the nearest pixel, so an edge never blends a foreground and a
-/// background depth into a point between them.
+/// picture's matrix and range. Depth is the bilinear mix of the four raw
+/// pixels around that position where all four hold a return within 4 cm of
+/// each other, so a slope comes out smooth rather than in half-pixel
+/// terraces, and the nearest raw pixel elsewhere, so an edge never blends a
+/// foreground and a background depth into a point between them, nor a hole
+/// into a return.
 ///
 /// Colour comes as I420 or NV12, on the device as a hardware decoder left it:
 /// planes in a buffer, as nvJPEG's pictures arrive, are read where they are,

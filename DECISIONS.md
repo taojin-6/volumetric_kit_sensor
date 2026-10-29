@@ -69,7 +69,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   GPU pre-processing is `recon_sensor_utils`: a driver hands out the frame as
   captured, the device undistorts depth and undistorts and converts colour,
   and fusion reads the buffers in place, depth and colour each with its own
-  camera rather than registered.
+  camera rather than registered. *Amended 2026-10-29:* depth mixes the four
+  raw pixels around the source where they are one surface, nearest only at
+  an edge or a hole.
 - [**2026-09-28**](#2026-09-28--a-decoded-colour-frame-never-leaves-the-gpu-the-platforms-hardware-decoder-for-h265-and-mjpeg-alike-hands-its-picture-to-vulkan-in-place-and-gpuframeprep-takes-i420-or-nv12-from-the-host-or-the-device) —
   A decoded colour frame never leaves the GPU: the platform's hardware
   decoder, for H.265 and MJPEG alike, hands its picture to Vulkan in place,
@@ -192,7 +194,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   usage. recon builds no point clouds and makes no calibration
   measurements. The same-K depth crop and nearest resampling are accepted on
   a stand-in lens, pending a fold check of each rig camera's own (by hand,
-  not yet run).
+  not yet run). *Amended 2026-10-29:* the resampling mixes where the raw
+  pixels are one surface; the crop stands.
 - [**2026-10-18**](#2026-10-18--the-calibration-files-world-may-be-a-printed-apriltag-in-opencvs-marker-axes-and-the-file-stays-version-2-amends-the-2026-10-12-calibration-file-entry) —
   The calibration file's world may be a printed AprilTag, in OpenCV's
   marker axes rather than libapriltag's, so a floor tag's z is up. A world
@@ -260,6 +263,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   alone. recon's libraries link `sensor_frame` alone, and nothing in the
   package includes recon or grid. The owner's decisions of 2026-10-28:
   repositories now, these names, Blackmagic stereo NVIDIA-only at first.
+- [**2026-10-29**](#2026-10-29--prepared-depth-mixes-the-four-raw-pixels-around-each-source-position-where-they-are-one-surface-and-keeps-the-nearest-pixel-at-an-edge-or-a-hole-amends-the-2026-09-28-gpu-pre-processing-and-2026-10-16-depth-crop-entries) —
+  Prepared depth is the bilinear mix of the four raw pixels around each
+  pixel's source position where all four return within 4 cm
+  (`kBlendSpanM`, the truncation the rig fuses with), and the nearest raw
+  pixel otherwise: a slope no longer comes out in half-pixel terraces, which
+  fusion shaded as bands on floors and walls, and an edge or a hole is never
+  blended. No option; about 1-2 µs of device time a frame.
 
 ## Decision record
 
@@ -1316,6 +1326,11 @@ come with MJPEG too.
 *Amended 2026-10-06 (below):* raw frames no longer come through
 `ICameraCapture`: `OrbbecSensor::poll` and `OrbbecRig::poll_set` hand them
 out, and the examples fuse them with `fuse_set` alone.
+
+*Amended 2026-10-29 (the depth-mix entry):* depth is no longer the nearest
+pixel everywhere. Where the four raw pixels around the source all return
+within 4 cm, it is their bilinear mix; the nearest pixel stays at an edge
+and a hole.
 
 **The rule.** `GpuFramePrep` (`sensor/utils/gpu_frame_prep.hpp`) takes a
 `RawFrame` (`sensor/raw_frame.hpp`): raw depth, the decoded Y'CbCr 4:2:0
@@ -3149,6 +3164,10 @@ past the left border, so the extrapolation holds on both sides.
 
 ### 2026-10-16 — A prepared frame's depth is shared like its colour, `GpuFramePrepConfig::depth_queue_families`; recon builds no point clouds and makes no calibration measurements; the same-K depth crop and nearest resampling are accepted on a stand-in lens, pending a fold check of the rig's own (amends the 2026-09-29 `rig_viewer` entry).
 
+*Amended 2026-10-29 (the depth-mix entry):* the resampling below is no
+longer the nearest pixel where the four raw pixels around the source are one
+surface; the crop and the fold check stand.
+
 **Depth may be shared.** gfx is to draw points from each camera's prepared
 depth in place, on its own queue family (GF5), for calib's 3D view of a rig
 of any size. `GpuFramePrepConfig::depth_queue_families` names the families a
@@ -3931,3 +3950,76 @@ package alone 41 passed and 2 skipped of 43 (the two JPEG tests, which skip
 where the GPU has no hardware JPEG engine, as on main), camera-only 6/6;
 each of main's 73 tests there has a counterpart, and the viewer leg's 7
 pass on main and here.
+
+### 2026-10-29 — Prepared depth mixes the four raw pixels around each source position where they are one surface, and keeps the nearest pixel at an edge or a hole (amends the 2026-09-28 GPU pre-processing and 2026-10-16 depth-crop entries).
+
+**The rule.** The depth pass (`undistort_depth.comp`) samples each pinhole
+pixel where the lens puts it in the raw image, a sub-pixel position `s`.
+Where the 2x2 raw pixels from `floor(s)` lie in the image, all return after
+the depth offset (each subtracted per pixel, before the mix), and span at
+most `kBlendSpanM` (4 cm), depth is their bilinear mix at `s`; otherwise it
+is the nearest raw pixel, as before, and 0 outside the image. The
+within-colour mask tests the value written, the mix included. It replaces
+nearest sampling outright: no option or switch, and no API, binding or push
+constant changes. The colour pass, the crop and fusion are unchanged.
+
+**Why.** The nearest pixel repeats some raw pixels across neighbouring
+output pixels and skips others, so a slope comes out in half-pixel steps,
+and fusion's own bilinear sample turns them into terraces: regular bands
+across floors and faceted walls in a lit mesh. recon's edge-quality study
+(2026-10-28, track C, its prep C2(c)) measured the fix on take3, the rig's
+4 Femtos, 300 sets, Dynamic. With today's fusion, interior roughness p90 (the
+angle between neighbouring face normals away from edges) went from 10.3 to
+2.4 degrees, and flipped edge triangles from 1.97 to 1.71%. With the study's
+final fusion set, the same two went from 10.2 to 2.5 degrees and from 1.66
+to 1.44%. Rims, holes and the eviction of a moving object were unchanged,
+and the stream rate fell 3%. Fusing the raw grid
+directly (its C1) did no better and needs the lens in fusion.
+
+**The threshold** is a constant of the shader, not a config field. 4 cm is
+the truncation band the rig fuses with, past which fusion's own bilinear
+depth sample (recon's `sample_depth`) falls back to the nearest pixel, so
+what the prep mixes fusion would mix too. A plane 2 m away spans it across a
+block only when turned more than about 80 degrees from facing the camera.
+The package knows no grid's truncation, and no consumer needs another
+value. A noise-scaled threshold was not tried.
+
+**Cost.** Device time of the depth pass alone (`depth_bench`, a take3
+set: 4 cameras at 640x576 with the colour-view mask; the two builds
+interleaved, 3 runs of 2000 sets): RTX 4090 0.0219 to 0.0255 ms a set
+(+3.7 µs), Apple M5 Max 0.0428 to 0.0506 ms (+8.0 µs), about 1 and 2 µs a
+frame.
+
+**Tests.** `sensor_gpu_frame_prep`, through the barrel test lens:
+- a plane turned 24 degrees, in 0.1 mm units, comes out within 0.1 mm of
+  the plane at every pixel (0.057 mm at worst, where the nearest pixel is
+  5.1 mm off), falling strictly along every row with no plateau (the nearest
+  pixel leaves 9,235);
+- across a 5 cm step every pixel is the nearest raw pixel's depth, bit for
+  bit, and a 3 cm step is mixed;
+- at 2.5-3 cm, where a hole's 0 lies within 4 cm of the returns, a block
+  with a hole keeps the nearest pixel, bit for bit, and a 2 mm return is
+  mixed until a 4 mm offset makes it a hole;
+- the mask keeps the unmasked pass's mixed depth exactly where the host puts
+  that depth's point in the colour image, and 0 elsewhere;
+- the host reference follows the rule, half its squares a slope that mixes;
+  a mix may differ from it by 1e-4 of the block's range, the two lenses'
+  rounding.
+
+Seven planted bugs each failed a test: nearest only, a 2 cm or 6 cm
+threshold, a hole mixed, the offset dropped, the fractions swapped, and
+the mask tested at the nearest depth.
+
+**Validation.** Release, under the validation layer. Apple M5 Max
+(MoltenVK): 35/35. RTX 4090 with Orbbec, FFmpeg and CUDA: 41 passed and the
+2 JPEG tests skipped, as on main, of 43. take3's raw depth through
+`GpuFramePrep` on the 4090 (300 sets, 1,185 frames, the recorded offsets
+and colour-view mask) lies within 10 µm of the study's float32 C2(c) at
+99.99980% of 4.37·10⁸ samples (within 1 µm at 99.965%). 375 samples differ
+in whether they return, float rounding at a pixel or mask boundary; the
+study's nearest-pixel control and the recorded GPU output differ at 6,101.
+Fused, the take's rate is 63.6 Mbps against the recorded depth's 65.6, as
+for C2(c), and lit renders of set 299 lose the floor's bands and the wall's
+facets. Checked by hand, not a test: recon main's `fuse_orbbec`, built on
+this package, fused 100 live frames of the rig's 4 Femtos (25 sets) at
+88.7 fps, frame prep 0.40 ms of device time a set.

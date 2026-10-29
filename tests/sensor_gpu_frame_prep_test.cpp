@@ -9,6 +9,10 @@
 //   - a real lens undistorts, not distorts: a pattern drawn in the pinhole
 //     image, then imaged through the lens by an independent iterative
 //     inversion, comes back where it was drawn;
+//   - depth mixes the four raw pixels around its source where they are one
+//     surface: a tilted plane comes out as the plane, within 0.1 mm and with
+//     no plateau, while a step past kBlendSpanM, or a pixel with no return
+//     among the four, keeps the nearest raw pixel's depth, bit for bit;
 //   - both passes match a host reference of the same sampling, colour's
 //     coverage byte included;
 //   - packed R'G'B' words from the host come through a pinhole as they went
@@ -21,7 +25,7 @@
 //   - its depth and colour outputs are shared with the queue families its
 //     config names for each, and read on another family as on its own;
 //   - with depth_within_color, depth survives only where colour recorded it,
-//     at the corrected depth.
+//     at the corrected and mixed depth.
 // Fusing its output is recon's test (recon_tsdf_prepared_frame).
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
@@ -268,6 +272,91 @@ int channel_diff(std::uint32_t a, std::uint32_t b) {
   return worst;
 }
 
+// undistort_depth.comp's kBlendSpanM: the widest depth range across a block of
+// four raw pixels that the depth pass still mixes.
+constexpr float kBlendSpanM = 0.04f;
+
+// The depth pass's sample at pinhole pixel (u, v), before the colour-view
+// mask, on the host: each raw pixel scaled and less the offset, 0 no return;
+// the bilinear mix of the 2x2 block around the lens's source position where
+// all four return within kBlendSpanM, else the nearest raw pixel; 0 where the
+// nearest pixel lies outside the image.
+struct DepthSample {
+  float z = 0.0f;        // what the pass writes, unmasked
+  float nearest = 0.0f;  // the nearest raw pixel, as the pass sampled before
+  bool mixed = false;    // z is the block's mix
+  bool block = false;    // the block lies in the image
+  float lo = 0.0f, hi = 0.0f;  // the block's range, when it does
+};
+DepthSample reference_depth(const std::vector<std::uint16_t>& raw,
+                            const camera::CameraModel& cam, float scale,
+                            float offset, std::uint32_t u, std::uint32_t v) {
+  const std::uint32_t w = cam.size.width, h = cam.size.height;
+  const auto metres = [&](float x, float y) {
+    const float z = static_cast<float>(raw[static_cast<std::size_t>(y) * w +
+                                           static_cast<std::size_t>(x)]) *
+                    scale;
+    return z > 0.0f ? std::max(z - offset, 0.0f) : 0.0f;
+  };
+  DepthSample out;
+  const sensor::Vec2f s =
+      source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
+  const float rx = std::floor(s.x + 0.5f), ry = std::floor(s.y + 0.5f);
+  if (!(rx >= 0 && ry >= 0 && rx < w && ry < h)) return out;
+  out.nearest = out.z = metres(rx, ry);
+  const float ox = std::floor(s.x), oy = std::floor(s.y);
+  if (!(ox >= 0 && oy >= 0 && ox + 1 < w && oy + 1 < h)) return out;
+  const float d00 = metres(ox, oy), d10 = metres(ox + 1, oy);
+  const float d01 = metres(ox, oy + 1), d11 = metres(ox + 1, oy + 1);
+  out.block = true;
+  out.lo = std::min(std::min(d00, d10), std::min(d01, d11));
+  out.hi = std::max(std::max(d00, d10), std::max(d01, d11));
+  if (out.lo > 0.0f && out.hi - out.lo <= kBlendSpanM) {
+    const float fx = s.x - ox, fy = s.y - oy;
+    const float top = d00 + (d10 - d00) * fx;
+    const float bottom = d01 + (d11 - d01) * fx;
+    out.z = top + (bottom - top) * fy;
+    out.mixed = true;
+  }
+  return out;
+}
+
+// Whether the device's mix matches the reference's. The operations are the
+// same, but each side rounds the lens its own way, fusing multiply-adds or
+// not, so the device's source position may sit up to about 1e-4 px from the
+// host's: the mix may move by that fraction of the block's range, beside a
+// few float steps at 3 m.
+bool same_mix(float device, const DepthSample& host) {
+  return std::fabs(device - host.z) <= 1e-6f + 1e-4f * (host.hi - host.lo);
+}
+
+// Counts a pixel whose depth `bad` says is wrong, printing the first few.
+void count_wrong(bool bad, const char* test, std::uint32_t u, std::uint32_t v,
+                 float got, const DepthSample& want, int* wrong) {
+  if (!bad) return;
+  if (++*wrong <= 3) {
+    std::fprintf(stderr,
+                 "  %s: pixel (%u, %u) is %.9g, the reference %.9g (nearest "
+                 "%.9g, %s, block %.9g to %.9g)\n",
+                 test, u, v, static_cast<double>(got),
+                 static_cast<double>(want.z), static_cast<double>(want.nearest),
+                 want.mixed ? "mixed" : "not mixed",
+                 static_cast<double>(want.lo), static_cast<double>(want.hi));
+  }
+}
+
+// Whether a source coordinate lies within float round-off of where the
+// nearest pixel or the block changes, where the device and the host may
+// each round it their own way.
+bool near_rounding_edge(sensor::Vec2f s) {
+  const auto edge = [](float x) {
+    const float half = std::fabs(x - std::floor(x) - 0.5f);
+    const float whole = std::fabs(x - std::round(x));
+    return std::fmin(half, whole) < 1e-3f;
+  };
+  return edge(s.x) || edge(s.y);
+}
+
 // `count` packed words as a dataset decodes them, random in every byte: the
 // high one is junk the pass must ignore.
 std::vector<std::uint32_t> packed_words(std::size_t count, std::uint32_t seed) {
@@ -510,6 +599,215 @@ int test_undistorts(sensor::GpuFramePrep& prep) {
   return 0;
 }
 
+// Depth in 0.1 mm units, fine enough that rounding to them stays well inside
+// the plane test's 0.1 mm.
+constexpr float kFineScale = 1e-4f;
+
+// A plane 0.9-1.8 m away, turned about 24 degrees from facing the camera: its
+// depth at normalized pinhole point (x, y).
+float plane_depth(float x, float y) {
+  return 1.2f / (1.0f + 0.4f * x + 0.2f * y);
+}
+
+// The plane as `cam` records it, in kFineScale units: each raw pixel holds
+// the depth at the pinhole point the lens inversion puts it at.
+std::vector<std::uint16_t> plane_raw(const camera::CameraModel& cam) {
+  const std::uint32_t w = cam.size.width, h = cam.size.height;
+  const float fx = f32(cam.intrinsics.fx), fy = f32(cam.intrinsics.fy);
+  const float cx = f32(cam.intrinsics.cx), cy = f32(cam.intrinsics.cy);
+  std::vector<std::uint16_t> raw(std::size_t{w} * h);
+  for (std::uint32_t v = 0; v < h; ++v) {
+    for (std::uint32_t u = 0; u < w; ++u) {
+      const sensor::Vec2f p =
+          undistort_pixel(cam, static_cast<float>(u), static_cast<float>(v));
+      raw[std::size_t{v} * w + u] = static_cast<std::uint16_t>(std::lround(
+          plane_depth((p.x - cx) / fx, (p.y - cy) / fy) / kFineScale));
+    }
+  }
+  return raw;
+}
+
+// A tilted plane through the barrel lens comes out as the plane: within
+// 0.1 mm of its depth at every pixel, the units' rounding and the mix's error
+// together, and falling strictly along every row, with no plateau. The
+// nearest raw pixel alone is millimetres off and repeats a raw pixel across
+// thousands of neighbours, the terraces fusion shades as bands.
+int test_tilted_plane(sensor::GpuFramePrep& prep) {
+  const camera::CameraModel cam = lensed();
+  const std::vector<std::uint16_t> raw = plane_raw(cam);
+  sensor::RgbdFrame f = frame_of(raw, cam);
+  f.metres_per_unit = kFineScale;
+  auto out = prep.prepare(f);
+  if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+  CHECK(out.ok());
+  const std::vector<float> d = depth_of(out.value());
+  CHECK(d.size() == raw.size());
+  const float fx = f32(cam.intrinsics.fx), fy = f32(cam.intrinsics.fy);
+  const float cx = f32(cam.intrinsics.cx), cy = f32(cam.intrinsics.cy);
+  int checked = 0, mixed = 0, plateaus = 0, rises = 0, nearest_plateaus = 0;
+  float worst = 0.0f, nearest_worst = 0.0f;
+  for (std::uint32_t v = 0; v < kHeight; ++v) {
+    bool previous = false;  // the pixel to the left was checked
+    float previous_nearest = 0.0f;
+    for (std::uint32_t u = 0; u < kWidth; ++u) {
+      const std::size_t i = std::size_t{v} * kWidth + u;
+      const DepthSample ref = reference_depth(raw, cam, kFineScale, 0.0f, u, v);
+      if (!ref.block) {
+        previous = false;
+        continue;
+      }
+      ++checked;
+      mixed += ref.mixed ? 1 : 0;
+      const float truth = plane_depth((static_cast<float>(u) - cx) / fx,
+                                      (static_cast<float>(v) - cy) / fy);
+      worst = std::max(worst, std::fabs(d[i] - truth));
+      nearest_worst = std::max(nearest_worst, std::fabs(ref.nearest - truth));
+      if (previous) {
+        plateaus += d[i] == d[i - 1] ? 1 : 0;
+        rises += d[i] > d[i - 1] ? 1 : 0;
+        nearest_plateaus += ref.nearest == previous_nearest ? 1 : 0;
+      }
+      previous = true;
+      previous_nearest = ref.nearest;
+    }
+  }
+  std::printf(
+      "  tilted plane: %d pixels, %d mixed, worst %.3f mm (nearest %.3f mm), "
+      "%d plateaus (nearest %d)\n",
+      checked, mixed, worst * 1e3f, nearest_worst * 1e3f, plateaus,
+      nearest_plateaus);
+  CHECK(checked > 70000 && mixed == checked);
+  CHECK(worst <= 1e-4f);
+  CHECK(plateaus == 0 && rises == 0);
+  // What the nearest pixel would have given, which these checks refuse.
+  CHECK(nearest_worst > 2e-3f && nearest_plateaus > 1000);
+  return 0;
+}
+
+// Two flat surfaces 1 m away meet along a slanted line of the raw image,
+// stepping back by 3 cm, under kBlendSpanM, or 5 cm, over it, seen through the
+// barrel lens. Where a pixel's block straddles the line, the smaller step is
+// mixed, to a depth between the two, and the larger never is: the pixel is
+// the nearest raw pixel's depth, bit for bit, one surface or the other. Every
+// other block is flat and keeps its surface's depth exactly.
+int test_depth_steps(sensor::GpuFramePrep& prep) {
+  const camera::CameraModel cam = lensed();
+  for (const std::uint16_t step : {std::uint16_t{30}, std::uint16_t{50}}) {
+    const bool edge = static_cast<float>(step) * kScale > kBlendSpanM;
+    std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight);
+    for (std::uint32_t y = 0; y < kHeight; ++y) {
+      for (std::uint32_t x = 0; x < kWidth; ++x) {
+        raw[std::size_t{y} * kWidth + x] =
+            static_cast<std::uint16_t>(2 * x + y < 400 ? 1000 : 1000 + step);
+      }
+    }
+    auto out = prep.prepare(frame_of(raw, cam));
+    CHECK(out.ok());
+    const std::vector<float> d = depth_of(out.value());
+    CHECK(d.size() == raw.size());
+    const float near_z = 1000.0f * kScale;
+    const float far_z = static_cast<float>(1000 + step) * kScale;
+    int straddling = 0, between = 0, wrong = 0, skipped = 0;
+    for (std::uint32_t v = 0; v < kHeight; ++v) {
+      for (std::uint32_t u = 0; u < kWidth; ++u) {
+        const std::size_t i = std::size_t{v} * kWidth + u;
+        if (near_rounding_edge(source_pixel(cam, static_cast<float>(u),
+                                            static_cast<float>(v)))) {
+          ++skipped;
+          continue;
+        }
+        const DepthSample ref = reference_depth(raw, cam, kScale, 0.0f, u, v);
+        between += d[i] > near_z && d[i] < far_z ? 1 : 0;
+        if (!ref.block || ref.lo == ref.hi) {
+          count_wrong(d[i] != ref.z, "step", u, v, d[i], ref, &wrong);
+          continue;
+        }
+        ++straddling;
+        count_wrong(edge ? ref.mixed || d[i] != ref.nearest
+                         : !ref.mixed || !same_mix(d[i], ref),
+                    "step", u, v, d[i], ref, &wrong);
+      }
+    }
+    std::printf(
+        "  %u mm step: %d blocks straddle it, %d pixels between, %d wrong, "
+        "%d at a rounding edge\n",
+        static_cast<unsigned>(step), straddling, between, wrong, skipped);
+    CHECK(wrong == 0);
+    CHECK(straddling > 200 && skipped < 1000);
+    CHECK(edge ? between == 0 : between > straddling / 2);
+  }
+  return 0;
+}
+
+// A tap with no return is never mixed. A plane 2.5-3 cm away, near enough that
+// 0 lies within kBlendSpanM of every return, so only the no-return rule keeps
+// a hole out of the mix, with holes (0) and weak returns (2 mm) scattered
+// through it. Every block with a hole is the nearest raw pixel's depth, bit
+// for bit: 0 where that pixel is the hole, a return where not; the rest mix.
+// A weak return is a return, and mixed, until a 4 mm depth offset takes it
+// to 0, when it is a hole too.
+int test_depth_holes(vkc::Device& device, vkc::Allocator& allocator) {
+  const camera::CameraModel cam = lensed();
+  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight);
+  for (std::uint32_t y = 0; y < kHeight; ++y) {
+    for (std::uint32_t x = 0; x < kWidth; ++x) {
+      std::uint16_t z = static_cast<std::uint16_t>(250 + (x + y) / 8);
+      if ((x * 7 + y * 13) % 23 == 0) {
+        z = 0;
+      } else if ((x * 5 + y * 11) % 29 == 0) {
+        z = 20;
+      }
+      raw[std::size_t{y} * kWidth + x] = z;
+    }
+  }
+  for (const float offset : {0.0f, 0.004f}) {
+    sensor::GpuFramePrepConfig config;
+    config.depth_offset_m = offset;
+    auto prep = sensor::GpuFramePrep::create(device, allocator, config);
+    CHECK(prep.ok());
+    sensor::RgbdFrame f = frame_of(raw, cam);
+    f.metres_per_unit = kFineScale;
+    f.min_depth = 0.001f;
+    auto out = prep->prepare(f);
+    if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+    CHECK(out.ok());
+    const std::vector<float> d = depth_of(out.value());
+    CHECK(d.size() == raw.size());
+    int holed = 0, hole_nearest = 0, weak_mixed = 0, wrong = 0;
+    for (std::uint32_t v = 0; v < kHeight; ++v) {
+      for (std::uint32_t u = 0; u < kWidth; ++u) {
+        const std::size_t i = std::size_t{v} * kWidth + u;
+        if (near_rounding_edge(source_pixel(cam, static_cast<float>(u),
+                                            static_cast<float>(v)))) {
+          continue;
+        }
+        const DepthSample ref =
+            reference_depth(raw, cam, kFineScale, offset, u, v);
+        if (!ref.block) continue;
+        if (ref.lo == 0.0f) {
+          ++holed;
+          hole_nearest += ref.nearest == 0.0f ? 1 : 0;
+          count_wrong(ref.mixed || d[i] != ref.nearest, "hole", u, v, d[i], ref,
+                      &wrong);
+          continue;
+        }
+        count_wrong(!ref.mixed || !same_mix(d[i], ref), "hole", u, v, d[i], ref,
+                    &wrong);
+        weak_mixed += ref.lo < 0.005f ? 1 : 0;
+      }
+    }
+    std::printf(
+        "  holes, offset %.0f mm: %d blocks with a hole (%d the nearest "
+        "pixel), %d weak returns mixed, %d wrong\n",
+        static_cast<double>(offset) * 1e3, holed, hole_nearest, weak_mixed,
+        wrong);
+    CHECK(wrong == 0);
+    CHECK(holed > 5000 && hole_nearest > 1000 && hole_nearest < holed);
+    CHECK(offset > 0.0f ? weak_mixed == 0 : weak_mixed > 3000);
+  }
+  return 0;
+}
+
 // A picture with structure in every plane, so a misread plane shows.
 Planes patterned(std::uint32_t w, std::uint32_t h) {
   Planes p = make_planes(w, h);
@@ -562,14 +860,21 @@ sensor::RgbdFrame image_frame(std::uint32_t w, std::uint32_t h) {
 
 // Both passes against the host reference of the same sampling, on smooth
 // planes and random depth, at w x h. `padded` gives the planes rows longer
-// than their width, full of junk, as a decoder can hand them out.
+// than their width, full of junk, as a decoder can hand them out. Depth
+// alternates 16 px squares of a slope, which the pass mixes, and random
+// returns, which it samples at the nearest pixel.
 int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
                            std::uint32_t h, bool padded) {
   camera::CameraModel cam = lensed();
   cam.size = {w, h};
   std::vector<std::uint16_t> raw(std::size_t{w} * h);
-  for (std::size_t i = 0; i < raw.size(); ++i) {
-    raw[i] = static_cast<std::uint16_t>(500 + (i * 2654435761u) % 4000u);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const std::size_t i = std::size_t{y} * w + x;
+      raw[i] = static_cast<std::uint16_t>(((x / 16 + y / 16) & 1u) != 0
+                                              ? 500 + (i * 2654435761u) % 4000u
+                                              : 1500 + 3 * x + 2 * y);
+    }
   }
   Planes p = patterned(w, h);
   sensor::RgbdFrame f = frame_of(raw, cam);
@@ -582,20 +887,14 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
   const std::vector<float> d = depth_of(out.value());
   const std::vector<std::uint32_t> c = color_of(out.value());
   CHECK(d.size() == raw.size() && c.size() == raw.size());
-  int depth_off = 0, color_worst = 0, color_off = 0, coverage_off = 0;
+  int depth_off = 0, mixed = 0, color_worst = 0, color_off = 0,
+      coverage_off = 0;
   for (std::uint32_t v = 0; v < h; ++v) {
     for (std::uint32_t u = 0; u < w; ++u) {
       const std::size_t i = std::size_t{v} * w + u;
-      const sensor::Vec2f s =
-          source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
-      const float rx = std::floor(s.x + 0.5f), ry = std::floor(s.y + 0.5f);
-      float want = 0.0f;
-      if (rx >= 0 && ry >= 0 && rx < w && ry < h) {
-        want = static_cast<float>(raw[static_cast<std::size_t>(ry) * w +
-                                      static_cast<std::size_t>(rx)]) *
-               kScale;
-      }
-      if (d[i] != want) ++depth_off;
+      const DepthSample want = reference_depth(raw, cam, kScale, 0.0f, u, v);
+      mixed += want.mixed ? 1 : 0;
+      if (want.mixed ? !same_mix(d[i], want) : d[i] != want.z) ++depth_off;
       const std::uint32_t ref =
           reference_color(p, cam, 0.2126f, 0.0722f, false,
                           static_cast<float>(u), static_cast<float>(v));
@@ -606,11 +905,13 @@ int test_matches_reference(sensor::GpuFramePrep& prep, std::uint32_t w,
     }
   }
   std::printf(
-      "  reference %ux%u%s: depth %d differ, colour %d differ, worst %d\n", w,
-      h, padded ? " padded" : "", depth_off, color_off, color_worst);
+      "  reference %ux%u%s: depth %d differ (%d mixed), colour %d differ, "
+      "worst %d\n",
+      w, h, padded ? " padded" : "", depth_off, mixed, color_off, color_worst);
   // A source coordinate within float round-off of a pixel boundary may round
   // the other way on the device; nothing else may differ.
   CHECK(depth_off <= 20);
+  CHECK(mixed > static_cast<int>(w * h / 4));
   CHECK(color_worst <= 1);
   CHECK(coverage_off == 0);
   return 0;
@@ -1861,6 +2162,43 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
     CHECK(wrong_edge == 0);
   }
 
+  // The mask tests the depth the pass writes, mixed: the tilted plane through
+  // the barrel lens (the same intrinsics), the narrower colour camera 10 cm
+  // aside. Masked, each pixel is the unmasked pass's depth where the host
+  // puts that depth's point in the colour image, and 0 where not.
+  {
+    const camera::CameraModel lens = lensed();
+    const std::vector<std::uint16_t> plane = plane_raw(lens);
+    sensor::RgbdFrame tilted = frame_of(plane, lens);
+    tilted.metres_per_unit = kFineScale;
+    tilted.color = planes.image(0.299f, 0.114f, true);
+    tilted.color_camera = narrow;
+    tilted.color_to_world[3] = glm::dvec4(0.1, 0.0, 0.0, 1.0);
+    tilted.depth_to_color[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
+    auto all = plain->prepare(tilted);
+    CHECK(all.ok());
+    const std::vector<float> unmasked = depth_of(all.value());
+    out = masked->prepare(tilted);
+    CHECK(out.ok());
+    const std::vector<float> m = depth_of(out.value());
+    CHECK(m.size() == unmasked.size());
+    std::size_t kept_mixed = 0, off_mixed = 0;
+    for (std::uint32_t v = 0; v < kHeight; ++v) {
+      for (std::uint32_t u = 0; u < kWidth; ++u) {
+        const std::size_t i = std::size_t{v} * kWidth + u;
+        bool edge = false;
+        const bool in = lands_in(u, v, unmasked[i], &edge);
+        if (edge || unmasked[i] == 0.0f) continue;
+        kept_mixed += in ? 1 : 0;
+        if (in ? m[i] != unmasked[i] : m[i] != 0.0f) ++off_mixed;
+      }
+    }
+    std::printf("  depth within colour, mixed: %zu kept, %zu off\n", kept_mixed,
+                off_mixed);
+    CHECK(off_mixed == 0);
+    CHECK(kept_mixed > 1000 && kept_mixed < std::size_t{kWidth} * kHeight / 2);
+  }
+
   // Off, and a frame with no colour: nothing zeroed.
   const sensor::RgbdFrame depth_only = frame_of(raw, pinhole());
   for (sensor::GpuFramePrep* check : {&plain.value(), &masked.value()}) {
@@ -1881,6 +2219,9 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_pinhole(prep.value()) != 0) return 1;
   if (test_depth_offset(gpu.device, gpu.allocator) != 0) return 1;
   if (test_undistorts(prep.value()) != 0) return 1;
+  if (test_tilted_plane(prep.value()) != 0) return 1;
+  if (test_depth_steps(prep.value()) != 0) return 1;
+  if (test_depth_holes(gpu.device, gpu.allocator) != 0) return 1;
   if (test_matches_reference(prep.value(), kWidth, kHeight, false) != 0) {
     return 1;
   }

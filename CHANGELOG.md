@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-10-29
+
+### Changed
+
+- **Prepared depth mixes where the raw pixels are one surface.** The depth
+  pass samples each pinhole pixel's sub-pixel source position as the
+  bilinear mix of the four raw pixels around it when all four return, after
+  the depth offset, within 4 cm of each other, and as the nearest raw pixel,
+  as before, otherwise. A slope no longer comes out in half-pixel terraces,
+  which fusion shaded as bands on floors and walls; an edge or a hole is
+  never blended. No API or option changes, and the pass takes about 1-2 µs
+  more a frame; a consumer that re-pins gets different prepared depth on
+  slopes (DECISIONS.md, the 2026-10-29 depth-mix entry).
+
 ## [0.1.0] - 2026-10-29
 
 Extracted from `volumetric_kit_recon` at `5eb28085`; earlier history in that
