@@ -4206,3 +4206,11 @@ the shader ignoring `raw_first`, a frame with nothing on the host binding
 no slot, the buffer weighed to its last sample rather than its last word,
 the failed submit letting the depth's buffer go, and the depth's queue
 family left unchecked. The Mac is CI's leg.
+
+A depth-only frame's prepare on the RTX 4090, Release, median of 500 each,
+host and device depth interleaved: at 960 x 544, 0.054 ms of device time
+from the host (the slot's copy up and the pass) and 0.009 ms from the
+device (the pass and the slot's word), and 0.025 against 0.004 ms of host
+time; 0.040 against 0.008 ms of device time at 640 x 576, and 0.089 against
+0.011 ms at 1280 x 720. A producer on the GPU saves its readback to the
+host besides, which this does not count.
