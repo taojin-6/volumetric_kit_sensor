@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/color_conventions.hpp
+/// @file color_conventions.hpp
 /// @brief The colour half of the capture boundary: what a driver's
 ///        @ref ColorEncoding declaration *means*, and the one conversion that
 ///        brings a frame into the canonical form the fusion tiers require.
@@ -15,9 +15,10 @@
 /// platform-bound driver produced the numbers, where a per-driver copy would be
 /// a per-driver chance to be wrong.
 ///
-/// The split against `core/color_space.hpp` is deliberate: **`core` owns the
-/// curve and the type** -- the curve has a GLSL mirror and `tsdf`/`mesh` decode
-/// with it in their kernels, and @ref is_canonical is a property of
+/// The split against `sensor/frame/color_space.hpp` is deliberate: **`core`
+/// owns the curve and the type** -- the curve has a GLSL mirror and
+/// `tsdf`/`mesh` decode with it in their kernels, and @ref is_canonical is a
+/// property of
 /// @ref ColorEncoding that `tsdf` must test to refuse a frame it cannot fuse;
 /// neither tier can include from `sensor`, which branches off `core` beside
 /// them. **`sensor` owns the boundary conversion** -- @ref to_canonical, which
@@ -31,10 +32,10 @@
 #include <cstdint>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/sensor/export.hpp"
+#include "volumetric_kit/sensor/export.hpp"
+#include "volumetric_kit/sensor/frame/color_space.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief Convert a packed-RGB frame into the canonical encoded form.
 ///
@@ -52,8 +53,8 @@ namespace volumetric_kit::recon::sensor {
 /// **Wide-gamut sources clip**, knowingly. BT.709 is the narrowest declarable
 /// gamut, so a saturated Display P3 or BT.2020 colour lands outside [0, 1] and
 /// is clamped on re-encode; an 8-bit canonical attribute could not have held it
-/// regardless. See `core/color_space.hpp` for why widening the working space
-/// and widening the storage are one move.
+/// regardless. See `sensor/frame/color_space.hpp` for why widening the working
+/// space and widening the storage are one move.
 ///
 /// @param src   `count` packed words, R/G/B in the low three bytes. The high
 ///              byte is ignored, whatever the driver left there.
@@ -74,9 +75,9 @@ namespace volumetric_kit::recon::sensor {
 ///           HDR curve needs tone mapping into an 8-bit SDR form -- something
 ///           this repo does not do, and reports rather than approximating into
 ///           a quietly wrong result.
-VR_SENSOR_API core::Status to_canonical(const std::uint32_t* src,
-                                        std::size_t count,
-                                        const ColorEncoding& enc,
-                                        std::uint32_t* dst);
+VS_INTERFACE_API core::Status to_canonical(const std::uint32_t* src,
+                                           std::size_t count,
+                                           const ColorEncoding& enc,
+                                           std::uint32_t* dst);
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

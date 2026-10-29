@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/video/hevc_syntax.hpp
+/// @file video/hevc_syntax.hpp
 /// @brief H.265 syntax read on the host: an Annex B access unit's NAL units,
 ///        the parameter sets, and the start of a slice header.
 ///
@@ -12,7 +12,7 @@
 /// (size, crop, format, the VUI's colour, the reorder depth), and each
 /// picture's slice header as far as its picture order count. Pure host code,
 /// with no codec, no GPU and no FFmpeg, so its target,
-/// `volumetric_kit::recon_sensor_video_syntax`, builds on every platform.
+/// `volumetric_kit::sensor_video_syntax`, builds on every platform.
 /// Every parser reads through @ref hevc::BitReader.
 /// @ref hevc::split_annex_b and the parsers return a host allocation failure
 /// as `Status::Code::OutOfMemory`. Clause and table numbers are ITU-T H.265's.
@@ -23,10 +23,10 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/sensor/video/color_codes.hpp"
-#include "volumetric_kit/recon/sensor/video/syntax_export.hpp"
+#include "volumetric_kit/sensor/video/color_codes.hpp"
+#include "volumetric_kit/sensor/video/syntax_export.hpp"
 
-namespace volumetric_kit::recon::sensor::hevc {
+namespace volumetric_kit::sensor::hevc {
 
 /// @name NAL unit types (Table 7-1)
 /// @{
@@ -84,9 +84,9 @@ struct Nal {
 ///         forbidden bit clear and nuh_temporal_id_plus1 not 0), @p out then
 ///         holding the units before it; or `Status::Code::InvalidArgument`
 ///         for a null @p data with a size.
-VR_SENSOR_VIDEO_SYNTAX_API core::Status split_annex_b(const std::uint8_t* data,
-                                                      std::size_t size,
-                                                      std::vector<Nal>& out);
+VS_VIDEO_SYNTAX_API core::Status split_annex_b(const std::uint8_t* data,
+                                               std::size_t size,
+                                               std::vector<Nal>& out);
 
 /// @brief Reads a NAL unit's payload as H.265's descriptors read it (7.2):
 ///        its bits most significant first, from the byte after the two-byte
@@ -96,7 +96,7 @@ VR_SENSOR_VIDEO_SYNTAX_API core::Status split_annex_b(const std::uint8_t* data,
 /// Every parser here is built on it. A read past the end reads zeros and
 /// sets @ref overrun, so a parser can read a structure through and check
 /// once. A copy reads on from where the original was.
-class VR_SENSOR_VIDEO_SYNTAX_API BitReader {
+class VS_VIDEO_SYNTAX_API BitReader {
  public:
   /// @brief A reader of @p nal's payload; a unit of no more than its header
   ///        has none.
@@ -151,7 +151,7 @@ class VR_SENSOR_VIDEO_SYNTAX_API BitReader {
 /// @param vps A video parameter set (@ref kVps).
 /// @return The id, 0 to 15; `Status::Code::IoError` if @p vps has no
 ///         payload; or `Status::Code::InvalidArgument` if it is not a VPS.
-VR_SENSOR_VIDEO_SYNTAX_API core::Result<std::uint32_t> vps_id(const Nal& vps);
+VS_VIDEO_SYNTAX_API core::Result<std::uint32_t> vps_id(const Nal& vps);
 
 /// @brief What a sequence parameter set (7.3.2.2) says about its pictures.
 struct Sps {
@@ -202,7 +202,7 @@ struct Sps {
 ///         a reorder depth not below its buffer, ...), or anything but its
 ///         trailing bits follows it; or `Status::Code::InvalidArgument` if
 ///         @p sps is not an SPS.
-VR_SENSOR_VIDEO_SYNTAX_API core::Result<Sps> parse_sps(const Nal& sps);
+VS_VIDEO_SYNTAX_API core::Result<Sps> parse_sps(const Nal& sps);
 
 /// @brief The leading fields of a picture parameter set (7.3.2.3): what the
 ///        start of a slice header needs.
@@ -221,7 +221,7 @@ struct Pps {
 /// @return Its fields; `Status::Code::IoError` if they are cut short or an
 ///         id is out of its range; or `Status::Code::InvalidArgument` if
 ///         @p pps is not a PPS.
-VR_SENSOR_VIDEO_SYNTAX_API core::Result<Pps> parse_pps(const Nal& pps);
+VS_VIDEO_SYNTAX_API core::Result<Pps> parse_pps(const Nal& pps);
 
 /// @brief The start of a slice segment header (7.3.6.1), as far as the
 ///        picture order count.
@@ -248,8 +248,8 @@ struct SliceStart {
 ///         its slice_type is past 2, or it names a PPS not in @p pps or one
 ///         whose SPS is not in @p sps; or `Status::Code::InvalidArgument` if
 ///         @p slice is not a VCL NAL unit.
-VR_SENSOR_VIDEO_SYNTAX_API core::Result<SliceStart> parse_slice_start(
+VS_VIDEO_SYNTAX_API core::Result<SliceStart> parse_slice_start(
     const Nal& slice, const std::map<std::uint32_t, Pps>& pps,
     const std::map<std::uint32_t, Sps>& sps);
 
-}  // namespace volumetric_kit::recon::sensor::hevc
+}  // namespace volumetric_kit::sensor::hevc

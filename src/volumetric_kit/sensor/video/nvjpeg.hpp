@@ -3,7 +3,7 @@
 
 #pragma once
 
-// The one place this target includes nvJPEG (VR_WITH_CUDA): its C header and
+// The one place this target includes nvJPEG (VS_WITH_CUDA): its C header and
 // its status as a Status. Internal.
 
 #include <nvjpeg.h>
@@ -13,7 +13,7 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 
 // An NvJpeg Backend error naming @p who, @p what it was doing and nvJPEG's
 // @p status, which is not NVJPEG_STATUS_SUCCESS, kept as its detail.
@@ -25,4 +25,4 @@ inline core::Status nvjpeg_error(const char* who, nvjpegStatus_t status,
           std::to_string(static_cast<int>(status)));
 }
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

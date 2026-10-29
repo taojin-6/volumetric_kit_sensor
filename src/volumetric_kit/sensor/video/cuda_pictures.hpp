@@ -3,7 +3,7 @@
 
 #pragma once
 
-// NVIDIA's decoders' pictures, handed over on the device (VR_WITH_CUDA,
+// NVIDIA's decoders' pictures, handed over on the device (VS_WITH_CUDA,
 // Linux), in Vulkan memory CUDA has imported (sensor/video/cuda_interop.hpp),
 // so the kernels read them where they are and they never cross the bus:
 // NVDEC's copied device to device into two plane images, which shaders
@@ -21,10 +21,10 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
-#include "volumetric_kit/recon/sensor/video/cuda_interop.hpp"
-#include "volumetric_kit/recon/sensor/yuv_image.hpp"
+#include "volumetric_kit/sensor/video/cuda_interop.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 
 // @p v rounded up to a multiple of @p to.
 constexpr std::uint64_t round_up(std::uint64_t v, std::uint64_t to) noexcept {
@@ -175,4 +175,4 @@ class CudaPlanePictures {
   std::vector<std::unique_ptr<Slot>> slots_;
 };
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/camera/geometry.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 #include <glm/gtc/constants.hpp>
 
-namespace volumetric_kit::recon::camera {
+namespace volumetric_kit::sensor::camera {
 
 namespace {
 
@@ -151,4 +151,4 @@ RodriguesTransform rodrigues_from_matrix(const Mat4d& transform) noexcept {
   return {rodrigues_from_rotation(Mat3d(transform)), Vec3d(transform[3])};
 }
 
-}  // namespace volumetric_kit::recon::camera
+}  // namespace volumetric_kit::sensor::camera

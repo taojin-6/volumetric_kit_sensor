@@ -8,7 +8,7 @@
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 
-namespace volumetric_kit::recon::sensor::detail {
+namespace volumetric_kit::sensor::detail {
 namespace {
 
 // Whether `rows` rows of `row_bytes`, `stride` apart from `offset`, fit in
@@ -135,4 +135,4 @@ core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
   return out;
 }
 
-}  // namespace volumetric_kit::recon::sensor::detail
+}  // namespace volumetric_kit::sensor::detail

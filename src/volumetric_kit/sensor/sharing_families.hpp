@@ -18,7 +18,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/physical_device_info.hpp"
 
-namespace volumetric_kit::recon::sensor::detail {
+namespace volumetric_kit::sensor::detail {
 
 // The families the images are CONCURRENT across: the distinct entries of
 // `families` when two or more, as the core's allocator picks a buffer's
@@ -66,4 +66,4 @@ inline core::Result<std::vector<std::uint32_t>> sharing_families(
   return distinct;
 }
 
-}  // namespace volumetric_kit::recon::sensor::detail
+}  // namespace volumetric_kit::sensor::detail

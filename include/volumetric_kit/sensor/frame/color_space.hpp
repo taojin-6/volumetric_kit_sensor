@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file core/color_space.hpp
+/// @file frame/color_space.hpp
 /// @brief The color-space vocabulary: what encoding a frame declares, and the
 ///        one transfer curve every tier converts through.
 ///
@@ -41,9 +41,9 @@
 #include <cmath>
 #include <cstdint>
 
-#include "volumetric_kit/recon/core/math/vector_types.hpp"
+#include "volumetric_kit/sensor/frame/vector_types.hpp"
 
-namespace volumetric_kit::recon {
+namespace volumetric_kit::sensor {
 
 /// @brief What a capture source declares about the color it produces.
 ///
@@ -246,4 +246,4 @@ inline Mat3f primaries_to_working(ColorEncoding::Primaries p) noexcept {
   return Mat3f{1.0f};
 }
 
-}  // namespace volumetric_kit::recon
+}  // namespace volumetric_kit::sensor

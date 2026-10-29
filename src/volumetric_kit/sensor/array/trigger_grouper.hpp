@@ -16,7 +16,7 @@
 #include <optional>
 #include <vector>
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief Groups each sensor's frames into one set per trigger, around the
 ///        anchor (the sync primary)'s frames.
@@ -112,4 +112,4 @@ class TriggerGrouper {
   std::vector<std::deque<Entry>> queues_;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

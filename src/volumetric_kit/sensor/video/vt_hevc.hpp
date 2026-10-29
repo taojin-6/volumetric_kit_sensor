@@ -26,11 +26,11 @@
 #include "videotoolbox.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/fwd.hpp"
-#include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
-#include "volumetric_kit/recon/sensor/video/decoded_picture.hpp"
-#include "volumetric_kit/recon/sensor/video/hevc_syntax.hpp"
+#include "volumetric_kit/sensor/apple/pixel_buffer_importer.hpp"
+#include "volumetric_kit/sensor/video/decoded_picture.hpp"
+#include "volumetric_kit/sensor/video/hevc_syntax.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 
 class VtHevc {
  public:
@@ -117,4 +117,4 @@ class VtHevc {
   std::string refusal_;
 };
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

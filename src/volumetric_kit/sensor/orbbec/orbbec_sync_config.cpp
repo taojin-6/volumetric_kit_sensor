@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sync_config.hpp"
 
 #include <exception>
 #include <string>
@@ -11,7 +11,7 @@
 
 #include "volumetric_kit/core/base/file_io.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 namespace {
 
@@ -175,4 +175,4 @@ core::Result<OrbbecRigSyncConfig> read_orbbec_sync_config(
   return config;
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

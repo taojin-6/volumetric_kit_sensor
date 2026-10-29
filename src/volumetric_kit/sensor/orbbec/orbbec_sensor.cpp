@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sensor.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sensor.hpp"
 
 #include <memory>
 #include <string>
@@ -14,7 +14,7 @@
 #include "frame_conversion.hpp"
 #include "volumetric_kit/core/base/check.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 namespace {
 
@@ -249,4 +249,4 @@ core::Result<std::vector<std::unique_ptr<IRgbdSensor>>> open_orbbec_sensors(
   return sensors;
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

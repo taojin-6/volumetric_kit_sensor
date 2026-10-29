@@ -17,13 +17,13 @@
 #include <libobsensor/h/Property.h>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/camera/camera_model.hpp"
-#include "volumetric_kit/recon/camera/color_controls.hpp"
-#include "volumetric_kit/recon/camera/geometry.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/color_controls.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_stream.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sync_config.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 /// A stream's camera as it captures, for the GPU pass: its intrinsics and its
 /// lens. The SDK sizes an image in `int16_t`, so a width or height that is not
@@ -137,4 +137,4 @@ core::Result<std::optional<camera::ColorControls>> write_color_controls(
     CameraProperties& camera,
     const std::optional<camera::ColorControls>& wanted, const std::string& who);
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/rgbd_sensor.hpp
+/// @file rgbd_sensor.hpp
 /// @brief One RGB-D sensor -- a Femto Mega, an iPhone, a cine camera -- as
 ///        every driver presents it, used on its own or in a sensor array.
 ///
@@ -28,13 +28,13 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/camera/camera_model.hpp"
-#include "volumetric_kit/recon/camera/color_controls.hpp"
-#include "volumetric_kit/recon/camera/geometry.hpp"
-#include "volumetric_kit/recon/sensor/export.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/color_controls.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/export.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief A sensor's role in a hardware-synchronised rig, as the sensor
 ///        reports it.
@@ -64,11 +64,11 @@ enum class PoseSource : std::uint8_t {
 };
 
 /// @return A stable lowercase name for @p role, for logs.
-VR_SENSOR_API const char* to_string(SyncRole role) noexcept;
+VS_INTERFACE_API const char* to_string(SyncRole role) noexcept;
 /// @return A stable lowercase name for @p clock, for logs.
-VR_SENSOR_API const char* to_string(ClockDomain clock) noexcept;
+VS_INTERFACE_API const char* to_string(ClockDomain clock) noexcept;
 /// @return A stable lowercase name for @p source, for logs.
-VR_SENSOR_API const char* to_string(PoseSource source) noexcept;
+VS_INTERFACE_API const char* to_string(PoseSource source) noexcept;
 
 /// @brief What a sensor is, known from when it opens: before a frame.
 ///
@@ -149,7 +149,7 @@ struct SensorStats {
 ///
 /// @warning Not thread-safe unless an implementation says otherwise: open,
 ///          start, poll, drain and stop from one thread.
-class VR_SENSOR_API IRgbdSensor {
+class VS_INTERFACE_API IRgbdSensor {
  public:
   virtual ~IRgbdSensor() = default;
 
@@ -238,4 +238,4 @@ class VR_SENSOR_API IRgbdSensor {
   IRgbdSensor& operator=(IRgbdSensor&&) = default;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

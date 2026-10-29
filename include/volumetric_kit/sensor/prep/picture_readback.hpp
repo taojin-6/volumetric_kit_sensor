@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/utils/picture_readback.hpp
+/// @file prep/picture_readback.hpp
 /// @brief A set's colour pictures copied from the device to the host, where
 ///        the decoder left them: a detector's luma, or every plane.
 
@@ -19,11 +19,11 @@
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/utils/export.hpp"
-#include "volumetric_kit/recon/sensor/yuv_image.hpp"
+#include "volumetric_kit/sensor/prep/export.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief One picture's planes on the host, as @ref PictureReadback::read
 ///        left them: views into the memory the read copied them to.
@@ -84,7 +84,7 @@ struct PictureView {
 /// @warning The `Device` and `Allocator` passed to @ref create must outlive
 ///          this object; it stores references to them. Not thread-safe,
 ///          though readbacks on several threads may share one device.
-class VR_SENSOR_UTILS_API PictureReadback {
+class VS_PREP_API PictureReadback {
  public:
   /// @brief Which planes @ref read copies.
   enum class Planes : std::uint8_t {
@@ -164,4 +164,4 @@ class VR_SENSOR_UTILS_API PictureReadback {
   core::Buffer staging_;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

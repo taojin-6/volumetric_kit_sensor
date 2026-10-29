@@ -3,11 +3,11 @@
 
 #pragma once
 
-/// @file sensor/video/cuda_interop.hpp
+/// @file video/cuda_interop.hpp
 /// @brief CUDA on the GPU of a recon device: its primary context, a stream,
 ///        and a buffer or an image the device exported, mapped into CUDA.
 ///
-/// Built with VR_WITH_CUDA (Linux) only, and includes cuda.h. libcuda is
+/// Built with VS_WITH_CUDA (Linux) only, and includes cuda.h. libcuda is
 /// loaded at run time, so a program built with it starts where no NVIDIA
 /// driver is: there @ref cuda_ordinal_of and @ref CudaContext::open return
 /// `Status::Code::Unsupported`. @ref HevcDecoder (NVDEC) and
@@ -20,9 +20,9 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/core/vulkan/fwd.hpp"
-#include "volumetric_kit/recon/sensor/video/export.hpp"
+#include "volumetric_kit/sensor/video/export.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief The CUDA device that is @p device's GPU: Vulkan's `deviceUUID`
 ///        matched against each CUDA device's.
@@ -31,8 +31,7 @@ namespace volumetric_kit::recon::sensor {
 ///         where libcuda does not load or start, or no CUDA device is that
 ///         GPU; or `Status::Code::Backend` if CUDA fails to count its
 ///         devices.
-VR_SENSOR_VIDEO_API core::Result<int> cuda_ordinal_of(
-    const core::Device& device);
+VS_VIDEO_API core::Result<int> cuda_ordinal_of(const core::Device& device);
 
 /// @brief The primary CUDA context of a device's GPU, retained while this
 ///        lives.
@@ -41,7 +40,7 @@ VR_SENSOR_VIDEO_API core::Result<int> cuda_ordinal_of(
 /// is never left current on a thread: each call that needs it makes it
 /// current for its own scope and puts back the context before, and a caller
 /// does the same with @ref handle (`cuCtxPushCurrent`, `cuCtxPopCurrent`).
-class VR_SENSOR_VIDEO_API CudaContext {
+class VS_VIDEO_API CudaContext {
  public:
   /// @brief Retain the primary context of @p device's GPU.
   /// @param device  The device whose GPU the context is on.
@@ -67,7 +66,7 @@ class VR_SENSOR_VIDEO_API CudaContext {
 /// @brief A CUDA stream of its own on a context: its work queues apart from
 ///        every other stream's, and never waits on the legacy default
 ///        stream.
-class VR_SENSOR_VIDEO_API CudaStream {
+class VS_VIDEO_API CudaStream {
  public:
   /// @brief Create a stream on @p context.
   /// @param context  The context; it must outlive the stream.
@@ -106,7 +105,7 @@ class VR_SENSOR_VIDEO_API CudaStream {
 /// // ... the batch reads exported.buffer
 /// VKC_TRY(batch.submit());
 /// @endcode
-class VR_SENSOR_VIDEO_API CudaBufferMapping {
+class VS_VIDEO_API CudaBufferMapping {
  public:
   /// @brief Import @p exported's memory into @p context and map its buffer.
   ///
@@ -164,7 +163,7 @@ class VR_SENSOR_VIDEO_API CudaBufferMapping {
 /// // ... the batch reads exported.image
 /// VKC_TRY(batch.submit());
 /// @endcode
-class VR_SENSOR_VIDEO_API CudaImageMapping {
+class VS_VIDEO_API CudaImageMapping {
  public:
   /// @brief Import @p exported's memory into @p context and map its image.
   ///
@@ -198,4 +197,4 @@ class VR_SENSOR_VIDEO_API CudaImageMapping {
   CUarray array_ = nullptr;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

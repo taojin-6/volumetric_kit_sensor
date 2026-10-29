@@ -21,7 +21,7 @@ extern "C" {
 #include "frame_color.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 
 struct CodecContextFree {
   void operator()(AVCodecContext* c) const noexcept {
@@ -58,4 +58,4 @@ core::Status ffmpeg_alloc_error(const char* who, const std::string& what);
 /// @return The colour @p frame declares, as H.273 codes.
 ColorCodes color_codes(const AVFrame& frame) noexcept;
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

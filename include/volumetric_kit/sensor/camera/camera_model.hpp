@@ -20,9 +20,9 @@
 #include <cstdint>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/camera/export.hpp"
+#include "volumetric_kit/sensor/camera/export.hpp"
 
-namespace volumetric_kit::recon::camera {
+namespace volumetric_kit::sensor::camera {
 
 /// @brief An image's size in pixels.
 struct ImageSize {
@@ -65,6 +65,6 @@ struct CameraModel {
 ///        coefficient finite.
 /// @param camera  The model.
 /// @return OK; or `Status::Code::InvalidArgument` naming the field.
-VR_CAMERA_API core::Status check_camera_model(const CameraModel& camera);
+VS_CAMERA_API core::Status check_camera_model(const CameraModel& camera);
 
-}  // namespace volumetric_kit::recon::camera
+}  // namespace volumetric_kit::sensor::camera

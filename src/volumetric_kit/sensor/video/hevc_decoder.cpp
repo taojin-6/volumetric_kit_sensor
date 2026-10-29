@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
+#include "volumetric_kit/sensor/video/hevc_decoder.hpp"
 
 #include <string>
 #include <utility>
 
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
 #include <climits>
 #include <cstring>
 
@@ -19,10 +19,10 @@ extern "C" {
 #elif defined(__APPLE__)
 #include "vt_hevc.hpp"
 #else
-#error "HevcDecoder decodes on NVDEC (VR_WITH_CUDA) or VideoToolbox only"
+#error "HevcDecoder decodes on NVDEC (VS_WITH_CUDA) or VideoToolbox only"
 #endif
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 namespace {
 
 constexpr const char* kWho = "HevcDecoder";
@@ -31,7 +31,7 @@ core::Status unsupported(const std::string& why) {
   return core::Status::unsupported(std::string(kWho) + ": " + why);
 }
 
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
 constexpr AVHWDeviceType kDeviceType = AV_HWDEVICE_TYPE_CUDA;
 constexpr AVPixelFormat kDeviceFormat = AV_PIX_FMT_CUDA;
 constexpr const char* kPath = "NVDEC";
@@ -57,7 +57,7 @@ bool has_device_path(const AVCodec* codec) {
 
 }  // namespace
 
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
 struct HevcDecoder::Impl {
   std::optional<VideoColorDescription> unlabelled_color;  // as in Options
   bool ended = false;
@@ -143,7 +143,7 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
     return unsupported("no device to decode onto (Options::device)");
   }
   auto impl = std::make_unique<Impl>();
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
   if (options.allocator == nullptr) {
     return unsupported(
         "no allocator to make NVDEC's picture images through "
@@ -221,7 +221,7 @@ core::Status HevcDecoder::send(const std::uint8_t* data, std::size_t size,
   if (impl_ == nullptr) {
     return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
   if (!impl_->refusal.empty()) return core::Status::unsupported(impl_->refusal);
   if (impl_->ended) {
     return core::Status::invalid_argument(
@@ -261,7 +261,7 @@ core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
   if (impl_ == nullptr) {
     return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
   AVFrame* decoded = impl_->decoded.get();
   av_frame_unref(decoded);
   const int err = avcodec_receive_frame(impl_->codec.get(), decoded);
@@ -295,7 +295,7 @@ core::Status HevcDecoder::reset() {
   if (impl_ == nullptr) {
     return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
-#if VR_SENSOR_VIDEO_WITH_CUDA
+#if VS_VIDEO_WITH_CUDA
   // As for a seek: FFmpeg drops what it holds, leaves draining, and takes the
   // next key frame as the first, skipping the pictures that lead it.
   avcodec_flush_buffers(impl_->codec.get());
@@ -306,4 +306,4 @@ core::Status HevcDecoder::reset() {
   return {};
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

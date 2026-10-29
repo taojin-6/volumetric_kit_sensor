@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Tao Jin
+
+#pragma once
+
+/// @file version.hpp
+/// @brief Compile-time and runtime accessors for the sensor package's
+///        version. Generated from version.hpp.in by CMake -- do not edit the
+///        generated copy.
+
+#include "volumetric_kit/sensor/camera/export.hpp"
+
+#define VS_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define VS_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define VS_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define VS_VERSION_STRING "@PROJECT_VERSION@"
+
+namespace volumetric_kit::sensor {
+
+/// @return The package version as "MAJOR.MINOR.PATCH".
+VS_CAMERA_API const char* version_string() noexcept;
+
+/// @return The major version component.
+VS_CAMERA_API int version_major() noexcept;
+/// @return The minor version component.
+VS_CAMERA_API int version_minor() noexcept;
+/// @return The patch version component.
+VS_CAMERA_API int version_patch() noexcept;
+
+}  // namespace volumetric_kit::sensor

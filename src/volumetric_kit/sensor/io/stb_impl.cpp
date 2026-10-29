@@ -4,7 +4,7 @@
 // The single translation unit that compiles stb image decoding and writing.
 // Kept apart from image_io.cpp behind a private bridge so third-party code can
 // be built with warnings disabled. Its symbols and settings are TU-local,
-// including when recon_image_io is static and its consumer uses another stb
+// including when sensor_image_io is static and its consumer uses another stb
 // copy.
 
 #include "stb_backend.hpp"
@@ -27,7 +27,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-namespace volumetric_kit::recon::io::detail::stb {
+namespace volumetric_kit::sensor::io::detail::stb {
 
 bool info(const std::uint8_t* data, int size, int* width, int* height,
           int* channels) {
@@ -65,4 +65,4 @@ std::uint32_t png_crc(const std::uint8_t* data, int size) {
   return stbiw__crc32(const_cast<unsigned char*>(data), size);
 }
 
-}  // namespace volumetric_kit::recon::io::detail::stb
+}  // namespace volumetric_kit::sensor::io::detail::stb

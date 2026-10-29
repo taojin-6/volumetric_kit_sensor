@@ -3,9 +3,9 @@
 
 #pragma once
 
-/// @file sensor/orbbec/orbbec_stream.hpp
+/// @file orbbec/orbbec_stream.hpp
 /// @brief What an Orbbec camera streams and reports: the streams an
-///        @ref volumetric_kit::recon::sensor::OrbbecSensor is opened with,
+///        @ref volumetric_kit::sensor::OrbbecSensor is opened with,
 ///        what the camera says about itself, and its counters.
 ///
 /// No Orbbec SDK type appears here, so a consumer includes this header
@@ -17,10 +17,10 @@
 #include <string>
 
 #include "volumetric_kit/core/vulkan/fwd.hpp"
-#include "volumetric_kit/recon/camera/color_controls.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
+#include "volumetric_kit/sensor/camera/color_controls.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sync_config.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief The size of @ref OrbbecStreamOptions::color_queue_families: the
 ///        core's `BufferDesc::kMaxQueueFamilies`, mirrored so this header
@@ -117,7 +117,7 @@ struct OrbbecStreamOptions {
   /// Reject depth farther than this (metres).
   float max_depth = 5.0f;
   /// The device the colour is decoded onto and the GPU pass prepares the
-  /// frames on: NVDEC's or nvJPEG's picture (VR_WITH_CUDA), or VideoToolbox's,
+  /// frames on: NVDEC's or nvJPEG's picture (VS_WITH_CUDA), or VideoToolbox's,
   /// stays there, and a frame's colour is that picture (`YuvImage::device` or
   /// `YuvImage::image`), so it never crosses to the host. Required: without
   /// it, the start returns `Status::Code::Unsupported`. Borrowed: it must
@@ -140,4 +140,4 @@ struct OrbbecStreamOptions {
   std::uint32_t color_queue_family_count = 0;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

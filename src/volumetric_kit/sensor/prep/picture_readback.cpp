@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/utils/picture_readback.hpp"
+#include "volumetric_kit/sensor/prep/picture_readback.hpp"
 
 #include <memory>
 #include <new>
@@ -13,7 +13,7 @@
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "yuv_planes.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 namespace {
 
 constexpr const char* kWho = "PictureReadback";
@@ -255,4 +255,4 @@ core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
   return {};
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

@@ -17,9 +17,9 @@
 #include <glm/glm.hpp>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/camera/export.hpp"
+#include "volumetric_kit/sensor/camera/export.hpp"
 
-namespace volumetric_kit::recon::camera {
+namespace volumetric_kit::sensor::camera {
 
 using Vec2d = glm::dvec2;  ///< A 2D point or vector.
 using Vec3d = glm::dvec3;  ///< A 3D point or vector.
@@ -44,14 +44,14 @@ struct RodriguesTransform {
 /// on its way here, and its determinant positive, which refuses a reflection.
 /// @param transform  The transform to check.
 /// @return OK; or `Status::Code::InvalidArgument` naming what is wrong.
-VR_CAMERA_API core::Status check_rigid(const Mat4d& transform);
+VS_CAMERA_API core::Status check_rigid(const Mat4d& transform);
 
 /// @brief The inverse of a rigid transform: `R^T` and `-R^T t`.
 /// @pre @p transform is rigid (@ref check_rigid); the transpose inverts
 ///      nothing else.
 /// @param transform  The transform.
 /// @return The transform that undoes @p transform.
-VR_CAMERA_API Mat4d rigid_inverse(const Mat4d& transform) noexcept;
+VS_CAMERA_API Mat4d rigid_inverse(const Mat4d& transform) noexcept;
 
 /// @brief The rotation nearest @p m: the orthogonal factor of its polar
 ///        decomposition.
@@ -65,7 +65,7 @@ VR_CAMERA_API Mat4d rigid_inverse(const Mat4d& transform) noexcept;
 ///      @p m came from.
 /// @param m  A matrix near a rotation.
 /// @return The rotation.
-VR_CAMERA_API Mat3d nearest_rotation(const Mat3d& m) noexcept;
+VS_CAMERA_API Mat3d nearest_rotation(const Mat3d& m) noexcept;
 
 /// @brief The rotation a Rodrigues vector describes: about its direction, by
 ///        its length in radians.
@@ -74,7 +74,7 @@ VR_CAMERA_API Mat3d nearest_rotation(const Mat3d& m) noexcept;
 /// undefined.
 /// @param rvec  A rotation vector, as `cv::Rodrigues` takes.
 /// @return The rotation matrix.
-VR_CAMERA_API Mat3d rotation_from_rodrigues(const Vec3d& rvec) noexcept;
+VS_CAMERA_API Mat3d rotation_from_rodrigues(const Vec3d& rvec) noexcept;
 
 /// @brief The Rodrigues vector of a rotation, its angle in [0, pi]; the
 ///        inverse of @ref rotation_from_rodrigues.
@@ -88,12 +88,12 @@ VR_CAMERA_API Mat3d rotation_from_rodrigues(const Vec3d& rvec) noexcept;
 /// @pre @p rotation is a rotation (@ref check_rigid).
 /// @param rotation  The rotation.
 /// @return The rotation vector.
-VR_CAMERA_API Vec3d rodrigues_from_rotation(const Mat3d& rotation) noexcept;
+VS_CAMERA_API Vec3d rodrigues_from_rotation(const Mat3d& rotation) noexcept;
 
 /// @brief The matrix of a transform OpenCV wrote: `[R(rvec) | tvec]`.
 /// @param transform  The transform.
 /// @return The same transform as a matrix.
-VR_CAMERA_API Mat4d
+VS_CAMERA_API Mat4d
 matrix_from_rodrigues(const RodriguesTransform& transform) noexcept;
 
 /// @brief A rigid transform in OpenCV's form; the inverse of
@@ -102,7 +102,7 @@ matrix_from_rodrigues(const RodriguesTransform& transform) noexcept;
 /// @param transform  The transform.
 /// @return Its rotation as a Rodrigues vector (@ref rodrigues_from_rotation)
 ///         and its translation.
-VR_CAMERA_API RodriguesTransform
+VS_CAMERA_API RodriguesTransform
 rodrigues_from_matrix(const Mat4d& transform) noexcept;
 
-}  // namespace volumetric_kit::recon::camera
+}  // namespace volumetric_kit::sensor::camera

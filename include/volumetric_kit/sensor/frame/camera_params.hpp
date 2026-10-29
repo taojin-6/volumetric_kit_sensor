@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file core/camera_params.hpp
+/// @file frame/camera_params.hpp
 /// @brief Posed pinhole camera parameter blocks -- the depth and color cameras
 ///        every frame-consuming tier is handed.
 ///
@@ -32,9 +32,9 @@
 #include <cstdint>
 #include <type_traits>
 
-#include "volumetric_kit/recon/core/math/vector_types.hpp"
+#include "volumetric_kit/sensor/frame/vector_types.hpp"
 
-namespace volumetric_kit::recon {
+namespace volumetric_kit::sensor {
 
 /// @brief Pinhole depth-camera intrinsics, image size, valid range and pose.
 ///
@@ -93,4 +93,4 @@ static_assert(std::is_trivially_copyable_v<ColorCameraParams>,
 static_assert(std::is_standard_layout_v<ColorCameraParams>,
               "ColorCameraParams must be standard-layout");
 
-}  // namespace volumetric_kit::recon
+}  // namespace volumetric_kit::sensor

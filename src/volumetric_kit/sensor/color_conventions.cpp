@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/color_conventions.hpp"
+#include "volumetric_kit/sensor/color_conventions.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 core::Status to_canonical(const std::uint32_t* src, std::size_t count,
                           const ColorEncoding& enc, std::uint32_t* dst) {
@@ -76,4 +76,4 @@ core::Status to_canonical(const std::uint32_t* src, std::size_t count,
   return core::Status{};
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

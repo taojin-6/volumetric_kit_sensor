@@ -3,13 +3,13 @@
 
 #pragma once
 
-/// @file sensor/chroma_location.hpp
+/// @file chroma_location.hpp
 /// @brief Chroma sample positions shared by decoders and frame preparation.
 
 #include <array>
 #include <cstdint>
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief Where each 4:2:0 chroma sample sits within its 2x2 luma group.
 enum class ChromaLocation : std::uint8_t {
@@ -43,4 +43,4 @@ constexpr std::array<float, 2> chroma_offset(ChromaLocation location) noexcept {
   return {0.0f, 0.5f};
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

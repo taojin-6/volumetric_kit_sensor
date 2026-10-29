@@ -8,7 +8,7 @@
 
 #include "volumetric_kit/core/base/check.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 TriggerGrouper::TriggerGrouper(const Config& config)
     : config_(config), queues_(config.cameras) {
@@ -115,4 +115,4 @@ void TriggerGrouper::clear(std::vector<std::uint64_t>* released) {
   }
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

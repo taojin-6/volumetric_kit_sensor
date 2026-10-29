@@ -22,9 +22,9 @@
 #include "decode_worker.hpp"
 #include "frame_conversion.hpp"
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
+#include "volumetric_kit/sensor/video/jpeg_decoder.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 class JpegColorDecoder {
  public:
@@ -91,4 +91,4 @@ class JpegColorDecoder {
   Worker worker_;  // last: its thread uses the rest
 };
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

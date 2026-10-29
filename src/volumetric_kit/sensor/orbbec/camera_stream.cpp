@@ -15,7 +15,7 @@
 #include "jpeg_color.hpp"
 #include "picture_frames.hpp"
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 
 namespace {
 
@@ -707,4 +707,4 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
   return std::optional<RgbdFrame>(std::move(frame));
 }
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

@@ -18,11 +18,11 @@
 #include <cstdint>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/core/camera_params.hpp"
-#include "volumetric_kit/recon/core/math/vector_types.hpp"
-#include "volumetric_kit/recon/sensor/export.hpp"
+#include "volumetric_kit/sensor/export.hpp"
+#include "volumetric_kit/sensor/frame/camera_params.hpp"
+#include "volumetric_kit/sensor/frame/vector_types.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief Reinterpret a camera-to-world transform from the OpenGL-style camera
 ///        convention into the computer-vision one this repo projects with.
@@ -47,7 +47,7 @@ namespace volumetric_kit::recon::sensor {
 ///                      convention.
 /// @return The same pose expressed in the computer-vision convention, ready for
 ///         @ref DepthCameraParams::cam_to_world.
-VR_SENSOR_API Mat4f cv_from_gl_camera(const Mat4f& cam_to_world);
+VS_INTERFACE_API Mat4f cv_from_gl_camera(const Mat4f& cam_to_world);
 
 /// @brief Derive depth-camera parameters from a colour camera the depth is
 ///        **registered** to.
@@ -81,8 +81,8 @@ VR_SENSOR_API Mat4f cv_from_gl_camera(const Mat4f& cam_to_world);
 ///         and positive (the unprojection divides by it, so a bad one yields
 ///         inf/NaN rays rather than an error), or if @p min_depth is negative
 ///         or not below @p max_depth.
-VR_SENSOR_API core::Result<DepthCameraParams> depth_from_registered_color(
+VS_INTERFACE_API core::Result<DepthCameraParams> depth_from_registered_color(
     const ColorCameraParams& color, std::uint32_t depth_width,
     std::uint32_t depth_height, float min_depth, float max_depth);
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

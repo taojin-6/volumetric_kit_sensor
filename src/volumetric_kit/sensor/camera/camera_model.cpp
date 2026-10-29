@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
 
 #include <cmath>
 #include <string>
 
-namespace volumetric_kit::recon::camera {
+namespace volumetric_kit::sensor::camera {
 
 namespace {
 
@@ -35,4 +35,4 @@ core::Status check_camera_model(const CameraModel& camera) {
   return {};
 }
 
-}  // namespace volumetric_kit::recon::camera
+}  // namespace volumetric_kit::sensor::camera

@@ -3,7 +3,7 @@
 
 #include "frame_color.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 namespace {
 
 // The H.273 code points named here.
@@ -131,4 +131,4 @@ void describe_color(
   }
 }
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

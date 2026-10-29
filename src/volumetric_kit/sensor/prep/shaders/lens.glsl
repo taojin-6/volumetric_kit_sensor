@@ -7,8 +7,8 @@
 // tests/sensor_gpu_frame_prep_test holds the passes to a host reference built
 // on it.
 
-#ifndef VR_SENSOR_LENS_GLSL
-#define VR_SENSOR_LENS_GLSL
+#ifndef VS_PREP_LENS_GLSL
+#define VS_PREP_LENS_GLSL
 
 #extension GL_EXT_scalar_block_layout : require
 
@@ -51,4 +51,4 @@ vec2 source_pixel(LensCamera c, vec2 pixel) {
   return vec2(d.x * c.fx + c.cx, d.y * c.fy + c.cy);
 }
 
-#endif  // VR_SENSOR_LENS_GLSL
+#endif  // VS_PREP_LENS_GLSL

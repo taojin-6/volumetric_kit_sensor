@@ -18,7 +18,7 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 
 // A Core Foundation object, released with its last owner.
 struct CfRelease {
@@ -64,4 +64,4 @@ core::Result<PixelBufferPtr> decode_sample(VTDecompressionSessionRef session,
                                            std::size_t size, const char* who,
                                            const std::string& what);
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/yuv_image.hpp
+/// @file yuv_image.hpp
 /// @brief A Y'CbCr picture on the device and how it is coded: what a decoder
 ///        or a platform's capture hands out, and what a frame's colour is.
 ///
@@ -18,9 +18,9 @@
 #include <memory>
 
 #include "volumetric_kit/core/vulkan/fwd.hpp"
-#include "volumetric_kit/recon/sensor/chroma_location.hpp"
+#include "volumetric_kit/sensor/chroma_location.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief How a picture's chroma is laid out.
 enum class YuvLayout : std::uint8_t {
@@ -136,4 +136,4 @@ struct YuvImage {
   ChromaLocation chroma_location = ChromaLocation::Left;  ///< Sample positions.
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/apple/pixel_buffer_importer.hpp
+/// @file apple/pixel_buffer_importer.hpp
 /// @brief Apple's pictures handed to Vulkan where they are: a `CVPixelBuffer`'s
 ///        NV12 planes on its IOSurface, as images on the device (Apple only).
 
@@ -15,10 +15,10 @@
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/fwd.hpp"
-#include "volumetric_kit/recon/sensor/apple/export.hpp"
-#include "volumetric_kit/recon/sensor/yuv_image.hpp"
+#include "volumetric_kit/sensor/apple/export.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief Imports 8-bit NV12 `CVPixelBuffer`s on an IOSurface -- a
 ///        VideoToolbox decoder's pictures, or a camera's such as ARKit's
@@ -54,7 +54,7 @@ namespace volumetric_kit::recon::sensor {
 /// @endcode
 ///
 /// @warning Not thread-safe: use from one thread.
-class VR_SENSOR_APPLE_API PixelBufferImporter {
+class VS_APPLE_API PixelBufferImporter {
  public:
   /// @param device The device the images are made on. Borrowed: it must
   ///        outlive the importer and every picture imported.
@@ -112,4 +112,4 @@ class VR_SENSOR_APPLE_API PixelBufferImporter {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

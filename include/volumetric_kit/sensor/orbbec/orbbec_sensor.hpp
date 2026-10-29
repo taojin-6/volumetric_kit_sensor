@@ -3,9 +3,9 @@
 
 #pragma once
 
-/// @file sensor/orbbec/orbbec_sensor.hpp
+/// @file orbbec/orbbec_sensor.hpp
 /// @brief An Orbbec RGB-D camera (the Femto Mega) as an
-///        @ref volumetric_kit::recon::sensor::IRgbdSensor: frames as it
+///        @ref volumetric_kit::sensor::IRgbdSensor: frames as it
 ///        captured them, for the GPU pass.
 ///
 /// No Orbbec SDK type appears here -- the SDK is held behind a pointer to an
@@ -19,14 +19,14 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/camera/geometry.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/export.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_stream.hpp"
-#include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/orbbec/export.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_stream.hpp"
+#include "volumetric_kit/sensor/orbbec/orbbec_sync_config.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/rgbd_sensor.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief One Orbbec RGB-D camera, polled for frames as it captured them.
 ///
@@ -35,7 +35,7 @@ namespace volumetric_kit::recon::sensor {
 /// factory model and the factory depth-to-colour extrinsic (its rotation
 /// made one; the 2026-10-06 sensor-frame decision). Nothing on the host
 /// undistorts, registers or converts: `sensor/utils`'s GPU pass does. Either
-/// codec is decoded here, by the video decoders VR_WITH_ORBBEC builds with.
+/// codec is decoded here, by the video decoders VS_WITH_ORBBEC builds with.
 ///
 /// A frame holds the SDK pair it was read from, so it outlives the next
 /// poll; the SDK has the pair's buffers back once every copy of the frame is
@@ -60,7 +60,7 @@ namespace volumetric_kit::recon::sensor {
 /// @warning Not thread-safe: open, start, poll, drain and stop from one
 ///          thread. The SDK delivers frames on a thread of its own, which
 ///          this class hands over internally.
-class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
+class VS_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
  public:
   /// @brief Which camera, which streams, and where it sits.
   struct Options : OrbbecStreamOptions {
@@ -252,8 +252,8 @@ class VR_SENSOR_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
 ///           before it closed again: of the streams in @p options, before
 ///           any camera is looked for, or of a camera, which it names
 ///           (`Status::Code::NotFound` for one that does not answer).
-VR_SENSOR_ORBBEC_API core::Result<std::vector<std::unique_ptr<IRgbdSensor>>>
+VS_ORBBEC_API core::Result<std::vector<std::unique_ptr<IRgbdSensor>>>
 open_orbbec_sensors(const std::string& sync_path,
                     const OrbbecSensor::Options& options);
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

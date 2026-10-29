@@ -20,7 +20,7 @@
 
 #extension GL_GOOGLE_include_directive : require
 #include "lens.glsl"
-#include "volumetric_kit/recon/core/shaders/pinhole.glsl"
+#include "volumetric_kit/sensor/frame/shaders/pinhole.glsl"
 
 layout(local_size_x = 256) in;
 
@@ -44,17 +44,17 @@ layout(push_constant, scalar) uniform Params {
 
 // Whether the colour camera recorded the depth camera's point at pinhole pixel
 // `pixel`, depth `z` metres: the colour pass's coverage test at the colour
-// pixel the point rounds to. The pinhole is core/shaders/pinhole.glsl's; the
+// pixel the point rounds to. The pinhole is sensor/frame/shaders/pinhole.glsl's; the
 // bounds are the colour pass's, so the rounded pixel must lie in the image
 // ([-0.5, width - 0.5) before rounding), not the pixel itself as
-// vr_project_pinhole asks.
+// vs_project_pinhole asks.
 bool color_recorded(vec2 pixel, float z) {
-  vec3 p = vr_unproject_pinhole(
+  vec3 p = vs_unproject_pinhole(
       pixel, z, vec4(pc.cam.fx, pc.cam.fy, pc.cam.cx, pc.cam.cy));
   vec3 q = (overlap.depth_to_color * vec4(p, 1.0)).xyz;
   LensCamera c = overlap.color;
   vec2 px;
-  if (!vr_pinhole_pixel(q, vec4(c.fx, c.fy, c.cx, c.cy), px)) {
+  if (!vs_pinhole_pixel(q, vec4(c.fx, c.fy, c.cx, c.cy), px)) {
     return false;
   }
   vec2 r = floor(px + 0.5);

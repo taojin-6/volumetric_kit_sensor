@@ -8,7 +8,7 @@
 
 #include <cstdint>
 
-namespace volumetric_kit::recon::io::detail::stb {
+namespace volumetric_kit::sensor::io::detail::stb {
 
 // Decoders read an encoded file already in memory, so inspection and decoding
 // see the same bytes.
@@ -29,4 +29,4 @@ bool write_png(WriteCallback callback, void* context, int width, int height,
 // The CRC-32 that a PNG chunk ends with, over its type and data.
 std::uint32_t png_crc(const std::uint8_t* data, int size);
 
-}  // namespace volumetric_kit::recon::io::detail::stb
+}  // namespace volumetric_kit::sensor::io::detail::stb

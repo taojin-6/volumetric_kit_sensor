@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/recon/sensor/video/hevc_syntax.hpp"
+#include "volumetric_kit/sensor/video/hevc_syntax.hpp"
 
 #include <array>
 #include <string>
@@ -13,7 +13,7 @@
 // refusal's message) as OutOfMemory through core::exception_status: no
 // exception leaves them.
 
-namespace volumetric_kit::recon::sensor::hevc {
+namespace volumetric_kit::sensor::hevc {
 namespace {
 
 // @p what (a parameter set, a slice header) that does not parse, and why.
@@ -544,4 +544,4 @@ core::Result<SliceStart> parse_slice_start(
                                 core::Status::Code::IoError);
 }
 
-}  // namespace volumetric_kit::recon::sensor::hevc
+}  // namespace volumetric_kit::sensor::hevc

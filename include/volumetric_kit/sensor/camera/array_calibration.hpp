@@ -77,12 +77,12 @@
 
 #include "volumetric_kit/core/base/file_io.hpp"
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/camera/camera_model.hpp"
-#include "volumetric_kit/recon/camera/color_controls.hpp"
-#include "volumetric_kit/recon/camera/export.hpp"
-#include "volumetric_kit/recon/camera/geometry.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/color_controls.hpp"
+#include "volumetric_kit/sensor/camera/export.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
 
-namespace volumetric_kit::recon::camera {
+namespace volumetric_kit::sensor::camera {
 
 /// @brief Where a camera's model came from.
 enum class IntrinsicsSource : std::uint8_t {
@@ -167,7 +167,7 @@ struct ArrayCalibration {
 /// @param id     A sensor's id.
 /// @return The sensor of @p array with @p id, or null; valid while @p array
 ///         is unchanged.
-VR_CAMERA_API const SensorCalibration* find_sensor(
+VS_CAMERA_API const SensorCalibration* find_sensor(
     const ArrayCalibration& array, std::string_view id);
 
 /// @brief The checks a calibration passes to be read or written.
@@ -183,7 +183,7 @@ VR_CAMERA_API const SensorCalibration* find_sensor(
 /// @param array  The calibration.
 /// @return OK; `Status::Code::InvalidArgument` naming what is wrong; or
 ///         `Status::Code::OutOfMemory`.
-VR_CAMERA_API core::Status validate_array_calibration(
+VS_CAMERA_API core::Status validate_array_calibration(
     const ArrayCalibration& array);
 
 /// @brief Parse a calibration document, version 3, 2 or 1.
@@ -197,7 +197,7 @@ VR_CAMERA_API core::Status validate_array_calibration(
 ///         `Status::Code::Unsupported` for a later version, a distortion
 ///         model other than `"rational"`, or a world that is neither a
 ///         sensor nor a tag; or `Status::Code::OutOfMemory`.
-VR_CAMERA_API core::Result<ArrayCalibration> parse_array_calibration(
+VS_CAMERA_API core::Result<ArrayCalibration> parse_array_calibration(
     std::string_view json);
 
 /// @brief Read and parse the calibration file at @p path.
@@ -205,7 +205,7 @@ VR_CAMERA_API core::Result<ArrayCalibration> parse_array_calibration(
 /// @return As @ref parse_array_calibration, the message prefixed with
 ///         @p path; or `core::read_file`'s error when the file cannot be read
 ///         (`Status::Code::NotFound` for a missing one).
-VR_CAMERA_API core::Result<ArrayCalibration> read_array_calibration(
+VS_CAMERA_API core::Result<ArrayCalibration> read_array_calibration(
     const std::string& path);
 
 /// @brief Format @p array as a version-3 document if it carries a correction
@@ -220,7 +220,7 @@ VR_CAMERA_API core::Result<ArrayCalibration> read_array_calibration(
 /// @return The document; `Status::Code::InvalidArgument` for a calibration
 ///         @ref validate_array_calibration refuses; or
 ///         `Status::Code::OutOfMemory`.
-VR_CAMERA_API core::Result<std::string> format_array_calibration(
+VS_CAMERA_API core::Result<std::string> format_array_calibration(
     const ArrayCalibration& array);
 
 /// @brief Write @p array to @p path as @ref format_array_calibration formats
@@ -234,8 +234,8 @@ VR_CAMERA_API core::Result<std::string> format_array_calibration(
 ///         @ref validate_array_calibration refuses, or
 ///         `Status::Code::OutOfMemory`, before the file is touched; or
 ///         `core::write_file`'s error.
-VR_CAMERA_API core::Status write_array_calibration(
+VS_CAMERA_API core::Status write_array_calibration(
     const std::string& path, const ArrayCalibration& array,
     core::WriteMode mode);
 
-}  // namespace volumetric_kit::recon::camera
+}  // namespace volumetric_kit::sensor::camera

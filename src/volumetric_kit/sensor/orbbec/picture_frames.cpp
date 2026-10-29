@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace volumetric_kit::recon::sensor::orbbec {
+namespace volumetric_kit::sensor::orbbec {
 namespace {
 
 // A device picture's frame's bytes: a tag and the picture's serial, plain
@@ -128,4 +128,4 @@ std::shared_ptr<ob::FrameSet> rebuilt_pair(std::shared_ptr<ob::Frame> depth,
   return pair;
 }
 
-}  // namespace volumetric_kit::recon::sensor::orbbec
+}  // namespace volumetric_kit::sensor::orbbec

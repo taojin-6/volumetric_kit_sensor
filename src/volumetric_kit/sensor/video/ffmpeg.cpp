@@ -5,7 +5,7 @@
 
 #include <string>
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 
 std::string ffmpeg_message(int err) {
   char text[AV_ERROR_MAX_STRING_SIZE] = {};
@@ -43,4 +43,4 @@ ColorCodes color_codes(const AVFrame& frame) noexcept {
   return codes;
 }
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

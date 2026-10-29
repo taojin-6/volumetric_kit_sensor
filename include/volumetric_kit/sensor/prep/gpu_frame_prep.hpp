@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/utils/gpu_frame_prep.hpp
+/// @file prep/gpu_frame_prep.hpp
 /// @brief A captured frame undistorted and converted on the GPU, left there
 ///        for fusion.
 ///
@@ -33,47 +33,13 @@
 #include "volumetric_kit/core/vulkan/host_ring.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
-#include "volumetric_kit/recon/core/camera_params.hpp"
-#include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/utils/export.hpp"
+#include "volumetric_kit/sensor/frame/camera_params.hpp"
+#include "volumetric_kit/sensor/frame/color_space.hpp"
+#include "volumetric_kit/sensor/frame/device_frame.hpp"
+#include "volumetric_kit/sensor/prep/export.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
 
-namespace volumetric_kit::recon::sensor {
-
-/// @brief One frame on the device, pinhole and R'G'B', in the shapes the
-///        fusion tiers read.
-///
-/// Depth and colour keep their own cameras. Pass @ref depth with
-/// @ref depth_camera to `integrate` (or to fusion as a `tsdf::FrameInput`),
-/// and to `allocate_from_depth` with the camera through
-/// `tsdf::to_depth_pinhole`; pass @ref color as `ColorFrame::buffer` with
-/// @ref color_camera and `ColorFrame::coverage_in_alpha` set.
-///
-/// The frame holds its buffers, which are `device_storage_buffer`s, so a
-/// `CommandBatch` can copy or read them back. One kept past the next
-/// @ref GpuFramePrep::prepare keeps its contents, and that call writes to new
-/// buffers instead; drop a frame once it is fused and the pass reuses them.
-/// The `Allocator` must outlive the frame, as it must the pass.
-struct DeviceFrame {
-  /// Row-major depth in metres, less the pass's
-  /// @ref GpuFramePrepConfig::depth_offset_m, `depth_camera.width * height`
-  /// floats; 0 where the sensor had no return, the offset leaves none, or
-  /// the lens maps outside its image.
-  std::shared_ptr<const core::Buffer> depth;
-  /// Row-major colour, `color_camera.width * height` words: R, G and B in the
-  /// low three bytes, and the pixel's coverage in the high one -- 0xFF where
-  /// the lens maps inside the captured picture, 0 (and black) where it maps
-  /// outside, which `ColorFrame::coverage_in_alpha` has fusion skip. Null
-  /// when the frame has no colour.
-  std::shared_ptr<const core::Buffer> color;
-  DepthCameraParams depth_camera{};  ///< The undistorted depth camera.
-  ColorCameraParams color_camera{};  ///< The undistorted colour camera.
-  ColorEncoding color_encoding{};    ///< What @ref color is encoded as.
-  std::uint64_t timestamp_ns = 0;    ///< The raw frame's.
-
-  /// @return `true` if this frame carries colour.
-  bool has_color() const noexcept { return color != nullptr; }
-};
+namespace volumetric_kit::sensor {
 
 /// @brief Options for @ref GpuFramePrep::create.
 struct GpuFramePrepConfig {
@@ -173,7 +139,7 @@ struct GpuFramePrepConfig {
 /// @warning The `Device` and `Allocator` passed to @ref create must
 ///          outlive this object; it stores references to them. Not
 ///          thread-safe.
-class VR_SENSOR_UTILS_API GpuFramePrep {
+class VS_PREP_API GpuFramePrep {
  public:
   /// @brief Build the two passes on @p device.
   /// @param device     The device the frames are prepared on (must outlive
@@ -399,4 +365,4 @@ class VR_SENSOR_UTILS_API GpuFramePrep {
   std::shared_ptr<Output> color_out_;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

@@ -3,7 +3,7 @@
 
 #include "videotoolbox.hpp"
 
-namespace volumetric_kit::recon::sensor::video {
+namespace volumetric_kit::sensor::video {
 namespace {
 
 // Both the decode call and its callback can fail. Keep the callback's status
@@ -121,4 +121,4 @@ core::Result<PixelBufferPtr> decode_sample(VTDecompressionSessionRef session,
   return picture;
 }
 
-}  // namespace volumetric_kit::recon::sensor::video
+}  // namespace volumetric_kit::sensor::video

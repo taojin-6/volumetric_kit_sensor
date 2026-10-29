@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/array/sensor_array.hpp
+/// @file array/sensor_array.hpp
 /// @brief Several RGB-D sensors read as one array: started in their rig's
 ///        order, their frames grouped into one set per trigger and posed by
 ///        the array's calibration.
@@ -26,13 +26,14 @@
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
-#include "volumetric_kit/recon/camera/array_calibration.hpp"
-#include "volumetric_kit/recon/sensor/array/export.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
-#include "volumetric_kit/recon/sensor/rgbd_sensor.hpp"
-#include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/array/export.hpp"
+#include "volumetric_kit/sensor/camera/array_calibration.hpp"
+#include "volumetric_kit/sensor/frame/device_frame.hpp"
+#include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
+#include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/rgbd_sensor.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief The frames one trigger produced across the array.
 struct FrameSet {
@@ -62,19 +63,10 @@ struct FrameSet {
   ///         saturated at `int64_t`'s range for a gap of 2^63 ns or more;
   ///         empty where the set holds no frame from that sensor.
   /// @pre @p i is below `frames.size()`.
-  VR_SENSOR_ARRAY_API std::optional<std::int64_t> skew_ns(std::size_t i) const;
+  VS_ARRAY_API std::optional<std::int64_t> skew_ns(std::size_t i) const;
   /// @return The latest frame's time less the earliest's, over the frames the
   ///         set holds, in nanoseconds; 0 for one frame or none.
-  VR_SENSOR_ARRAY_API std::uint64_t spread_ns() const noexcept;
-};
-
-/// @brief A set prepared on the GPU: each frame undistorted and converted,
-///        left on the device for fusion.
-struct DeviceFrameSet {
-  std::uint64_t timestamp_ns = 0;  ///< As @ref FrameSet::timestamp_ns.
-  std::uint64_t sequence = 0;      ///< As @ref FrameSet::sequence.
-  /// One per sensor, in the array's order; empty where the set had no frame.
-  std::vector<std::optional<DeviceFrame>> frames;
+  VS_ARRAY_API std::uint64_t spread_ns() const noexcept;
 };
 
 /// @brief Counters a caller reads to see how the array is keeping up.
@@ -124,7 +116,7 @@ struct SensorArrayStats {
 /// @endcode
 ///
 /// @warning Not thread-safe: open, start, poll and stop from one thread.
-class VR_SENSOR_ARRAY_API SensorArray {
+class VS_ARRAY_API SensorArray {
  public:
   /// @brief How the sensors are grouped and posed.
   struct Options {
@@ -277,4 +269,4 @@ class VR_SENSOR_ARRAY_API SensorArray {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

@@ -3,7 +3,7 @@
 
 #pragma once
 
-/// @file sensor/rgbd_frame.hpp
+/// @file rgbd_frame.hpp
 /// @brief A frame as an RGB-D sensor captured it, before undistortion and
 ///        colour conversion: what every driver hands out, and what
 ///        `sensor/utils`'s GPU pass prepares.
@@ -23,12 +23,12 @@
 #include <memory>
 
 #include "volumetric_kit/core/vulkan/fwd.hpp"
-#include "volumetric_kit/recon/camera/camera_model.hpp"
-#include "volumetric_kit/recon/camera/geometry.hpp"
-#include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/sensor/yuv_image.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/frame/color_space.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 
 /// @brief The colour as the camera coded it, before any decoding: bytes a
 ///        consumer can keep as they came.
@@ -134,4 +134,4 @@ struct RgbdFrame {
   }
 };
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor

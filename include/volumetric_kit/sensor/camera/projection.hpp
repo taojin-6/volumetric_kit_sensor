@@ -17,7 +17,7 @@
 /// (1 + k4 r^2 + k5 r^4 + k6 r^6)`; with `k4 = k5 = k6 = 0` it is the
 /// five-coefficient Brown-Conrady model.
 
-namespace volumetric_kit::recon::camera {
+namespace volumetric_kit::sensor::camera {
 
 /// @brief Where the lens images a point: normalized pinhole coordinates
 ///        (`x = X / Z`) to the normalized coordinates it lands at.
@@ -41,4 +41,4 @@ inline void distort_rational(const T* d, const T& x, const T& y, T* xd, T* yd) {
   *yd = y * radial + d[2] * (r2 + T(2) * y * y) + T(2) * d[3] * xy;
 }
 
-}  // namespace volumetric_kit::recon::camera
+}  // namespace volumetric_kit::sensor::camera

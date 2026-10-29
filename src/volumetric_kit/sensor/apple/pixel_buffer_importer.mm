@@ -4,7 +4,7 @@
 // Before anything includes Vulkan: VK_EXT_metal_objects' structures.
 #define VK_USE_PLATFORM_METAL_EXT
 
-#include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"
+#include "volumetric_kit/sensor/apple/pixel_buffer_importer.hpp"
 
 #include <IOSurface/IOSurfaceRef.h>
 #include <Metal/Metal.h>
@@ -23,7 +23,7 @@
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 
-namespace volumetric_kit::recon::sensor {
+namespace volumetric_kit::sensor {
 namespace {
 
 // A surface no picture has arrived on in this many has left its producer's
@@ -359,4 +359,4 @@ core::Status PixelBufferImporter::import(CVPixelBufferRef pixels,
   return {};
 }
 
-}  // namespace volumetric_kit::recon::sensor
+}  // namespace volumetric_kit::sensor
