@@ -4225,11 +4225,15 @@ device depth's buffer, and one that fails otherwise lets it go.
 **Validation.** RTX 4090, Ubuntu 26.04, Release with warnings as errors,
 Orbbec, FFmpeg and CUDA, under the validation layer: 41 tests passed and the
 2 JPEG tests skipped, as on main, of 43. recon main (`89133e50`) built on
-this checkout passes its 41 tests. Five planted bugs each failed a test:
+this checkout passes its 41 tests. Twelve planted bugs each failed a test:
 the shader ignoring `raw_first`, a frame with nothing on the host binding
 no slot, the buffer weighed to its last sample rather than its last word,
-the failed submit letting the depth's buffer go, and the depth's queue
-family left unchecked. The Mac is CI's leg.
+the failed submit letting the depth's buffer go, the depth's queue family
+left unchecked, the binding cut a word short or by its lead (the pinhole
+cases; the review found the barrel lens never read that far), the buffers'
+acquires dropped, the depth's or the planes' buffer not taken over, a
+shared buffer taken over once a reference, and references naming two
+writers let through. The Mac is CI's leg.
 
 A depth-only frame's prepare on the RTX 4090, Release, median of 500 each,
 host and device depth interleaved: at 960 x 544, 0.054 ms of device time
