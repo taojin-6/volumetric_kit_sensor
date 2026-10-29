@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
-#include "volumetric_kit/recon/io/export.hpp"
+#include "volumetric_kit/recon/io/image_io_export.hpp"
 
 namespace volumetric_kit::recon::io {
 
@@ -31,7 +31,7 @@ namespace volumetric_kit::recon::io {
 /// @param expected_h Expected positive height; a mismatch is an error.
 /// @return Packed pixels, or non-OK Status for invalid dimensions, a decode
 ///         failure, or an allocation failure.
-VR_IO_API core::Result<std::vector<std::uint32_t>> load_color_packed(
+VR_IMAGE_IO_API core::Result<std::vector<std::uint32_t>> load_color_packed(
     const std::string& path, std::uint32_t expected_w,
     std::uint32_t expected_h);
 
@@ -47,7 +47,7 @@ VR_IO_API core::Result<std::vector<std::uint32_t>> load_color_packed(
 /// @param expected_h Expected positive height; a mismatch is an error.
 /// @return The raw samples, or non-OK Status on invalid input, decode failure,
 ///         or allocation failure.
-VR_IO_API core::Result<std::vector<std::uint16_t>> load_depth_u16(
+VR_IMAGE_IO_API core::Result<std::vector<std::uint16_t>> load_depth_u16(
     const std::string& path, std::uint32_t expected_w,
     std::uint32_t expected_h);
 
@@ -67,11 +67,11 @@ VR_IO_API core::Result<std::vector<std::uint16_t>> load_depth_u16(
 /// @param height Positive height supported by the encoder's integer bounds.
 /// @return OK after closing the file, or non-OK Status for invalid input,
 ///         allocation failure, or encoding/write failure.
-VR_IO_API core::Status write_png_rgba8(const std::string& path,
-                                       const std::uint8_t* pixels,
-                                       std::size_t byte_count,
-                                       std::uint32_t width,
-                                       std::uint32_t height);
+VR_IMAGE_IO_API core::Status write_png_rgba8(const std::string& path,
+                                             const std::uint8_t* pixels,
+                                             std::size_t byte_count,
+                                             std::uint32_t width,
+                                             std::uint32_t height);
 
 /// @brief Encode tightly packed 16-bit samples as a 16-bit grayscale PNG in
 ///        memory.
@@ -86,7 +86,7 @@ VR_IO_API core::Status write_png_rgba8(const std::string& path,
 /// @param height Positive height supported by the encoder's integer bounds.
 /// @return The PNG file's bytes, or non-OK Status for invalid input or
 ///         allocation failure.
-VR_IO_API core::Result<std::vector<std::uint8_t>> encode_png_u16(
+VR_IMAGE_IO_API core::Result<std::vector<std::uint8_t>> encode_png_u16(
     const std::uint16_t* samples, std::size_t sample_count, std::uint32_t width,
     std::uint32_t height);
 
@@ -104,9 +104,10 @@ VR_IO_API core::Result<std::vector<std::uint8_t>> encode_png_u16(
 /// @param height Positive height supported by the encoder's integer bounds.
 /// @return OK after closing the file, or non-OK Status for invalid input,
 ///         allocation failure, or write failure.
-VR_IO_API core::Status write_png_u16(const std::string& path,
-                                     const std::uint16_t* samples,
-                                     std::size_t sample_count,
-                                     std::uint32_t width, std::uint32_t height);
+VR_IMAGE_IO_API core::Status write_png_u16(const std::string& path,
+                                           const std::uint16_t* samples,
+                                           std::size_t sample_count,
+                                           std::uint32_t width,
+                                           std::uint32_t height);
 
 }  // namespace volumetric_kit::recon::io

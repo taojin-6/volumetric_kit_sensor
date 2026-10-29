@@ -4,7 +4,8 @@
 // The single translation unit that compiles stb image decoding and writing.
 // Kept apart from image_io.cpp behind a private bridge so third-party code can
 // be built with warnings disabled. Its symbols and settings are TU-local,
-// including when recon_io is static and its consumer uses another stb copy.
+// including when recon_image_io is static and its consumer uses another stb
+// copy.
 
 #include "stb_backend.hpp"
 #include "volumetric_kit/core/base/check.hpp"
