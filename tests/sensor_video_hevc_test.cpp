@@ -30,17 +30,19 @@
 #include <utility>
 #include <vector>
 
-#include "buffer_readback.hpp"
+#include "decoder_test.hpp"
 #include "device_picture_readback.hpp"
-#include "gpu_test.hpp"
 #include "hevc_fixture.hpp"
 #include "md5.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/buffer_readback.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/video/hevc_decoder.hpp"
@@ -95,7 +97,7 @@ int patch_y(int p) { return 40 + 24 * p; }
 int patch_u(int p) { return 64 + 16 * ((3 * p) % 8); }
 int patch_v(int p) { return 64 + 16 * ((5 * p) % 8); }
 
-using Gpu = vr_test::GpuContext;
+using Gpu = vkc::test::GpuContext;
 
 // The device and allocator the decoders hand their pictures out on.
 HevcDecoder::Options decoder_options(const Gpu& gpu) {
@@ -604,8 +606,8 @@ int test_frame_prep(const Gpu& gpu) {
       std::fprintf(stderr, "%s\n", prepared.status().message().c_str());
       return out;
     }
-    auto read = vr_test::read_back<std::uint32_t>(gpu.device, gpu.allocator,
-                                                  *prepared->color, pixels);
+    auto read = vkc::test::read_back<std::uint32_t>(gpu.device, gpu.allocator,
+                                                    *prepared->color, pixels);
     if (read) out = std::move(read).value();
     return out;
   };
@@ -644,8 +646,8 @@ int test_frame_prep(const Gpu& gpu) {
         bytes.push_back(planes[1][k]);
         bytes.push_back(planes[2][k]);
       }
-      auto buffer = vr_test::upload_device_buffer(gpu.device, gpu.allocator,
-                                                  bytes.data(), bytes.size());
+      auto buffer = vkc::test::upload_device_buffer(gpu.device, gpu.allocator,
+                                                    bytes.data(), bytes.size());
       CHECK(buffer.ok());
       sensor::YuvImage copied = yuv;
       copied.image[0] = copied.image[1] = nullptr;
@@ -677,7 +679,7 @@ int test_queue_families(const Gpu& gpu) {
   CHECK(HevcDecoder::create(options).status().domain() ==
         vkc::Status::Code::InvalidArgument);
   const std::optional<std::uint32_t> other =
-      vr_test::other_queue_family(gpu.device);
+      vkc::test::other_queue_family(gpu.device);
   if (!other) return 0;
   const std::uint32_t families[] = {gpu.device.queue_family(), *other};
   options.queue_families = families;
@@ -1025,5 +1027,5 @@ int main() {
                  kPatches, kFrames);
     return 1;
   }
-  return vr_test::run_on_gpu(gpu_main);
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
 }

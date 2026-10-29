@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "frame_conversion.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 
 namespace vkc = volumetric_kit::core;

@@ -19,8 +19,8 @@
 
 #include "cuda_driver.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
-#include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/sensor/video/cuda_interop.hpp"
 #include "volumetric_kit/recon/sensor/yuv_image.hpp"
 

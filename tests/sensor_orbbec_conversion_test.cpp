@@ -16,7 +16,7 @@
 #include <string>
 
 #include "frame_conversion.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/recon/camera/color_controls.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/math/vector_types.hpp"

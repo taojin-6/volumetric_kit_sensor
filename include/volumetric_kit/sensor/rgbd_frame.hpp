@@ -22,10 +22,10 @@
 #include <cstdint>
 #include <memory>
 
+#include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/core/color_space.hpp"
-#include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/sensor/yuv_image.hpp"
 
 namespace volumetric_kit::recon::sensor {

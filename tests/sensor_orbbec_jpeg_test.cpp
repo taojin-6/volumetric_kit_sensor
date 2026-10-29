@@ -38,12 +38,14 @@
 #include "device_picture_readback.hpp"
 #include "jpeg_color.hpp"
 #include "picture_frames.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "yuv_reference.hpp"
 
-#include "gpu_test.hpp"
+#include "decoder_test.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
@@ -367,7 +369,7 @@ int test_bitstream() {
 // across two families.
 int test_queue_families() {
   const std::optional<std::uint32_t> other =
-      vr_test::other_queue_family(*g_device);
+      vkc::test::other_queue_family(*g_device);
   if (!other) return 0;
   const Run r =
       run({pair(read_file(kJpeg), 0)}, {g_device->queue_family(), *other});
@@ -402,7 +404,7 @@ int test_unsupported_jpeg() {
   return 0;
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   g_device = &gpu.device;
   g_allocator = &gpu.allocator;
   {
@@ -439,5 +441,5 @@ int main() {
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
   if (test_start_needs_device() != 0) return 1;
 
-  return vr_test::run_on_gpu(gpu_main);
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
 }

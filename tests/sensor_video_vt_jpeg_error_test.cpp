@@ -16,9 +16,11 @@
 #include <iterator>
 #include <vector>
 
-#include "gpu_test.hpp"
-#include "test_check.hpp"
+#include "decoder_test.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/video/jpeg_decoder.hpp"
 
 namespace vkc = volumetric_kit::core;
@@ -72,7 +74,7 @@ extern "C" OSStatus VTDecompressionSessionDecodeFrame(
 
 namespace {
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   JpegDecoder::Options options;
   options.device = &gpu.device;
   if (auto probe = JpegDecoder::create(options); !probe) {
@@ -131,4 +133,6 @@ int gpu_main(vr_test::GpuContext& gpu) {
 
 }  // namespace
 
-int main() { return vr_test::run_on_gpu(gpu_main); }
+int main() {
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+}

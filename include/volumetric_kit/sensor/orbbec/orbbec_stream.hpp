@@ -16,8 +16,8 @@
 #include <optional>
 #include <string>
 
+#include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/recon/camera/color_controls.hpp"
-#include "volumetric_kit/recon/core/fwd.hpp"
 #include "volumetric_kit/recon/sensor/orbbec/orbbec_sync_config.hpp"
 
 namespace volumetric_kit::recon::sensor {

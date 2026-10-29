@@ -10,7 +10,7 @@
 #include <optional>
 
 #include "frame_color.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "yuv_reference.hpp"
 
 namespace sensor = volumetric_kit::recon::sensor;

@@ -3,8 +3,8 @@
 
 // The pinhole camera on the device: recon's GLSL projection, which its kernels
 // and its consumers' include (spelled
-// "volumetric_kit/recon/core/shaders/pinhole.glsl", under the include root
-// recon_core's VR_SHADER_INCLUDE_DIR names). The camera is camera_model.hpp's:
+// "volumetric_kit/recon/core/shaders/pinhole.glsl", through the core's
+// INCLUDE_TARGETS volumetric_kit::recon_core). The camera is camera_model.hpp's:
 // +X right, +Y down, +Z forward, pixel centres at integer coordinates, and a
 // rigid cam_to_world pose.
 //

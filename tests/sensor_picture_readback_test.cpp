@@ -21,12 +21,13 @@
 #include <utility>
 #include <vector>
 
-#include "buffer_readback.hpp"
-#include "gpu_test.hpp"
-#include "test_check.hpp"
+#include "decoder_test.hpp"
 #include "test_image.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
+#include "volumetric_kit/core/testing/buffer_readback.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
@@ -34,6 +35,7 @@
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/sensor/utils/picture_readback.hpp"
@@ -141,12 +143,12 @@ int check_view(const PictureView& v, const Packed& want, YuvLayout layout,
 // `bytes` in a device storage buffer shared among `families` (exclusive for
 // none), as a decoder leaves its picture; null if it cannot be made.
 std::shared_ptr<const vkc::Buffer> on_device(
-    const vr_test::Gpu& gpu, const std::vector<std::uint8_t>& bytes,
+    const vkc::test::Gpu& gpu, const std::vector<std::uint8_t>& bytes,
     const std::uint32_t* families = nullptr, std::uint32_t family_count = 0) {
   auto made = vkc::device_storage_buffer(gpu.allocator, bytes.size(), 0,
                                          families, family_count);
   if (!made.ok() ||
-      !vr_test::write_back(gpu.device, gpu.allocator, *made, bytes).ok()) {
+      !vkc::test::write_back(gpu.device, gpu.allocator, *made, bytes).ok()) {
     return nullptr;
   }
   return std::make_shared<const vkc::Buffer>(std::move(made).value());
@@ -189,7 +191,7 @@ std::vector<std::uint8_t> laid_out(const Packed& p, YuvLayout layout,
 }
 
 // `p` in a buffer, as laid_out places it; no buffer if it cannot be made.
-YuvImage in_buffer(const vr_test::Gpu& gpu, const Packed& p, YuvLayout layout,
+YuvImage in_buffer(const vkc::test::Gpu& gpu, const Packed& p, YuvLayout layout,
                    const std::uint32_t* families = nullptr,
                    std::uint32_t family_count = 0) {
   YuvImage image;
@@ -201,7 +203,7 @@ YuvImage in_buffer(const vr_test::Gpu& gpu, const Packed& p, YuvLayout layout,
 // `p` as VideoToolbox leaves it: NV12's planes as images 3 texels wider and
 // 2 rows taller than the planes, junk in the rest; no images if they cannot
 // be made.
-YuvImage as_images(const vr_test::Gpu& gpu, const Packed& p) {
+YuvImage as_images(const vkc::test::Gpu& gpu, const Packed& p) {
   const std::vector<std::uint8_t> cbcr = p.cbcr();
   YuvImage image;
   image.layout = YuvLayout::Nv12;
@@ -221,7 +223,7 @@ bool made(const YuvImage& image) {
          (image.image[0] != nullptr && image.image[1] != nullptr);
 }
 
-std::unique_ptr<PictureReadback> readback_on(const vr_test::Gpu& gpu) {
+std::unique_ptr<PictureReadback> readback_on(const vkc::test::Gpu& gpu) {
   auto made = PictureReadback::create(gpu.device, gpu.allocator);
   return made.ok() ? std::move(made).value() : nullptr;
 }
@@ -229,7 +231,7 @@ std::unique_ptr<PictureReadback> readback_on(const vr_test::Gpu& gpu) {
 // Each layout, at odd and even sizes and a single pixel, read alone, luma
 // alone and every plane: exact, rows at the buffer's strides or packed from
 // the images' corner; the range passed through.
-int test_layouts(const vr_test::Gpu& gpu) {
+int test_layouts(const vkc::test::Gpu& gpu) {
   const auto readback = readback_on(gpu);
   CHECK(readback != nullptr);
   struct Size {
@@ -265,7 +267,7 @@ int test_layouts(const vr_test::Gpu& gpu) {
 // A set: a view per frame that has a picture on the device, every picture
 // exact in one read; empty where the frame is missing, has no colour, or has
 // it as host words.
-int test_set(const vr_test::Gpu& gpu) {
+int test_set(const vkc::test::Gpu& gpu) {
   const auto readback = readback_on(gpu);
   CHECK(readback != nullptr);
   const Packed a = pattern(37, 21, 7), b = pattern(64, 48, 8),
@@ -301,7 +303,7 @@ int test_set(const vr_test::Gpu& gpu) {
 // that family; a CONCURRENT buffer another family wrote; and one an API
 // outside Vulkan wrote: the same bytes. Plane images likewise, except that
 // another family's EXCLUSIVE images are refused.
-int test_families(const vr_test::Gpu& gpu) {
+int test_families(const vkc::test::Gpu& gpu) {
   const auto readback = readback_on(gpu);
   CHECK(readback != nullptr);
   const Packed p = pattern(37, 21, 3);
@@ -316,7 +318,7 @@ int test_families(const vr_test::Gpu& gpu) {
     CHECK(check_view(*view, p, YuvLayout::Nv12, Planes::All) == 0);
     CHECK(picture.queue_family == own);
   }
-  if (const auto other = vr_test::other_queue_family(gpu.device)) {
+  if (const auto other = vkc::test::other_queue_family(gpu.device)) {
     const std::uint32_t shared[2] = {own, *other};
     YuvImage concurrent = in_buffer(gpu, p, YuvLayout::I420, shared, 2);
     CHECK(made(concurrent));
@@ -352,7 +354,7 @@ int test_families(const vr_test::Gpu& gpu) {
     CHECK(images.image[0]->layout() == VK_IMAGE_LAYOUT_GENERAL);
   }
   // Another family's EXCLUSIVE images cannot cross to this one.
-  if (const auto other = vr_test::other_queue_family(gpu.device)) {
+  if (const auto other = vkc::test::other_queue_family(gpu.device)) {
     images.queue_family = *other;
     CHECK(readback->read(images, Planes::Luma).status().domain() ==
           vkc::Status::Code::InvalidArgument);
@@ -449,7 +451,7 @@ std::uint64_t allocated(const vkc::Allocator& allocator) {
 // The views are copies the readback holds: a picture rewritten or dropped
 // after the read leaves them as they were. The memory grows for a larger read
 // and is reused by every read that fits: a steady stream allocates nothing.
-int test_memory(const vr_test::Gpu& gpu) {
+int test_memory(const vkc::test::Gpu& gpu) {
   const auto readback = readback_on(gpu);
   CHECK(readback != nullptr);
   const Packed small = pattern(37, 21, 4), large = pattern(96, 64, 5);
@@ -461,7 +463,8 @@ int test_memory(const vr_test::Gpu& gpu) {
   CHECK(first.ok());
   // Rewritten, then dropped: the view still holds what was read.
   std::vector<std::uint8_t> zeros(s.device->size(), 0);
-  CHECK(vr_test::write_back(gpu.device, gpu.allocator, *s.device, zeros).ok());
+  CHECK(
+      vkc::test::write_back(gpu.device, gpu.allocator, *s.device, zeros).ok());
   s.device.reset();
   CHECK(check_view(*first, small, YuvLayout::I420, Planes::All) == 0);
   s = in_buffer(gpu, small, YuvLayout::I420);
@@ -496,7 +499,7 @@ int test_memory(const vr_test::Gpu& gpu) {
 
 // What a read refuses, each naming why, a set refused whole; the readback
 // reads again afterwards. create refuses an empty device or allocator.
-int test_refusals(vr_test::GpuContext& gpu) {
+int test_refusals(vkc::test::GpuContext& gpu) {
   const auto readback = readback_on(gpu);
   CHECK(readback != nullptr);
   const Packed p = pattern(37, 21, 6);
@@ -600,7 +603,7 @@ int test_refusals(vr_test::GpuContext& gpu) {
 
 // A measured read adds one "readback" row, its device half inside its host
 // half; an unmeasured one adds none.
-int test_metrics(const vr_test::Gpu& gpu) {
+int test_metrics(const vkc::test::Gpu& gpu) {
   const auto readback = readback_on(gpu);
   CHECK(readback != nullptr);
   const Packed p = pattern(64, 48, 2);
@@ -623,7 +626,7 @@ int test_metrics(const vr_test::Gpu& gpu) {
   return 0;
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   CHECK(test_layouts(gpu) == 0);
   CHECK(test_set(gpu) == 0);
   CHECK(test_families(gpu) == 0);
@@ -637,4 +640,6 @@ int gpu_main(vr_test::GpuContext& gpu) {
 
 }  // namespace
 
-int main() { return vr_test::run_on_gpu(gpu_main); }
+int main() {
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+}

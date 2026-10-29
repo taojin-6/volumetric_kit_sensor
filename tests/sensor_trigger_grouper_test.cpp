@@ -13,8 +13,8 @@
 #include <string>
 #include <vector>
 
-#include "test_check.hpp"
 #include "trigger_grouper.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 
 namespace sensor = volumetric_kit::recon::sensor;
 

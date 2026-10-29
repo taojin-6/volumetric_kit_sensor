@@ -12,7 +12,7 @@
 #include <string>
 
 #include "ffmpeg.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 
 namespace vkc = volumetric_kit::core;
 namespace video = volumetric_kit::recon::sensor::video;

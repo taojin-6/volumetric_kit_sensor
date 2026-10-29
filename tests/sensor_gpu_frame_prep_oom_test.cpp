@@ -15,10 +15,10 @@
 #include <utility>
 #include <vector>
 
-#include "buffer_readback.hpp"
-#include "gpu_test.hpp"
-#include "test_allocation_failure.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/buffer_readback.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/core/testing/test_allocation_failure.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/instance.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
@@ -27,7 +27,7 @@ namespace vkc = volumetric_kit::core;
 namespace vr = volumetric_kit::recon;
 namespace sensor = vr::sensor;
 
-int staging_failure_case(vr_test::Gpu ctx, bool single) {
+int staging_failure_case(vkc::test::Gpu ctx, bool single) {
   auto prep = sensor::GpuFramePrep::create(ctx.device, ctx.allocator);
   CHECK(prep.ok());
   std::vector<sensor::GpuFramePrep> preps;
@@ -59,7 +59,7 @@ int staging_failure_case(vr_test::Gpu ctx, bool single) {
     vkc::Buffer buffer;
     std::atomic<bool> held{false};
   };
-  auto& failure = vr_test::allocation_failure;
+  auto& failure = vkc::test::allocation_failure;
   failure.measure = true;
   auto owner = std::make_shared<Leased>();
   failure.measure = false;
@@ -86,10 +86,10 @@ int staging_failure_case(vr_test::Gpu ctx, bool single) {
   auto retry = prepare();
   CHECK(retry.ok());
   CHECK(held->depth != retry->depth);
-  auto before = vr_test::read_back<float>(ctx.device, ctx.allocator,
-                                          *held->depth, depth.size());
-  auto after = vr_test::read_back<float>(ctx.device, ctx.allocator,
-                                         *retry->depth, depth.size());
+  auto before = vkc::test::read_back<float>(ctx.device, ctx.allocator,
+                                            *held->depth, depth.size());
+  auto after = vkc::test::read_back<float>(ctx.device, ctx.allocator,
+                                           *retry->depth, depth.size());
   CHECK(before.ok() && after.ok());
   for (std::size_t i = 0; i < depth.size(); ++i) {
     CHECK((*before)[i] == 1000.0f * frame.metres_per_unit);
@@ -100,10 +100,12 @@ int staging_failure_case(vr_test::Gpu ctx, bool single) {
   return 0;
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   CHECK(staging_failure_case(gpu, false) == 0);
   CHECK(staging_failure_case(gpu, true) == 0);
   return 0;
 }
 
-int main() { return vr_test::run_on_gpu(gpu_main); }
+int main() {
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+}

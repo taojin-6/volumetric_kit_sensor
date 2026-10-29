@@ -13,7 +13,7 @@
 
 #include "cuda_driver.hpp"
 #include "nvjpeg.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
 
 namespace vkc = volumetric_kit::core;

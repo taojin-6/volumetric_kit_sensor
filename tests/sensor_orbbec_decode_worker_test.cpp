@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "decode_worker.hpp"
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 
 namespace vkc = volumetric_kit::core;
 namespace orbbec = volumetric_kit::recon::sensor::orbbec;

@@ -15,7 +15,7 @@
 
 #include <libobsensor/ObSensor.hpp>
 
-#include "test_check.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 
 int main() {
   const int major = ob::Version::getMajor();

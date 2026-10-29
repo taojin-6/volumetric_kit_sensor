@@ -42,12 +42,12 @@
 #include <utility>
 #include <vector>
 
-#include "buffer_readback.hpp"
 #include "grid_readback.hpp"
-#include "test_check.hpp"
 #include "test_image.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
+#include "volumetric_kit/core/testing/buffer_readback.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
@@ -61,7 +61,8 @@
 #include "volumetric_kit/recon/volume/voxel_block_grid.hpp"
 #include "volumetric_kit/recon/volume/voxel_hash_map.hpp"
 
-#include "gpu_test.hpp"
+#include "volumetric_kit/core/testing/gpu_test.hpp"
+#include "volumetric_kit/recon/core/device_requirements.hpp"
 
 namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
@@ -150,7 +151,8 @@ std::shared_ptr<const vkc::Buffer> on_device(
     const std::vector<std::uint8_t>& bytes) {
   auto made = vkc::device_storage_buffer(*g_allocator, bytes.size());
   if (!made.ok() ||
-      !vr_test::write_back(*g_device, *g_allocator, made.value(), bytes).ok()) {
+      !vkc::test::write_back(*g_device, *g_allocator, made.value(), bytes)
+           .ok()) {
     return nullptr;
   }
   return std::make_shared<const vkc::Buffer>(std::move(made).value());
@@ -302,7 +304,7 @@ sensor::RgbdFrame frame_of(const std::vector<std::uint16_t>& depth,
 // A prepared frame's outputs, read back; empty if the copy failed.
 template <typename T>
 std::vector<T> read(const vkc::Buffer& buffer, std::size_t count) {
-  auto out = vr_test::read_back<T>(*g_device, *g_allocator, buffer, count);
+  auto out = vkc::test::read_back<T>(*g_device, *g_allocator, buffer, count);
   if (!out) {
     std::fprintf(stderr, "read back: %s\n", out.status().message().c_str());
     return {};
@@ -961,7 +963,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   };
   // EXCLUSIVE images another family wrote, which cross only from outside
   // Vulkan, and images from a family the device lacks.
-  if (const auto other = vr_test::other_queue_family(*g_device)) {
+  if (const auto other = vkc::test::other_queue_family(*g_device)) {
     bad_images = images;
     bad_images.queue_family = *other;
     CHECK(refused(bad_images, "cross only from outside Vulkan"));
@@ -1572,7 +1574,7 @@ int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
       {named({own, own}, {own, own}), kExclusive, kExclusive},
   };
   if (const std::optional<std::uint32_t> other =
-          vr_test::other_queue_family(device)) {
+          vkc::test::other_queue_family(device)) {
     cases.push_back({named({own, *other}, {}), kConcurrent, kExclusive});
     cases.push_back({named({}, {own, *other}), kExclusive, kConcurrent});
     cases.push_back({named({*other, own, *other, own}, {own, *other}),
@@ -1678,18 +1680,18 @@ int test_cross_family() {
       const sensor::DeviceFrame& f = *(*prepared)[c];
       CHECK(f.depth->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
       CHECK(f.color->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
-      auto on_compute = vr_test::read_back<float>(
+      auto on_compute = vkc::test::read_back<float>(
           two.compute(), two.compute_allocator(), *f.depth, n);
-      auto on_graphics = vr_test::read_back<float>(
+      auto on_graphics = vkc::test::read_back<float>(
           two.graphics(), two.graphics_allocator(), *f.depth, n);
       CHECK(on_compute.ok() && on_graphics.ok());
       CHECK(*on_graphics == *on_compute);
       // Not a buffer of zeros: the pinhole centre reads its raw pixel.
       const std::size_t centre = std::size_t{24} * kW + 32;
       CHECK((*on_compute)[centre] > 0.0f);
-      auto color_compute = vr_test::read_back<std::uint32_t>(
+      auto color_compute = vkc::test::read_back<std::uint32_t>(
           two.compute(), two.compute_allocator(), *f.color, n);
-      auto color_graphics = vr_test::read_back<std::uint32_t>(
+      auto color_graphics = vkc::test::read_back<std::uint32_t>(
           two.graphics(), two.graphics_allocator(), *f.color, n);
       CHECK(color_compute.ok() && color_graphics.ok());
       CHECK(*color_graphics == *color_compute);
@@ -2054,7 +2056,7 @@ int test_fuses_at_the_surface(vkc::Device& device, vkc::Allocator& allocator,
   return 0;
 }
 
-int gpu_main(vr_test::GpuContext& gpu) {
+int gpu_main(vkc::test::GpuContext& gpu) {
   g_device = &gpu.device;
   g_allocator = &gpu.allocator;
   auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
@@ -2122,4 +2124,6 @@ int gpu_main(vr_test::GpuContext& gpu) {
 
 }  // namespace
 
-int main() { return vr_test::run_on_gpu(gpu_main); }
+int main() {
+  return vkc::test::run_on_gpu(vr::device_requirements(), gpu_main);
+}

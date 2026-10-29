@@ -17,7 +17,7 @@
 #include <cstdint>
 #include <memory>
 
-#include "volumetric_kit/recon/core/fwd.hpp"
+#include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/recon/sensor/chroma_location.hpp"
 
 namespace volumetric_kit::recon::sensor {

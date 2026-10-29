@@ -11,8 +11,8 @@
 
 #include <glm/gtc/constants.hpp>
 
-#include "test_check.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 
 namespace vkc = volumetric_kit::core;
