@@ -1933,9 +1933,10 @@ int test_fuses(vkc::Device& device, vkc::Allocator& allocator,
   grid.num_buckets = 2048;
   grid.num_blocks = 2048 * 8;
   grid.max_chain = 128;
-  const vol::AttributeSpec attrs[] = {{"tsdf", sizeof(float)},
-                                      {"weight", sizeof(float)},
-                                      {"color", sizeof(std::uint32_t)}};
+  const vol::AttributeSpec attrs[] = {
+      {vol::kTsdfAttribute, sizeof(float)},
+      {vol::kWeightAttribute, sizeof(float)},
+      {vol::kColorAttribute, sizeof(std::uint32_t)}};
   auto vbg = vol::VoxelBlockGrid::create(device, allocator, grid, attrs, 3);
   auto integrator = tsdf::TsdfIntegrator::create(device, allocator);
   CHECK(vbg.ok() && integrator.ok());
@@ -1998,8 +1999,8 @@ int test_fuses_at_the_surface(vkc::Device& device, vkc::Allocator& allocator,
   grid.num_buckets = 2048;
   grid.num_blocks = 2048 * 8;
   grid.max_chain = 128;
-  const vol::AttributeSpec attrs[] = {{"tsdf", sizeof(float)},
-                                      {"weight", sizeof(float)}};
+  const vol::AttributeSpec attrs[] = {{vol::kTsdfAttribute, sizeof(float)},
+                                      {vol::kWeightAttribute, sizeof(float)}};
   auto vbg = vol::VoxelBlockGrid::create(device, allocator, grid, attrs, 2);
   auto integrator = tsdf::TsdfIntegrator::create(device, allocator);
   CHECK(vbg.ok() && integrator.ok());
@@ -2007,10 +2008,10 @@ int test_fuses_at_the_surface(vkc::Device& device, vkc::Allocator& allocator,
   CHECK(integrator->integrate(vbg.value(), *out->depth, dc).ok());
 
   auto active = vbg->map().compact_active_blocks();
-  auto tsdf_values =
-      vr_test::read_attribute<float>(device, allocator, vbg.value(), "tsdf");
-  auto weights =
-      vr_test::read_attribute<float>(device, allocator, vbg.value(), "weight");
+  auto tsdf_values = vr_test::read_attribute<float>(
+      device, allocator, vbg.value(), vol::kTsdfAttribute);
+  auto weights = vr_test::read_attribute<float>(device, allocator, vbg.value(),
+                                                vol::kWeightAttribute);
   CHECK(active.ok() && tsdf_values.ok() && weights.ok());
   // Every fused voxel's value, by its global coordinate.
   std::map<std::array<int, 3>, float> fused;

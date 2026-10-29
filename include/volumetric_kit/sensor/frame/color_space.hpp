@@ -32,11 +32,11 @@
 ///
 /// This lives in `core` rather than `sensor` for the reason the camera
 /// parameter blocks do: `sensor` branches off `core` *beside* the fusion tiers,
-/// so `tsdf` and `mesh` -- which decode in GLSL -- cannot include from it, and
-/// a curve four tiers need is vocabulary. The GLSL mirror is
-/// `core/shaders/color_common.glsl`; `tests/core_color_space_gpu_test.cpp` pins
-/// the two against each other over all 256 codes, because two implementations
-/// of one curve is exactly the drift this header exists to prevent.
+/// so `tsdf` cannot include from it. The voxel colour attribute's format, the
+/// curve the kernels decode with included, is `volume`'s
+/// (`volume/voxel_color.hpp` and its GLSL); `recon_volume_voxel_color` pins
+/// that to this curve, because two implementations of one curve is exactly
+/// the drift this header exists to prevent.
 
 #include <cmath>
 #include <cstdint>
@@ -178,7 +178,7 @@ inline Vec3f linear_to_srgb(const Vec3f& l) noexcept {
 /// The packed layout is the one the `tsdf` and `mesh` tiers share: R, G, B in
 /// the low three bytes, alpha (if any) in the high byte and ignored here.
 /// Mirrors GLSL's `unpackUnorm4x8(...).rgb` fed through @ref srgb_to_linear,
-/// which is what `core/shaders/color_common.glsl` does.
+/// which is what `volume/shaders/voxel_color.glsl` does.
 inline Vec3f unpack_srgb_to_linear(std::uint32_t packed) noexcept {
   const float inv = 1.0f / 255.0f;
   return srgb_to_linear(
