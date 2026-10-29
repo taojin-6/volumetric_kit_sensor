@@ -234,7 +234,8 @@ class VS_ARRAY_API SensorArray {
   ///        sensor copied into its pass's slot, undistorted and converted
   ///        (`GpuFramePrep::record_set`), with nothing submitted.
   /// @param batch    Records the work; the caller submits it, and keeps @p set
-  ///                 until it has resolved, since its pictures are read then.
+  ///                 until it has resolved, since its device depth and
+  ///                 pictures are read then.
   /// @param set      A set this array handed out.
   /// @param metrics  Optional: one `"frame prep"` row for the set, its host
   ///                 half now and its device half from
