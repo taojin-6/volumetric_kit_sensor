@@ -15,9 +15,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   each camera's fold; the pass compares one radius.
 - **`StereoRectifier`: a buffer the pictures share is taken over once.** A
   side-by-side frame's one buffer was taken over twice. Pictures in one
-  buffer, a colour picture beside them included, must name one
-  `queue_family` (refused otherwise), and `RectifiedPair::source` names the
-  pass's family for each of them.
+  buffer, a colour picture beside them included, must name the family that
+  wrote it (refused otherwise), as `GpuFramePrep`'s inputs must, through
+  one shared check, and `RectifiedPair::source` names the pass's family for
+  each of them.
 
 ### Changed
 

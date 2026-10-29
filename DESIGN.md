@@ -671,8 +671,9 @@ consumer of depth never sees it: a depth source built on a stereo camera
   and the pass compares one squared radius. Pictures in a buffer are bound
   where they are, taken over from `YuvImage::queue_family` once a buffer: a
   side-by-side frame's two pictures in one buffer, a colour picture beside
-  them, must name one family, and `RectifiedPair::source` names the pass's
-  family for each of them. Host planes are copied into one persistent
+  them, must name the family that wrote it, as `GpuFramePrep`'s inputs must
+  (`transfer_family`, `sharing_families.hpp`, which both call), and
+  `RectifiedPair::source` names the pass's family for each of them. Host planes are copied into one persistent
   `HostRing` slot, left then right, as `GpuFramePrep` stages them; NV12
   plane images are refused (`TODO(sensor)`, when a stereo source decodes on
   the GPU).

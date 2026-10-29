@@ -4276,8 +4276,8 @@ host besides, which this does not count.
 ### 2026-10-29 — Calibrated stereo pairs are the `stereo` tier's, and `StereoRectifier` rectifies them on the GPU as OpenCV's `stereoRectify` computes it, sampling through the colour pass's own code (amends the host-planes entry above).
 
 *Amended the same day (the stereo review entry, below):* rays past a lens's
-fold are 0; pictures sharing a buffer are taken over once and name one
-family; the views are used in turn and the next pass takes them back with no
+fold are 0; pictures sharing a buffer are taken over once and name the
+family that wrote it; the views are used in turn and the next pass takes them back with no
 transfer, so a Vulkan reader need not hand them back; a pair rectified
 already is scaled by one factor, alpha cropping or fitting it; luma alone is
 not checked for a matrix or a siting.
@@ -4470,9 +4470,13 @@ first.
   parameters carry its square (68 bytes, float's largest for no fold), and
   the pass compares one squared radius.
 - **A buffer is taken over once.** Pictures that share a buffer -- a
-  side-by-side frame's two, a colour picture beside them -- name one
-  `queue_family`, or the frame is refused before any work; the batch takes
-  the buffer over once, and `RectifiedPair::source` names the pass's family
+  side-by-side frame's two, a colour picture beside them -- name the family
+  that wrote it, or the frame is refused before any work: the rule
+  `GpuFramePrep` follows for its depth and planes (the device-depth entry
+  above), through the one check both call, which counts the pass's own
+  family and a `CONCURRENT` buffer's other Vulkan families as no transfer.
+  The batch takes the buffer over once, and `RectifiedPair::source` names
+  the pass's family
   for every picture in a buffer it took over, the colour's included. The
   frame passed to `rectify` keeps its families: later stages read
   `source`.

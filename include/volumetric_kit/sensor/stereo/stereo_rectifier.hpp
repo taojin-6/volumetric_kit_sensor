@@ -202,7 +202,7 @@ class VS_STEREO_API StereoRectifier final {
   ///                 their writer finished, are read before this returns,
   ///                 each buffer taken over once: pictures in one buffer (a
   ///                 side-by-side frame, a colour picture beside them) name
-  ///                 one `queue_family`. @p frame keeps the families it
+  ///                 the family that wrote it. @p frame keeps the families it
   ///                 names; hand on @ref RectifiedPair::source instead,
   ///                 whose pictures name what the pass left them in.
   /// @param metrics  Optional: a `"stereo rectify"` row, the staging and both
@@ -213,7 +213,7 @@ class VS_STEREO_API StereoRectifier final {
   ///         not its camera's, an unknown layout or chroma location, a bad
   ///         matrix, YUYV of odd width, strides, offsets, overlap or a buffer
   ///         it cannot bind), a `queue_family` the device lacks, or pictures
-  ///         in one buffer that name different queue families;
+  ///         in one buffer that name different writers' queue families;
   ///         `Status::Code::OutOfMemory` for a host allocation failure; or a
   ///         buffer or submit failure, after which the rectifier refuses
   ///         every frame, as the device may still run the pass.

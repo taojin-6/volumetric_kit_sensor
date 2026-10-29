@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "../prep/color_pass.hpp"
+#include "../sharing_families.hpp"
 #include "rectify_comp.spv.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
@@ -619,41 +620,41 @@ struct Inputs {
   }
 };
 
-std::string family_name(std::uint32_t family) {
-  if (family == kQueueFamilyIgnored) return "kQueueFamilyIgnored";
-  if (family == kQueueFamilyExternal) return "kQueueFamilyExternal";
-  return std::to_string(family);
-}
-
 // Each buffer `frame`'s pictures are in, taken over once (CommandBatch::acquire
-// does not merge two): a side-by-side frame's two pictures share one, which its
-// writer released once, so both must name that family. The colour is not
+// does not merge two), from the family transfer_family names for it on `own`,
+// the pass's family: a side-by-side frame's two pictures share one, which its
+// writer released once, so both must name that writer. The colour is not
 // read, but a colour picture in that buffer is taken over with it, so it must
-// name the family too.
-core::Result<Inputs> device_inputs(const StereoFrame& frame) {
+// name the writer too.
+core::Result<Inputs> device_inputs(const StereoFrame& frame,
+                                   std::uint32_t own) {
   Inputs out;
   for (const YuvImage* image : {&frame.left, &frame.right}) {
     if (image->device == nullptr) continue;
+    const std::uint32_t from =
+        detail::transfer_family(*image->device, image->queue_family, own);
     const int i = out.find(*image->device);
     if (i < 0) {
       out.buffer[out.count] = image->device.get();
-      out.family[out.count++] = image->queue_family;
-    } else if (out.family[i] != image->queue_family) {
+      out.family[out.count++] = from;
+    } else if (out.family[i] != from) {
       return refuse(
           "the left and right pictures are in one buffer, taken over once, "
-          "but name queue families " +
-          family_name(out.family[i]) + " and " +
-          family_name(image->queue_family));
+          "but name two writers' queue families, " +
+          detail::family_name(out.family[i]) + " and " +
+          detail::family_name(from));
     }
   }
   if (frame.color.device != nullptr) {
     const int i = out.find(*frame.color.device);
-    if (i >= 0 && out.family[i] != frame.color.queue_family) {
+    const std::uint32_t from = detail::transfer_family(
+        *frame.color.device, frame.color.queue_family, own);
+    if (i >= 0 && out.family[i] != from) {
       return refuse(
           "the colour picture shares a buffer with the left or right one, "
           "taken over once, but names queue family " +
-          family_name(frame.color.queue_family) + ", not " +
-          family_name(out.family[i]));
+          detail::family_name(from) + ", not " +
+          detail::family_name(out.family[i]));
     }
   }
   return out;
@@ -693,7 +694,7 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
   VKC_ASSIGN(pictures[1],
              check_picture(*device, frame.right, calibration.right, "right",
                            max_storage_buffer_range, offset_alignment));
-  VKC_ASSIGN(const Inputs taken, device_inputs(frame));
+  VKC_ASSIGN(const Inputs taken, device_inputs(frame, device->queue_family()));
 
   // Host pictures copied into the one slot, each from a binding's alignment;
   // the last batch, which bound it, has resolved.

@@ -14,6 +14,7 @@
 #include <string>
 #include <utility>
 
+#include "../sharing_families.hpp"
 #include "color_pass.hpp"
 #include "undistort_color_comp.spv.hpp"
 #include "undistort_color_images_comp.spv.hpp"
@@ -698,27 +699,6 @@ core::Result<std::vector<const RgbdFrame*>> listed_frames(
   return listed;
 }
 
-// The family `buffer`, named as written on `family`, is taken over from, as
-// CommandBatch::acquire decides: kQueueFamilyIgnored where nothing is
-// transferred -- written on `own`, the pass's family, or a CONCURRENT buffer
-// another Vulkan family wrote.
-std::uint32_t transfer_family(const core::Buffer& buffer, std::uint32_t family,
-                              std::uint32_t own) noexcept {
-  if (family == own) return kQueueFamilyIgnored;
-  if (family != kQueueFamilyExternal &&
-      buffer.sharing_mode() == VK_SHARING_MODE_CONCURRENT) {
-    return kQueueFamilyIgnored;
-  }
-  return family;
-}
-
-// A transfer_family for a message.
-std::string family_name(std::uint32_t family) {
-  if (family == kQueueFamilyIgnored) return "the pass's own";
-  if (family == kQueueFamilyExternal) return "kQueueFamilyExternal";
-  return std::to_string(family);
-}
-
 }  // namespace
 
 core::Result<DeviceFrame> GpuFramePrep::record(
@@ -815,14 +795,15 @@ core::Result<GpuFramePrep*> GpuFramePrep::check_frames(
   std::vector<Acquire> named;  // every distinct buffer, transferred or not
   const auto name = [&](const core::Buffer& buffer,
                         std::uint32_t family) -> core::Status {
-    const std::uint32_t from = transfer_family(buffer, family, own);
+    const std::uint32_t from = detail::transfer_family(buffer, family, own);
     for (const Acquire& seen : named) {
       if (seen.first->handle() != buffer.handle()) continue;
       if (seen.second == from) return {};
       return core::Status::invalid_argument(
           "GpuFramePrep: one buffer is named with two writers' queue "
           "families, " +
-          family_name(seen.second) + " and " + family_name(from) +
+          detail::family_name(seen.second) + " and " +
+          detail::family_name(from) +
           "; every depth and picture in it must name the one that wrote it");
     }
     named.emplace_back(&buffer, from);
