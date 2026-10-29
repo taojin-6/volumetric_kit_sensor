@@ -257,8 +257,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   `recon_io_assimp`. Headers and namespace are unchanged; `recon_io` is
   gone.
 - [**2026-10-29**](#2026-10-29--the-camera-and-sensor-tiers-are-the-package-volumetric_kit_sensor-in-recons-sensor-until-it-has-a-repository-of-its-own-and-recons-libraries-link-its-frame-tier-alone-amends-the-2026-08-02-sensor-tier-2026-10-06-camera-tier-2026-10-16-glsl-pinhole-and-2026-10-28-io-entries) —
-  The camera and sensor tiers are the package `volumetric_kit_sensor`, in
-  recon's `sensor/` until it has a repository of its own: tiers `sensor_*`,
+  The camera and sensor tiers are the package `volumetric_kit_sensor` (now
+  its own repository, which recon fetches by commit): tiers `sensor_*`,
   namespace `volumetric_kit::sensor`, macros and options `VS_`, on the core
   alone. recon's libraries link `sensor_frame` alone, and nothing in the
   package includes recon or grid. The owner's decisions of 2026-10-28:
@@ -3877,6 +3877,15 @@ nothing else. Adding `recon_mesh` to `recon_image_io`'s links fails
 `recon_subproject_defaults`.
 
 ### 2026-10-29 — The camera and sensor tiers are the package `volumetric_kit_sensor`, in recon's `sensor/` until it has a repository of its own, and recon's libraries link its frame tier alone (amends the 2026-08-02 sensor-tier, 2026-10-06 camera-tier, 2026-10-16 GLSL pinhole and 2026-10-28 io entries).
+
+*Amended 2026-10-29:* the package is now this repository, extracted from
+recon with its history at 5eb28085 (recon #311's merge), and recon #312
+removes `sensor/` from recon. recon, like an application, declares it by
+this repository's URL and a commit, with no `SOURCE_SUBDIR`; recon does so
+after the core and before grid, and builds neither its tests nor its
+`-Werror`. The rule's in-tree declaration below (`SOURCE_DIR`,
+`SOURCE_SUBDIR sensor`, tests and `-Werror` following recon's) no longer
+holds.
 
 **The owner's decisions (2026-10-28).** On the recon split: "I approve all
 decisions. However, for D2, we should split now." The sensor and grid
