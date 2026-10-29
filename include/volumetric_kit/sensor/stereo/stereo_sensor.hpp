@@ -16,6 +16,7 @@
 /// reaches no Vulkan.
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -121,6 +122,22 @@ class VS_STEREO_API IStereoSensor {
 
   /// @return The counters since the last @ref start, as an `IRgbdSensor`'s.
   virtual SensorStats stats() const noexcept = 0;
+
+  /// @brief Have the source call @p notify each time a pair becomes ready for
+  ///        @ref poll, or the source fails, so a consumer -- a depth source's
+  ///        own thread, say -- can block between polls instead of sleeping.
+  ///        As `IRgbdSensor::set_frame_notify`.
+  ///
+  /// @p notify runs on whatever thread delivers the pair, after the pair is
+  /// held, so the poll it wakes finds it. It must be quick, must not call
+  /// back into the source, and may run after a later call replaced it, so it
+  /// owns whatever it touches.
+  /// @param notify  Called once for each pair held and on a failure; empty
+  ///                stops the calls.
+  /// @return OK; `Status::Code::InvalidArgument` once started;
+  ///         `Status::Code::Unsupported` for a source that notifies nothing,
+  ///         the default, whose consumer polls it.
+  virtual core::Status set_frame_notify(std::function<void()> notify);
 
  protected:
   IStereoSensor() = default;

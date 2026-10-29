@@ -15,7 +15,7 @@ set(_vs_stereo_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 add_library(sensor_stereo)
 add_library(volumetric_kit::sensor_stereo ALIAS sensor_stereo)
 
-target_sources(sensor_stereo PRIVATE stereo_rectifier.cpp)
+target_sources(sensor_stereo PRIVATE stereo_rectifier.cpp stereo_sensor.cpp)
 
 generate_export_header(
   sensor_stereo

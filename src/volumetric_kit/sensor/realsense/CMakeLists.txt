@@ -2,11 +2,12 @@
 # Copyright (c) 2026 Tao Jin
 
 # --- sensor_realsense: the RealSense (D400) driver ---------------------------
-# RealSenseSensor, an IRgbdSensor over librealsense, built only with
-# VS_WITH_REALSENSE (see cmake/vs_realsense.cmake). Its own target so
-# sensor_interface stays free of the SDK (the 2026-09-26 decision). The SDK is
-# PRIVATE and no SDK type reaches the public header, but linking still needs its
-# library.
+# RealSenseSensor, an IRgbdSensor over librealsense (the camera's own depth),
+# and RealSenseStereo, an IStereoSensor (its infrared pair), both on one camera
+# (camera.hpp), built only with VS_WITH_REALSENSE (see cmake/vs_realsense.cmake).
+# Its own target so sensor_interface stays free of the SDK (the 2026-09-26
+# decision). The SDK is PRIVATE and no SDK type reaches the public headers, but
+# linking still needs its library.
 include(GenerateExportHeader)
 
 set(_vs_sensor_realsense_generated_inc
@@ -15,7 +16,8 @@ set(_vs_sensor_realsense_generated_inc
 add_library(sensor_realsense)
 add_library(volumetric_kit::sensor_realsense ALIAS sensor_realsense)
 
-target_sources(sensor_realsense PRIVATE realsense_sensor.cpp conversion.cpp)
+target_sources(sensor_realsense PRIVATE camera.cpp conversion.cpp
+                                        realsense_sensor.cpp realsense_stereo.cpp)
 
 generate_export_header(
   sensor_realsense
@@ -40,10 +42,11 @@ endif()
 
 target_compile_features(sensor_realsense PUBLIC cxx_std_17)
 
-# PUBLIC sensor_interface: the sensor *is* an IRgbdSensor, and its header hands
-# out the sensor tier's frame. The SDK privately, compiled with the exceptions
-# it throws (vs_link_realsense_sdk).
-target_link_libraries(sensor_realsense PUBLIC sensor_interface)
+# PUBLIC sensor_interface and sensor_stereo: the sensor *is* an IRgbdSensor and
+# the pair an IStereoSensor, and their headers hand out the frame and the pair.
+# The SDK privately, compiled with the exceptions it throws
+# (vs_link_realsense_sdk).
+target_link_libraries(sensor_realsense PUBLIC sensor_interface sensor_stereo)
 vs_link_realsense_sdk(sensor_realsense)
 
 target_include_directories(
