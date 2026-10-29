@@ -42,7 +42,6 @@
 #include <utility>
 #include <vector>
 
-#include "grid_readback.hpp"
 #include "test_image.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
@@ -52,14 +51,15 @@
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/grid/testing/grid_readback.hpp"
+#include "volumetric_kit/grid/volume/voxel_block_grid.hpp"
+#include "volumetric_kit/grid/volume/voxel_hash_map.hpp"
 #include "volumetric_kit/recon/camera/camera_model.hpp"
 #include "volumetric_kit/recon/camera/geometry.hpp"
 #include "volumetric_kit/recon/camera/projection.hpp"
 #include "volumetric_kit/recon/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/recon/sensor/utils/gpu_frame_prep.hpp"
 #include "volumetric_kit/recon/tsdf/tsdf_integrator.hpp"
-#include "volumetric_kit/recon/volume/voxel_block_grid.hpp"
-#include "volumetric_kit/recon/volume/voxel_hash_map.hpp"
 
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/recon/core/device_requirements.hpp"
@@ -68,7 +68,7 @@ namespace vr = volumetric_kit::recon;
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::recon::sensor;
 namespace camera = volumetric_kit::recon::camera;
-namespace vol = volumetric_kit::recon::volume;
+namespace vol = volumetric_kit::grid::volume;
 namespace tsdf = volumetric_kit::recon::tsdf;
 
 namespace {
@@ -2008,10 +2008,10 @@ int test_fuses_at_the_surface(vkc::Device& device, vkc::Allocator& allocator,
   CHECK(integrator->integrate(vbg.value(), *out->depth, dc).ok());
 
   auto active = vbg->map().compact_active_blocks();
-  auto tsdf_values = vr_test::read_attribute<float>(
+  auto tsdf_values = vgrid_test::read_attribute<float>(
       device, allocator, vbg.value(), vol::kTsdfAttribute);
-  auto weights = vr_test::read_attribute<float>(device, allocator, vbg.value(),
-                                                vol::kWeightAttribute);
+  auto weights = vgrid_test::read_attribute<float>(
+      device, allocator, vbg.value(), vol::kWeightAttribute);
   CHECK(active.ok() && tsdf_values.ok() && weights.ok());
   // Every fused voxel's value, by its global coordinate.
   std::map<std::array<int, 3>, float> fused;

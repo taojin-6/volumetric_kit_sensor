@@ -19,7 +19,7 @@
 /// describes its cameras as captured, lens included, in `camera::CameraModel`
 /// instead; these are the pinhole cameras fusion reads. `volume`, which
 /// allocates blocks from a depth frame, takes a camera of its own,
-/// `volume::DepthPinhole`, which `tsdf::to_depth_pinhole` fills from a
+/// `vgrid::volume::DepthPinhole`, which `tsdf::to_depth_pinhole` fills from a
 /// `DepthCameraParams`.
 ///
 /// Both structs are uploaded verbatim to compute kernels that read them through
