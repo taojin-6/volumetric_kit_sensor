@@ -4245,7 +4245,10 @@ left unchecked, the binding cut a word short or by its lead (the pinhole
 cases; the review found the barrel lens never read that far), the buffers'
 acquires dropped, the depth's or the planes' buffer not taken over, a
 shared buffer taken over once a reference, and references naming two
-writers let through. The Mac is CI's leg.
+writers let through. With main merged in (the stereo tier, this entry's
+version 0.4.0), 43 passed and the 2 JPEG tests skipped of 45, recon's 41
+passed again, and the twelve planted bugs each failed again. The Mac is
+CI's leg.
 
 A depth-only frame's prepare on the RTX 4090, Release, median of 500 each,
 host and device depth interleaved: at 960 x 544, 0.054 ms of device time
