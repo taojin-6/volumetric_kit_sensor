@@ -48,7 +48,8 @@ struct PictureView {
   YuvLayout layout = YuvLayout::Nv12;
   /// With `PictureReadback::Planes::All`, the chroma, `(height + 1) / 2` rows
   /// each: NV12's interleaved Cb and Cr in `chroma[0]`, `(width + 1) / 2` pairs
-  /// a row, or I420's Cb and Cr, `(width + 1) / 2` bytes a row. Null otherwise.
+  /// a row, or I420's Cb and Cr, `(width + 1) / 2` bytes a row. Null otherwise,
+  /// and for luma alone (`YuvLayout::Luma`).
   const std::uint8_t* chroma[2] = {};
   std::size_t chroma_stride[2] = {};  ///< Bytes between @ref chroma rows.
 };
@@ -136,7 +137,8 @@ class VS_PREP_API PictureReadback {
   /// @param metrics  As the other overload.
   /// @return The view, valid as the other overload's;
   ///         `Status::Code::InvalidArgument` for a picture that is empty,
-  ///         not on the device or YUYV (it reads 4:2:0 only), planes both in
+  ///         not on the device or YUYV (it reads 4:2:0 and luma alone,
+  ///         whose view has no chroma), planes both in
   ///         a buffer and as images, a
   ///         buffer that is empty or without `TRANSFER_SRC` usage, a plane
   ///         stride shorter than its rows, planes that overlap or lie

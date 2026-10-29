@@ -257,6 +257,19 @@ target_link_libraries(
 vs_target_warnings(sensor_array_process_test)
 add_test(NAME sensor_array_process COMMAND sensor_array_process_test)
 
+# The stereo tier's rectifier (sensor_stereo) on synthetic calibrated pairs: its
+# rectification against OpenCV's numbers (pinned by
+# tools/stereo_rectify_reference.py), rows aligned and the host reference of the
+# remap on a scene an independent renderer images, every layout from the host
+# and the device, a pair rectified already, the depth view, the views' lease and
+# export, the refusals, and the pass's time. Skips without a device.
+add_executable(sensor_stereo_rectifier_test sensor_stereo_rectifier_test.cpp)
+target_link_libraries(
+  sensor_stereo_rectifier_test PRIVATE volumetric_kit::sensor_stereo
+                                       volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_stereo_rectifier_test)
+add_test(NAME sensor_stereo_rectifier COMMAND sensor_stereo_rectifier_test)
+
 # RGB-D sensor defaults, frame-return helpers, copied-frame ownership and stable
 # enum names. Host-only.
 add_executable(sensor_rgbd_sensor_test sensor_rgbd_sensor_test.cpp)

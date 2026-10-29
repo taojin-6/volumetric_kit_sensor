@@ -4,8 +4,8 @@
 #pragma once
 
 // A device picture's planes and the checks every reader of one makes:
-// GpuFramePrep, which converts it, and PictureReadback, which copies it to
-// the host. Internal to sensor_prep.
+// GpuFramePrep and the stereo rectifier, which convert it (color_pass.hpp),
+// and PictureReadback, which copies it to the host. Internal to sensor_prep.
 
 #include <cstdint>
 
@@ -15,10 +15,11 @@
 namespace volumetric_kit::sensor::detail {
 
 // A picture's planes: Y, then NV12's CbCr or I420's Cb and Cr, the chroma
-// at half the size, rounded up; or YUYV's one plane, two bytes a pixel.
+// at half the size, rounded up; or YUYV's one plane, two bytes a pixel; or
+// Luma's, one.
 struct YuvPlanes {
-  int count = 0;                    // 2 for NV12, 3 for I420, 1 for YUYV
-  std::uint64_t rows[3] = {};       // each plane's rows
+  int count = 0;               // 2 for NV12, 3 for I420, 1 for YUYV and Luma
+  std::uint64_t rows[3] = {};  // each plane's rows
   std::uint64_t row_bytes[3] = {};  // the bytes of a row the picture uses
   std::uint64_t begin[3] = {};      // planes in a buffer or on the host:
   std::uint64_t end[3] = {};        // the first byte and one past the last

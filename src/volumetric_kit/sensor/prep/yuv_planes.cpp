@@ -100,7 +100,7 @@ core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
                   "images, one of them");
   }
   if (static_cast<unsigned>(image.layout) >
-      static_cast<unsigned>(YuvLayout::Yuyv)) {
+      static_cast<unsigned>(YuvLayout::Luma)) {
     return refuse(who, "unknown colour layout");
   }
   if (as_images) VKC_TRY(check_images(image, who, read));
@@ -112,6 +112,10 @@ core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
     out.count = 1;
     out.rows[0] = image.height;
     out.row_bytes[0] = 2 * std::uint64_t{image.width};
+  } else if (image.layout == YuvLayout::Luma) {
+    out.count = 1;
+    out.rows[0] = image.height;
+    out.row_bytes[0] = image.width;
   } else {
     const bool nv12 = image.layout == YuvLayout::Nv12;
     const std::uint64_t cw = (std::uint64_t{image.width} + 1) / 2;

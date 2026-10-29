@@ -66,6 +66,10 @@ add_subdirectory(prep)
 # Several sensors read as one, above every driver; see array/CMakeLists.txt.
 add_subdirectory(array)
 
+# Calibrated stereo pairs and their rectification on the GPU, on the prep's
+# colour pass; see stereo/CMakeLists.txt.
+add_subdirectory(stereo)
+
 # Apple's pictures on the device; see apple/CMakeLists.txt. Ahead of the video
 # decoders, whose VideoToolbox pictures come through it.
 if(APPLE)

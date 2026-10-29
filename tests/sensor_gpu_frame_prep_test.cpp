@@ -1333,7 +1333,7 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   bad.stride[0] = w - 1;
   CHECK(refused(bad, "stride is shorter"));
   bad = dev;
-  bad.layout = static_cast<sensor::YuvLayout>(3);
+  bad.layout = static_cast<sensor::YuvLayout>(4);
   CHECK(refused(bad, "unknown colour layout"));
   bad = dev;
   bad.device = std::make_shared<const vkc::Buffer>();
@@ -1588,6 +1588,102 @@ int test_yuyv(sensor::GpuFramePrep& prep) {
   CHECK(luma != nullptr);
   bad.image[0] = bad.image[1] = luma;
   CHECK(refused(bad, "NV12's two"));
+  return 0;
+}
+
+// Luma alone, a mono camera's, from the host, rows padded and from byte 1,
+// through the barrel lens: grey, each word's R, G and B the luma the host
+// reference samples (its range expanded where limited), within a code, the
+// coverage byte exact; the same bytes in a device buffer give the same words.
+// As images it is refused.
+int test_luma(sensor::GpuFramePrep& prep) {
+  const std::uint32_t w = kWidth, h = kHeight;
+  std::vector<std::uint8_t> y(std::size_t{w} * h);
+  for (std::uint32_t r = 0; r < h; ++r) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      y[std::size_t{r} * w + x] =
+          static_cast<std::uint8_t>(128 + 110 * std::sin(0.06 * x - 0.04 * r));
+    }
+  }
+  const std::size_t lead = 1, stride = std::size_t{w} + 5;
+  std::vector<std::uint8_t> bytes(lead + stride * h, 0xCD);
+  for (std::uint32_t r = 0; r < h; ++r) {
+    std::memcpy(&bytes[lead + r * stride], &y[std::size_t{r} * w], w);
+  }
+  sensor::YuvImage mono;
+  mono.layout = sensor::YuvLayout::Luma;
+  mono.host = bytes.data();
+  mono.offset[0] = lead;
+  mono.stride[0] = stride;
+  mono.width = w;
+  mono.height = h;
+
+  const camera::CameraModel cam = lensed();
+  std::vector<std::uint16_t> raw(std::size_t{w} * h, 1500);
+  sensor::RgbdFrame f = frame_of(raw, cam);
+  f.color_camera = cam;
+  for (const bool full : {true, false}) {
+    f.color = mono;
+    f.color.full_range = full;
+    auto out = prep.prepare(f);
+    if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+    CHECK(out.ok());
+    const std::vector<std::uint32_t> got = color_of(out.value());
+    CHECK(got.size() == raw.size());
+    int worst = 0, coverage_off = 0, not_grey = 0, inside = 0;
+    for (std::uint32_t v = 0; v < h; ++v) {
+      for (std::uint32_t u = 0; u < w; ++u) {
+        const sensor::Vec2f s =
+            source_pixel(cam, static_cast<float>(u), static_cast<float>(v));
+        std::uint32_t ref = 0;
+        if (s.x >= -0.5f && s.y >= -0.5f && s.x <= w - 0.5f &&
+            s.y <= h - 0.5f) {
+          const float luma = bilinear(y, w, h, s.x, s.y);
+          const std::uint32_t g =
+              code(full ? luma / 255.0f : (luma - 16.0f) / 219.0f);
+          ref = g | (g << 8) | (g << 16) | 0xFF000000u;
+          ++inside;
+        }
+        const std::uint32_t c = got[std::size_t{v} * w + u];
+        if ((c >> 24) != (ref >> 24)) ++coverage_off;
+        if ((c & 0xFF) != ((c >> 8) & 0xFF) ||
+            (c & 0xFF) != ((c >> 16) & 0xFF)) {
+          ++not_grey;
+        }
+        worst = std::max(worst, channel_diff(c, ref));
+      }
+    }
+    std::printf(
+        "  luma alone through a lens, %s range: %d inside, worst %d, %d "
+        "coverage off, %d not grey\n",
+        full ? "full" : "limited", inside, worst, coverage_off, not_grey);
+    CHECK(inside > static_cast<int>(w * h / 2));
+    CHECK(worst <= 1 && coverage_off == 0 && not_grey == 0);
+    if (!full) continue;
+
+    // The same bytes in a device buffer.
+    std::vector<std::uint8_t> words(bytes);
+    words.resize((words.size() + 3) & ~std::size_t{3}, 0xCD);
+    sensor::YuvImage dev = f.color;
+    dev.host = nullptr;
+    dev.device = on_device(words);
+    CHECK(dev.device != nullptr);
+    sensor::RgbdFrame g = f;
+    g.color = dev;
+    auto from_device = prep.prepare(g);
+    CHECK(from_device.ok() && color_of(from_device.value()) == got);
+  }
+
+  sensor::YuvImage bad = mono;
+  bad.host = nullptr;
+  const auto plane =
+      image_of(VK_FORMAT_R8_UNORM, 1, w, h, y.data(), w, h, kSampled);
+  CHECK(plane != nullptr);
+  bad.image[0] = bad.image[1] = plane;
+  f.color = bad;
+  const vkc::Status status = prep.prepare(f).status();
+  CHECK(status.domain() == vkc::Status::Code::InvalidArgument &&
+        status.message().find("NV12's two") != std::string::npos);
   return 0;
 }
 
@@ -2516,6 +2612,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
     if (test_layouts(prep.value(), location) != 0) return 1;
   }
   if (test_yuyv(prep.value()) != 0) return 1;
+  if (test_luma(prep.value()) != 0) return 1;
   if (test_coverage(prep.value()) != 0) return 1;
   if (test_poses(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;

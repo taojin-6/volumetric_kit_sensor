@@ -1,0 +1,71 @@
+#version 450
+
+// The stereo rectifier's pass, one view a dispatch: each pixel of the
+// rectified view is a ray of the rectified camera, turned into the source
+// camera (the rectifying rotation undone), through its lens (lens.glsl), and
+// the source picture is sampled there bilinearly and converted as the colour
+// pass converts (undistort_color.glsl), from planes in a buffer
+// (color_planes.glsl). pc.cam is the source camera. A ray behind the source
+// camera, or one its lens puts outside the picture, writes 0.
+
+#extension GL_GOOGLE_include_directive : require
+#include "volumetric_kit/sensor/prep/shaders/undistort_color.glsl"
+#include "volumetric_kit/sensor/prep/shaders/color_planes.glsl"
+
+// Luma codes, four pixels a word, the first in the low byte, rows packed; or
+// R | G << 8 | B << 16 | coverage << 24 a pixel.
+layout(set = 0, binding = 1, scalar) writeonly buffer View { uint words[]; };
+
+// stereo_rectifier.cpp's ViewParams: the view's rectification, fixed when the
+// rectifier is made.
+layout(set = 0, binding = 2, scalar) readonly buffer Rectification {
+  mat3 rect_to_source;  // a ray of the rectified camera, in the source camera
+  float fx;             // the rectified camera
+  float fy;
+  float cx;
+  float cy;
+  uint width;  // the rectified view
+  uint height;
+  uint luma_out;  // luma, four pixels a word; else R'G'B' words
+} rect;
+
+// Where pixel `p` of the rectified view shows in the source picture, `s`;
+// false where its ray is behind the source camera or lands outside the
+// picture.
+bool rectified_source(uint p, out vec2 s) {
+  vec2 px = vec2(float(p % rect.width), float(p / rect.width));
+  vec3 ray = rect.rect_to_source *
+             vec3((px.x - rect.cx) / rect.fx, (px.y - rect.cy) / rect.fy, 1.0);
+  s = vec2(-1.0);
+  if (ray.z <= 0.0) {
+    return false;
+  }
+  vec2 d = distort_normalized(pc.cam, ray.xy / ray.z);
+  s = vec2(d.x * pc.cam.fx + pc.cam.cx, d.y * pc.cam.fy + pc.cam.cy);
+  return s.x >= -0.5 && s.y >= -0.5 && s.x <= float(pc.cam.width) - 0.5 &&
+         s.y <= float(pc.cam.height) - 0.5;
+}
+
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint pixels = rect.width * rect.height;
+  vec2 s;
+  if (rect.luma_out != 0u) {
+    uint first = gid * 4u;
+    if (first >= pixels) {
+      return;
+    }
+    uint word = 0u;
+    for (uint k = 0u; k < 4u && first + k < pixels; ++k) {
+      if (rectified_source(first + k, s)) {
+        word |= code(luma_level(luma_sample(s))) << (8u * k);
+      }
+    }
+    words[gid] = word;
+    return;
+  }
+  if (gid >= pixels) {
+    return;
+  }
+  words[gid] = rectified_source(gid, s) ? ycbcr_word(s) : 0u;
+}
