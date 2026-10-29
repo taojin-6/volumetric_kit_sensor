@@ -71,9 +71,10 @@ namespace volumetric_kit::sensor {
 /// }
 /// @endcode
 ///
-/// @warning Not thread-safe: open, start, poll and stop from one thread. The
-///          SDK delivers pairs on a thread of its own, which this class hands
-///          over internally.
+/// @warning Not thread-safe: open, start, poll and stop from one thread at a
+///          time, in order -- a thread that polls is created after @ref start
+///          and joined before @ref stop. The SDK delivers pairs on a thread
+///          of its own, which this class hands over internally.
 class VS_REALSENSE_API RealSenseStereo final : public IStereoSensor {
  public:
   /// @brief Which camera, which modes, and where it sits.
@@ -134,7 +135,9 @@ class VS_REALSENSE_API RealSenseStereo final : public IStereoSensor {
   const RealSenseDeviceInfo& device_info() const noexcept;
 
   /// @return The pair's factory calibration at the opened modes, and the
-  ///         colour camera's (see the class). Empty on a moved-from camera.
+  ///         colour camera's (see the class); the camera's serial and name,
+  ///         the host's clock, @ref Options::fps and the colour exposure as
+  ///         read back. Empty on a moved-from camera.
   const StereoInfo& info() const noexcept override;
   /// @return OK once streaming, and if already streaming;
   ///         `Status::Code::InvalidArgument` on a moved-from camera;

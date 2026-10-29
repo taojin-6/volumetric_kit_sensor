@@ -17,6 +17,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   global time (DECISIONS.md, the 2026-10-29 RealSense stereo entry).
 - `IStereoSensor::set_frame_notify`, as `IRgbdSensor`'s: a source that
   notifies nothing returns `Unsupported`, the default.
+- `StereoInfo` carries what the source is, as `SensorInfo` has it: `id`,
+  `model`, `clock`, `fps` and `color_controls`; `RealSenseStereo` fills
+  them, and `StereoRectifier::depth_info()` copies them, so a depth source
+  on a pair can join a `SensorArray`.
 
 ### Changed
 

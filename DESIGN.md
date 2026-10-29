@@ -443,13 +443,14 @@ device once. `info()` is the factory calibration: both infrared cameras a
 pinhole (a lens on either is refused), `left_to_right` librealsense's
 extrinsic from the left infrared camera to the right one (on the lab D455
 no rotation and 95.03 mm along x, so the rectifier only resamples), and
-the colour camera with its lens and `left_to_color`. Its time is the left
-infrared frame's global time. It holds the newest stereo frame
-(`IStereoSensor` has no queue depth) and wakes a consumer through
-`set_frame_notify`. Both drivers run on one internal camera
-(`realsense/camera.hpp`): finding the camera, the modes, the projector, the
-colour exposure, the pipeline with global time on, the disconnect watch, the
-frame queue and the counters. A frameset is one moment
+the colour camera with its lens and `left_to_color`; and what the camera is,
+as `RealSenseSensor`'s `SensorInfo` has it (serial, name, the host's clock,
+rate, the colour exposure read back). Its time is the left infrared frame's
+global time. It holds the newest stereo frame (`IStereoSensor` has no queue
+depth) and wakes a consumer through `set_frame_notify`. Both drivers run on
+one internal camera (`realsense/camera.hpp`): finding the camera, the modes,
+the projector, the colour exposure, the pipeline with global time on, the
+disconnect watch, the frame queue and the counters. A frameset is one moment
 (`realsense::together`) when it holds a frame of every mode opened, each
 within half a frame of the first; any other is counted failed.
 **`IRgbdSensor`** (`rgbd_sensor.hpp`) is one sensor: its
@@ -634,7 +635,8 @@ consumer of depth never sees it: a depth source built on a stereo camera
 
 - **`stereo/stereo_sensor.hpp`** — `StereoCalibration` (the two cameras,
   lenses included, and `left_to_right`, OpenCV's `R`, `T`), `StereoInfo`
-  (the pair and any third, colour camera with `left_to_color`),
+  (the pair and any third, colour camera with `left_to_color`, and what the
+  source is as `SensorInfo` has it: id, model, clock, rate, colour exposure),
   `StereoFrame` (one picture from each camera as the source delivered it, in
   any layout the GPU reads, on the host or in a device buffer; the colour to
   fuse, a third camera's or none when the left is the colour; times as
@@ -668,7 +670,9 @@ consumer of depth never sees it: a depth source built on a stereo camera
   view's rotation is `R1 * R^T`. `depth_info()` is the `SensorInfo` a
   matcher's depth is prepared with: depth in the rectified left camera,
   colour the third camera or the left one with its lens (its picture is the
-  colour), and `depth_to_color = left_to_color * rectified_to_left`.
+  colour), and `depth_to_color = left_to_color * rectified_to_left`; the
+  source's id, model, clock, rate and colour exposure, so a sensor array
+  takes the depth source as any other sensor.
 - **The pass** (`stereo/shaders/rectify.comp`): one dispatch a view, both in
   one batch, one submit and its wait. Each rectified pixel's ray is turned
   into the source camera (the view's rotation undone, from a storage buffer

@@ -192,8 +192,9 @@ class VS_STEREO_API StereoRectifier final {
   ///        camera itself, lens included, whose picture is the colour -- and
   ///        the depth camera's frame to the colour camera's
   ///        (`left_to_color * rectified_to_left`).
-  /// @return The sensor's cameras; its id, model and rates are the source's
-  ///         to fill.
+  /// @return The sensor's cameras, and the source's id, model, clock, rate
+  ///         and colour exposure as its @ref StereoInfo has them; the rig
+  ///         role and pose source as `SensorInfo`'s defaults.
   const SensorInfo& depth_info() const noexcept;
 
   /// @brief Rectify both views of @p frame: one submit, both passes, and its

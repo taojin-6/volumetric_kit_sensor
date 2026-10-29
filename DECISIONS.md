@@ -299,6 +299,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   *Amended the same day (the stereo review entry):* rays past a lens's fold
   are 0; a shared buffer is taken over once; the views are used in turn and
   taken back with no transfer; a pair rectified already keeps square pixels.
+  *Again (the RealSense stereo entry):* `StereoInfo` carries the source's
+  id, model, clock, rate and colour exposure, which `depth_info()` copies;
+  `IStereoSensor` gains `set_frame_notify`.
 
 - [**2026-10-29**](#2026-10-29--the-realsense-d400-driver-is-sensor_realsense-the-cameras-own-depth-and-its-colour-cameras-yuyv-on-the-host-librealsense-a-prerequisite-ci-installs-tested-against-rsutilh-with-no-camera) —
   The RealSense D400 driver is `sensor_realsense` (`RealSenseSensor`): the
@@ -317,7 +320,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   `IStereoSensor`: their Y8 as the camera rectifies them, luma on the host,
   and the colour camera's YUYV, the projector off by default, the factory
   calibration as `StereoInfo`; both RealSense drivers run on one internal
-  camera; `IStereoSensor` gains `set_frame_notify`.
+  camera; `IStereoSensor` gains `set_frame_notify`, and `StereoInfo` what
+  the source is (id, model, clock, rate, colour exposure), which
+  `StereoRectifier::depth_info()` copies.
 
 ## Decision record
 
@@ -4287,6 +4292,10 @@ family that wrote it; the views are used in turn and the next pass takes them ba
 transfer, so a Vulkan reader need not hand them back; a pair rectified
 already is scaled by one factor, alpha cropping or fitting it; luma alone is
 not checked for a matrix or a siting.
+*Amended again the same day (the RealSense stereo entry, below):*
+`StereoInfo` carries what the source is as `SensorInfo` has it (id, model,
+clock, rate, colour exposure) and `depth_info()` copies it;
+`IStereoSensor` gains `set_frame_notify`.
 
 **The rule.** A tier of its own, `sensor_stereo`, on the interface, linking
 `prep` privately; no SDK, every platform. `IStereoSensor` is what a stereo
@@ -4586,6 +4595,11 @@ costs nothing measurable. The Mac is CI's leg.
   the left infrared camera (its index 1) to the right one (index 2), and the
   colour camera with its lens and `left_to_color`. A frame's time is the
   left infrared frame's global time, on the host's clock.
+- `StereoInfo` carries what the source is, as `SensorInfo` has it: `id`,
+  `model`, `clock`, `fps` and `color_controls` (the colour exposure read
+  back at open). `RealSenseStereo` fills them as `RealSenseSensor` does,
+  and `StereoRectifier::depth_info()` copies them, so the depth source
+  built on the pair reports them as its own.
 - The projector is off by default (`Options::emitter`).
 - It holds the newest stereo frame; its counters and a disconnect behave as
   `RealSenseSensor`'s, and `set_frame_notify` wakes a consumer.
@@ -4609,7 +4623,11 @@ the lab camera the factory extrinsic has no rotation and 95.03 mm along x,
 both cameras one pinhole, so `StereoRectifier` only resamples them.
 `set_frame_notify` lets a depth source's own thread wait for a frame
 rather than poll on a timer, the hook `IRgbdSensor` has; the approved
-header did not list it.
+header did not list it. Nor did it list the source's identity, without
+which the depth source reports an empty id, the device's clock, rate 0 and
+no colour exposure, so a `SensorArray` refuses it (no id; auto exposure
+against a calibration's lock; off the host clock beside other sensors),
+even for one camera.
 
 **Tests, no hardware and no virtual camera** (the owner's choice):
 - `sensor_realsense_conversion`: the D455's infrared calibration as
@@ -4624,7 +4642,9 @@ header did not list it.
   `RealSenseSensor`'s, nanoseconds), and views that contradict the opened
   modes refused; the options refused before any camera is looked for;
 - `sensor_realsense_open`: `RealSenseStereo::open` refuses those options
-  before it looks, and an unknown serial as `NotFound`.
+  before it looks, and an unknown serial as `NotFound`;
+- `sensor_stereo_rectifier`: `depth_info()` carries the source's id,
+  model, clock, rate and colour exposure.
 
 **Validation.** RTX 4090, Ubuntu 26.04, librealsense 2.59.1, Release with
 warnings as errors, Orbbec, RealSense, FFmpeg and CUDA, under the

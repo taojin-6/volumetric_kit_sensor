@@ -28,7 +28,8 @@
 //     comes back byte for byte, and at another its camera is scaled by one
 //     factor, the picture cropped at alpha 0 and fitted at alpha 1;
 //   - the depth view for GpuFramePrep (depth_info): depth in the rectified
-//     left camera, colour the left camera or the third one;
+//     left camera, colour the left camera or the third one, and the
+//     source's id, model, clock, rate and colour exposure;
 //   - pairs used in turn have the same two buffers, a Vulkan reader keeping
 //     them or not; a pair kept past the next keeps its views, and a view no
 //     pair holds is written again; where the device exports memory the
@@ -1119,9 +1120,15 @@ int test_already_rectified() {
 }
 
 // The depth view a matcher's depth is prepared with: the rectified left
-// camera; the colour camera, the left one or a third; and between them.
+// camera; the colour camera, the left one or a third; and between them. What
+// the source is -- id, model, clock, rate, colour exposure -- is its own.
 int test_depth_info() {
   sensor::StereoInfo info = mild_pair();
+  info.id = "123456789012";
+  info.model = "Intel RealSense D455";
+  info.clock = sensor::ClockDomain::Host;
+  info.fps = 30;
+  info.color_controls = camera::ColorControls{167, 60};
   const auto own = make(info, {{960, 544}, 0.0f, Rectifier::Output::Luma8});
   CHECK(own != nullptr);
   const sensor::SensorInfo& d = own->depth_info();
@@ -1131,6 +1138,11 @@ int test_depth_info() {
   CHECK(d.color->intrinsics.fx == info.calibration.left.intrinsics.fx &&
         d.color->distortion.k1 == info.calibration.left.distortion.k1);
   CHECK(d.depth_to_color == own->rig().rectified_to_left);
+  CHECK(d.id == info.id && d.model == info.model);
+  CHECK(d.clock == sensor::ClockDomain::Host && d.fps == 30);
+  CHECK(d.color_controls && *d.color_controls == *info.color_controls);
+  CHECK(d.role == sensor::SyncRole::FreeRun &&
+        d.pose == sensor::PoseSource::Fixed);
 
   info.color = CameraModel{{1280, 800}, {640.5, 640.25, 642.0, 401.5}, {}};
   info.left_to_color = Mat4d(1.0);

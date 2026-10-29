@@ -109,17 +109,25 @@ core::Result<RealSenseStereo> RealSenseStereo::open(
                          options.color_height, options.fps, "YUYV colour"));
 
   // The factory calibration, as the stereo tier reads it.
-  VKC_ASSIGN(impl->info,
-             realsense::stereo_info(
-                 left.get_intrinsics(), right.get_intrinsics(),
-                 left.get_extrinsics_to(right), color.get_intrinsics(),
-                 left.get_extrinsics_to(color), camera.who()));
+  StereoInfo& info = impl->info;
+  VKC_ASSIGN(info, realsense::stereo_info(
+                       left.get_intrinsics(), right.get_intrinsics(),
+                       left.get_extrinsics_to(right), color.get_intrinsics(),
+                       left.get_extrinsics_to(color), camera.who()));
   impl->color_to_world = options.color_to_world;
 
   // The projector and the colour exposure: last, so a camera refused above
   // gets no write; then the modes start opens.
-  VKC_TRY(camera.configure(options.emitter, options.color_controls).status());
+  VKC_ASSIGN(info.color_controls,
+             camera.configure(options.emitter, options.color_controls));
   VKC_TRY(camera.set_streams({left, right, color}, options.fps));
+
+  // What the camera is, for the depth source built on it to report.
+  const RealSenseDeviceInfo& about = camera.device_info();
+  info.id = about.serial;
+  info.model = about.name;
+  info.clock = ClockDomain::Host;
+  info.fps = options.fps;
   return RealSenseStereo(std::move(impl));
 } catch (const std::exception& e) {
   return realsense::sdk_failure(kWho, "opening the camera", e);
