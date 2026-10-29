@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Tao Jin
 
 // GpuFramePrep keeps the depth camera's intrinsics, so its pinhole image is
-// the lens's view cropped to that K and resampled at the nearest pixel
-// (DECISIONS.md, 2026-10-16). That holds only while every output pixel lies
+// the lens's view cropped to that K and resampled (DECISIONS.md, 2026-10-16,
+// as amended 2026-10-29). That holds only while every output pixel lies
 // inside the lens's monotonic radius: past it distort_rational folds, two
 // output pixels read one raw pixel, and depth shows mirrored. Scanning
 // distort_rational forward along each border pixel's ray, on the host:

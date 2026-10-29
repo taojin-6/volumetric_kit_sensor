@@ -1,13 +1,18 @@
 #version 450
 
-// Depth undistortion. One thread per pixel of the pinhole image: sample the
-// raw image at the nearest pixel to where the lens puts it, and scale to
-// metres. Nearest, not bilinear: between a foreground and a background return
-// there is no surface, and blending them would invent one. Z depth is along
-// the optical axis, which undistortion does not move, so the value is kept,
-// less the sensor's pc.depth_offset_m (+ where it reads too far): a return
-// the offset takes to 0 or below is no return, and 0 stays no return whatever
-// the offset's sign.
+// Depth undistortion. One thread per pixel of the pinhole image, sampled
+// where the lens puts it in the raw image, a sub-pixel position: the bilinear
+// mix of the four raw pixels around it where all four hold a return within
+// kBlendSpanM of each other, else the nearest raw pixel. The nearest pixel
+// alone repeats a raw pixel across neighbours and skips others, so a slope
+// comes out in half-pixel terraces, which fusion turns into shading bands on
+// floors and walls; the mix follows the surface instead. Between a foreground
+// and a background return there is no surface, and a mix there would invent
+// one, so a block that spans more, or misses a return, keeps the nearest
+// pixel. Z depth is along the optical axis, which undistortion does not move,
+// so the value is kept, less the sensor's pc.depth_offset_m (+ where it reads
+// too far), per raw pixel before any mix: a return the offset takes to 0 or
+// below is no return, and 0 stays no return whatever the offset's sign.
 //
 // With pc.within_color the pixel is also kept only where the colour camera
 // recorded its point, at the corrected depth: moved into the colour camera by
@@ -67,7 +72,24 @@ bool color_recorded(vec2 pixel, float z) {
          s.y <= float(c.height) - 0.5;
 }
 
+// The largest depth range, in metres, across the four raw pixels of a block
+// that is still one surface and mixed; a step past it is an edge. 4 cm is the
+// truncation band the rig fuses with, past which fusion's own bilinear depth
+// sample falls back to the nearest pixel too. A plane 2 m away spans it only
+// when turned more than about 80 degrees from facing the camera.
+const float kBlendSpanM = 0.04;
+
 uint raw_at(uint i) { return (raw[i >> 1] >> ((i & 1u) * 16u)) & 0xFFFFu; }
+
+// Raw pixel i in metres, less the depth offset; 0 is no return.
+float metres_at(uint i) {
+  float z = float(raw_at(i)) * pc.metres_per_unit;
+  return z > 0.0 ? max(z - pc.depth_offset_m, 0.0) : 0.0;
+}
+
+// a at t = 0, b at t = 1; exactly a where a == b, fused or not, so a flat
+// block keeps its value.
+float lerp(float a, float b, float t) { return a + (b - a) * t; }
 
 void main() {
   uint gid = gl_GlobalInvocationID.x;
@@ -84,9 +106,23 @@ void main() {
     depth[gid] = 0.0;
     return;
   }
-  float z = float(raw_at(uint(r.y) * w + uint(r.x))) * pc.metres_per_unit;
-  if (z > 0.0) {
-    z = max(z - pc.depth_offset_m, 0.0);
+  float z = metres_at(uint(r.y) * w + uint(r.x));
+  // The 2x2 block from floor(s), which holds the nearest pixel. Where it
+  // reaches past the image, the nearest pixel stands.
+  vec2 o = floor(s);
+  if (o.x >= 0.0 && o.y >= 0.0 && o.x + 1.0 < float(w) &&
+      o.y + 1.0 < float(h)) {
+    uint i = uint(o.y) * w + uint(o.x);
+    float d00 = metres_at(i);
+    float d10 = metres_at(i + 1u);
+    float d01 = metres_at(i + w);
+    float d11 = metres_at(i + w + 1u);
+    float lo = min(min(d00, d10), min(d01, d11));
+    float hi = max(max(d00, d10), max(d01, d11));
+    if (lo > 0.0 && hi - lo <= kBlendSpanM) {
+      vec2 f = s - o;
+      z = lerp(lerp(d00, d10, f.x), lerp(d01, d11, f.x), f.y);
+    }
   }
   if (pc.within_color != 0u && z > 0.0 &&
       !color_recorded(vec2(float(gid % w), float(gid / w)), z)) {

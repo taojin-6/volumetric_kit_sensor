@@ -448,15 +448,21 @@ first frames in the array's order; after `kSilenceLimit` (10 s) with no set
 it returns `IoError`, naming a lone sync secondary's cause. The prep stays
 the caller's, recorded into the caller's batch (2026-10-25).
 **`prep/`'s `GpuFramePrep`** undistorts an `RgbdFrame`
-(`rgbd_frame.hpp`) on the device: depth sampled at the nearest pixel,
-colour bilinearly and converted from Y'CbCr in the same pass, each camera
-keeping its intrinsics. The frame carries each camera's `camera::CameraModel`
-in double, narrowed to float once for the passes; the colour camera's pose,
-`color_to_world`, and the sensor's `depth_to_color`, both refused unless
-rigid, pose the outputs; a sequence number; and `pixels`, the owner of its
-depth, any host colour and any `color_bitstream` (the colour as the camera
-coded it, when that decodes on its own), so a consumer may keep frames past
-the next poll and past the capture.
+(`rgbd_frame.hpp`) on the device, each camera keeping its intrinsics.
+Depth is sampled where the lens puts each pinhole pixel, a sub-pixel
+position of the raw image: the bilinear mix of the four raw pixels around it
+where all four return within 4 cm of each other (`kBlendSpanM`, the
+truncation band the rig fuses with), else the nearest raw pixel. A slope
+comes out smooth, not in the half-pixel terraces the nearest pixel alone
+leaves, which fusion shades as bands on floors and walls; an edge or a hole
+is never blended (2026-10-29). Colour is sampled bilinearly and converted
+from Y'CbCr in the same pass. The frame carries each camera's
+`camera::CameraModel` in double, narrowed to float once for the passes; the
+colour camera's pose, `color_to_world`, and the sensor's `depth_to_color`,
+both refused unless rigid, pose the outputs; a sequence number; and
+`pixels`, the owner of its depth, any host colour and any `color_bitstream`
+(the colour as the camera coded it, when that decodes on its own), so a
+consumer may keep frames past the next poll and past the capture.
 `ChromaLocation` travels in the picture's `YuvImage`: JPEG is centred, and
 HEVC keeps the decoded tag with left alignment when unspecified.
 The GPU samples the location consistently for planes in a buffer and NV12
@@ -504,8 +510,8 @@ preserving previously returned frames.
 default; `rig_viewer` turns it on) zeroes depth outside the colour camera's
 view, by the colour pass's own coverage test, so nothing is fused that no
 colour camera can colour. `depth_offset_m` (0 by default) is subtracted
-from every return in the depth pass, before that test: for `z > 0`,
-`z = max(z - offset, 0)`, so 0 stays no return whatever the sign; a
+from every raw return in the depth pass, before the mix and that test: for
+`z > 0`, `z = max(z - offset, 0)`, so 0 stays no return whatever the sign; a
 `SensorArray` sets it per sensor from the calibration.
 **`prep/`'s `PictureReadback`** copies a set's colour pictures to the
 host, luma alone or every plane, for calib's detector: NV12 images from
