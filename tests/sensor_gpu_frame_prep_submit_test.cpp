@@ -49,21 +49,24 @@ vkQueueSubmit(VkQueue queue, std::uint32_t count, const VkSubmitInfo* submits,
 
 namespace {
 
-// Buffer-backed NV12, image-backed NV12, and an absent camera in one set.
-// Weak references observe whether dropping the set returns either picture
-// to its producer, which could immediately reuse it for the next frame.
+// Buffer-backed NV12 beside depth on the device, image-backed NV12, and an
+// absent camera in one set. Weak references observe whether dropping the set
+// returns the depth or either picture to its producer, which could
+// immediately reuse it for the next frame.
 struct Set {
   std::vector<std::uint16_t> depth = std::vector<std::uint16_t>(16 * 16, 1000);
   std::vector<sensor::GpuFramePrep> preps;
   std::vector<std::optional<sensor::RgbdFrame>> frames{3};
-  std::weak_ptr<const vkc::Buffer> buffer;
+  std::weak_ptr<const vkc::Buffer> buffer, depth_buffer;
   std::weak_ptr<const vkc::Image> luma, chroma;
 
   bool pictures_released() const {
-    return buffer.expired() && luma.expired() && chroma.expired();
+    return buffer.expired() && depth_buffer.expired() && luma.expired() &&
+           chroma.expired();
   }
   bool pictures_retained() const {
-    return !buffer.expired() && !luma.expired() && !chroma.expired();
+    return !buffer.expired() && !depth_buffer.expired() && !luma.expired() &&
+           !chroma.expired();
   }
 
   int make(vkc::test::GpuContext& gpu) {
@@ -90,6 +93,13 @@ struct Set {
     frames[0]->color.offset[1] = 256;
     frames[0]->color.stride[0] = frames[0]->color.stride[1] = 16;
     buffer = frames[0]->color.device;
+    // Camera 0's depth as a GPU stage leaves it, on the device.
+    auto made_depth = vkc::device_storage_buffer(gpu.allocator, 512);
+    CHECK(made_depth.ok());
+    frames[0]->depth = nullptr;
+    frames[0]->depth_device.buffer =
+        std::make_shared<vkc::Buffer>(std::move(*made_depth));
+    depth_buffer = frames[0]->depth_device.buffer;
 
     auto made_luma = test_image::make(
         gpu.device, gpu.allocator, VK_FORMAT_R8_UNORM, 16, 16,

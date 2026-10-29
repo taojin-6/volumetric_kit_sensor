@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2026-10-29
+## [0.6.0] - 2026-10-29
 
 ### Fixed
 
@@ -33,6 +33,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fitted (1), where it was scaled across and down apart.
 - Luma alone (`YuvLayout::Luma`) is not checked for a matrix or a chroma
   siting, in `GpuFramePrep` and the rectifier.
+
+## [0.5.0] - 2026-10-29
+
+### Added
+
+- **Depth on the device.** `RgbdFrame::depth_device`, a `DeviceDepth` (a
+  buffer, the first sample's byte and its writer's queue family), holds the
+  frame's 16-bit depth where a GPU stage left it, instead of the host
+  `depth`; `RgbdFrame::has_depth()` counts either. `GpuFramePrep` reads it
+  in place, at any even byte of its buffer, after taking it over from that
+  queue family, with no copy; the depth pass's push constants gain
+  `raw_first` (`DepthParams` is 72 bytes). A buffer several of a batch's
+  depths and planes share is taken over once, and references to it naming
+  different writers are refused (DECISIONS.md, the 2026-10-29 device-depth
+  entry).
 
 ## [0.4.0] - 2026-10-29
 

@@ -29,8 +29,11 @@
 
 layout(local_size_x = 256) in;
 
-// Raw 16-bit samples, two to a word, little-endian: sample i is the low half
-// of word i/2 when i is even.
+// Raw 16-bit samples, two to a word, little-endian, the image's first at
+// sample pc.raw_first of the binding: sample j is the low half of word j/2
+// when j is even. The binding starts where a binding's offset may, at or
+// below the first sample, so depth left on the device at any even byte is
+// read where it is.
 layout(set = 0, binding = 0, scalar) readonly buffer Raw { uint raw[]; };
 layout(set = 0, binding = 1, scalar) writeonly buffer Depth { float depth[]; };
 // The colour camera and the rigid transform from the depth camera into it,
@@ -45,6 +48,7 @@ layout(push_constant, scalar) uniform Params {
   float metres_per_unit;
   uint within_color;
   float depth_offset_m;
+  uint raw_first;  // the image's first sample in the binding
 } pc;
 
 // Whether the colour camera recorded the depth camera's point at pinhole pixel
@@ -79,7 +83,11 @@ bool color_recorded(vec2 pixel, float z) {
 // when turned more than about 80 degrees from facing the camera.
 const float kBlendSpanM = 0.04;
 
-uint raw_at(uint i) { return (raw[i >> 1] >> ((i & 1u) * 16u)) & 0xFFFFu; }
+// Raw pixel i of the image.
+uint raw_at(uint i) {
+  uint j = i + pc.raw_first;
+  return (raw[j >> 1] >> ((j & 1u) * 16u)) & 0xFFFFu;
+}
 
 // Raw pixel i in metres, less the depth offset; 0 is no return.
 float metres_at(uint i) {
