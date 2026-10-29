@@ -69,7 +69,7 @@ endfunction()
 file(REMOVE_RECURSE "${BINARY_DIR}")
 
 foreach(_option VR_BUILD_EXAMPLES VR_WITH_ORBBEC VR_WITH_FFMPEG VR_WITH_CUDA
-                VR_WITH_ASSIMP)
+                VGRID_WITH_ASSIMP)
   _vr_configure(refuse_${_option} ${_fetch} "-D${_option}=ON")
   # CMake wraps a message's lines: match it with each run of blanks as one.
   string(REGEX REPLACE "[ \n]+" " " _flat "${_output}")
