@@ -4089,4 +4089,13 @@ Any layout may come from the host: the staging is the same code.
 
 `sensor_picture_readback` refuses a YUYV picture and a host one.
 
-**Validation.** VALIDATION_TBD
+**Validation.** RTX 4090, Ubuntu 26.04, Release with warnings as errors,
+Orbbec, FFmpeg and CUDA, under the validation layer: 41 tests passed and the
+2 JPEG tests skipped, as on main, of 43. YUYV through the lens is within a
+code of the reference at every pixel; of 19,200 flat-colour pixels, 18,720
+are librealsense's exactly and the rest within 1. recon main (`b7ef45da`)
+built on this checkout passes its 40 tests. Six planted bugs each failed
+`sensor_gpu_frame_prep`: luma read at every byte, chroma halved down the
+rows, host planes copied from the pointer rather than the first plane, Cr
+read beside Cb, `has_color()` blind to host planes, and YUYV of odd width
+accepted. The Mac is CI's leg.
