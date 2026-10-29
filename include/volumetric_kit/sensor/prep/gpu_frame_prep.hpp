@@ -103,9 +103,11 @@ struct GpuFramePrepConfig {
   /// per sensor, and refuses one in `SensorArray::Options::prep`. A return
   /// the offset takes to 0 or below is no return (0), and 0 stays no return
   /// whatever the sign, so a negative offset never makes a hole a surface.
-  /// It is subtracted before @ref depth_within_color's test, which sees the
-  /// corrected depth. 0, the default, leaves depth as the sensor reported
-  /// it. Finite, or @ref GpuFramePrep::create refuses it.
+  /// It is subtracted from each raw pixel before the depth mix, so a return
+  /// it takes to 0 is a hole the mix skips, and before
+  /// @ref depth_within_color's test, which sees the corrected depth. 0, the
+  /// default, leaves depth as the sensor reported it. Finite, or
+  /// @ref GpuFramePrep::create refuses it.
   float depth_offset_m = 0.0f;
 };
 
@@ -116,9 +118,12 @@ struct GpuFramePrepConfig {
 /// of the pinhole image is sampled from where `camera::distort_rational` puts
 /// it in the captured one. Colour is sampled bilinearly, luma and chroma each
 /// at its own siting (@ref YuvImage::chroma_location), and converted by the
-/// picture's matrix and range; depth is
-/// sampled at the nearest pixel, so an edge never blends a foreground and a
-/// background depth into a point between them.
+/// picture's matrix and range. Depth is the bilinear mix of the four raw
+/// pixels around that position where all four hold a return within 4 cm of
+/// each other, so a slope comes out smooth rather than in half-pixel
+/// terraces, and the nearest raw pixel elsewhere, so an edge never blends a
+/// foreground and a background depth into a point between them, nor a hole
+/// into a return.
 ///
 /// Colour comes as I420 or NV12, on the device as a hardware decoder left it:
 /// planes in a buffer, as nvJPEG's pictures arrive, are read where they are,
