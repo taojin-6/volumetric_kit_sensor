@@ -511,9 +511,10 @@ from Y'CbCr in the same pass. The frame carries each camera's
 `camera::CameraModel` in double, narrowed to float once for the passes; the
 colour camera's pose, `color_to_world`, and the sensor's `depth_to_color`,
 both refused unless rigid, pose the outputs; a sequence number; and
-`pixels`, the owner of its depth, any host colour and any `color_bitstream`
-(the colour as the camera coded it, when that decodes on its own), so a
-consumer may keep frames past the next poll and past the capture.
+`pixels`, the owner of its host depth, any host colour and any
+`color_bitstream` (the colour as the camera coded it, when that decodes on
+its own), so a consumer may keep frames past the next poll and past the
+capture; depth on the device is held by its buffer, as a device picture is.
 `ChromaLocation` travels in the picture's `YuvImage`: JPEG is centred, and
 HEVC keeps the decoded tag with left alignment when unspecified.
 The GPU samples the location consistently for planes in a buffer and NV12
@@ -547,15 +548,29 @@ A dataset decoded on the host hands its colour over as packed R'G'B' words
 instead (`RgbdFrame::color_packed`, `io::load_color_packed`'s layout; the
 2026-10-07 packed-colour decision), copied the same way; the colour pass
 samples R, G and B as byte planes four bytes apart, through the same
-bilinear sampler and coverage test. The depth, and any host colour after it
-at the binding alignment, is copied into the pass's
+bilinear sampler and coverage test. Depth comes from the host
+(`RgbdFrame::depth`, as a sensor's SDK hands it over) or from the device
+(`RgbdFrame::depth_device`, a `DeviceDepth`: the same 16-bit samples, rows
+packed, in a storage buffer from an even byte, as a GPU stage such as stereo
+matching leaves them; the 2026-10-29 device-depth decision), read where it
+is once the batch has taken the buffer over from its writer's queue family:
+bound from its first sample rounded down to the binding alignment, the
+image's first sample in the binding a push constant (`raw_first`), so any
+even offset is read with no copy, and the buffer must hold the word with
+the last sample, which the kernel reads whole. A buffer that several of a
+batch's depths and planes name (a frame's depth and planes, every camera's
+depth) is taken over once, before any frame's inputs, and references to it
+that name different writers are refused. Host depth, and any host
+colour after it at the binding alignment, is copied into the pass's
 one persistent slot (`core::HostRing`), which the batch binds in place where
 mapped device memory is cached and copies once into its device-only mirror
 elsewhere; nothing is allocated per frame (a batch staging per call made VMA
 allocate a block for every set: 46 ms a rig set on an RTX 5090, 4.8 ms
 kept). `record(batch, frame)` records the copy and both passes into a
 caller's batch, and `prepare` is that, one submit and its wait; a record
-before the pass's last batch resolves is refused, as it binds the slot. The
+before the pass's last batch resolves is refused, as it binds the slot (a
+frame with nothing on the host claims a word of it, which its batch binds
+all the same). The
 frame *holds* its device-local
 buffers through a lease, and the pass reuses one only once no frame holds
 it, so a frame kept past the next is still itself; the whole frame is
