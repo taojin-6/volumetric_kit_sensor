@@ -4535,9 +4535,9 @@ reported by poll and drain after a notification; the camera polled on the
 thread alone and never called from two threads at once.
 
 **Validation.** RTX 4090, Ubuntu 26.04, Release with warnings as errors,
-Orbbec, FFmpeg, CUDA 13.4 and FFS (TensorRT 11.4.0), under the validation
-layer with synchronization validation: 45 tests passed and the 2 JPEG tests
-skipped (the 4090 has no JPEG engine), of 47. Six planted bugs each failed
+Orbbec, RealSense, FFmpeg, CUDA 13.4 and FFS (TensorRT 11.4.0), under the
+validation layer with synchronization validation: 49 tests passed and the 2
+JPEG tests skipped (the 4090 has no JPEG engine), of 51. Six planted bugs each failed
 a test: a disparity past its column kept, the padded network's row length
 read as the view's, a depth buffer a frame holds written again, R and B
 swapped in `Rgba8`, the plan cache never read, and a refused pair ending
