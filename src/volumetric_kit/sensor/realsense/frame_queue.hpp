@@ -92,10 +92,13 @@ class FrameQueue {
   // A frame taken but never handed out, counted dropped.
   void discard() noexcept { dropped_.fetch_add(1, std::memory_order_relaxed); }
 
-  // At a stop: the frames held let go uncounted, and the count restarted.
+  // At a stop or a start: the frames held let go uncounted.
   void clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_.clear();
+  }
+  // At a start: the dropped count restarted, as every counter is.
+  void reset_dropped() noexcept {
     dropped_.store(0, std::memory_order_relaxed);
   }
 

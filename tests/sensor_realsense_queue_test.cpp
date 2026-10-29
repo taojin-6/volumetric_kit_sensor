@@ -7,7 +7,8 @@
 //     counted dropped;
 //   - the consumer is woken once a frame or a failure, after it is held;
 //   - a failure is reported to every later take, the first one kept;
-//   - a stop clears it; a discarded frame is counted dropped;
+//   - a stop clears it and keeps the count, which a start restarts; a
+//     discarded frame is counted dropped;
 //   - with a producer thread pushing, every frame is taken or dropped once.
 
 #include <atomic>
@@ -88,9 +89,11 @@ int test_clear() {
   for (int i = 0; i < 5; ++i) q.push(i);
   CHECK(q.dropped() == 3);
   q.clear();
-  CHECK(q.dropped() == 0);
+  CHECK(q.dropped() == 3);  // read after a stop
   auto none = q.take_newest();
   CHECK(none.ok() && !none.value());
+  q.reset_dropped();
+  CHECK(q.dropped() == 0);
   return 0;
 }
 

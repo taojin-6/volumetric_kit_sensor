@@ -85,8 +85,10 @@ core::Result<std::optional<camera::ColorControls>> apply_color_controls(
     rs2::sensor& color, const std::optional<camera::ColorControls>& controls,
     const std::string& who) {
   if (!controls) {
-    if (color.supports(RS2_OPTION_ENABLE_AUTO_EXPOSURE)) {
-      color.set_option(RS2_OPTION_ENABLE_AUTO_EXPOSURE, 1.0f);
+    // Auto exposure, and auto white balance on, as with a manual exposure.
+    for (const rs2_option o : {RS2_OPTION_ENABLE_AUTO_EXPOSURE,
+                               RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE}) {
+      if (color.supports(o)) color.set_option(o, 1.0f);
     }
     return std::optional<camera::ColorControls>{};
   }
@@ -120,10 +122,16 @@ core::Result<std::optional<camera::ColorControls>> apply_color_controls(
   read.exposure =
       static_cast<std::uint32_t>(color.get_option(RS2_OPTION_EXPOSURE));
   read.gain = static_cast<std::uint32_t>(color.get_option(RS2_OPTION_GAIN));
-  if (read.exposure != controls->exposure || read.gain != controls->gain) {
+  if (read.exposure != controls->exposure || read.gain != controls->gain ||
+      color.get_option(RS2_OPTION_ENABLE_AUTO_EXPOSURE) != 0.0f ||
+      color.get_option(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE) != 1.0f) {
     return core::Status::unsupported(
         who + "'s colour controls read back as exposure " +
         std::to_string(read.exposure) + ", gain " + std::to_string(read.gain) +
+        ", auto exposure " +
+        std::to_string(color.get_option(RS2_OPTION_ENABLE_AUTO_EXPOSURE)) +
+        ", auto white balance " +
+        std::to_string(color.get_option(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE)) +
         ", not as written");
   }
   return std::optional<camera::ColorControls>(read);
@@ -182,8 +190,15 @@ struct RealSenseSensor::Impl {
     shared->queue.clear();
   }
 
-  // A frameset taken from the queue as the frame it is.
-  core::Result<std::optional<RgbdFrame>> read(Arrived arrived) try {
+  // A frameset taken from the queue as the frame it is; one it refuses is
+  // counted failed.
+  core::Result<std::optional<RgbdFrame>> read(Arrived arrived) {
+    core::Result<std::optional<RgbdFrame>> frame = convert(std::move(arrived));
+    if (!frame.ok()) shared->failed.fetch_add(1, std::memory_order_release);
+    return frame;
+  }
+
+  core::Result<std::optional<RgbdFrame>> convert(Arrived arrived) try {
     const rs2::depth_frame depth = arrived.frames.get_depth_frame();
     const rs2::video_frame color = arrived.frames.get_color_frame();
     if (depth.get_frame_timestamp_domain() ==
@@ -207,7 +222,7 @@ struct RealSenseSensor::Impl {
         std::make_shared<const rs2::frameset>(std::move(arrived.frames));
     VKC_ASSIGN(RgbdFrame frame,
                realsense::rgbd_frame(view, setup, std::move(pixels), who));
-    delivered.fetch_add(1, std::memory_order_relaxed);
+    delivered.fetch_add(1, std::memory_order_release);
     return IRgbdSensor::some_frame(std::move(frame));
   } catch (const std::exception& e) {
     return sdk_failure("reading a frame", e);
@@ -334,8 +349,6 @@ core::Result<RealSenseSensor> RealSenseSensor::open(
   } else if (options.emitter) {
     return core::Status::unsupported(who + " has no projector to switch on");
   }
-  depth_sensor->set_option(RS2_OPTION_GLOBAL_TIME_ENABLED, 1.0f);
-  color_sensor->set_option(RS2_OPTION_GLOBAL_TIME_ENABLED, 1.0f);
   SensorInfo& info = impl->info;
   VKC_ASSIGN(info.color_controls,
              apply_color_controls(*color_sensor, options.color_controls, who));
@@ -411,40 +424,56 @@ core::Status RealSenseSensor::start() {
     return core::Status::invalid_argument(
         "RealSenseSensor: start on a moved-from sensor");
   }
-  if (impl_->running) return {};
   Shared& shared = *impl_->shared;
+  // Before the idempotent return: a camera gone while streaming is not
+  // running, whatever the flag says.
   if (shared.disconnected.load(std::memory_order_acquire)) {
     return core::Status::io_error(impl_->who + " disconnected");
   }
+  if (impl_->running) return {};
+  // The counters restart here, not at a stop, so they read the same after
+  // one.
   shared.received.store(0, std::memory_order_relaxed);
   shared.failed.store(0, std::memory_order_relaxed);
   impl_->delivered.store(0, std::memory_order_relaxed);
   shared.queue.clear();
+  shared.queue.reset_dropped();
   try {
     // Framesets without depth or colour, or whose colour is of another
-    // moment, as the syncer's are while the colour camera starts, are counted
-    // failed and never queued.
-    impl_->pipeline->start(impl_->config, [shared = impl_->shared,
-                                           fps = impl_->fps](rs2::frame frame) {
-      const std::uint64_t arrival = now_ns();
-      shared->received.fetch_add(1, std::memory_order_relaxed);
-      try {
-        const auto frames = frame.as<rs2::frameset>();
-        const rs2::depth_frame depth =
-            frames ? frames.get_depth_frame() : rs2::depth_frame(rs2::frame());
-        const rs2::video_frame color =
-            frames ? frames.get_color_frame() : rs2::video_frame(rs2::frame());
-        if (!depth || !color ||
-            !realsense::same_moment(depth.get_timestamp(),
-                                    color.get_timestamp(), fps)) {
-          shared->failed.fetch_add(1, std::memory_order_relaxed);
-          return;
-        }
-        shared->queue.push(Arrived{frames, arrival});
-      } catch (...) {
-        shared->failed.fetch_add(1, std::memory_order_relaxed);
+    // moment, as while the D455 restarts its depth for its first 1.2 s and
+    // the pipeline matches its last depth frame with newer colour, are
+    // counted failed and never queued.
+    const rs2::pipeline_profile streaming = impl_->pipeline->start(
+        impl_->config,
+        [shared = impl_->shared, fps = impl_->fps](rs2::frame frame) {
+          const std::uint64_t arrival = now_ns();
+          shared->received.fetch_add(1, std::memory_order_relaxed);
+          try {
+            const auto frames = frame.as<rs2::frameset>();
+            const rs2::depth_frame depth = frames
+                                               ? frames.get_depth_frame()
+                                               : rs2::depth_frame(rs2::frame());
+            const rs2::video_frame color = frames
+                                               ? frames.get_color_frame()
+                                               : rs2::video_frame(rs2::frame());
+            if (!depth || !color ||
+                !realsense::same_moment(depth.get_timestamp(),
+                                        color.get_timestamp(), fps)) {
+              shared->failed.fetch_add(1, std::memory_order_release);
+              return;
+            }
+            shared->queue.push(Arrived{frames, arrival});
+          } catch (...) {
+            shared->failed.fetch_add(1, std::memory_order_release);
+          }
+        });
+    // Global time belongs to the device instance that streams, which the
+    // pipeline opens itself, so it is set there; librealsense's default is on.
+    for (rs2::sensor& s : streaming.get_device().query_sensors()) {
+      if (s.supports(RS2_OPTION_GLOBAL_TIME_ENABLED)) {
+        s.set_option(RS2_OPTION_GLOBAL_TIME_ENABLED, 1.0f);
       }
-    });
+    }
   } catch (const std::exception& e) {
     return sdk_failure("starting the streams", e);
   }
@@ -500,11 +529,13 @@ bool RealSenseSensor::exhausted() const noexcept {
 SensorStats RealSenseSensor::stats() const noexcept {
   if (impl_ == nullptr) return {};
   const Shared& shared = *impl_->shared;
+  // A frame is counted received before anything else, so received is read
+  // last: the others never sum past it.
   SensorStats s;
-  s.received = shared.received.load(std::memory_order_relaxed);
-  s.delivered = impl_->delivered.load(std::memory_order_relaxed);
+  s.delivered = impl_->delivered.load(std::memory_order_acquire);
   s.dropped = shared.queue.dropped();
-  s.failed = shared.failed.load(std::memory_order_relaxed);
+  s.failed = shared.failed.load(std::memory_order_acquire);
+  s.received = shared.received.load(std::memory_order_acquire);
   return s;
 }
 

@@ -4251,8 +4251,8 @@ for the submit. The Mac is CI's leg.
   CMake package (`cmake/vs_realsense.cmake`), never fetched: Homebrew's
   formula on macOS (the Mac leg checks it), RealSense's apt repository on
   Ubuntu, which CI's `install-librealsense` action installs at the floor,
-  its signing key checked against a pinned SHA256 first. Every CI leg builds
-  it.
+  its signing key checked against a pinned SHA256 first. Both Ubuntu build
+  legs and the macOS leg build it (not the sanitizer or camera-only jobs).
 
 **Why.** The owner's RealSense design (2026-10-29): the camera's own depth
 with the projector on, beside a later stereo path for Fast-FoundationStereo
@@ -4261,9 +4261,13 @@ only, so the driver hands over the camera's YUYV, not librealsense's RGB
 (a CPU conversion). The D455's colour lens through OpenCV's model projects
 within 0.016 px of librealsense's own over its picture (the difference is
 the tangential term applied after the radial one), so the GPU pass's one
-lens model serves it. The syncer matches depth with colour up to 1.3 s
-stale in a camera's first second (measured on the lab D455), which the
-half-frame rule keeps out of fusion.
+lens model serves it. As streaming starts the D455 restarts its depth for
+about 1.2 s, and the pipeline matches its last depth frame with colour up to
+1.3 s newer meanwhile (measured on the lab D455), which the half-frame rule
+keeps out of fusion. With a manual colour exposure the colour camera runs
+out of step with the depth: their timestamps sweep the whole half-frame
+window (exposure 100, gain 64: over 10 s), against 0.04 ms under auto
+exposure, so colour may be up to half a frame from its depth.
 
 **Tests, no hardware and no virtual camera** (the owner: librealsense's
 software device would test a fake more than the camera):

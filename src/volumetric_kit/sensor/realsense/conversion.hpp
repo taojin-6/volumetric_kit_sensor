@@ -51,8 +51,9 @@ core::Result<camera::Mat4d> transform_from(const rs2_extrinsics& extrinsics,
                                            const std::string& who);
 
 // Whether a depth and a colour frame stamped `depth_ms` and `color_ms` are of
-// one moment: no more than half a frame apart at `fps`. librealsense's syncer
-// matches depth with a stale colour frame while the colour camera starts.
+// one moment: no more than half a frame apart at `fps`. As streaming starts
+// the D455 restarts its depth for about 1.2 s, and librealsense's pipeline
+// matches its last depth frame with newer colour meanwhile.
 bool same_moment(double depth_ms, double color_ms, std::uint32_t fps) noexcept;
 
 // One frameset's pixels and stamps, as plain values.

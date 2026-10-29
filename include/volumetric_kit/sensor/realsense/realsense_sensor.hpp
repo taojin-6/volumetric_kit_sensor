@@ -58,8 +58,8 @@ struct RealSenseDeviceInfo {
 /// camera's own depth, the projector on by default.
 ///
 /// @code
-/// RealSenseSensor::Options options;  // depth 1280x720, colour 1280x800, 30
-/// fps VKC_ASSIGN(RealSenseSensor sensor, RealSenseSensor::open(options));
+/// RealSenseSensor::Options options;  // depth 1280x720, colour 1280x800
+/// VKC_ASSIGN(RealSenseSensor sensor, RealSenseSensor::open(options));
 /// VKC_ASSIGN(auto prep, GpuFramePrep::create(device, allocator));
 /// VKC_TRY(sensor.start());
 /// for (;;) {
@@ -92,8 +92,9 @@ class VS_REALSENSE_API RealSenseSensor final : public IRgbdSensor {
     /// texture to match on blank surfaces.
     bool emitter = true;
     /// The colour camera's manual exposure (auto exposure off, auto white
-    /// balance on), in its units: exposure in 100 us, gain 0 to 128 on the
-    /// D455; empty leaves it on auto exposure.
+    /// balance on), in its units: exposure in 100 us, gain 1 to 128 on the
+    /// D455 (0 is refused); empty leaves it on auto exposure and auto white
+    /// balance.
     std::optional<camera::ColorControls> color_controls;
     /// The colour camera's frame to the world's, stamped on every frame as
     /// `RgbdFrame::color_to_world`; rigid. Identity places the world at the
@@ -160,10 +161,11 @@ class VS_REALSENSE_API RealSenseSensor final : public IRgbdSensor {
   /// @return `true` on a moved-from sensor and once the camera has
   ///         disconnected.
   bool exhausted() const noexcept override;
-  /// @return The counters since the last @ref start: `SensorStats::failed`
-  ///         counts the SDK's framesets without depth or colour, or whose
-  ///         depth and colour lie more than half a frame apart, as some do in
-  ///         the first second. Zero on a moved-from sensor.
+  /// @return The counters since the last @ref start, kept through a
+  ///         @ref stop: `SensorStats::failed` counts the SDK's framesets
+  ///         without depth or colour, or whose depth and colour lie more than
+  ///         half a frame apart, as some do in the first second, and frames
+  ///         @ref poll or @ref drain refused. Zero on a moved-from sensor.
   SensorStats stats() const noexcept override;
   /// @brief As `IRgbdSensor::set_frame_notify`: called from the SDK's thread
   ///        as each frame reaches the queue, and when the camera

@@ -75,7 +75,7 @@ recon's examples assemble the rest.
 - CMake targets `volumetric_kit::sensor_<tier>`: `sensor_camera`,
   `sensor_frame`, `sensor_interface`, `sensor_prep`, `sensor_array`,
   `sensor_stereo`, `sensor_video`, `sensor_video_syntax`, `sensor_apple`,
-  `sensor_orbbec` and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
+  `sensor_orbbec`, `sensor_realsense` and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
   `sensor`, which is why the interface's is `sensor_interface`). `io` is
   the one exception to `sensor_<tier>` and `<tier>/export.hpp`: its
   target, export header and macro are named after the image files it holds
@@ -421,7 +421,10 @@ radial one; other lens models with coefficients are refused. Timestamps are
 librealsense's global time, on the host's `std::chrono::system_clock`, so
 `SensorInfo::clock` is `Host`; a frameset without depth or colour, or whose
 colour lies more than half a frame from its depth, as some do while the
-colour camera starts, is counted failed and never queued. The projector is
+D455 restarts its depth in its first 1.2 s, is counted failed and never
+queued, as is a frame `poll` or `drain` refuses; with a manual colour
+exposure the colour runs out of step with the depth, up to half a frame. The
+counters restart at `start`, not at `stop`. The projector is
 on by default (`Options::emitter`); `Options::color_controls` writes a
 manual exposure, checked against the camera's ranges first and read back,
 as Orbbec's. The frames wait in an internal queue (`realsense/frame_queue.hpp`)
