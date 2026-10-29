@@ -100,7 +100,7 @@ bare_plane_textures_size}` -> `vs_test::...` (sensor/tests).
 | `VR_WITH_ORBBEC` | `VS_WITH_ORBBEC` |
 | `VR_WITH_FFMPEG` | `VS_WITH_FFMPEG` |
 | `VR_WITH_CUDA` | `VS_WITH_CUDA` |
-| — | `VS_BUILD_TESTS` (default: top level; recon's CI passes ON), `VS_WARNINGS_AS_ERRORS`, `VS_SANITIZE` |
+| — | `VS_BUILD_TESTS` and `VS_WARNINGS_AS_ERRORS` (default: top level; in recon's build, recon's `VR_` ones), `VS_SANITIZE` |
 | `VR_ORBBEC_SDK_VERSION`, `_MAJOR`, `_MINOR`, `_PATCH`, `VR_ORBBEC_SDK_MIN_VERSION` | `VS_ORBBEC_SDK_VERSION...` (set in the sensor package's root directory scope) |
 | `VR_FFMPEG` (pkg-config prefix; `PkgConfig::VR_FFMPEG`) | `VS_FFMPEG` (`PkgConfig::VS_FFMPEG`) |
 | `VR_NVJPEG_INCLUDE_DIR` | `VS_NVJPEG_INCLUDE_DIR` |
@@ -163,11 +163,13 @@ bare_plane_textures_size}` -> `vs_test::...` (sensor/tests).
 `recon_camera_*` -> `sensor_camera_*`,
 `recon_sensor_X` -> `sensor_X`,
 `recon_subproject_camera_only` -> `sensor_subproject_camera_only`,
-`recon_subproject_apple_ffmpeg` -> `sensor_subproject_apple_ffmpeg`.
+`recon_subproject_apple_ffmpeg` -> `sensor_subproject_apple_ffmpeg`,
+`recon_subproject_glsl` -> `sensor_subproject_glsl` (the pinhole was recon's
+last exported GLSL).
 Split: `recon_sensor_gpu_frame_prep`'s fusion half -> `recon_tsdf_prepared_frame`;
 `recon_sensor_orbbec_sync_config`'s committed-rig case -> `recon_example_rig_sync_config`.
-New: `sensor_smoke`, `sensor_package_boundary`, `sensor_subproject_{defaults, old_sensor,
-glsl, old_core, core_without_vulkan}`, `recon_library_sensor_links`.
+New: `sensor_smoke`, `sensor_package_boundary`, `sensor_subproject_{clean, defaults,
+old_sensor, old_core, core_without_vulkan}`, `recon_library_sensor_links`.
 
 #### Files
 

@@ -3923,8 +3923,12 @@ consumer would: its defaults, an old floor, a GLSL consumer, an old core, a
 core without Vulkan, camera-only, and FFmpeg on Apple refused. The
 frame-prep test's fusion half is recon's `recon_tsdf_prepared_frame`.
 
-**Validation.** Release, validation layer on. Apple M5 Max: recon with the
-package and grid fetched 83/83 (the package's 43 among them), the package
-alone 43/43, camera-only with Vulkan disabled 6/6. RTX 4090 with Orbbec,
-FFmpeg and CUDA: the package alone 41 passed and 2 skipped (the two JPEG
-skips it had in recon), camera-only 6/6.
+**Validation.** Release, validation layer on, recon's options at their
+defaults (the package's 43 tests and `-Werror` with them). Apple M5 Max:
+recon with the package and grid fetched 83/83, the package alone 43/43,
+camera-only with Vulkan disabled 6/6, the iOS build check passed. RTX 4090
+with Orbbec, FFmpeg and CUDA: recon 81 passed and 2 skipped of 83, the
+package alone 41 passed and 2 skipped of 43 (the two JPEG tests, which skip
+where the GPU has no hardware JPEG engine, as on main), camera-only 6/6;
+each of main's 73 tests there has a counterpart, and the viewer leg's 7
+pass on main and here.
