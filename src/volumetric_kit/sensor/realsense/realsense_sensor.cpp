@@ -160,7 +160,16 @@ struct RealSenseSensor::Impl {
   bool running = false;
   std::atomic<std::uint64_t> delivered{0};
 
-  ~Impl() { stop(); }
+  ~Impl() {
+    stop();
+    // The callback holds the device, and librealsense's context waits
+    // forever in its destructor for a callback that does (measured on the
+    // lab D455 with 2.59.1): replaced first, which lets the device go.
+    try {
+      context.set_devices_changed_callback([](rs2::event_information&) {});
+    } catch (...) {  // NOLINT(bugprone-empty-catch): nothing left to stop
+    }
+  }
 
   void stop() noexcept {
     if (running && pipeline) {

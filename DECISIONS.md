@@ -278,6 +278,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   colour as its SDK hands it over, staged beside the depth as packed words
   are and converted on the device. `PictureReadback` refuses YUYV.
 
+- [**2026-10-29**](#2026-10-29--the-realsense-d400-driver-is-sensor_realsense-the-cameras-own-depth-and-its-colour-cameras-yuyv-on-the-host-librealsense-a-prerequisite-ci-installs-tested-against-rsutilh-with-no-camera) —
+  The RealSense D400 driver is `sensor_realsense` (`RealSenseSensor`): the
+  camera's own depth and its colour camera's YUYV on the host, converted on
+  the device by `GpuFramePrep`; librealsense 2.59.1 a prerequisite that CI
+  installs; tested against librealsense's own `rsutil.h`, with no camera and
+  no virtual one.
+
 ## Decision record
 
 ### 2026-08-02 — The `sensor` tier is a *contract*, not a driver collection: a capture driver lives here only if this repo can build
@@ -4105,3 +4112,63 @@ built on this checkout passes its 40 tests. Six planted bugs each failed
 rows, host planes copied from the pointer rather than the first plane, Cr
 read beside Cb, `has_color()` blind to host planes, and YUYV of odd width
 accepted. The Mac is CI's leg.
+
+### 2026-10-29 — The RealSense D400 driver is `sensor_realsense`: the camera's own depth and its colour camera's YUYV on the host, librealsense a prerequisite CI installs, tested against `rsutil.h` with no camera.
+
+**The rule.** `RealSenseSensor` (`realsense/realsense_sensor.hpp`, target
+`sensor_realsense`, `VS_WITH_REALSENSE`) is one RealSense D400 camera as an
+`IRgbdSensor`, free-running, its SDK behind a pointer:
+- Each frame is the camera's Z16 depth, in the left infrared camera and
+  rectified (its factory model a pinhole; a lens on it is refused), and its
+  colour camera's picture as the camera sends it, YUYV on the host
+  (`YuvImage::host`, BT.601 limited range, chroma sited left), which
+  `GpuFramePrep` converts on the device (the host-planes entry above). The
+  frame holds its frameset; nothing is copied or converted on the host.
+- The factory colour lens, inverse Brown-Conrady, is taken as OpenCV's
+  `k1, k2, p1, p2, k3`, and plain Brown-Conrady too; other models with
+  coefficients are refused. The extrinsic is librealsense's, column-major.
+- Timestamps are librealsense's global time, on the host's
+  `system_clock` (`ClockDomain::Host`); a camera without it is refused.
+  A frameset without depth or colour, or whose colour lies more than half
+  a frame from its depth, is counted failed and never queued.
+- The projector is on by default (`Options::emitter`); `color_controls`
+  writes a manual exposure, checked against the camera's ranges before any
+  write and read back.
+- librealsense 2.59.1 or later is a prerequisite, found through its own
+  CMake package (`cmake/vs_realsense.cmake`), never fetched: Homebrew's
+  formula on macOS (the Mac leg checks it), RealSense's apt repository on
+  Ubuntu, which CI's `install-librealsense` action installs at the floor,
+  its signing key checked against a pinned SHA256 first. Every CI leg builds
+  it.
+
+**Why.** The owner's RealSense design (2026-10-29): the camera's own depth
+with the projector on, beside a later stereo path for Fast-FoundationStereo
+from its infrared pair with the projector off; colour converted on the GPU
+only, so the driver hands over the camera's YUYV, not librealsense's RGB
+(a CPU conversion). The D455's colour lens through OpenCV's model projects
+within 0.016 px of librealsense's own over its picture (the difference is
+the tangential term applied after the radial one), so the GPU pass's one
+lens model serves it. The syncer matches depth with colour up to 1.3 s
+stale in a camera's first second (measured on the lab D455), which the
+half-frame rule keeps out of fusion.
+
+**Tests, no hardware and no virtual camera** (the owner: librealsense's
+software device would test a fake more than the camera):
+- `sensor_realsense_conversion`: the D455's colour lens projects within
+  0.0158 px of `rs2_project_point_to_pixel` over its picture, plain
+  Brown-Conrady within 0.00014 px; the depth stream is a pinhole and refused
+  with a lens; other lens models with coefficients are refused, named; bad
+  intrinsics are refused; the extrinsic moves points within 1.5e-7 m of
+  `rs2_transform_point_to_point`, and a scaled one is refused; the half-frame
+  rule; a frame points into its view, YUYV coded as librealsense converts
+  it, stamped in nanoseconds, and a view that contradicts its streams is
+  refused; the option checks;
+- `sensor_realsense_queue`: the frame queue's contract, with a producer
+  thread: every frame taken or dropped once, in order;
+- `sensor_realsense_open`: options refused before any camera is looked
+  for, and a serial no camera has refused as `NotFound`;
+- `sensor_realsense_sdk_smoke`: the librealsense that loads is the one
+  configured, and its context opens.
+
+**Validation.** VALIDATION_TBD
+

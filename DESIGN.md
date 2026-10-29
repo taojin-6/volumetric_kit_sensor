@@ -41,9 +41,9 @@ recon's examples assemble the rest.
   pinhole cameras and `ColorEncoding`, so it
   depends on **`camera` and `frame` alone** — it sits beside recon's fusion tiers,
   not on top of them — and bundles **no drivers**: one ships here only if this package can build
-  *and* test it (the 2026-08-02 decision). The one that does, Orbbec, is a
-  target of its own (`orbbec/`), so `sensor_interface` never links a vendor
-  SDK. The HEVC and JPEG decoders are another target of
+  *and* test it (the 2026-08-02 decision). The ones that do, Orbbec and
+  RealSense, are targets of their own (`orbbec/`, `realsense/`), so
+  `sensor_interface` never links a vendor SDK. The HEVC and JPEG decoders are another target of
   their own (`video/`, on the GPU's hardware) and link no camera tier:
   `frame` and, on Apple, the Apple importer (`apple/`), which links
   `frame` alone. The H.265 syntax they read on the host is a target of its
@@ -401,6 +401,29 @@ matrix, range and chroma siting to its caller, who alone knows how the
 samples are coded (a stream's unlabelled colour, say). An iOS camera's
 pictures, such as ARKit's `capturedImage`, can come through it with no
 conversion on the host.
+**`realsense/`** (`VS_WITH_REALSENSE`, librealsense 2.59.1 or later, found
+through its own CMake package) is a RealSense D400 (the D455):
+**`RealSenseSensor`**, one free-running camera (the 2026-10-29 RealSense
+decision). Each frame is the camera's own depth (Z16, in the left infrared
+camera, rectified, so the factory model has no lens) and its colour camera's
+YUYV on the host (`YuvImage::host`, BT.601 limited range, chroma sited left:
+what librealsense converts by), which `GpuFramePrep` stages and converts on
+the device; nothing converts on the host. The factory colour lens,
+librealsense's inverse Brown-Conrady, is taken as OpenCV's (k1, k2, p1, p2,
+k3): it projects within 0.016 px of `rs2_project_point_to_pixel` over the
+D455's picture, the difference being the tangential term applied after the
+radial one; other lens models with coefficients are refused. Timestamps are
+librealsense's global time, on the host's `std::chrono::system_clock`, so
+`SensorInfo::clock` is `Host`; a frameset without depth or colour, or whose
+colour lies more than half a frame from its depth, as some do while the
+colour camera starts, is counted failed and never queued. The projector is
+on by default (`Options::emitter`); `Options::color_controls` writes a
+manual exposure, checked against the camera's ranges first and read back,
+as Orbbec's. The frames wait in an internal queue (`realsense/frame_queue.hpp`)
+that keeps the `IRgbdSensor` contract: newest wins, a deeper queue drains
+oldest first, every frame passed over or pushed out counted dropped. Each
+frame holds its frameset, so librealsense's bounded frame pool is the limit
+on how many a consumer may keep.
 **`IRgbdSensor`** (`rgbd_sensor.hpp`) is one sensor: its
 `SensorInfo` from when it opens (id, the cameras' factory models at the
 opened modes, `depth_to_color`, rig role, clock, pose source, rate, the
