@@ -8,8 +8,8 @@
 // axis or a half-pixel bias never raises an error -- it produces a smeared or
 // subtly misaligned reconstruction that looks like a tracking problem. Pure
 // host math (no device), so they always run, which is the whole reason this
-// arithmetic lives in recon while the ARKit driver that feeds it does not (the
-// 2026-08-02 sensor-tier decision).
+// arithmetic lives in this package while the ARKit driver that feeds it does
+// not (the 2026-08-02 sensor-tier decision).
 
 #include <cmath>
 #include <cstdint>
