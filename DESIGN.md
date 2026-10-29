@@ -16,8 +16,9 @@ volumetric_kit_recon's DESIGN.md with the package (2026-10-29).
 ## Tiers
 
 The package sits on volumetric_kit_core alone, and nothing in it includes
-recon (`sensor_recon_free`). recon's libraries link the `frame` tier alone
-(`recon_library_sensor_links`); recon's examples assemble the rest.
+recon or grid, its sibling on the core (`sensor_package_boundary`). recon's
+libraries link the `frame` tier alone (`recon_library_sensor_links`);
+recon's examples assemble the rest.
 
 - **`camera`** — the camera vocabulary the drivers and the interface
   share: the double-precision `CameraModel` (image size, intrinsics, OpenCV's
@@ -70,7 +71,16 @@ recon (`sensor_recon_free`). recon's libraries link the `frame` tier alone
   `sensor_frame`, `sensor_interface`, `sensor_prep`, `sensor_array`,
   `sensor_video`, `sensor_video_syntax`, `sensor_apple`, `sensor_orbbec`
   and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
-  `sensor`, which is why the interface's is `sensor_interface`).
+  `sensor`, which is why the interface's is `sensor_interface`). `io` is
+  the one exception to `sensor_<tier>` and `<tier>/export.hpp`: its
+  target, export header and macro are named after the image files it holds
+  (`sensor_image_io`, `io/image_io_export.hpp`, `VS_IMAGE_IO_API`), as they
+  were in recon.
+- Package-wide headers: `version.hpp` at the root, built by `sensor_camera`
+  so camera-only builds have it; `frame/device_requirements.hpp` and
+  `frame/vector_types.hpp` in `frame`, the lowest tier on Vulkan and the one
+  every tier past `camera` links (the camera tier names its double types in
+  `camera/geometry.hpp`).
 
 ## Colour at the boundary
 

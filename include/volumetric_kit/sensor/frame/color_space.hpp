@@ -7,7 +7,8 @@
 /// @brief The color-space vocabulary: what encoding a frame declares, and the
 ///        one transfer curve every tier converts through.
 ///
-/// The rule this header exists to enforce (DESIGN.md, "Color space"):
+/// The rule this header exists to enforce (DESIGN.md, "Colour at the
+/// boundary"):
 ///
 /// > **8-bit color is encoded. Float color is linear. Convert once at the
 /// > sensor boundary, encode once at presentation.**
@@ -30,13 +31,13 @@
 /// @ref ColorEncoding::Primaries a value something converts rather than a label
 /// something reads.
 ///
-/// This lives in `core` rather than `sensor` for the reason the camera
-/// parameter blocks do: `sensor` branches off `core` *beside* the fusion tiers,
-/// so `tsdf` cannot include from it. The voxel colour attribute's format, the
-/// curve the kernels decode with included, is `volume`'s
-/// (`volume/voxel_color.hpp` and its GLSL); `recon_volume_voxel_color` pins
-/// that to this curve, because two implementations of one curve is exactly
-/// the drift this header exists to prevent.
+/// This lives in `frame`, the contract, for the reason the camera parameter
+/// blocks do: a consumer that fuses frames reads it without the camera stack
+/// that made them. A consumer that keeps its own copy of the curve, as grid's
+/// voxel colour attribute does (`volume/voxel_color.hpp` and its GLSL), pins
+/// that copy to this one in a test (recon's `recon_tsdf_voxel_color_space`),
+/// because two implementations of one curve is exactly the drift this header
+/// exists to prevent.
 
 #include <cmath>
 #include <cstdint>
@@ -81,7 +82,7 @@ struct ColorEncoding {
     Linear,
     /// BT.2020 with the PQ (SMPTE ST 2084) absolute-luminance HDR curve.
     /// Declarable so a driver can be truthful; mapping it into an 8-bit SDR
-    /// canonical form needs tone mapping, which this repo does not do, so
+    /// canonical form needs tone mapping, which this package does not do, so
     /// `sensor::to_canonical` reports `Status::Code::Unsupported` rather
     /// than fusing something quietly wrong.
     Bt2020Pq,
@@ -216,7 +217,7 @@ inline std::uint32_t pack_linear_to_srgb(const Vec3f& linear) noexcept {
 ///
 /// All three primary sets are defined at D65, so this is a pure primaries
 /// change with no chromatic adaptation. The BT.709 case is the identity, which
-/// is why every surface and sensor this repo has run on costs nothing here --
+/// is why every sensor this package has run on costs nothing here --
 /// and why the conversion is written down before a wide-gamut source makes it
 /// something other than identity.
 ///

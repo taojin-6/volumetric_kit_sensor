@@ -5,11 +5,11 @@
 
 /// @file frame/device_frame.hpp
 /// @brief The frame contract: one posed, undistorted RGB-D frame on the
-///        device, the shape fusion, texturing and a sender read.
+///        device, the shape every consumer reads.
 ///
-/// A camera stack is anything that produces these: `GpuFramePrep` from a raw
-/// RGB-D sensor's frames, or a pipeline that makes depth on the device
-/// itself. Every producer keeps the same contract:
+/// A camera stack is anything that produces these: this package's frame
+/// preparation from a raw RGB-D sensor's frames, or a pipeline that makes
+/// depth on the device itself. Every producer keeps the same contract:
 ///
 /// - the buffers are device-local storage buffers, allocated on the
 ///   consumer's `VkDevice`;
@@ -30,14 +30,11 @@
 
 namespace volumetric_kit::sensor {
 
-/// @brief One frame on the device, pinhole and R'G'B', in the shapes the
-///        fusion tiers read.
+/// @brief One frame on the device, pinhole and R'G'B'.
 ///
-/// Depth and colour keep their own cameras. Pass @ref depth with
-/// @ref depth_camera to `integrate` (or to fusion as a `tsdf::FrameInput`),
-/// and to `allocate_from_depth` with the camera through
-/// `tsdf::to_depth_pinhole`; pass @ref color as `ColorFrame::buffer` with
-/// @ref color_camera and `ColorFrame::coverage_in_alpha` set.
+/// Depth and colour keep their own cameras, and neither is registered to the
+/// other: @ref depth is read through @ref depth_camera, and @ref color through
+/// @ref color_camera, its high byte the pixel's coverage.
 ///
 /// The frame holds its buffers, which are `device_storage_buffer`s, so a
 /// `CommandBatch` can copy or read them back. One kept past the producer's
@@ -46,15 +43,14 @@ namespace volumetric_kit::sensor {
 /// them. The `Allocator` must outlive the frame, as it must the producer.
 struct DeviceFrame {
   /// Row-major depth in metres, `depth_camera.width * height` floats, less
-  /// the producer's depth offset (`GpuFramePrepConfig::depth_offset_m`); 0
-  /// where the sensor had no return, the offset leaves none, or the lens maps
-  /// outside its image.
+  /// any depth offset the producer corrects for; 0 where the sensor had no
+  /// return, the offset leaves none, or the lens maps outside its image.
   std::shared_ptr<const core::Buffer> depth;
   /// Row-major colour, `color_camera.width * height` words: R, G and B in the
   /// low three bytes, and the pixel's coverage in the high one -- 0xFF where
   /// the lens maps inside the captured picture, 0 (and black) where it maps
-  /// outside, which `ColorFrame::coverage_in_alpha` has fusion skip. Null
-  /// when the frame has no colour.
+  /// outside, which a consumer skips rather than reads as black. Null when
+  /// the frame has no colour.
   std::shared_ptr<const core::Buffer> color;
   DepthCameraParams depth_camera{};  ///< The undistorted depth camera.
   ColorCameraParams color_camera{};  ///< The undistorted colour camera.

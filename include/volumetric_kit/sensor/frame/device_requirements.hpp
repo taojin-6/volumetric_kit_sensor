@@ -10,12 +10,13 @@
 /// that runs the sensor package alone passes @ref device_requirements to
 /// `Instance::select_physical_device` and `Device::create`; one that also
 /// runs another package's kernels on the same device merges the two lists
-/// with the core's `merge` first.
+/// (that package's, `consumer_requirements` below) with the core's `merge`
+/// first.
 ///
 /// @code
 /// VKC_ASSIGN(const core::DeviceRequirements reqs,
 ///            core::merge(sensor::device_requirements(),
-///                        recon::device_requirements()));
+///                        consumer_requirements));
 /// VKC_ASSIGN(core::PhysicalDeviceInfo gpu,
 ///            instance.select_physical_device(reqs));
 /// VKC_ASSIGN(core::Device device, core::Device::create(instance, gpu, reqs));

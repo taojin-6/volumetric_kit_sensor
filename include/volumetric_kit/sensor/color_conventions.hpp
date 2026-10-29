@@ -73,8 +73,8 @@ namespace volumetric_kit::sensor {
 ///         - `Status::Code::Unsupported` for
 ///           @ref ColorEncoding::Transfer::Bt2020Pq, whose absolute-luminance
 ///           HDR curve needs tone mapping into an 8-bit SDR form -- something
-///           this repo does not do, and reports rather than approximating into
-///           a quietly wrong result.
+///           this package does not do, and reports rather than approximating
+///           into a quietly wrong result.
 VS_INTERFACE_API core::Status to_canonical(const std::uint32_t* src,
                                            std::size_t count,
                                            const ColorEncoding& enc,

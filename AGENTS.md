@@ -17,7 +17,8 @@ consumers posed, undistorted RGB-D frames on the device (`DeviceFrame`).
 - It builds on [volumetric_kit_core](https://github.com/taojin-6/volumetric_kit_core)
   alone (fetched, pinned by commit), under the core's names (`core::Status`,
   `core::Device`). Code two or more siblings need belongs in the core.
-- It never includes recon, which sits above it (`sensor_recon_free`).
+- It never includes recon, which sits above it, or grid, a sibling on the
+  core (`sensor_package_boundary`).
   recon's libraries link `sensor_frame` alone, so a change there is a change
   to recon's contract.
 - A sensor driver belongs here only if this package can build and test it.

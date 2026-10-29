@@ -7,7 +7,7 @@
 /// @brief A camera as it captures: its image size, pinhole intrinsics, and
 ///        OpenCV's rational lens.
 ///
-/// Conventions, the same everywhere in this repo:
+/// Conventions, the same everywhere in this package:
 /// - The camera looks down **+Z** with **+X right** and **+Y down**.
 /// - Pixel centres sit at integer coordinates, so a W-pixel-wide image spans
 ///   `[-0.5, W - 0.5]`. Normalized coordinates are the pinhole's:

@@ -47,9 +47,9 @@ struct GpuFramePrepConfig {
   ///        @ref DeviceFrame::color.
   ///
   /// Left empty (the default) the buffer is `VK_SHARING_MODE_EXCLUSIVE` to
-  /// the pass's own family, which is right for a recon-only consumer and what
-  /// the pass always made. A consumer on another queue family -- a renderer
-  /// copying the colour into its atlas -- must name both, as
+  /// the pass's own family, which is right for a consumer on that family and
+  /// what the pass always made. A consumer on another queue family -- a
+  /// renderer copying the colour into its atlas -- must name both, as
   /// `vgrid::mesh::MarchingCubesConfig::queue_families` explains for the mesh:
   /// reading an EXCLUSIVE buffer from a family that does not own it is
   /// undefined, and on Apple, where Metal has no ownership to violate, it is
@@ -69,10 +69,10 @@ struct GpuFramePrepConfig {
   ///        colour and independently of it.
   ///
   /// Left empty (the default) depth is EXCLUSIVE to the pass's own family,
-  /// as recon's tiers read it. A consumer on another family -- a renderer
-  /// drawing points from the depth in place -- names both. The buffer has no
-  /// usage beyond the pass's storage and transfer usage (no vertex usage); a
-  /// consumer reads it as a storage buffer.
+  /// as a fusion on that family reads it. A consumer on another family -- a
+  /// renderer drawing points from the depth in place -- names both. The buffer
+  /// has no usage beyond the pass's storage and transfer usage (no vertex
+  /// usage); a consumer reads it as a storage buffer.
   std::uint32_t depth_queue_families[core::BufferDesc::kMaxQueueFamilies] = {};
   /// Entries in @ref depth_queue_families; refused by
   /// @ref GpuFramePrep::create as for @ref color_queue_family_count.

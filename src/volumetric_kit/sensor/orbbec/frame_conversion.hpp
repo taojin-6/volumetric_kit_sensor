@@ -4,8 +4,8 @@
 #pragma once
 
 // Internal (not installed): the arithmetic between the Orbbec SDK's types and
-// recon's -- the camera models, the extrinsic, the sync settings -- the option
-// checks, and the colour controls' write and read-back, kept out of the
+// this package's -- the camera models, the extrinsic, the sync settings -- the
+// option checks, and the colour controls' write and read-back, kept out of the
 // driver's .cpp so host tests pin them with no camera attached.
 
 #include <cstdint>
@@ -40,8 +40,8 @@ core::Result<camera::CameraModel> camera_model_from(
     const OBCameraIntrinsic& intrinsic, const OBCameraDistortion& distortion,
     const std::string& what, const std::string& who);
 
-/// The SDK's lens model by recon's name for it, as `OrbbecDeviceInfo` records
-/// it and @ref camera_model_from's refusal names it:
+/// The SDK's lens model by this package's name for it, as `OrbbecDeviceInfo`
+/// records it and @ref camera_model_from's refusal names it:
 /// `OB_DISTORTION_BROWN_CONRADY_K6` is "brown-conrady-k6", and so on; a value
 /// this SDK does not name is "unknown-" and its number.
 std::string lens_model_name(OBCameraDistortionModel model);

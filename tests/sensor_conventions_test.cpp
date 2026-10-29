@@ -295,8 +295,8 @@ int main() {
     CHECK((rotated[0] & 0xFFFFFFu) == 0xFFFFFFu);
 
     // PQ is refused rather than approximated: mapping an absolute-luminance HDR
-    // curve into an 8-bit SDR form is tone mapping, which this repo does not
-    // do. A driver that declares it gets an inspectable error instead of a
+    // curve into an 8-bit SDR form is tone mapping, which this package does
+    // not do. A driver that declares it gets an inspectable error instead of a
     // quietly wrong reconstruction -- the point of declaring at all.
     CHECK(!sensor::to_canonical(src, 3,
                                 {sensor::ColorEncoding::Transfer::Bt2020Pq,

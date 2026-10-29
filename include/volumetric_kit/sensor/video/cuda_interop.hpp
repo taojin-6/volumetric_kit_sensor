@@ -4,7 +4,7 @@
 #pragma once
 
 /// @file video/cuda_interop.hpp
-/// @brief CUDA on the GPU of a recon device: its primary context, a stream,
+/// @brief CUDA on the GPU of a Vulkan device: its primary context, a stream,
 ///        and a buffer or an image the device exported, mapped into CUDA.
 ///
 /// Built with VS_WITH_CUDA (Linux) only, and includes cuda.h. libcuda is

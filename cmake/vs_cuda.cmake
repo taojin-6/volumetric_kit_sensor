@@ -9,9 +9,9 @@
 # CMakeLists only when VS_WITH_CUDA is ON, which needs VS_WITH_FFMPEG, as
 # VS_WITH_FFMPEG needs it off Apple.
 #
-# recon takes only headers from it and loads libcuda and libnvjpeg at run time,
-# but CMake's FindCUDAToolkit locates the toolkit through nvcc. On Ubuntu, from
-# NVIDIA's repository: apt install cuda-nvcc-13-4 cuda-cudart-dev-13-4
+# The package takes only headers from it and loads libcuda and libnvjpeg at run
+# time, but CMake's FindCUDAToolkit locates the toolkit through nvcc. On Ubuntu,
+# from NVIDIA's repository: apt install cuda-nvcc-13-4 cuda-cudart-dev-13-4
 # cuda-driver-dev-13-4 libnvjpeg-dev-13-4 and point CUDAToolkit_ROOT at
 # /usr/local/cuda-13.4 if nvcc is not on PATH.
 

@@ -89,11 +89,11 @@ class VS_ORBBEC_API OrbbecSensor final : public IRgbdSensor {
     bool apply_sync = false;
     /// Stamp each frame with the SDK's global timestamp -- the camera's clock
     /// mapped onto the host's `std::chrono::system_clock` (the SDK's default
-    /// host clock, which recon never changes), the mapping re-fitted as the
-    /// two drift -- so it compares with other sensors' (`ClockDomain::Host`);
-    /// otherwise with the camera's own clock. Each @ref start also sets the
-    /// camera's clock to the host's, once, before it streams, so its first
-    /// frames are mapped.
+    /// host clock, which this driver never changes), the mapping re-fitted as
+    /// the two drift -- so it compares with other sensors'
+    /// (`ClockDomain::Host`); otherwise with the camera's own clock. Each @ref
+    /// start also sets the camera's clock to the host's, once, before it
+    /// streams, so its first frames are mapped.
     bool sync_clock_to_host = false;
     /// Switch off the SDK's log file (it writes `./Log/` at DEBUG by default)
     /// and route its console sink at WARN, at @ref open, and set FFmpeg's log

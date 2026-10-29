@@ -5,7 +5,7 @@
 
 /// @file camera_conventions.hpp
 /// @brief Conversions between a capture API's camera conventions and the ones
-///        this repo projects with.
+///        this package projects with.
 ///
 /// These live here, in platform-neutral C++, rather than in whichever
 /// platform-bound driver produced the numbers (the 2026-08-02 sensor-tier
@@ -25,10 +25,11 @@
 namespace volumetric_kit::sensor {
 
 /// @brief Reinterpret a camera-to-world transform from the OpenGL-style camera
-///        convention into the computer-vision one this repo projects with.
+///        convention into the computer-vision one this package projects with.
 ///
 /// ARKit, ARCore and OpenGL all place the camera looking down **−Z** with **+Y
-/// up**; recon projects with `u = fx·x/z + cx`, i.e. looking down **+Z** with
+/// up**; this package projects with `u = fx·x/z + cx`, i.e. looking down **+Z**
+/// with
 /// **+Y down**. The two differ by a 180° roll about the view axis, so a pose
 /// taken straight from ARKit describes a camera pointing the opposite way and
 /// mirrored vertically.
@@ -61,7 +62,7 @@ VS_INTERFACE_API Mat4f cv_from_gl_camera(const Mat4f& cam_to_world);
 /// partial-colouring caveats an independently-posed colour camera carries.
 ///
 /// Focal lengths scale with the size ratio. The principal point does **not**
-/// scale naively: with pixel centres at integer coordinates (this repo's
+/// scale naively: with pixel centres at integer coordinates (this package's
 /// convention — @ref DepthCameraParams feeds
 /// `x = (u − cx)·d/fx` on integer pixels), an image of width `W` spans
 /// `[−0.5, W−0.5]`, so the correct map is

@@ -100,7 +100,7 @@ struct RgbdFrame {
   /// frame decoded from H.265 or taken from a dataset.
   ColorBitstream color_bitstream{};
 
-  /// The colour camera's frame to the world's, in this repo's camera axes
+  /// The colour camera's frame to the world's, in this package's camera axes
   /// (+Z forward, +Y down): where the sensor sits, from its calibration or,
   /// for a tracked sensor, its own estimate for this frame.
   camera::Mat4d color_to_world = camera::Mat4d(1.0);

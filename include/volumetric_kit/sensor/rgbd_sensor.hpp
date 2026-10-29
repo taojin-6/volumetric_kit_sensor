@@ -15,9 +15,10 @@
 /// are on -- is its @ref SensorInfo, which a sensor array reads to start the
 /// sensors in order and group their frames.
 ///
-/// A driver ships in this repo only if this repo can build and test it (the
-/// 2026-08-02 decision); a platform-bound one (ARKit) implements this from
-/// its application's repo. Like the frame, this header reaches no Vulkan.
+/// A driver ships in this package only if the package can build and test it
+/// (the 2026-08-02 decision); a platform-bound one (ARKit) implements this
+/// from its application's repository. Like the frame, this header reaches no
+/// Vulkan.
 
 #include <cstddef>
 #include <cstdint>

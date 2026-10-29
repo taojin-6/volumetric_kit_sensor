@@ -97,7 +97,7 @@ core::Status check_orientation(ob::Device& device, const std::string& who) {
   return {};
 }
 
-// The SDK reports every failure as a thrown ob::Error; this repo returns
+// The SDK reports every failure as a thrown ob::Error; this package returns
 // Status across its API. `who` names the caller ("OrbbecSensor", ...).
 core::Status sdk_error(const std::string& who, const std::string& what,
                        const std::exception& e) {

@@ -77,6 +77,11 @@ entries relevant to your task; later amendments supersede earlier rules.
   software decoding and fallbacks it kept went on 2026-10-06.
   *Amended 2026-10-25:* VideoToolbox's plane images are sampled where they
   are, not copied (the plane-image entry).
+- [**2026-10-03**](https://github.com/taojin-6/volumetric_kit_grid/blob/main/DECISIONS.md#2026-10-03--asset-loading-and-export-belong-to-io-with-assimp-as-an-optional-private-backend) —
+  Asset loading and export move into the installed `io` tier; Assimp adds
+  optional static mesh import, while dataset and normalization policy stay
+  with consumers. (grid's entry, mostly mesh files; the 2026-10-28 `io`
+  entry below amends it for images.)
 - [**2026-10-06**](#2026-10-06--the-familys-camera-vocabulary-is-recons-camera-tier-a-double-precision-camera-model-and-the-sensor-arrays-calibration-file-version-2) —
   The family's camera vocabulary is recon's `camera` tier: a double-precision
   camera model with one templated projection, rigid transforms, and the
@@ -253,8 +258,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   recon's `sensor/` until it has a repository of its own: tiers `sensor_*`,
   namespace `volumetric_kit::sensor`, macros and options `VS_`, on the core
   alone. recon's libraries link `sensor_frame` alone, and nothing in the
-  package includes recon. The owner's decisions of 2026-10-28: repositories
-  now, these names, a future stereo depth producer NVIDIA-only at first.
+  package includes recon or grid. The owner's decisions of 2026-10-28:
+  repositories now, these names, a future stereo depth producer NVIDIA-only
+  at first.
 
 ## Decision record
 
@@ -3858,7 +3864,9 @@ nothing else. Adding `recon_mesh` to `recon_image_io`'s links fails
 decisions. However, for D2, we should split now." The sensor and grid
 packages each become a repository of their own now, by way of an in-repo
 package that builds alone and is then extracted with its history, the
-paths before the move included. The names were approved as
+paths before the move included: the extraction keeps the moved files' old
+paths as well as `sensor/` and renames them, since `sensor/` alone starts
+at the move. The names were approved as
 proposed (the sensor design's D2): package `volumetric_kit_sensor`,
 namespace `volumetric_kit::sensor` with `sensor::camera` for the
 vocabulary, targets `sensor_*`, options and macros `VS_`. A future stereo
@@ -3879,11 +3887,15 @@ depth producer is NVIDIA-only at first (D3).
   `recon_tsdf`, `recon_texture` and `recon_sender` link it, and no recon
   library links another sensor tier. recon's examples link whichever tiers
   they assemble. recon exports no GLSL of its own now.
-- Nothing under `sensor/` includes recon.
+- Nothing under `sensor/` includes recon, or grid, its sibling on the core.
 - recon declares the core, then the package, by `FetchContent_Declare` with
   `SOURCE_DIR ${PROJECT_SOURCE_DIR}/sensor`, then grid, and checks the
   package with `vkc_require_sibling`. An application declares it first, by
-  URL and commit with `SOURCE_SUBDIR sensor`, and its pin wins.
+  URL and commit with `SOURCE_SUBDIR sensor`, and its pin wins. In recon's
+  build the package's tests and `-Werror` follow recon's
+  (`VS_BUILD_TESTS`, `VS_WARNINGS_AS_ERRORS` set from the `VR_` ones), as
+  grid's did while it was in-tree, and it builds in `sensor/` under the
+  build tree.
 - Each package has its own device requirements, GLM aliases and version.
   `sensor::device_requirements()` names the decoders' optional extensions
   (`VK_KHR_external_memory_fd`, `VK_EXT_metal_objects`); recon's keeps
@@ -3902,10 +3914,11 @@ The move is one PR rather than tier by tier: halfway,
 stood side by side, breaking every unqualified `sensor::` lookup, and the
 package could not build alone until the last step.
 
-**Tests.** `sensor_recon_free` fails on a file under `sensor/` that
-includes `volumetric_kit/recon/`, and `recon_library_sensor_links` on a
-recon library that links a sensor tier other than `sensor_frame`; each was
-seen to fail by mutation. The package's subproject tests configure it as a
+**Tests.** `sensor_package_boundary` fails on a file under `sensor/` that
+includes `volumetric_kit/recon/` or `volumetric_kit/grid/`, and
+`recon_library_sensor_links` on a recon library that links a sensor tier
+other than `sensor_frame`, a generator expression around it included; each
+was seen to fail by mutation. The package's subproject tests configure it as a
 consumer would: its defaults, an old floor, a GLSL consumer, an old core, a
 core without Vulkan, camera-only, and FFmpeg on Apple refused. The
 frame-prep test's fusion half is recon's `recon_tsdf_prepared_frame`.

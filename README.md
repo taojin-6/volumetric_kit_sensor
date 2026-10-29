@@ -18,9 +18,9 @@ It lives in [volumetric_kit_recon](https://github.com/taojin-6/volumetric_kit_re
 ## In the family
 
 The package builds on [volumetric_kit_core](https://github.com/taojin-6/volumetric_kit_core)
-alone and never includes recon. An application declares the packages in the
-order core → sensor → grid → recon: recon's libraries link the frame tier
-(`sensor_frame`), and grid takes nothing from this package.
+alone and never includes recon or grid. An application declares the
+packages in the order core → sensor → grid → recon: recon's libraries link
+the frame tier (`sensor_frame`), and grid takes nothing from this package.
 
 ## Tiers
 
@@ -72,7 +72,8 @@ The GPU tests follow the core's test policy (its README, "Build and test"):
 ## Consuming the package
 
 recon declares it after the core, by `SOURCE_DIR`, so recon's configure
-takes the `VS_` options. An application fetches it pinned by commit (the
+takes the `VS_WITH_` options; there its tests and `-Werror` follow recon's.
+An application fetches it pinned by commit (the
 package has no install rules), declares it before anything that also does,
 and checks the floor it needs; FetchContent keeps the first declaration:
 

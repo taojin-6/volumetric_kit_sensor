@@ -9,7 +9,7 @@
 ///
 /// Double, not float, so a calibration's poses keep every digit until a GPU
 /// consumer narrows them once, where it uploads (`Mat4f(m)`). The types are
-/// GLM's, column-major like the rest of this repo (`m[column][row]`).
+/// GLM's, column-major like the rest of this package (`m[column][row]`).
 ///
 /// A transform is named by what it maps: `color_to_world` takes a point in
 /// the colour camera's frame to the world's.

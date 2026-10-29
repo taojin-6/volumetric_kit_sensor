@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 #
-# The iOS build check the macOS CI leg runs (recon's
-# .github/workflows/_build.yml): sensor_apple, sensor_video and the H.265
+# The iOS build check the macOS CI leg runs (.github/workflows/_build.yml,
+# recon's while the package is in its tree): sensor_apple, sensor_video and the H.265
 # syntax it reads with (sensor_video_syntax), which every Apple build has,
 # compiled for the iOS floor with the include paths and definitions of a macOS
 # build's compile commands, warnings as errors, the importer with ARC and its

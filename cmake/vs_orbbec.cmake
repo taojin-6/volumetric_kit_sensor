@@ -28,7 +28,7 @@
 #   `find_package(OrbbecSDK 2.10.6)` rejects even a matching SDK. The version is
 #   read out of that file instead, and checked here.
 
-# The oldest SDK this repo builds against. Raise it with the SDK the family
+# The oldest SDK this package builds against. Raise it with the SDK the family
 # installs, and keep it in lockstep with any sibling that finds the same copy
 # and with the SDK CI installs (.github/actions/install-orbbec-sdk).
 set(VS_ORBBEC_SDK_MIN_VERSION 2.10.6)
@@ -92,10 +92,11 @@ if(VS_ORBBEC_SDK_VERSION VERSION_LESS VS_ORBBEC_SDK_MIN_VERSION
    OR NOT VS_ORBBEC_SDK_VERSION_MAJOR EQUAL _vs_orbbec_min_major)
   message(
     FATAL_ERROR
-      "Orbbec SDK ${VS_ORBBEC_SDK_VERSION} at ${OrbbecSDK_DIR} is not one this "
-      "repo builds against: it requires ${VS_ORBBEC_SDK_MIN_VERSION} or a "
-      "newer ${_vs_orbbec_min_major}.x release. Point OrbbecSDK_ROOT at such "
-      "an SDK; the next configure finds it.")
+      "Orbbec SDK ${VS_ORBBEC_SDK_VERSION} at ${OrbbecSDK_DIR} is not one the "
+      "sensor package builds against: it requires "
+      "${VS_ORBBEC_SDK_MIN_VERSION} or a newer ${_vs_orbbec_min_major}.x "
+      "release. Point OrbbecSDK_ROOT at such an SDK; the next configure finds "
+      "it.")
 endif()
 
 message(STATUS "Orbbec SDK ${VS_ORBBEC_SDK_VERSION}: ${OrbbecSDK_DIR}")

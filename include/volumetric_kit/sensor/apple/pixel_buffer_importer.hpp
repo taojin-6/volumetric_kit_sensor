@@ -38,8 +38,8 @@ namespace volumetric_kit::sensor {
 /// any @ref YuvImage: the GPU pass waits on nothing.
 ///
 /// The images are shared across the queue families @ref create is given, as
-/// when a renderer on another family draws the pictures (MoltenVK hands recon
-/// and gfx different families).
+/// when a renderer on another family draws the pictures (MoltenVK hands a
+/// compute consumer and a renderer different families).
 ///
 /// @code
 /// auto importer = PixelBufferImporter::create(device, "ARKitCapture");
