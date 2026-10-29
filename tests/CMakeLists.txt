@@ -417,6 +417,29 @@ if(APPLE OR VS_WITH_FFMPEG)
     add_test(NAME sensor_video_cuda_error COMMAND sensor_video_cuda_error_test)
   endif()
 
+  if(VS_WITH_FFS)
+    # FFS (sensor_ffs) on the test models in data/ffs
+    # (tools/ffs/make_test_onnx.py), FFS's inputs and output with a disparity
+    # worked out by hand: FfsStereo's depth units, no returns, padding, both
+    # view layouts, the plan cache, the depth read in place by GpuFramePrep and
+    # the refusals; and StereoDepthSensor on a test camera, as any IRgbdSensor.
+    # They skip as the interop test does.
+    foreach(_vs_ffs_test stereo depth_sensor)
+      add_executable(sensor_ffs_${_vs_ffs_test}_test
+                     sensor_ffs_${_vs_ffs_test}_test.cpp)
+      target_link_libraries(
+        sensor_ffs_${_vs_ffs_test}_test
+        PRIVATE volumetric_kit::sensor_ffs volumetric_kit::sensor_prep
+                volumetric_kit::sensor_video volumetric_kit::core_test_policy)
+      target_compile_definitions(
+        sensor_ffs_${_vs_ffs_test}_test
+        PRIVATE VS_FFS_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data/ffs")
+      vs_target_warnings(sensor_ffs_${_vs_ffs_test}_test)
+      add_test(NAME sensor_ffs_${_vs_ffs_test}
+               COMMAND sensor_ffs_${_vs_ffs_test}_test)
+    endforeach()
+  endif()
+
   if(APPLE)
     # Compile the public JPEG decoder here so the executable's native-call
     # replacements intercept it in both static and shared library builds.

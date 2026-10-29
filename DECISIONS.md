@@ -296,6 +296,14 @@ entries relevant to your task; later amendments supersede earlier rules.
   rectification as OpenCV's `stereoRectify` computes it, once, then a
   Vulkan pass a view that samples through the colour pass's own code, into
   views CUDA can import. `YuvLayout::Luma` for mono pairs.
+- [**2026-10-29**](#2026-10-29--stereo-depth-on-nvidia-ffsstereo-runs-fast-foundationstereo-on-tensorrt-between-two-cuda-kernels-from-the-rectifiers-views-straight-into-a-vulkan-depth-buffer-and-stereodepthsensor-makes-any-stereo-camera-an-irgbdsensor) —
+  Stereo depth on NVIDIA (`sensor_ffs`, `VS_WITH_FFS`): `FfsStereo` runs an
+  FFS export on TensorRT, its plan cached by GPU, TensorRT, model and size,
+  between a CUDA kernel reading the rectifier's views in place and one
+  writing 16-bit depth into a Vulkan buffer (`RgbdFrame::depth_device`);
+  `StereoDepthSensor` is any `IStereoSensor` as an `IRgbdSensor`, on a
+  thread of its own. Research use: NVlabs' code and the 23-36-37 weights,
+  exported by `tools/ffs/export_onnx.py`, never vendored.
 
 ## Decision record
 
@@ -4355,3 +4363,93 @@ RealSense pair's luma from the host 0.097 ms (`Luma8` or `Rgba8`), most of
 it the 1.8 MB copy up to the device; YUYV from the host as `Rgba8`
 0.179 ms; on the host 0.04 ms to 0.46 ms a pair, nearly all of it the wait
 for the submit. The Mac is CI's leg.
+
+### 2026-10-29 — Stereo depth on NVIDIA: `FfsStereo` runs Fast-FoundationStereo on TensorRT between two CUDA kernels, from the rectifier's views straight into a Vulkan depth buffer, and `StereoDepthSensor` makes any stereo camera an `IRgbdSensor`.
+
+**The rule.** A target of its own, `sensor_ffs` (`VS_WITH_FFS`, which needs
+`VS_WITH_CUDA`; Linux, NVIDIA only), on `stereo`, linking `video` privately
+for CUDA's view of Vulkan memory. TensorRT ≥ 11 (headers, `libnvinfer`,
+`libnvonnxparser`) is found by `cmake/vs_ffs.cmake` and never fetched; nvcc
+compiles the two kernels; the CUDA runtime is linked static and TensorRT's
+libraries shared, privately. No CUDA or TensorRT type reaches a header.
+`FfsStereo::create` takes the `StereoRectifier` whose pairs come in (its rig
+and `depth_info()`), an FFS ONNX and a plan cache directory: the network is
+the rig's size rounded up to multiples of 32, checked on the parsed network
+before the build; the plan is named for the GPU, the TensorRT version, the
+model's bytes and that size, loaded if TensorRT takes it and built (and
+written whole, by rename) if not. `depth` maps each view into CUDA once,
+pads and normalises it into the network's input with one kernel, runs
+TensorRT, and writes `fx * baseline / d` with another, 16-bit in
+`max(0.1 mm, max_depth / 65535)` units, into an exported Vulkan buffer
+mapped at creation, leased to the frame as `depth_device`
+(`kQueueFamilyExternal`); 0 for a disparity not above 0, past its column
+(off the right view) or outside the depth range. One stream, one wait; no
+host copy and no allocation a frame while no frame is kept past the next.
+`StereoDepthSensor` owns the camera, the rectifier and the matcher and runs
+them on a thread from `start` to `stop`; a refused pair counts `failed`,
+any other failure is the sensor's. `tools/ffs/export_onnx.py` exports FFS,
+research use, from a local NVlabs checkout: the 23-36-37 checkpoint, 8
+iterations, 192 pixels of disparity, the four TensorRT changes, traced under
+AMP. `vs_target_warnings` keys its flags by language, so nvcc gets its own.
+
+**Why.** The owner's decisions of 2026-10-29: FFS runs on NVIDIA only and
+takes any calibrated pair, not the RealSense's alone; downstream sees
+`IRgbdSensor`, with `IStereoSensor` only under `StereoDepthSensor`; research
+use, so the best and fast model, the study's own PyTorch export (NVIDIA's
+commercial ONNX works only to ~1 Mpx and lacks the changes); the 23-36-37
+checkpoint by measurement on the D455 takes; and every per-frame step on the
+GPU, which here means no host round trip between the rectifier, the network
+and `GpuFramePrep` at all. The plan is cached because a build takes minutes
+(about 160 s at 960 x 544 on the 4090) and a load seconds; it is keyed by
+everything a plan is good for only. Where the code made the approved header
+(the design's rev 4 and 5) change:
+- `FfsStereo::create` takes the `StereoRectifier`, not its `StereoRig`: the
+  frame's colour camera and `depth_to_color` are the rectifier's
+  `depth_info()`, which the rig does not carry.
+- `depth` takes an optional `core::StageMetrics*`, as `rectify` does: the
+  per-step device times below come from it.
+- The network is the rig's size rounded up to 32, not equal to it: FFS needs
+  multiples of 32, and the D455's 1280 x 720 runs as 1280 x 736, as the
+  study ran it. The views' layout is read from their size, since a
+  `RectifiedPair` does not name it.
+- A view is mapped by the first matcher that reads it (CUDA takes its
+  descriptor), so one rectifier feeds one matcher.
+
+The depth buffers are not handed back to `VK_QUEUE_FAMILY_EXTERNAL` before
+CUDA writes them again: CUDA writes every sample, and the buffer's last
+reader finished before its frame let it go, the decoders' rule
+(`cuda_pictures.cpp`). The camera is called from one thread at a time
+(`IStereoSensor` is not thread-safe): `start` and `stop` on the caller's,
+`poll` on the sensor's thread, joined before `stop` calls it. The thread's
+Vulkan submits and the caller's need nothing more: `core::Device` gives each
+submit its own pool and serialises `vkQueueSubmit` under the queue's mutex,
+and the allocator locks its own state. With no notification from
+`IStereoSensor`, the thread asks again after 1 ms when nothing is new.
+
+**Tests.** On two 593-byte models with FFS's inputs and output
+(`tests/data/ffs`, `tools/ffs/make_test_onnx.py`) whose disparity is a
+weighted difference of the views' channels (1/8, 2/8, 5/8, or half), so
+every sample's depth is known. `sensor_ffs_stereo`: every sample of three
+luma pairs within a unit of `fx * baseline / d`, its no-returns (0 and
+negative disparity, past the column, nearer than `min_depth`, farther than
+`max_depth`) exact, at 64 x 32 and at 60 x 30 on the 64 x 32 network (padded
+and cut); the unit from `max_depth`; `Rgba8` views from YUYV, each channel
+weighed, against the views read back; the frame's fields (camera, colour,
+pose, times, the pictures held); two frames kept write two buffers and one
+let go is reused; the depth read through Vulkan from
+`VK_QUEUE_FAMILY_EXTERNAL`, and prepared in place by `GpuFramePrep` to
+metres, three times on reused buffers; the plan cache by what it loads (the
+half model's plan under the model's name halves the depth; a plan cut short
+is built again; another model is another plan); refusals (depth range, no
+model, a model TensorRT cannot parse, a rig whose network is another size, a
+pair of another rig, views not exported or imported elsewhere).
+`sensor_ffs_depth_sensor`, on a test camera fed from the test: `info` the
+rectifier's depth view; poll the newest of three, its times the pair's, two
+dropped; a frame kept while the next is made; a refused pair counted and
+passed over; stop and restart; drain oldest first; a camera failure
+reported by poll and drain after a notification; the camera polled on the
+thread alone and never called from two threads at once.
+
+**Validation.** VALIDATION_TBD
+
+**Hand check (not a test).** HAND_CHECK_TBD

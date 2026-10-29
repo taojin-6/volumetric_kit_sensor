@@ -49,6 +49,14 @@ on:
         required: false
         type: boolean
         default: false
+      ffs:
+        description: >-
+          Install TensorRT from NVIDIA's CUDA repository and build with
+          VS_WITH_FFS=ON, so this leg builds sensor_ffs (Fast-FoundationStereo
+          on TensorRT) and runs its tests. Needs cuda.
+        required: false
+        type: boolean
+        default: false
       hevc_backend:
         description: >-
           The hardware this leg promises the decoders run on (cuda,
@@ -180,6 +188,17 @@ jobs:
             sudo apt-get install -y --no-install-recommends cuda-nvcc-13-4 \
               cuda-cudart-dev-13-4 cuda-driver-dev-13-4 libnvjpeg-dev-13-4
             echo "CUDAToolkit_ROOT=/usr/local/cuda-13.4" >> "$GITHUB_ENV"
+            # TensorRT for VS_WITH_FFS (cmake/vs_ffs.cmake), from the same
+            # repository, at the version built for this CUDA, every package
+            # of it pinned so apt takes no newer one. nvcc above compiles
+            # sensor_ffs's kernels; the package installs 2.6 GB.
+            if [ "${{ inputs.ffs }}" = "true" ]; then
+              trt=11.4.0.106-1+cuda13.4
+              sudo apt-get install -y --no-install-recommends \
+                "libnvinfer11=${trt}" "libnvinfer-headers-dev=${trt}" \
+                "libnvinfer-safe-headers-dev=${trt}" "libnvinfer-dev=${trt}" \
+                "libnvonnxparsers11=${trt}" "libnvonnxparsers-dev=${trt}"
+            fi
           fi
           # The loader is pinned to nothing: the NVIDIA Vulkan ICD injected by
           # the container toolkit is then the only ICD, so the Vulkan tests run
@@ -322,7 +341,8 @@ jobs:
                 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                 -DVS_WITH_ORBBEC=${{ inputs.orbbec_sdk && 'ON' || 'OFF' }} \
                 -DVS_WITH_FFMPEG=${{ inputs.ffmpeg && 'ON' || 'OFF' }} \
-                -DVS_WITH_CUDA=${{ inputs.cuda && 'ON' || 'OFF' }}; then
+                -DVS_WITH_CUDA=${{ inputs.cuda && 'ON' || 'OFF' }} \
+                -DVS_WITH_FFS=${{ inputs.ffs && 'ON' || 'OFF' }}; then
               ok=1
               break
             fi
