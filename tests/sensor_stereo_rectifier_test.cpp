@@ -16,7 +16,7 @@
 //     coverage byte exact, and limited-range luma;
 //   - the same pictures in device buffers give the same views, bit for bit;
 //   - past a lens's fold the pass writes 0: on the strong barrel pair at
-//     alpha 1 a tenth of each view's rays are past it, where the lens model
+//     alpha 1, 5-10% of each view's rays are past it, where the lens model
 //     would put them back inside the picture, mirrored, and every one is 0,
 //     the fold found independently (the review's host replica);
 //   - pictures in device buffers are taken over from their writer's family,
@@ -55,7 +55,6 @@
 #include "volumetric_kit/core/testing/buffer_readback.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
-#include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
@@ -539,20 +538,17 @@ Picture color_picture(const Scene& scene, const CameraModel& c,
   return p;
 }
 
-// `bytes` in a device buffer of their own, EXCLUSIVE, written on `device`'s
-// family and left as a writer leaves it: released to the family `to` -- to
-// VK_QUEUE_FAMILY_EXTERNAL, as CUDA's writes come; to another family of the
-// device -- or kept, for kQueueFamilyIgnored. Null on failure.
+// `bytes` in a device buffer of their own, EXCLUSIVE, and left as a writer
+// leaves it: released to VK_QUEUE_FAMILY_EXTERNAL, as CUDA's writes come, for
+// `to` kQueueFamilyExternal, or kept, for kQueueFamilyIgnored. Null on
+// failure.
 std::shared_ptr<const vkc::Buffer> device_bytes(
     std::vector<std::uint8_t> bytes,
-    std::uint32_t to = sensor::kQueueFamilyIgnored,
-    vkc::Device* device = nullptr, vkc::Allocator* allocator = nullptr) {
-  if (device == nullptr) device = g_device;
-  if (allocator == nullptr) allocator = g_allocator;
+    std::uint32_t to = sensor::kQueueFamilyIgnored) {
   bytes.resize((bytes.size() + 3) & ~std::size_t{3}, 0xEE);
-  auto made = vkc::device_storage_buffer(*allocator, bytes.size());
+  auto made = vkc::device_storage_buffer(*g_allocator, bytes.size());
   if (!made.ok()) return nullptr;
-  vkc::CommandBatch batch(*device, *allocator);
+  vkc::CommandBatch batch(*g_device, *g_allocator);
   if (!batch.upload(made.value(), 0, bytes.data(), bytes.size()).ok() ||
       !batch.release(made.value(), to).ok() || !batch.submit().ok()) {
     return nullptr;
@@ -585,15 +581,13 @@ sensor::StereoFrame frame_of(const Picture& left, const Picture& right) {
 
 // --- Reading the views, and the host reference ------------------------------
 
-// A view's bytes, read on `device` as a Vulkan reader takes them: over from
-// the pair's queue family and, with `hand_back`, handed back to it; without,
-// kept, as PictureReadback and GpuFramePrep keep what they take.
-std::vector<std::uint8_t> read_view_on(vkc::Device& device,
-                                       vkc::Allocator& allocator,
-                                       const sensor::RectifiedPair& pair,
-                                       const vkc::ExportedBuffer& view,
-                                       std::size_t bytes, bool hand_back) {
-  vkc::CommandBatch batch(device, allocator);
+// A view's bytes, read as a Vulkan reader takes them: over from the pair's
+// queue family and, with `hand_back`, handed back to it; without, kept, as
+// PictureReadback and GpuFramePrep keep what they take.
+std::vector<std::uint8_t> read_view(const sensor::RectifiedPair& pair,
+                                    const vkc::ExportedBuffer& view,
+                                    std::size_t bytes, bool hand_back = true) {
+  vkc::CommandBatch batch(*g_device, *g_allocator);
   std::vector<std::uint8_t> out(bytes);
   if (!batch.acquire(view.buffer, pair.queue_family).ok() ||
       !batch.readback(view.buffer, 0, bytes, out.data()).ok() ||
@@ -603,12 +597,6 @@ std::vector<std::uint8_t> read_view_on(vkc::Device& device,
     return {};
   }
   return out;
-}
-
-std::vector<std::uint8_t> read_view(const sensor::RectifiedPair& pair,
-                                    const vkc::ExportedBuffer& view,
-                                    std::size_t bytes, bool hand_back = true) {
-  return read_view_on(*g_device, *g_allocator, pair, view, bytes, hand_back);
 }
 
 std::size_t view_bytes(const sensor::StereoRig& rig, Rectifier::Output o) {
@@ -1263,10 +1251,11 @@ Picture smooth_picture(const CameraModel& c, double phase) {
 
 // The strong barrel pair OpenCV's numbers pin, 800x600 to 640x480. Its
 // lenses fold -- r * radial(r^2) stops growing, at r = 2.05 for the left
-// one, which images no ray past r = 1.14 -- and at alpha 1 a tenth of each
-// view's rays lie past the fold, where the lens model turns back and would
-// land them inside the picture, mirrored (32,417 of the left view's 307,200,
-// by the review's host replica). The pass writes each 0, coverage included,
+// one, which images no ray past r = 1.14, and 2.20 for the right -- and at
+// alpha 1 a tenth of the left view's rays and a twentieth of the right's lie
+// past the fold, where the lens model turns back and would land them inside
+// the picture, mirrored (32,417 of the left view's 307,200, by the review's
+// host replica in double). The pass writes each 0, coverage included,
 // as the host reference cut at the replica's fold has it, and the rest within
 // a code of it, as luma bytes and as R'G'B' words; at alpha 0 no ray reaches
 // the fold.
@@ -1320,7 +1309,7 @@ int test_fold() {
         if (alpha == 0.0f) {
           CHECK(past == 0);
         } else {
-          CHECK(past > pixels / 20);
+          CHECK(past > (v == 0 ? pixels / 10 : pixels / 20));
         }
       }
     }
@@ -1369,6 +1358,8 @@ sensor::StereoFrame side_by_side_frame(
 //     it too: one transfer more, and RectifiedPair::source's pictures read
 //     the pass's family, while a colour picture in a buffer of its own keeps
 //     its writer's;
+//   - the same buffer CONCURRENT with another of the device's families,
+//     which wrote it: none;
 //   - pictures in one buffer that name two families, the colour one's
 //     included, are refused before any work.
 int test_taken_over() {
@@ -1441,6 +1432,25 @@ int test_taken_over() {
   CHECK(same(own_color));
   CHECK(barriers == together_own + 1);
   CHECK(source.color.queue_family == sensor::kQueueFamilyExternal);
+  // Written on another of the device's families into a buffer CONCURRENT
+  // with the pass's: shared already, so taken with no transfer.
+  const std::uint32_t own = g_device->queue_family();
+  if (g_device->caps().queue_families().size() > 1) {
+    const std::uint32_t shared[2] = {own, own == 0 ? 1u : 0u};
+    std::vector<std::uint8_t> words = rows;
+    words.resize((words.size() + 3) & ~std::size_t{3}, 0xEE);
+    auto made =
+        vkc::device_storage_buffer(*g_allocator, words.size(), 0, shared, 2);
+    CHECK(made.ok());
+    vkc::CommandBatch batch(*g_device, *g_allocator);
+    CHECK(batch.upload(made.value(), 0, words.data(), words.size()).ok() &&
+          batch.submit().ok());
+    const auto concurrent =
+        std::make_shared<const vkc::Buffer>(std::move(made).value());
+    CHECK(same(side_by_side_frame(left, right, concurrent, stride, shared[1])));
+    CHECK(barriers == together_own);
+    CHECK(source.left.queue_family == sensor::kQueueFamilyIgnored);
+  }
 
   const auto refused = [&](const sensor::StereoFrame& f, const char* why) {
     const std::uint64_t submits = g_device->counters().submits;
@@ -1469,66 +1479,6 @@ int test_taken_over() {
       static_cast<unsigned long long>(apart_own),
       static_cast<unsigned long long>(together_own + 1),
       static_cast<unsigned long long>(together_own));
-  return 0;
-}
-
-// From another queue family of the device -- a renderer's, carved as
-// SharedDevice carves them -- a side-by-side frame's one EXCLUSIVE buffer,
-// released to the rectifier's family once, is taken over once (the
-// validation layer matches the halves), and gives the host pictures' views.
-// Skipped where the device puts both on one family.
-int test_other_family() {
-  auto made =
-      vkc::test::TwoFamilyDevice::create(sensor::device_requirements(), {});
-  if (!made) std::fprintf(stderr, "%s\n", made.status().message().c_str());
-  CHECK(made.ok());
-  vkc::test::TwoFamilyDevice& two = **made;
-  if (!two.crosses_families()) {
-    std::printf("  another family's pictures: skipped, %s\n",
-                two.shared().summary().c_str());
-    return 0;
-  }
-  const sensor::StereoInfo info = mild_pair();
-  auto rectifier =
-      Rectifier::create(two.compute(), two.compute_allocator(), info,
-                        {{480, 272}, 0.0f, Rectifier::Output::Luma8});
-  CHECK(rectifier.ok());
-  const Scene scene;
-  const Picture left = luma_picture(scene, info.calibration.left, Mat4d(1.0));
-  const Picture right =
-      luma_picture(scene, info.calibration.right,
-                   camera::rigid_inverse(info.calibration.left_to_right));
-  const std::size_t bytes =
-      view_bytes(rectifier.value()->rig(), Rectifier::Output::Luma8);
-  const auto read = [&](const sensor::RectifiedPair& pair,
-                        const vkc::ExportedBuffer& view) {
-    return read_view_on(two.compute(), two.compute_allocator(), pair, view,
-                        bytes, true);
-  };
-  std::vector<std::uint8_t> want[2];
-  {
-    auto pair = rectifier.value()->rectify(frame_of(left, right));
-    CHECK(pair.ok());
-    want[0] = read(*pair, *pair->left);
-    want[1] = read(*pair, *pair->right);
-  }
-  const std::uint32_t ours = two.families()[0];
-  const std::uint32_t theirs = two.families()[1];
-  std::size_t stride = 0;
-  const auto buffer =
-      device_bytes(side_by_side_rows(left, right, &stride), ours,
-                   &two.graphics(), &two.graphics_allocator());
-  CHECK(buffer != nullptr);
-  auto pair = rectifier.value()->rectify(
-      side_by_side_frame(left, right, buffer, stride, theirs));
-  if (!pair) std::fprintf(stderr, "%s\n", pair.status().message().c_str());
-  CHECK(pair.ok());
-  CHECK(read(*pair, *pair->left) == want[0]);
-  CHECK(read(*pair, *pair->right) == want[1]);
-  CHECK(pair->source.left.queue_family == sensor::kQueueFamilyIgnored);
-  std::printf(
-      "  a side-by-side frame written on family %u, taken over once on %u\n",
-      theirs, ours);
   return 0;
 }
 
@@ -1714,7 +1664,6 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_pairs_hold_views() != 0) return 1;
   if (test_fold() != 0) return 1;
   if (test_taken_over() != 0) return 1;
-  if (test_other_family() != 0) return 1;
   if (test_refusals() != 0) return 1;
   if (test_timing() != 0) return 1;
   std::puts("sensor_stereo_rectifier: OK");
