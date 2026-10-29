@@ -95,11 +95,11 @@ struct PlaneBinding {
 };
 
 // `image`, the picture a camera of `size` took, checked as the colour pass
-// reads it -- its size the camera's, a known chroma location, a matrix of
-// positive weights summing below 1, a buffer it can bind, its planes as
-// check_yuv_planes takes them for sampling, every byte within 4 GiB and a
-// storage binding's range -- and bound. Refusals read "<who>: ..." and name
-// the picture as "the <what> ...".
+// reads it -- its size the camera's, a known chroma location and a matrix of
+// positive weights summing below 1 (luma alone has neither), a buffer it can
+// bind, its planes as check_yuv_planes takes them for sampling, every byte
+// within 4 GiB and a storage binding's range -- and bound. Refusals read
+// "<who>: ..." and name the picture as "the <what> ...".
 VS_PREP_API core::Result<PlaneBinding> bind_planes(
     const YuvImage& image, const camera::ImageSize& size, const char* who,
     const char* what, VkDeviceSize max_range, VkDeviceSize offset_alignment);

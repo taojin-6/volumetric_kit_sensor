@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0] - 2026-10-29
+## [0.7.0] - 2026-10-29
 
 ### Changed
 
@@ -14,6 +14,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   without colour keeps all its depth. `GpuFramePrepConfig::depth_within_color`
   is gone: a consumer that set it drops the line, and one that left it off
   gets the mask (DECISIONS.md, the 2026-10-29 same-view entry).
+
+## [0.6.0] - 2026-10-29
+
+### Fixed
+
+- **`StereoRectifier`: rays past a lens's fold are 0.** Past the fold,
+  where the radial model stops carrying rays outward, the model turns back
+  and put rays the lens cannot image inside the picture, mirrored and
+  marked covered: a tenth of a strong lens's view at alpha 1. `create` finds
+  each camera's fold; the pass compares one radius.
+- **`StereoRectifier`: a buffer the pictures share is taken over once.** A
+  side-by-side frame's one buffer was taken over twice. Pictures in one
+  buffer, a colour picture beside them included, must name the family that
+  wrote it (refused otherwise), as `GpuFramePrep`'s inputs must, through
+  one shared check, and `RectifiedPair::source` names the pass's family for
+  each of them.
+
+### Changed
+
+- **`StereoRectifier`'s views are taken back with no transfer.** The pass
+  writes every word, so it no longer acquires its views back from
+  `VK_QUEUE_FAMILY_EXTERNAL`; a Vulkan reader need not hand them back.
+  `RectifiedPair` states the contract: use pairs in turn (rectify, read,
+  drop) and the views are the same two buffers, mapped once; drop a pair
+  only once its reads have completed; map a view by its open descriptor;
+  hand on `RectifiedPair::source`.
+- **A pair rectified already keeps square pixels:** it is scaled by one
+  factor about the centres, alpha choosing the picture cropped (0) or
+  fitted (1), where it was scaled across and down apart.
+- Luma alone (`YuvLayout::Luma`) is not checked for a matrix or a chroma
+  siting, in `GpuFramePrep` and the rectifier.
 
 ## [0.5.0] - 2026-10-29
 
