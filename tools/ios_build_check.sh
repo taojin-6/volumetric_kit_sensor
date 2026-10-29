@@ -2,17 +2,17 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
 #
-# The iOS build check the macOS CI leg runs (.github/workflows/_build.yml):
-# recon_sensor_apple, recon_sensor_video and the H.265 syntax it reads with
-# (recon_sensor_video_syntax), which every Apple build has, compiled for the
-# iOS floor with the include paths and definitions of a macOS
+# The iOS build check the macOS CI leg runs (recon's
+# .github/workflows/_build.yml): sensor_apple, sensor_video and the H.265
+# syntax it reads with (sensor_video_syntax), which every Apple build has,
+# compiled for the iOS floor with the include paths and definitions of a macOS
 # build's compile commands, warnings as errors, the importer with ARC and its
 # header as plain C++ too; then linked into an iOS library against the SDK's
 # frameworks, so a symbol iOS does not have fails the link. Only their
-# dependencies' symbols are left unresolved: the core's, recon's other tiers'
-# and Vulkan's.
+# dependencies' symbols are left unresolved: the core's, the package's other
+# tiers' and Vulkan's.
 #
-#   tools/ios_build_check.sh <build>/compile_commands.json <out dir>
+#   sensor/tools/ios_build_check.sh <build>/compile_commands.json <out dir>
 #
 # Needs an iOS SDK, which only full Xcode has. Runs on macOS's bash 3.2.
 set -euo pipefail
@@ -28,9 +28,8 @@ import json, os, shlex, subprocess, sys
 
 db, out, ios = sys.argv[1], sys.argv[2], sys.argv[3:]
 ios += ["-std=c++17", "-Wall", "-Wextra", "-Wpedantic", "-Werror"]
-header = b'#include "volumetric_kit/recon/sensor/apple/pixel_buffer_importer.hpp"\n'
-targets = ("recon_sensor_apple", "recon_sensor_video",
-           "recon_sensor_video_syntax")
+header = b'#include "volumetric_kit/sensor/apple/pixel_buffer_importer.hpp"\n'
+targets = ("sensor_apple", "sensor_video", "sensor_video_syntax")
 objects = []
 for entry in json.load(open(db)):
     output = entry.get("output", "")
@@ -68,7 +67,7 @@ done <"$out/objects.txt"
 nm -u -j "$out/targets.o" | sort -u >"$out/undefined.txt"
 xcrun c++filt <"$out/undefined.txt" >"$out/demangled.txt"
 paste "$out/undefined.txt" "$out/demangled.txt" |
-  awk -F'\t' '$2 ~ /volumetric_kit::(core|recon)::/ || $1 ~ /^_vk[A-Z]/ {
+  awk -F'\t' '$2 ~ /volumetric_kit::(core|sensor)::/ || $1 ~ /^_vk[A-Z]/ {
     print "-Wl,-U," $1 }' >"$out/dependency_symbols.txt"
 link=("${ios[@]}" -dynamiclib -o "$out/libios_build_check.dylib"
   "$out/targets.o" -framework VideoToolbox -framework CoreMedia

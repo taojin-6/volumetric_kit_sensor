@@ -3,9 +3,9 @@
 
 # The Orbbec SDK, for the Orbbec (Femto Mega) capture driver: a prerequisite,
 # found and never fetched (the 2026-09-24 decision). Included from the root
-# CMakeLists only when VR_WITH_ORBBEC is ON; defines ob::OrbbecSDK,
-# VR_ORBBEC_SDK_VERSION and its _MAJOR / _MINOR / _PATCH parts, and
-# vr_link_orbbec_sdk.
+# CMakeLists only when VS_WITH_ORBBEC is ON; defines ob::OrbbecSDK,
+# VS_ORBBEC_SDK_VERSION and its _MAJOR / _MINOR / _PATCH parts, and
+# vs_link_orbbec_sdk.
 #
 # The SDK is a prebuilt binary, so it is installed once and every repo in the
 # family that talks to a camera links that one copy -- by convention
@@ -14,8 +14,8 @@
 # environment, once for every repo:
 #
 # ~~~
-# cmake -B build -DVR_WITH_ORBBEC=ON -DOrbbecSDK_ROOT=<sdk>
-#   (on Linux, with -DVR_WITH_FFMPEG=ON -DVR_WITH_CUDA=ON as well)
+# cmake -B build -DVS_WITH_ORBBEC=ON -DOrbbecSDK_ROOT=<sdk>
+#   (on Linux, with -DVS_WITH_FFMPEG=ON -DVS_WITH_CUDA=ON as well)
 # export OrbbecSDK_ROOT=<sdk>
 # ~~~
 #
@@ -31,24 +31,24 @@
 # The oldest SDK this repo builds against. Raise it with the SDK the family
 # installs, and keep it in lockstep with any sibling that finds the same copy
 # and with the SDK CI installs (.github/actions/install-orbbec-sdk).
-set(VR_ORBBEC_SDK_MIN_VERSION 2.10.6)
+set(VS_ORBBEC_SDK_MIN_VERSION 2.10.6)
 
 # The driver decodes each camera's colour itself, onto the GPU, so it needs the
 # video decoders: without them it could open no camera. Apple builds them
 # always; elsewhere they need FFmpeg.
-if(NOT APPLE AND NOT VR_WITH_FFMPEG)
+if(NOT APPLE AND NOT VS_WITH_FFMPEG)
   message(
     FATAL_ERROR
-      "VR_WITH_ORBBEC needs VR_WITH_FFMPEG off Apple: the Orbbec driver "
+      "VS_WITH_ORBBEC needs VS_WITH_FFMPEG off Apple: the Orbbec driver "
       "decodes the cameras' colour through the video decoders.")
 endif()
 
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   message(
     FATAL_ERROR
-      "VR_WITH_ORBBEC is ON, but the Orbbec SDK ships no ${CMAKE_SYSTEM_NAME} "
+      "VS_WITH_ORBBEC is ON, but the Orbbec SDK ships no ${CMAKE_SYSTEM_NAME} "
       "build (macOS is its only Apple platform). Configure this build with "
-      "-DVR_WITH_ORBBEC=OFF.")
+      "-DVS_WITH_ORBBEC=OFF.")
 endif()
 
 # A named root is authoritative. find_package caches the directory it found in
@@ -63,49 +63,49 @@ find_package(OrbbecSDK CONFIG PATH_SUFFIXES lib)
 if(NOT OrbbecSDK_FOUND)
   message(
     FATAL_ERROR
-      "VR_WITH_ORBBEC is ON but the Orbbec SDK was not found. Install the SDK "
-      "(>= ${VR_ORBBEC_SDK_MIN_VERSION}, "
+      "VS_WITH_ORBBEC is ON but the Orbbec SDK was not found. Install the SDK "
+      "(>= ${VS_ORBBEC_SDK_MIN_VERSION}, "
       "https://github.com/orbbec/OrbbecSDK_v2/releases) and point the build "
       "at its root with -DOrbbecSDK_ROOT=<sdk> or the OrbbecSDK_ROOT "
       "environment variable.")
 endif()
 
-file(STRINGS "${OrbbecSDK_DIR}/OrbbecSDKVersion.cmake" _vr_orbbec_version_line
+file(STRINGS "${OrbbecSDK_DIR}/OrbbecSDKVersion.cmake" _vs_orbbec_version_line
      REGEX "^set\\(PACKAGE_VERSION \"[0-9.]+\"\\)")
-if(NOT _vr_orbbec_version_line MATCHES "\"([0-9]+)\\.([0-9]+)\\.([0-9]+)\"")
+if(NOT _vs_orbbec_version_line MATCHES "\"([0-9]+)\\.([0-9]+)\\.([0-9]+)\"")
   message(
     FATAL_ERROR
       "Could not read the Orbbec SDK version from "
       "${OrbbecSDK_DIR}/OrbbecSDKVersion.cmake; the SDK's package layout may "
       "have changed.")
 endif()
-set(VR_ORBBEC_SDK_VERSION_MAJOR ${CMAKE_MATCH_1})
-set(VR_ORBBEC_SDK_VERSION_MINOR ${CMAKE_MATCH_2})
-set(VR_ORBBEC_SDK_VERSION_PATCH ${CMAKE_MATCH_3})
-set(VR_ORBBEC_SDK_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
+set(VS_ORBBEC_SDK_VERSION_MAJOR ${CMAKE_MATCH_1})
+set(VS_ORBBEC_SDK_VERSION_MINOR ${CMAKE_MATCH_2})
+set(VS_ORBBEC_SDK_VERSION_PATCH ${CMAKE_MATCH_3})
+set(VS_ORBBEC_SDK_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
 
 # The floor and the same major version -- the rule the SDK's own version file
 # encodes, had find_package been able to read it.
-string(REGEX MATCH "^[0-9]+" _vr_orbbec_min_major
-             "${VR_ORBBEC_SDK_MIN_VERSION}")
-if(VR_ORBBEC_SDK_VERSION VERSION_LESS VR_ORBBEC_SDK_MIN_VERSION
-   OR NOT VR_ORBBEC_SDK_VERSION_MAJOR EQUAL _vr_orbbec_min_major)
+string(REGEX MATCH "^[0-9]+" _vs_orbbec_min_major
+             "${VS_ORBBEC_SDK_MIN_VERSION}")
+if(VS_ORBBEC_SDK_VERSION VERSION_LESS VS_ORBBEC_SDK_MIN_VERSION
+   OR NOT VS_ORBBEC_SDK_VERSION_MAJOR EQUAL _vs_orbbec_min_major)
   message(
     FATAL_ERROR
-      "Orbbec SDK ${VR_ORBBEC_SDK_VERSION} at ${OrbbecSDK_DIR} is not one this "
-      "repo builds against: it requires ${VR_ORBBEC_SDK_MIN_VERSION} or a "
-      "newer ${_vr_orbbec_min_major}.x release. Point OrbbecSDK_ROOT at such "
+      "Orbbec SDK ${VS_ORBBEC_SDK_VERSION} at ${OrbbecSDK_DIR} is not one this "
+      "repo builds against: it requires ${VS_ORBBEC_SDK_MIN_VERSION} or a "
+      "newer ${_vs_orbbec_min_major}.x release. Point OrbbecSDK_ROOT at such "
       "an SDK; the next configure finds it.")
 endif()
 
-message(STATUS "Orbbec SDK ${VR_ORBBEC_SDK_VERSION}: ${OrbbecSDK_DIR}")
+message(STATUS "Orbbec SDK ${VS_ORBBEC_SDK_VERSION}: ${OrbbecSDK_DIR}")
 
-# vr_link_orbbec_sdk(<target>): links the SDK, privately, and compiles the
+# vs_link_orbbec_sdk(<target>): links the SDK, privately, and compiles the
 # target with exceptions. The SDK reports every failure by throwing ob::Error,
 # so code that calls it needs exceptions to catch one, even where
 # CMAKE_CXX_FLAGS turns them off; the driver turns each into a Status, and none
 # crosses its API.
-function(vr_link_orbbec_sdk target)
+function(vs_link_orbbec_sdk target)
   target_link_libraries(${target} PRIVATE ob::OrbbecSDK)
   target_compile_options(${target} PRIVATE -fexceptions)
 endfunction()
