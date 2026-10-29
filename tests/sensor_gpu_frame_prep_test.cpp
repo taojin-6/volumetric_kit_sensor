@@ -28,8 +28,8 @@
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its depth and colour outputs are shared with the queue families its
 //     config names for each, and read on another family as on its own;
-//   - with depth_within_color, depth survives only where colour recorded it,
-//     at the corrected and mixed depth;
+//   - a frame with colour keeps depth only where colour recorded it, at the
+//     corrected and mixed depth, and a frame without colour keeps all of it;
 //   - depth on the device, at any even byte of its buffer, taken over or
 //     not, alone or in a set beside host depth, gives the words the same
 //     depth from the host gives, bit for bit, and holds the pass's slot;
@@ -1738,15 +1738,13 @@ int test_luma(sensor::GpuFramePrep& prep) {
 // too few passes are refused.
 int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   constexpr std::size_t kCams = 5;
-  sensor::GpuFramePrepConfig masked;
-  masked.depth_within_color = true;
   std::vector<sensor::GpuFramePrep> preps;
   for (std::size_t c = 0; c < kCams; ++c) {
-    auto made = sensor::GpuFramePrep::create(device, allocator, masked);
+    auto made = sensor::GpuFramePrep::create(device, allocator);
     CHECK(made.ok());
     preps.push_back(std::move(made).value());
   }
-  auto alone = sensor::GpuFramePrep::create(device, allocator, masked);
+  auto alone = sensor::GpuFramePrep::create(device, allocator);
   CHECK(alone.ok());
   // A pincushion colour lens misses the corners, which the mask zeroes.
   camera::CameraModel pincushion = pinhole();
@@ -2104,7 +2102,6 @@ int test_device_depth(vkc::Device& device, vkc::Allocator& allocator) {
   const auto invalid = vkc::Status::Code::InvalidArgument;
   sensor::GpuFramePrepConfig config;
   config.depth_offset_m = 0.0123f;
-  config.depth_within_color = true;  // where a frame has colour
   auto made = sensor::GpuFramePrep::create(device, allocator, config);
   auto made_reference = sensor::GpuFramePrep::create(device, allocator, config);
   CHECK(made.ok() && made_reference.ok());
@@ -2843,8 +2840,7 @@ int test_cross_family() {
   return 0;
 }
 
-// GpuFramePrepConfig::depth_within_color keeps depth only where the colour
-// camera recorded it.
+// A frame with colour keeps depth only where its colour camera recorded it.
 //   - Same intrinsics and pose, a pincushion colour lens: each depth pixel
 //     lands on the colour pixel it shares, so depth must be zeroed exactly
 //     where the colour's coverage byte is 0 -- the corners the lens missed.
@@ -2855,13 +2851,11 @@ int test_cross_family() {
 //     depth, where one testing the raw depth gets pixels wrong in every row.
 //   - A colour principal point a fraction of a pixel off: the image's edges
 //     are where the rounded colour pixel leaves it, not the pixel itself.
-//   - Off, and on a frame without colour, every depth pixel is kept.
+//   - A frame without colour keeps every depth pixel, the same cameras'
+//     included.
 int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
-  sensor::GpuFramePrepConfig on;
-  on.depth_within_color = true;
-  auto masked = sensor::GpuFramePrep::create(device, allocator, on);
-  auto plain = sensor::GpuFramePrep::create(device, allocator);
-  CHECK(masked.ok() && plain.ok());
+  auto masked = sensor::GpuFramePrep::create(device, allocator);
+  CHECK(masked.ok());
   std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
   Planes planes = make_planes();
 
@@ -2928,10 +2922,9 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   // left in the colour camera (390 px x 0.1 m x (1 / 0.95 - 1)), so a mask
   // that tested the raw depth would get a column or two wrong at each side
   // of the kept region, in every row it spans.
-  sensor::GpuFramePrepConfig offset_on = on;
-  offset_on.depth_offset_m = 0.05f;
-  auto offset_masked =
-      sensor::GpuFramePrep::create(device, allocator, offset_on);
+  sensor::GpuFramePrepConfig offset;
+  offset.depth_offset_m = 0.05f;
+  auto offset_masked = sensor::GpuFramePrep::create(device, allocator, offset);
   CHECK(offset_masked.ok());
   const std::vector<std::uint16_t> metre(raw.size(), 1024);
   sensor::RgbdFrame distant = frame_of(metre, pinhole());
@@ -3010,10 +3003,11 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   // The mask tests the depth the pass writes, mixed: raw columns alternating
   // 0.5 and 0.535 m through the barrel lens (the same intrinsics), so every
   // block mixes, up to 17.5 mm from its nearest pixel's depth, and the
-  // narrower colour camera 10 cm aside. Masked, each pixel is the unmasked
-  // pass's depth where the host puts that depth's point in the colour image,
-  // and 0 where not. A mask that tested the nearest pixel's depth would decide
-  // pixels along both sides of the kept region differently, about 190 of them.
+  // narrower colour camera 10 cm aside. Each pixel is the depth the same
+  // frame without colour gives where the host puts that depth's point in the
+  // colour image, and 0 where not. A mask that tested the nearest pixel's
+  // depth would decide pixels along both sides of the kept region
+  // differently, about 190 of them.
   {
     const camera::CameraModel lens = lensed();
     std::vector<std::uint16_t> stripes(std::size_t{kWidth} * kHeight);
@@ -3022,13 +3016,13 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
     }
     sensor::RgbdFrame striped = frame_of(stripes, lens);
     striped.metres_per_unit = kFineScale;
+    auto all = masked->prepare(striped);  // no colour yet: nothing masked
+    CHECK(all.ok());
+    const std::vector<float> unmasked = depth_of(all.value());
     striped.color = planes.image(0.299f, 0.114f, true);
     striped.color_camera = narrow;
     striped.color_to_world[3] = glm::dvec4(0.1, 0.0, 0.0, 1.0);
     striped.depth_to_color[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
-    auto all = plain->prepare(striped);
-    CHECK(all.ok());
-    const std::vector<float> unmasked = depth_of(all.value());
     out = masked->prepare(striped);
     CHECK(out.ok());
     const std::vector<float> m = depth_of(out.value());
@@ -3057,13 +3051,13 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
     CHECK(nearest_would_differ > 100);
   }
 
-  // Off, and a frame with no colour: nothing zeroed.
-  const sensor::RgbdFrame depth_only = frame_of(raw, pinhole());
-  for (sensor::GpuFramePrep* check : {&plain.value(), &masked.value()}) {
-    auto all = check->prepare(check == &plain.value() ? aside : depth_only);
-    CHECK(all.ok());
-    for (const float z : depth_of(all.value())) CHECK(z == 1000.0f * kScale);
-  }
+  // The aside frame without its colour: nothing zeroed.
+  sensor::RgbdFrame depth_only = aside;
+  depth_only.color = {};
+  CHECK(!depth_only.has_color());
+  auto all = masked->prepare(depth_only);
+  CHECK(all.ok());
+  for (const float z : depth_of(all.value())) CHECK(z == 1000.0f * kScale);
   return 0;
 }
 

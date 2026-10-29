@@ -43,7 +43,7 @@ constexpr std::uint32_t kSpansPerFrame = 3;
 struct DepthParams {
   LensParams cam;
   float metres_per_unit;
-  std::uint32_t within_color;  // mask by OverlapParams
+  std::uint32_t within_color;  // the frame has colour: mask by OverlapParams
   float depth_offset_m;        // subtracted from every return
   std::uint32_t raw_first;     // the image's first sample in the binding
 };
@@ -558,9 +558,9 @@ core::Status GpuFramePrep::record_inputs(core::CommandBatch& batch,
   // joins the open tile, the frame prep's. Bound even when it holds only the
   // word a frame with nothing on the host claims, so the batch holds it.
   VKC_ASSIGN(*input, batch.input(slot, 0, layout.slot_bytes));
-  // The overlap mask, for a frame with colour when the config asks: the
-  // colour camera and the depth-to-colour transform, written inline.
-  if (config_.depth_within_color && frame.has_color()) {
+  // The colour-view mask, for a frame with colour: the colour camera and the
+  // depth-to-colour transform, written inline.
+  if (frame.has_color()) {
     const OverlapParams overlap{lens_params(frame.color_camera),
                                 Mat4f(frame.depth_to_color)};
     VKC_TRY(batch.upload(overlap_, 0, &overlap, sizeof(overlap)));
@@ -583,10 +583,9 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
                                          depth.bind_bytes);
   depth_kernel_.set.write_storage_buffer(1, depth_out_->buffer.handle(), 0,
                                          depth.out_bytes);
-  const bool within_color = config_.depth_within_color && frame.has_color();
-  const DepthParams depth_params{lens_params(frame.depth_camera),
-                                 frame.metres_per_unit, within_color ? 1u : 0u,
-                                 config_.depth_offset_m, depth.first};
+  const DepthParams depth_params{
+      lens_params(frame.depth_camera), frame.metres_per_unit,
+      frame.has_color() ? 1u : 0u, config_.depth_offset_m, depth.first};
   VKC_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
                          core::group_count(depth.pixels, kLocalSize),
                          max_workgroup_count_x_, stage));

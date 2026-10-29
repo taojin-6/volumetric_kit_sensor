@@ -14,14 +14,14 @@
 // too far), per raw pixel before any mix: a return the offset takes to 0 or
 // below is no return, and 0 stays no return whatever the offset's sign.
 //
-// With pc.within_color the pixel is also kept only where the colour camera
-// recorded its point, at the corrected depth: moved into the colour camera by
-// the two poses, the point must lie in front of it and on a pinhole pixel the
-// colour pass marks covered -- the same rounding and the same lens test, so
-// depth survives exactly where the colour's coverage byte is set. Elsewhere it
-// is 0, no return, so what is fused lies inside the colour camera's view. Its
-// view, not its line of sight: nothing here tests whether a nearer surface
-// hides the point from it.
+// With pc.within_color, set for a frame with colour, the pixel is also kept
+// only where the colour camera recorded its point, at the corrected depth:
+// moved into the colour camera by the two poses, the point must lie in front
+// of it and on a pinhole pixel the colour pass marks covered -- the same
+// rounding and the same lens test, so depth survives exactly where the
+// colour's coverage byte is set. Elsewhere it is 0, no return, so what is
+// fused lies inside the colour camera's view. Its view, not its line of
+// sight: nothing here tests whether a nearer surface hides the point from it.
 
 #extension GL_GOOGLE_include_directive : require
 #include "lens.glsl"

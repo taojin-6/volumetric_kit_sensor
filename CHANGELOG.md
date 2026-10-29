@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-29
+
+### Changed
+
+- **BREAKING: a frame with colour keeps depth only inside its colour
+  camera's view.** `GpuFramePrep` zeroes every depth pixel whose point its
+  colour camera does not record, from the host or the device; a frame
+  without colour keeps all its depth. `GpuFramePrepConfig::depth_within_color`
+  is gone: a consumer that set it drops the line, and one that left it off
+  gets the mask (DECISIONS.md, the 2026-10-29 same-view entry).
+
 ## [0.5.0] - 2026-10-29
 
 ### Added

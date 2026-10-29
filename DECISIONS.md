@@ -71,7 +71,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   and fusion reads the buffers in place, depth and colour each with its own
   camera rather than registered. *Amended 2026-10-29:* depth mixes the four
   raw pixels around the source where they are one surface, nearest only at
-  an edge or a hole.
+  an edge or a hole; and a frame with colour keeps depth only inside its
+  colour camera's view, an option since 2026-09-29 (the same-view entry).
 - [**2026-09-28**](#2026-09-28--a-decoded-colour-frame-never-leaves-the-gpu-the-platforms-hardware-decoder-for-h265-and-mjpeg-alike-hands-its-picture-to-vulkan-in-place-and-gpuframeprep-takes-i420-or-nv12-from-the-host-or-the-device) —
   A decoded colour frame never leaves the GPU: the platform's hardware
   decoder, for H.265 and MJPEG alike, hands its picture to Vulkan in place,
@@ -303,6 +304,12 @@ entries relevant to your task; later amendments supersede earlier rules.
   the device by `GpuFramePrep`; librealsense 2.59.1 a prerequisite that CI
   installs; tested against librealsense's own `rsutil.h`, with no camera and
   no virtual one.
+- [**2026-10-29**](#2026-10-29--a-frame-with-colour-keeps-depth-only-inside-its-colour-cameras-view-wherever-the-depth-comes-from-and-gpuframeprepconfigdepth_within_color-goes-amends-the-2026-09-28-gpu-pre-processing-entry) —
+  A frame with colour keeps depth only inside its colour camera's view,
+  whether the depth came from the host or the device; a frame without
+  colour keeps all of it. `GpuFramePrepConfig::depth_within_color` goes,
+  with no option in its place. In a rig this also drops depth another
+  camera could colour; the owner chose that.
 
 ## Decision record
 
@@ -1532,6 +1539,8 @@ pass marks uncovered. The test uses the colour pass's own rounding and lens
 test, so depth survives exactly where `DeviceFrame::color`'s coverage byte is
 set. The option is off by default, and a frame without colour keeps all its
 depth.
+*Amended 2026-10-29 (the same-view entry):* it is no longer an option; every
+frame with colour is masked.
 
 - **Why.** A Femto Mega's depth covers about 65 degrees vertically and its
   16:9 colour about 51. The depth outside the colour view fuses into surfaces
@@ -4440,3 +4449,42 @@ without, the colour undistorted and true. The hand check found that
 librealsense's context waits forever in its destructor while its
 devices-changed callback holds the device: the driver replaces the callback
 first.
+
+### 2026-10-29 — A frame with colour keeps depth only inside its colour camera's view, wherever the depth comes from, and `GpuFramePrepConfig::depth_within_color` goes (amends the 2026-09-28 GPU pre-processing entry).
+
+**The rule.** `GpuFramePrep` zeroes, in every frame with colour, each depth
+pixel whose point its colour camera does not record: the 2026-09-29 test
+(behind the colour camera, or on a pixel the colour pass marks uncovered),
+unchanged. It applies wherever the depth came from: a GPU stage's depth
+(`RgbdFrame::depth_device`) reaches the same pass as a sensor's host depth.
+A frame without colour keeps all its depth.
+`GpuFramePrepConfig::depth_within_color` goes, with no option in its place;
+a consumer that set it drops the line.
+
+**Why.** The owner (2026-10-29): "only valid RGBD of same FoV", fixed in the
+sensor package. A Femto Mega's depth at 640 x 576 reaches 33.6 degrees above
+its axis and its colour at 3840 x 2160 24.9 (from the cameras' intrinsics),
+so every camera fused a band at the top that its colour camera never sees.
+The option was off by default and only recon's `rig_viewer` turned it on;
+the other callers fused that band. One behaviour, not a switch.
+
+**The cost, the owner's choice.** In a multi-camera rig this also drops
+depth that another camera's colour could colour: a surface one camera's
+depth sees outside its own colour view is no longer fused from that camera,
+even where a neighbour's colour camera sees it. The owner chose that: every
+frame handed out is RGBD of one field of view.
+
+**Tests.** `sensor_gpu_frame_prep` runs the within-colour cases on a default
+pass: the pincushion colour lens, the narrower colour camera 10 cm aside, the
+corrected depth, the shifted principal point and the mixed depth, whose
+unmasked reference is now the same frame without its colour; a frame without
+colour keeps every pixel. `test_prepare_batch` (five cameras, every colour
+layout) and `test_device_depth` (device depth beside packed colour, equal to
+the same frame from the host and masked) run on default passes. Two planted
+bugs each fail it: the mask skipped (the depth pass's flag left 0), and the
+mask skipped for device depth alone.
+
+**Validation.** Apple M5 Max, macOS, Release with warnings as errors, under
+the validation layer: the 36 tests pass. CI is the NVIDIA leg. recon's
+libraries link `sensor_frame` alone, which this leaves as it was; its
+`rig_viewer` sets the field this removes, so recon drops that at its re-pin.
