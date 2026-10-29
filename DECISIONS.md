@@ -259,8 +259,7 @@ entries relevant to your task; later amendments supersede earlier rules.
   namespace `volumetric_kit::sensor`, macros and options `VS_`, on the core
   alone. recon's libraries link `sensor_frame` alone, and nothing in the
   package includes recon or grid. The owner's decisions of 2026-10-28:
-  repositories now, these names, a future stereo depth producer NVIDIA-only
-  at first.
+  repositories now, these names, Blackmagic stereo NVIDIA-only at first.
 
 ## Decision record
 
@@ -3869,8 +3868,8 @@ paths as well as `sensor/` and renames them, since `sensor/` alone starts
 at the move. The names were approved as
 proposed (the sensor design's D2): package `volumetric_kit_sensor`,
 namespace `volumetric_kit::sensor` with `sensor::camera` for the
-vocabulary, targets `sensor_*`, options and macros `VS_`. A future stereo
-depth producer is NVIDIA-only at first (D3).
+vocabulary, targets `sensor_*`, options and macros `VS_`. Blackmagic stereo
+(depth from a stereo network) is NVIDIA-only at first (D3).
 
 **The rule.**
 - `sensor/` is a CMake project of its own, `volumetric_kit_sensor` 0.1.0,
@@ -3907,7 +3906,7 @@ depth producer is NVIDIA-only at first (D3).
   alone.
 
 **Why.** A camera stack is anything that produces `DeviceFrame`s, so a new
-one, such as a future stereo depth producer, is a new producer and no recon
+one, such as Blackmagic stereo, is a new producer and no recon
 change. The contract already existed; only its home and namespace change.
 The move is one PR rather than tier by tier: halfway,
 `volumetric_kit::sensor` and `volumetric_kit::recon::sensor` would have

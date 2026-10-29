@@ -17,6 +17,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# Where the package's test fixtures are, for consumers' tests (recon's examples
+# use its JPEG). Not volumetric_kit_sensor_SOURCE_DIR: when an application
+# declares this package from recon's repository (SOURCE_SUBDIR sensor),
+# FetchContent sets that to the checkout's root.
+set(VS_TEST_DATA_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    CACHE INTERNAL "The sensor package's test fixtures")
+
 # --- Options -----------------------------------------------------------------
 # PROJECT_IS_TOP_LEVEL is ON only when this package is the root project, not
 # added by recon or an application through add_subdirectory/FetchContent; the

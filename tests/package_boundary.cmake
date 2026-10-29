@@ -26,7 +26,7 @@ foreach(_vs_file IN LISTS _vs_all)
   endif()
   math(EXPR _vs_count "${_vs_count} + 1")
   file(STRINGS "${_vs_file}" _vs_lines
-       REGEX "#[ \t]*include[ \t]*[\"<]${_vs_kit}/${_vs_outside}/")
+       REGEX "#[ \t]*(include|import)[ \t]*[\"<]${_vs_kit}/${_vs_outside}/")
   foreach(_vs_line IN LISTS _vs_lines)
     string(APPEND _vs_found "\n  ${_vs_rel}: ${_vs_line}")
   endforeach()
