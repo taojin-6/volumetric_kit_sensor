@@ -73,9 +73,9 @@ struct DeviceDepth {
   /// frame is kept or prepared, and a prepare whose wait fails holds it for
   /// good, as the device may still read it.
   std::shared_ptr<const core::Buffer> buffer;
-  /// The first sample's byte in @ref buffer: even, any multiple of 2. The
-  /// pass binds from below it at the alignment a binding needs, so it need
-  /// not be aligned.
+  /// The first sample's byte in @ref buffer, any even one: the pass binds
+  /// from below it at the alignment a binding needs, so it need not be
+  /// aligned further.
   std::uint64_t offset = 0;
   /// The queue family that owns @ref buffer, its writer, which the pass takes
   /// it over from, as `YuvImage::queue_family` says for a picture's buffer:

@@ -2007,8 +2007,8 @@ int test_device_depth(vkc::Device& device, vkc::Allocator& allocator) {
   CHECK(at_zero.has_depth() && !at_zero.has_color());
   CHECK(same(at_zero));
   // Deep in a bigger buffer: 4102 is 2051 samples in, odd, and 4100 even;
-  // neither is a binding's alignment, at least 16 on every device the tests
-  // run on, and 4102 not even a word's.
+  // neither is a multiple of 16, the binding alignment of the RTX 4090 and
+  // lavapipe, and 4102 is not even a word's.
   constexpr std::size_t kDeep = 4102;
   const auto deep = depth_buffer(raw, kDeep, 10);
   const auto deep_even = depth_buffer(raw, kDeep - 2, 6);

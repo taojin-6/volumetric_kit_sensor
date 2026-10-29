@@ -103,7 +103,9 @@ entries relevant to your task; later amendments supersede earlier rules.
 - [**2026-10-06**](#2026-10-06--a-sensors-frame-is-rgbdframe-each-cameras-cameramodel-the-poses-in-double-a-sequence-number-and-the-pixels-it-holds-and-the-femto-megas-factory-extrinsic-is-made-a-rotation) —
   A sensor's frame is `RgbdFrame`: each camera's `CameraModel`, the poses in
   double, a sequence number, and the pixels it holds. The Femto Mega's factory
-  depth-to-colour rotation is not one, and is made one.
+  depth-to-colour rotation is not one, and is made one. *Amended
+  2026-10-29:* its depth may be on the device instead
+  (`RgbdFrame::depth_device`), held by its buffer.
 - [**2026-10-06**](#2026-10-06--a-sensor-is-an-irgbdsensor-what-it-is-before-a-frame-sensorinfo-frames-polled-newest-or-drained-oldest-first-and-the-femto-mega-is-orbbecsensor) —
   A sensor is an `IRgbdSensor`: what it is before a frame (`SensorInfo`),
   frames polled newest or drained oldest first. The Femto Mega is
@@ -132,7 +134,8 @@ entries relevant to your task; later amendments supersede earlier rules.
 - [**2026-10-06**](#2026-10-06--gpuframeprep-takes-colour-on-the-device-only-and-a-sets-depth-is-staged-on-one-thread-amends-the-2026-09-28-decoded-frame-and-2026-10-06-one-batch-entries) —
   `GpuFramePrep` takes colour on the device only, and a set's depth is
   staged on one thread. (Packed host colour came back the next day, and
-  host Y'CbCr planes on 2026-10-29.)
+  host Y'CbCr planes on 2026-10-29.) *Amended 2026-10-29:* depth may come
+  from the device, read in place with no copy; only host depth is staged.
 - [**2026-10-06**](#2026-10-06--a-sensor-array-groups-its-frames-by-trigger-only-syncmode-and-sequence-grouping-go-amends-the-2026-10-06-sensorarray-entry) —
   A sensor array groups its frames by trigger only: `SyncMode` and sequence
   grouping go.
@@ -277,6 +280,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   and YUYV (`YuvLayout::Yuyv`, 4:2:2) among the layouts: a UVC camera's
   colour as its SDK hands it over, staged beside the depth as packed words
   are and converted on the device. `PictureReadback` refuses YUYV.
+- [**2026-10-29**](#2026-10-29--gpuframeprep-reads-depth-on-the-device-in-place-a-gpu-stages-depth-rgbdframedepth_device-taken-over-from-its-writers-queue-family-and-bound-where-it-is-amends-the-2026-10-06-sensor-frame-and-device-only-gpuframeprep-entries) —
+  `GpuFramePrep` reads depth on the device in place:
+  `RgbdFrame::depth_device` (a `DeviceDepth`), the 16-bit samples a GPU
+  stage such as stereo matching wrote, at any even byte of a storage buffer,
+  taken over from its writer's queue family and bound where it is, the
+  image's first sample a push constant. No copy and no host round trip; a
+  frame with nothing on the host still binds a word of the pass's slot.
 
 ## Decision record
 
@@ -2188,6 +2198,10 @@ as run or not run.
 
 ### 2026-10-06 — A sensor's frame is `RgbdFrame`: each camera's `CameraModel`, the poses in double, a sequence number, and the pixels it holds; and the Femto Mega's factory extrinsic is made a rotation.
 
+*Amended 2026-10-29 (the device-depth entry):* a frame's depth may be on
+the device instead of the host, `RgbdFrame::depth_device`, which the frame
+holds through its buffer as it holds a device picture.
+
 `RgbdFrame` (`sensor/rgbd_frame.hpp`) replaces `RawFrame`, the second step of
 the plan above. It is the frame every driver will hand out once
 `IRgbdSensor` lands; `sensor::LensCamera` and `LensDistortion` are gone.
@@ -2547,6 +2561,9 @@ H.265 tests on NVDEC, the first run of that path. Not run on a camera.
 and copied up in the pass's own batch; Y'CbCr planes stay device-only.
 *Amended 2026-10-29 (the host-planes entry):* Y'CbCr planes come from the
 host too, `YuvImage::host`, staged as the packed words are.
+*Amended 2026-10-29 (the device-depth entry):* depth may come from the
+device too, `RgbdFrame::depth_device`, read where it is with no copy; only
+host depth goes up from the host.
 
 **The rule.** `GpuFramePrep` takes a frame's colour on the device only: I420
 or NV12 planes in a buffer (`YuvImage::device`), or NV12's planes as images
@@ -4105,3 +4122,87 @@ built on this checkout passes its 40 tests. Six planted bugs each failed
 rows, host planes copied from the pointer rather than the first plane, Cr
 read beside Cb, `has_color()` blind to host planes, and YUYV of odd width
 accepted. The Mac is CI's leg.
+
+### 2026-10-29 — `GpuFramePrep` reads depth on the device in place: a GPU stage's depth, `RgbdFrame::depth_device`, taken over from its writer's queue family and bound where it is (amends the 2026-10-06 sensor-frame and device-only `GpuFramePrep` entries).
+
+**The rule.** `RgbdFrame` gains `depth_device`, a `DeviceDepth`: a storage
+buffer on the frame's device, the byte of its first sample, and the queue
+family that wrote it (`kQueueFamilyExternal` for CUDA through exported
+memory, another family that released it, or `kQueueFamilyIgnored`). Its
+samples are those `depth` would hold, 16-bit in `metres_per_unit`,
+`depth_camera`'s size, rows packed; a frame sets one or the other, never
+both, and `has_depth()` counts either. Its writer must have finished before
+the frame is prepared, as a device picture's must, and the frame holds the
+buffer. `GpuFramePrep` takes the buffer over from that family and binds it
+where it is, from the first sample rounded down to
+`max(minStorageBufferOffsetAlignment, 4)`, and tells the depth pass where
+the image starts in the binding by a push constant, `raw_first`
+(`DepthParams` is 72 bytes); the pass is otherwise unchanged. Any even
+offset is read so, with no copy; the buffer must hold the word with the
+last sample, which the kernel reads whole, as a colour plane's buffer must.
+A failed submit that may still run lets the buffer go, as it does device
+planes. Refused before any work: depth on the host and the device, an odd
+offset, samples or their last word past the buffer, a buffer that is
+empty, lacks storage usage or is not device-local, and a queue family the
+device lacks. A frame with nothing on the host still claims a word of the
+pass's slot, which its batch binds, so a record before that batch resolves
+is refused as for any frame. The array tier holds and passes frames as they
+are, and `PictureReadback` reads colour only; neither changes.
+
+**Why.** The owner's RealSense and stereo design (2026-10-29), and "make sure
+everything is fast and GPU accelerated when possible": Fast-FoundationStereo
+runs on CUDA and TensorRT and writes its depth straight into a Vulkan buffer
+it maps, so prep reads it there rather than through a readback to the host
+and the slot's copy back up, about 1 MB each way a frame at 960 x 544. It
+writes 16-bit depth in a `metres_per_unit` chosen from its maximum depth
+(0.1 mm units reach 6.5 m), so a frame keeps one depth format and the depth
+pass its arithmetic; only the source moves.
+
+**Why an offset in the shader, not an aligned binding or a copy.** A
+binding's offset must be a multiple of `minStorageBufferOffsetAlignment`
+(16 on the RTX 4090 and lavapipe, up to 256 by the spec), and a producer's
+buffer may hold its depth after a header or several frames in a ring.
+Refusing other offsets
+would put the alignment on every producer, and copying into the slot would
+be the pass over the samples this removes. The colour pass already binds a
+buffer's planes from below their first byte and adds the offset in the
+shader; depth does the same with one push-constant word and an add. An odd
+byte offset is refused: no writer puts a 16-bit sample there.
+
+**Why a word of the slot.** The slot is how a record learns that the pass's
+last batch has resolved before it rewrites the kernels' sets and may
+replace the outputs that batch uses. A frame with nothing on the host would
+claim none, and a second record before its batch resolved would rewrite a
+set the batch still reads. One word bound keeps the refusal: nothing is
+recorded where the slot is bound in place (Apple, lavapipe), a 4-byte copy
+where it is copied (a discrete GPU).
+
+**Tests.** `sensor_gpu_frame_prep`, through the barrel test lens with a
+depth offset, the four-pixel mix, edges and holes: depth on the device gives
+the words the same samples from the host give, bit for bit,
+- from byte 0 of a buffer that ends with the last sample;
+- at bytes 4100 and 4102 of a bigger buffer, junk before and after: offsets
+  no binding may start at, the image starting in either half of a word;
+- 321 x 241 samples, an odd count, from byte 4096, refused while the buffer
+  ends two bytes into their last word and read once it holds the word, and
+  from byte 4098, where they end a word, with the buffer ending there;
+- taken over from outside Vulkan, and named as the pass's own family;
+- beside packed colour from the host, masked by the colour camera's view;
+- in a set of five beside frames whose depth is on the host, one camera
+  missing and one with I420 planes in a buffer, prepared and recorded, each
+  as it prepares alone.
+
+A device-only frame's record refuses a second record before its batch
+resolves; fifty warm frames allocate no staging and submit once each; and
+the refusals above come before any row is timed. In
+`sensor_gpu_frame_prep_submit`, a submit that loses the device keeps the
+device depth's buffer, and one that fails otherwise lets it go.
+
+**Validation.** RTX 4090, Ubuntu 26.04, Release with warnings as errors,
+Orbbec, FFmpeg and CUDA, under the validation layer: 41 tests passed and the
+2 JPEG tests skipped, as on main, of 43. recon main (`89133e50`) built on
+this checkout passes its 41 tests. Five planted bugs each failed a test:
+the shader ignoring `raw_first`, a frame with nothing on the host binding
+no slot, the buffer weighed to its last sample rather than its last word,
+the failed submit letting the depth's buffer go, and the depth's queue
+family left unchecked. The Mac is CI's leg.
