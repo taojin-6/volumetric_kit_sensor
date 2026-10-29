@@ -33,12 +33,12 @@ enum class YuvLayout : std::uint8_t {
 
 /// @brief @ref YuvImage::queue_family for device planes that need no
 ///        ownership transfer: written on the queue family that prepares them,
-///        or held in a CONCURRENT buffer or images. Vulkan's
-///        `VK_QUEUE_FAMILY_IGNORED`.
+///        or held in a CONCURRENT buffer or images; and `DeviceDepth`'s
+///        likewise. Vulkan's `VK_QUEUE_FAMILY_IGNORED`.
 inline constexpr std::uint32_t kQueueFamilyIgnored = ~std::uint32_t{0};
 /// @brief @ref YuvImage::queue_family for device planes an API outside Vulkan
-///        wrote, such as CUDA through imported memory. Vulkan's
-///        `VK_QUEUE_FAMILY_EXTERNAL`.
+///        wrote, such as CUDA through imported memory, and `DeviceDepth`'s
+///        likewise. Vulkan's `VK_QUEUE_FAMILY_EXTERNAL`.
 inline constexpr std::uint32_t kQueueFamilyExternal = ~std::uint32_t{0} - 1;
 
 /// @brief The YCbCr-to-RGB matrix of a coded picture.

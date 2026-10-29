@@ -50,9 +50,12 @@ struct DepthParams {
   float metres_per_unit;
   std::uint32_t within_color;  // mask by OverlapParams
   float depth_offset_m;        // subtracted from every return
+  std::uint32_t raw_first;     // the image's first sample in the binding
 };
-static_assert(sizeof(DepthParams) == 68, "DepthParams layout drift");
+static_assert(sizeof(DepthParams) == 72, "DepthParams layout drift");
 static_assert(offsetof(DepthParams, depth_offset_m) == 64,
+              "DepthParams layout drift");
+static_assert(offsetof(DepthParams, raw_first) == 68,
               "DepthParams layout drift");
 
 // undistort_depth.comp's Overlap block: the colour camera, and the rigid
@@ -158,10 +161,17 @@ VkDeviceSize round_up(VkDeviceSize bytes, VkDeviceSize alignment) noexcept {
   return (bytes + alignment - 1) & ~(alignment - 1);
 }
 
-// A frame's depth half, checked, and the bytes it moves.
+// A frame's depth half, checked: the range the kernel binds, where the image
+// starts in it, and the bytes it moves. Host samples are copied into the slot
+// from byte 0 and bound from there; samples in a buffer are read where they
+// are, bound from the first one rounded down to the alignment a binding's
+// offset needs.
 struct DepthLayout {
   std::uint32_t pixels = 0;
-  VkDeviceSize in_bytes = 0;   // the raw samples, rounded up to a word
+  bool on_device = false;
+  VkDeviceSize staged_bytes = 0;  // host samples the slot takes, to a word
+  VkDeviceSize bind_offset = 0, bind_bytes = 0;
+  std::uint32_t first = 0;     // the image's first sample in the binding
   VkDeviceSize out_bytes = 0;  // the metres
 };
 
@@ -187,11 +197,18 @@ struct ColorLayout {
 
 core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
                                       std::uint64_t max_pixels,
-                                      VkDeviceSize max_range) {
+                                      VkDeviceSize max_range,
+                                      VkDeviceSize offset_alignment) {
   const camera::CameraModel& cam = frame.depth_camera;
-  if (frame.depth == nullptr) {
+  const DeviceDepth& device = frame.depth_device;
+  if (!frame.has_depth()) {
     return core::Status::invalid_argument(
         "GpuFramePrep: the frame has no depth");
+  }
+  if (frame.depth != nullptr && device.buffer != nullptr) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep: the depth must be on the host or on the device, not "
+        "both");
   }
   VKC_TRY(check_camera("depth", cam));
   if (!(finite(frame.metres_per_unit) && frame.metres_per_unit > 0.0f)) {
@@ -218,10 +235,44 @@ core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
   }
   DepthLayout out;
   out.pixels = static_cast<std::uint32_t>(pixels);
-  out.in_bytes = round_up4(pixels * sizeof(std::uint16_t));
   out.out_bytes = pixels * sizeof(float);
   VKC_TRY(core::check_storage_buffer_range("GpuFramePrep: the depth buffer",
                                            out.out_bytes, max_range));
+  const VkDeviceSize bytes = pixels * sizeof(std::uint16_t);
+  if (device.buffer == nullptr) {
+    // Copied into the slot from byte 0, which the kernel reads in words.
+    out.staged_bytes = out.bind_bytes = round_up4(bytes);
+    return out;
+  }
+  out.on_device = true;
+  // Empty or without storage usage, before its size is weighed.
+  const core::StorageInput input(*device.buffer);
+  VKC_TRY(input.check("GpuFramePrep: the depth's buffer", 0));
+  if (device.offset % sizeof(std::uint16_t) != 0) {
+    return core::Status::invalid_argument("GpuFramePrep: the depth's offset, " +
+                                          std::to_string(device.offset) +
+                                          ", is odd; its samples are 16-bit");
+  }
+  const VkDeviceSize size = device.buffer->size();
+  if (device.offset > size || bytes > size - device.offset) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep: the depth runs past its buffer");
+  }
+  // The kernel reads whole words, so the one holding the last sample must be
+  // in the buffer.
+  const VkDeviceSize end = round_up4(device.offset + bytes);
+  VKC_TRY(input.check("GpuFramePrep: the depth's buffer", end));
+  // Bound from the first sample, rounded down to the alignment a binding's
+  // offset needs (and to a word), and the kernel told where the image starts
+  // in it, so depth at any even byte is read where it is, with no copy, and
+  // the limit below weighs the image rather than where it sits in its buffer.
+  const VkDeviceSize align = std::max<VkDeviceSize>(offset_alignment, 4);
+  out.bind_offset = device.offset / align * align;
+  out.bind_bytes = end - out.bind_offset;
+  out.first = static_cast<std::uint32_t>((device.offset - out.bind_offset) /
+                                         sizeof(std::uint16_t));
+  VKC_TRY(core::check_storage_buffer_range("GpuFramePrep: the depth samples",
+                                           out.bind_bytes, max_range));
   return out;
 }
 
@@ -519,12 +570,12 @@ struct GpuFramePrep::Layout {
   DepthLayout depth;
   ColorLayout color;
   // NV12 plane images, sampled in place; host bytes, packed words or planes,
-  // copied into the slot after the depth; else planes in a buffer, read in
-  // place.
+  // copied into the slot after any host depth; else planes in a buffer, read
+  // in place.
   bool from_images = false;
   bool from_host = false;
-  // The slot holds the depth from byte 0, and host colour from this offset,
-  // at minStorageBufferOffsetAlignment; its bytes used.
+  // The slot holds host depth from byte 0, and host colour from this offset,
+  // at minStorageBufferOffsetAlignment; its bytes used, one word at least.
   VkDeviceSize color_at = 0;
   VkDeviceSize slot_bytes = 0;
 };
@@ -547,7 +598,8 @@ core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
       std::uint64_t{max_workgroup_count_x_} * kLocalSize;
   Layout layout;
   VKC_ASSIGN(layout.depth,
-             check_depth(frame, max_pixels, max_storage_buffer_range_));
+             check_depth(frame, max_pixels, max_storage_buffer_range_,
+                         min_storage_buffer_offset_alignment_));
   if (frame.has_color()) {
     VKC_ASSIGN(layout.color,
                check_color(frame, max_pixels, max_storage_buffer_range_,
@@ -557,15 +609,25 @@ core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
       frame.color.image[0] != nullptr || frame.color.image[1] != nullptr;
   layout.from_host =
       frame.color_packed != nullptr || frame.color.host != nullptr;
-  // Device planes come from a family the batch can take them over from, so
-  // the acquire refuses nothing once recording starts. An EXCLUSIVE image
-  // crosses only from outside Vulkan (CommandBatch::acquire); one another
-  // family reads is made CONCURRENT.
+  // Device depth and planes come from a family the batch can take them over
+  // from, so the acquire refuses nothing once recording starts. An EXCLUSIVE
+  // image crosses only from outside Vulkan (CommandBatch::acquire); one
+  // another family reads is made CONCURRENT.
+  const auto has_family = [this](std::uint32_t family) {
+    return family == kQueueFamilyIgnored || family == kQueueFamilyExternal ||
+           family < device_->caps().queue_families().size();
+  };
+  if (layout.depth.on_device && !has_family(frame.depth_device.queue_family)) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep: the depth comes from queue family " +
+        std::to_string(frame.depth_device.queue_family) +
+        ", which the device does not have");
+  }
   if (frame.color.device != nullptr || layout.from_images) {
     const std::uint32_t family = frame.color.queue_family;
     const bool special =
         family == kQueueFamilyIgnored || family == kQueueFamilyExternal;
-    if (!special && family >= device_->caps().queue_families().size()) {
+    if (!has_family(family)) {
       return core::Status::invalid_argument(
           "GpuFramePrep: the colour planes come from queue family " +
           std::to_string(family) + ", which the device does not have");
@@ -582,13 +644,18 @@ core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
       }
     }
   }
-  layout.slot_bytes = layout.depth.in_bytes;
+  layout.slot_bytes = layout.depth.staged_bytes;
   if (layout.from_host) {
     layout.color_at = round_up(
-        layout.depth.in_bytes,
+        layout.depth.staged_bytes,
         std::max<VkDeviceSize>(min_storage_buffer_offset_alignment_, 4));
     layout.slot_bytes = layout.color_at + layout.color.bind_bytes;
   }
+  // A frame with nothing on the host still claims a word of the slot and its
+  // batch binds it, so its batch holds the slot as any frame's does, and a
+  // record before that batch resolves is refused (stage) rather than
+  // rewriting the sets and outputs it uses.
+  layout.slot_bytes = std::max<VkDeviceSize>(layout.slot_bytes, 4);
   return layout;
 }
 
@@ -597,9 +664,10 @@ core::Result<core::HostSlot> GpuFramePrep::stage(const RgbdFrame& frame,
   const DepthLayout& depth = layout.depth;
   const ColorLayout& color = layout.color;
   // One slot: the frame is copied in as it is recorded, so the batch of the
-  // pass's last record, which binds the slot, has resolved by then (its
-  // kernels' sets are rewritten too). A record before it has refuses here,
-  // before ensure_buffers can free a buffer that batch still uses.
+  // pass's last record, which binds the slot whatever the frame staged, has
+  // resolved by then (its kernels' sets are rewritten too). A record before
+  // it has refuses here, before ensure_buffers can free a buffer that batch
+  // still uses.
   if (inputs_ == nullptr) {
     core::HostRingDesc desc;
     desc.slot_bytes = layout.slot_bytes;
@@ -609,9 +677,11 @@ core::Result<core::HostSlot> GpuFramePrep::stage(const RgbdFrame& frame,
     VKC_ASSIGN(inputs_, core::HostRing::create(*device_, *allocator_, desc));
   }
   VKC_ASSIGN(core::HostSlot slot, inputs_->claim(layout.slot_bytes));
-  // The depth, then any host colour at its aligned offset.
-  std::memcpy(slot.data(), frame.depth,
-              std::size_t{depth.pixels} * sizeof(std::uint16_t));
+  // Host depth, then any host colour at its aligned offset.
+  if (!depth.on_device) {
+    std::memcpy(slot.data(), frame.depth,
+                std::size_t{depth.pixels} * sizeof(std::uint16_t));
+  }
   if (layout.from_host) {
     const void* from =
         frame.color_packed != nullptr
@@ -640,8 +710,12 @@ core::Status GpuFramePrep::record_inputs(core::CommandBatch& batch,
                                          const core::HostSlot& slot,
                                          VkBuffer* input) {
   const YuvImage& image = frame.color;
-  // Device planes taken over from the family that wrote them, images in the
-  // layout they are in.
+  // Device depth and planes taken over from the family that wrote them,
+  // images in the layout they are in.
+  if (layout.depth.on_device) {
+    VKC_TRY(batch.acquire(*frame.depth_device.buffer,
+                          frame.depth_device.queue_family));
+  }
   if (image.device != nullptr) {
     VKC_TRY(batch.acquire(*image.device, image.queue_family));
   }
@@ -651,7 +725,8 @@ core::Status GpuFramePrep::record_inputs(core::CommandBatch& batch,
     }
   }
   // The slot's used range: bound in place, or one copy into its mirror, which
-  // joins the open tile, the frame prep's.
+  // joins the open tile, the frame prep's. Bound even when it holds only the
+  // word a frame with nothing on the host claims, so the batch holds it.
   VKC_ASSIGN(*input, batch.input(slot, 0, layout.slot_bytes));
   // The overlap mask, for a frame with colour when the config asks: the
   // colour camera and the depth-to-colour transform, written inline.
@@ -670,13 +745,18 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
   const DepthLayout& depth = layout.depth;
   const ColorLayout& color = layout.color;
   const YuvImage& image = frame.color;
-  depth_kernel_.set.write_storage_buffer(0, input, 0, depth.in_bytes);
+  // Host depth where the slot holds it; depth on the device where its writer
+  // left it.
+  const VkBuffer raw =
+      depth.on_device ? frame.depth_device.buffer->handle() : input;
+  depth_kernel_.set.write_storage_buffer(0, raw, depth.bind_offset,
+                                         depth.bind_bytes);
   depth_kernel_.set.write_storage_buffer(1, depth_out_->buffer.handle(), 0,
                                          depth.out_bytes);
   const bool within_color = config_.depth_within_color && frame.has_color();
   const DepthParams depth_params{lens_params(frame.depth_camera),
                                  frame.metres_per_unit, within_color ? 1u : 0u,
-                                 config_.depth_offset_m};
+                                 config_.depth_offset_m, depth.first};
   VKC_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
                          core::group_count(depth.pixels, kLocalSize),
                          max_workgroup_count_x_, stage));
@@ -730,10 +810,14 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
 }
 
 void GpuFramePrep::abandon(const RgbdFrame& frame) {
-  // The device may still run the kernels, so the device planes, buffer or
-  // images, which the caller may drop, and a decoder reuse, as soon as the
-  // call returns, are let go rather than freed. The slot stays with the
-  // batch, which the device keeps.
+  // The device may still run the kernels, so the device depth and planes,
+  // buffers or images, which the caller may drop, and a writer reuse, as soon
+  // as the call returns, are let go rather than freed. The slot stays with
+  // the batch, which the device keeps.
+  if (frame.depth_device.buffer != nullptr) {
+    static_cast<void>(
+        new std::shared_ptr<const core::Buffer>(frame.depth_device.buffer));
+  }
   if (frame.color.device != nullptr) {
     static_cast<void>(
         new std::shared_ptr<const core::Buffer>(frame.color.device));

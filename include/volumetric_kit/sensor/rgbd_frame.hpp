@@ -47,14 +47,54 @@ struct ColorBitstream {
   std::size_t size = 0;  ///< The count of @ref data; 0 with `Codec::None`.
 };
 
+/// @brief A frame's depth on the device, as a GPU stage wrote it: stereo
+///        matching that writes its depth straight into a Vulkan buffer, say.
+///
+/// The samples are those @ref RgbdFrame::depth would hold -- 16-bit, in
+/// @ref RgbdFrame::metres_per_unit, `depth_camera.size.width * height` of
+/// them, row-major with the rows packed, 0 "no return" -- from byte
+/// @ref offset of @ref buffer. `GpuFramePrep` reads them where they are,
+/// after taking the buffer over from @ref queue_family, with no copy.
+///
+/// @code
+/// DeviceDepth depth;  // a GPU stage's depth, written and waited on
+/// depth.buffer = depth_buffer;    // STORAGE_BUFFER usage, device-local
+/// depth.offset = 0;
+/// depth.queue_family = kQueueFamilyExternal;  // CUDA wrote it
+/// frame.depth_device = depth;     // instead of frame.depth
+/// @endcode
+struct DeviceDepth {
+  /// A storage buffer on the device the frame is prepared on that holds the
+  /// samples, through the word holding the last one: the buffer's size is at
+  /// least @ref offset plus the samples' bytes, rounded up to 4, since the
+  /// pass reads whole words. Its writer must have **finished** before the
+  /// frame is prepared, as for `YuvImage::device`, since the pass waits on no
+  /// semaphore. The frame holds it, so its writer cannot reuse it while the
+  /// frame is kept or prepared, and a prepare whose wait fails holds it for
+  /// good, as the device may still read it.
+  std::shared_ptr<const core::Buffer> buffer;
+  /// The first sample's byte in @ref buffer: even, any multiple of 2. The
+  /// pass binds from below it at the alignment a binding needs, so it need
+  /// not be aligned.
+  std::uint64_t offset = 0;
+  /// The queue family that owns @ref buffer, its writer, which the pass takes
+  /// it over from, as `YuvImage::queue_family` says for a picture's buffer:
+  /// @ref kQueueFamilyExternal for a write from outside Vulkan, such as CUDA
+  /// through exported memory; another family of the device, whose writer
+  /// released the buffer to the pass's; or @ref kQueueFamilyIgnored when the
+  /// pass's own family wrote it, or for a CONCURRENT buffer.
+  std::uint32_t queue_family = kQueueFamilyIgnored;
+};
+
 /// @brief One RGB-D frame as the sensor captured it.
 ///
 /// It holds what it points to, so a consumer may keep several -- a sensor
-/// array groups each sensor's frames by trigger before it prepares any: the
-/// depth and any host colour through @ref pixels, a device picture through
-/// `YuvImage::device` or `YuvImage::image`. A driver's buffers go back to it
-/// once every copy of the frame is gone, so a consumer that keeps frames
-/// keeps the driver's buffers from it.
+/// array groups each sensor's frames by trigger before it prepares any: host
+/// depth and any host colour through @ref pixels, depth on the device through
+/// `DeviceDepth::buffer`, a device picture through `YuvImage::device` or
+/// `YuvImage::image`. A driver's buffers go back to it once every copy of the
+/// frame is gone, so a consumer that keeps frames keeps the driver's buffers
+/// from it.
 ///
 /// @code
 /// RgbdFrame frame;  // as a driver fills one
@@ -74,6 +114,9 @@ struct RgbdFrame {
   /// Row-major depth in the sensor's units, `depth_camera.size.width *
   /// height` samples; 0 is "no return". Held by @ref pixels.
   const std::uint16_t* depth = nullptr;
+  /// Or the same samples on the device, where a GPU stage left them; set
+  /// this or @ref depth, not both.
+  DeviceDepth depth_device{};
   float metres_per_unit = 0.001f;    ///< What one depth unit is, in metres.
   camera::CameraModel depth_camera;  ///< The depth camera, lens included.
   /// Nearer samples are dropped (metres). Set it: the pass needs
@@ -127,6 +170,11 @@ struct RgbdFrame {
   /// @ref color_bitstream point into, held for as long as the frame is; null
   /// when they need no owner.
   std::shared_ptr<const void> pixels;
+
+  /// @return `true` if this frame carries depth, on the host or the device.
+  bool has_depth() const noexcept {
+    return depth != nullptr || depth_device.buffer != nullptr;
+  }
 
   /// @return `true` if this frame carries colour.
   bool has_color() const noexcept {

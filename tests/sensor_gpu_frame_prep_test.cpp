@@ -29,7 +29,10 @@
 //   - its depth and colour outputs are shared with the queue families its
 //     config names for each, and read on another family as on its own;
 //   - with depth_within_color, depth survives only where colour recorded it,
-//     at the corrected and mixed depth.
+//     at the corrected and mixed depth;
+//   - depth on the device, at any even byte of its buffer, taken over or
+//     not, alone or in a set beside host depth, gives the words the same
+//     depth from the host gives, bit for bit, and holds the pass's slot.
 // Fusing its output is recon's test (recon_tsdf_prepared_frame).
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
@@ -1892,6 +1895,314 @@ int test_batch_timing(vkc::Device& device, vkc::Allocator& allocator) {
   return 0;
 }
 
+// w x h raw depth for the device-depth test: 16 px squares of a slope, which
+// the pass mixes, and of random returns, which it samples at the nearest
+// pixel, with a hole every 37 pixels.
+std::vector<std::uint16_t> mixed_raw(std::uint32_t w, std::uint32_t h) {
+  std::vector<std::uint16_t> raw(std::size_t{w} * h);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const std::size_t i = std::size_t{y} * w + x;
+      raw[i] = i % 37 == 0 ? 0
+               : ((x / 16 + y / 16) & 1u) != 0
+                   ? static_cast<std::uint16_t>(500 + (i * 2654435761u) % 4000u)
+                   : static_cast<std::uint16_t>(1500 + 3 * x + 2 * y);
+    }
+  }
+  return raw;
+}
+
+// `raw`'s samples in a device storage buffer from byte `at`, after `at` junk
+// bytes and before `tail` more, as a GPU stage leaves its depth; null if it
+// cannot be made. The junk reads as 61 m, so a sample read from the wrong
+// place shows.
+std::shared_ptr<const vkc::Buffer> depth_buffer(
+    const std::vector<std::uint16_t>& raw, std::size_t at, std::size_t tail) {
+  std::vector<std::uint8_t> bytes(
+      at + raw.size() * sizeof(std::uint16_t) + tail, 0xEE);
+  std::memcpy(bytes.data() + at, raw.data(),
+              raw.size() * sizeof(std::uint16_t));
+  return on_device(bytes);
+}
+
+// `host`, its depth moved to the device: `buffer` from byte `at`.
+sensor::RgbdFrame on_device_depth(sensor::RgbdFrame host,
+                                  std::shared_ptr<const vkc::Buffer> buffer,
+                                  std::uint64_t at) {
+  host.depth = nullptr;
+  host.depth_device.buffer = std::move(buffer);
+  host.depth_device.offset = at;
+  return host;
+}
+
+// A prepared frame's depth as the words the pass wrote, for a comparison bit
+// for bit.
+std::vector<std::uint32_t> depth_words(const sensor::DeviceFrame& f) {
+  return read<std::uint32_t>(
+      *f.depth, std::size_t{f.depth_camera.width} * f.depth_camera.height);
+}
+
+// Depth on the device, as a GPU stage leaves it (RgbdFrame::depth_device), is
+// read where it is, and gives the words the same samples from the host give,
+// bit for bit, through the barrel lens, mixed, at an edge and at a hole, less
+// a depth offset:
+//   - from byte 0 of a buffer that ends at the last sample;
+//   - deep in a bigger buffer, junk before and after, at offsets no binding
+//     may start at: an odd count of samples in, so the image starts in the
+//     second half of a word, and an even count;
+//   - an odd count of samples that ends two bytes into a word, refused while
+//     that word runs past the buffer and read once the buffer holds it, or
+//     ending a word when it starts two bytes in;
+//   - taken over from outside Vulkan (CUDA), or named as the pass's own
+//     family;
+//   - beside packed colour from the host, masked by the colour's view;
+//   - in a set beside frames whose depth is on the host, one with planes in a
+//     buffer, prepared or recorded, as each prepares alone.
+// A frame with nothing on the host still holds the pass's slot, so a record
+// before its batch resolves is refused; warm, it allocates nothing to move
+// bytes; and the frames it refuses, before any work.
+int test_device_depth(vkc::Device& device, vkc::Allocator& allocator) {
+  const auto invalid = vkc::Status::Code::InvalidArgument;
+  sensor::GpuFramePrepConfig config;
+  config.depth_offset_m = 0.0123f;
+  config.depth_within_color = true;  // where a frame has colour
+  auto made = sensor::GpuFramePrep::create(device, allocator, config);
+  auto made_reference = sensor::GpuFramePrep::create(device, allocator, config);
+  CHECK(made.ok() && made_reference.ok());
+  sensor::GpuFramePrep& prep = made.value();
+  sensor::GpuFramePrep& reference = made_reference.value();
+
+  const camera::CameraModel cam = lensed();
+  const std::vector<std::uint16_t> raw = mixed_raw(kWidth, kHeight);
+  const std::size_t bytes = raw.size() * sizeof(std::uint16_t);
+  const sensor::RgbdFrame host = frame_of(raw, cam);
+  auto want_frame = reference.prepare(host);
+  CHECK(want_frame.ok());
+  const std::vector<std::uint32_t> want = depth_words(want_frame.value());
+  CHECK(want.size() == raw.size());
+  std::size_t holes = 0;
+  for (const std::uint32_t w : want) holes += w == 0u ? 1 : 0;
+  CHECK(holes > raw.size() / 100 && holes < raw.size() / 2);
+  const auto same = [&](const sensor::RgbdFrame& f) {
+    auto got = prep.prepare(f);
+    if (!got) std::fprintf(stderr, "%s\n", got.status().message().c_str());
+    return got.ok() && depth_words(got.value()) == want;
+  };
+  const auto refused = [&](const sensor::RgbdFrame& f, const char* why) {
+    vkc::StageMetrics metrics;
+    const vkc::Status status = prep.prepare(f, &metrics).status();
+    if (status.message().find(why) == std::string::npos) {
+      std::fprintf(stderr, "  refused for \"%s\", not \"%s\"\n",
+                   status.message().c_str(), why);
+    }
+    return status.domain() == invalid &&
+           status.message().find(why) != std::string::npos &&
+           metrics.rows().empty();
+  };
+
+  // From byte 0, the buffer ending at the last sample (a whole word).
+  const auto exact = depth_buffer(raw, 0, 0);
+  CHECK(exact != nullptr && exact->size() == bytes);
+  const sensor::RgbdFrame at_zero = on_device_depth(host, exact, 0);
+  CHECK(at_zero.has_depth() && !at_zero.has_color());
+  CHECK(same(at_zero));
+  // Deep in a bigger buffer: 4102 is 2051 samples in, odd, and 4100 even;
+  // neither is a binding's alignment, at least 16 on every device the tests
+  // run on, and 4102 not even a word's.
+  constexpr std::size_t kDeep = 4102;
+  const auto deep = depth_buffer(raw, kDeep, 10);
+  const auto deep_even = depth_buffer(raw, kDeep - 2, 6);
+  CHECK(deep != nullptr && deep_even != nullptr);
+  const sensor::RgbdFrame deep_frame = on_device_depth(host, deep, kDeep);
+  CHECK(same(deep_frame));
+  CHECK(same(on_device_depth(host, deep_even, kDeep - 2)));
+  // Taken over from CUDA, or named as the pass's own family: the same depth.
+  sensor::RgbdFrame taken = deep_frame;
+  taken.depth_device.queue_family = sensor::kQueueFamilyExternal;
+  CHECK(same(taken));
+  taken.depth_device.queue_family = device.queue_family();
+  CHECK(same(taken));
+
+  // An odd count of samples, 321 x 241: from byte 4096 they end two bytes
+  // into a word, which the kernel reads whole, so a buffer that ends with
+  // them is refused, and one two bytes longer is read; from 4098 they end a
+  // word, and the buffer may end with them.
+  {
+    camera::CameraModel odd_cam = cam;
+    odd_cam.size = {kWidth + 1, kHeight + 1};
+    const std::vector<std::uint16_t> odd_raw =
+        mixed_raw(kWidth + 1, kHeight + 1);
+    CHECK(odd_raw.size() % 2 == 1);
+    const sensor::RgbdFrame odd_host = frame_of(odd_raw, odd_cam);
+    auto odd_want = reference.prepare(odd_host);
+    CHECK(odd_want.ok());
+    const std::vector<std::uint32_t> odd_words = depth_words(odd_want.value());
+    const auto odd_same = [&](const sensor::RgbdFrame& f) {
+      auto got = prep.prepare(f);
+      if (!got) std::fprintf(stderr, "%s\n", got.status().message().c_str());
+      return got.ok() && depth_words(got.value()) == odd_words;
+    };
+    const auto short_word = depth_buffer(odd_raw, 4096, 0);
+    CHECK(short_word != nullptr && short_word->size() % 4 == 2);
+    CHECK(refused(on_device_depth(odd_host, short_word, 4096),
+                  "the binding reads"));
+    CHECK(odd_same(
+        on_device_depth(odd_host, depth_buffer(odd_raw, 4096, 2), 4096)));
+    const auto ends_word = depth_buffer(odd_raw, 4098, 0);
+    CHECK(ends_word != nullptr && ends_word->size() % 4 == 0);
+    CHECK(odd_same(on_device_depth(odd_host, ends_word, 4098)));
+  }
+
+  // Beside packed colour from the host, the colour camera's pincushion lens
+  // missing the corners: depth masked by the colour's view, and the colour,
+  // as the same frame with its depth on the host gives them.
+  camera::CameraModel pincushion = pinhole();
+  pincushion.distortion.k1 = 0.3f;
+  const std::vector<std::uint32_t> words = packed_words(raw.size(), 5);
+  sensor::RgbdFrame host_colored = host;
+  host_colored.color_packed = words.data();
+  host_colored.color_camera = pincushion;
+  auto colored_want = reference.prepare(host_colored);
+  CHECK(colored_want.ok());
+  const std::vector<std::uint32_t> colored_depth =
+      depth_words(colored_want.value());
+  const std::vector<std::uint32_t> colored_color =
+      color_of(colored_want.value());
+  CHECK(colored_depth != want);  // the mask zeroed the corners
+  {
+    auto got = prep.prepare(on_device_depth(host_colored, deep, kDeep));
+    CHECK(got.ok());
+    CHECK(depth_words(got.value()) == colored_depth);
+    CHECK(color_of(got.value()) == colored_color);
+  }
+
+  // A set: host depth with packed colour; device depth from CUDA, no colour;
+  // a camera missing; device depth deep in its buffer with I420 planes in a
+  // buffer; host depth alone. Prepared together, and recorded into a
+  // caller's batch, each is what its pass gives it alone.
+  {
+    Planes planes = patterned(kWidth, kHeight);
+    sensor::RgbdFrame host_planes = host;
+    host_planes.color = planes.image(0.2126f, 0.0722f, false);
+    host_planes.color_camera = pincushion;
+    CHECK(host_planes.color.device != nullptr);
+    sensor::RgbdFrame from_cuda = at_zero;
+    from_cuda.depth_device.queue_family = sensor::kQueueFamilyExternal;
+    const std::vector<std::optional<sensor::RgbdFrame>> mixed{
+        host_colored, from_cuda, std::nullopt,
+        on_device_depth(host_planes, deep, kDeep), host};
+    // What each gives alone, its depth on the host.
+    const std::vector<std::optional<sensor::RgbdFrame>> alone{
+        host_colored, host, std::nullopt, host_planes, host};
+    std::vector<sensor::GpuFramePrep> preps;
+    std::vector<sensor::GpuFramePrep> recording;
+    for (std::size_t c = 0; c < mixed.size(); ++c) {
+      auto a = sensor::GpuFramePrep::create(device, allocator, config);
+      auto b = sensor::GpuFramePrep::create(device, allocator, config);
+      CHECK(a.ok() && b.ok());
+      preps.push_back(std::move(a).value());
+      recording.push_back(std::move(b).value());
+    }
+    for (int round = 0; round < 2; ++round) {
+      auto set = sensor::GpuFramePrep::prepare_batch(preps, mixed);
+      if (!set) std::fprintf(stderr, "%s\n", set.status().message().c_str());
+      CHECK(set.ok() && set->size() == mixed.size() && !(*set)[2]);
+      vkc::CommandBatch batch(device, allocator);
+      auto recorded = sensor::GpuFramePrep::record_set(batch, recording, mixed);
+      CHECK(recorded.ok() && recorded->size() == mixed.size());
+      CHECK(batch.submit().ok());
+      for (std::size_t c = 0; c < mixed.size(); ++c) {
+        if (!mixed[c]) continue;
+        auto one = reference.prepare(*alone[c]);
+        CHECK(one.ok());
+        const std::vector<std::uint32_t> d = depth_words(one.value());
+        CHECK(depth_words(*(*set)[c]) == d);
+        CHECK(depth_words(*(*recorded)[c]) == d);
+        CHECK(mixed[c]->has_color() == (*set)[c]->has_color());
+        if (mixed[c]->has_color()) {
+          const std::vector<std::uint32_t> col = color_of(one.value());
+          CHECK(color_of(*(*set)[c]) == col);
+          CHECK(color_of(*(*recorded)[c]) == col);
+        }
+      }
+    }
+    // One frame refused refuses the set before any work.
+    std::vector<std::optional<sensor::RgbdFrame>> bad = mixed;
+    bad[1]->depth_device.offset = 1;
+    vkc::StageMetrics metrics;
+    CHECK(sensor::GpuFramePrep::prepare_batch(preps, bad, &metrics)
+              .status()
+              .domain() == invalid);
+    CHECK(metrics.rows().empty());
+  }
+
+  // Nothing on the host, yet the frame's batch holds the pass's slot: a
+  // record before it resolves is refused, with nothing recorded, and after it
+  // records again.
+  {
+    auto fresh = sensor::GpuFramePrep::create(device, allocator, config);
+    CHECK(fresh.ok());
+    vkc::CommandBatch first(device, allocator);
+    vkc::CommandBatch second(device, allocator);
+    CHECK(fresh->record(first, deep_frame).ok());
+    const vkc::DeviceCounters was = device.counters();
+    CHECK(fresh->record(second, deep_frame).status().domain() == invalid);
+    CHECK(first.submit().ok() && second.submit().ok());
+    CHECK(device.counters().submits - was.submits == 1);  // the first only
+    CHECK(same(deep_frame));
+  }
+
+  // Warm: frames whose depth is on the device allocate nothing to move
+  // bytes, each prepare one submit.
+  CHECK(prep.prepare(deep_frame).ok());
+  const vkc::DeviceCounters warm = device.counters();
+  for (int i = 0; i < 50; ++i) CHECK(prep.prepare(deep_frame).ok());
+  const vkc::DeviceCounters now = device.counters();
+  CHECK(now.staging_buffers == warm.staging_buffers);
+  CHECK(now.submits - warm.submits == 50);
+
+  // Refused, before any work: depth on the host and the device; an empty
+  // buffer, or one the kernel cannot bind; an odd offset; samples past the
+  // buffer, by a sample or from an offset past it; and a queue family the
+  // device does not have.
+  sensor::RgbdFrame bad = deep_frame;
+  bad.depth = raw.data();
+  CHECK(refused(bad, "not both"));
+  bad = deep_frame;
+  bad.depth_device.buffer = std::make_shared<const vkc::Buffer>();
+  CHECK(refused(bad, "is empty"));
+  vkc::BufferDesc desc;
+  desc.size = deep->size();
+  desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  auto unbindable = allocator.create_buffer(desc);
+  CHECK(unbindable.ok());
+  bad.depth_device.buffer =
+      std::make_shared<const vkc::Buffer>(std::move(unbindable).value());
+  CHECK(refused(bad, "not a storage buffer"));
+  bad = deep_frame;
+  bad.depth_device.offset = kDeep + 1;
+  CHECK(refused(bad, "is odd"));
+  bad = deep_frame;
+  bad.depth_device.offset = deep->size() - bytes + 2;  // a sample past it
+  CHECK(refused(bad, "runs past its buffer"));
+  bad.depth_device.offset = deep->size() + 2;
+  CHECK(refused(bad, "runs past its buffer"));
+  bad = deep_frame;
+  bad.depth_device.queue_family =
+      static_cast<std::uint32_t>(device.caps().queue_families().size());
+  CHECK(refused(bad, "which the device does not have"));
+  // The same depth through the frame's own camera, but no depth at all.
+  bad = deep_frame;
+  bad.depth_device = {};
+  CHECK(!bad.has_depth());
+  CHECK(refused(bad, "has no depth"));
+  std::printf(
+      "  device depth: from bytes 0, %zu and %zu of its buffer, bit for bit "
+      "as from the host (%zu holes)\n",
+      kDeep - 2, kDeep, holes);
+  return 0;
+}
+
 // A pincushion lens maps the pinhole image's corners outside the captured
 // picture. There colour is a 0 word, coverage and all, so that fusion skips
 // it rather than fusing black; everywhere else its coverage byte is 0xFF,
@@ -2526,6 +2837,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_queue_families(gpu.device, gpu.allocator) != 0) return 1;
   if (test_cross_family() != 0) return 1;
   if (test_depth_within_color(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_device_depth(gpu.device, gpu.allocator) != 0) return 1;
 
   sensor::GpuFramePrep moved = std::move(prep).value();
   CHECK(moved.valid());
