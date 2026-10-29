@@ -17,10 +17,12 @@
 layout(set = 0, binding = 1, scalar) writeonly buffer View { uint words[]; };
 
 // stereo_rectifier.cpp's ViewParams: the view's rectification, fixed when the
-// rectifier is made.
+// rectifier is made. The rotation is nine floats rather than a mat3, whose
+// 12-byte columns not every shader translation (MoltenVK's) packs alike.
 layout(set = 0, binding = 2, scalar) readonly buffer Rectification {
-  mat3 rect_to_source;  // a ray of the rectified camera, in the source camera
-  float fx;             // the rectified camera
+  // A ray of the rectified camera, in the source camera: column-major.
+  float rect_to_source[9];
+  float fx;  // the rectified camera
   float fy;
   float cx;
   float cy;
@@ -34,8 +36,13 @@ layout(set = 0, binding = 2, scalar) readonly buffer Rectification {
 // picture.
 bool rectified_source(uint p, out vec2 s) {
   vec2 px = vec2(float(p % rect.width), float(p / rect.width));
-  vec3 ray = rect.rect_to_source *
-             vec3((px.x - rect.cx) / rect.fx, (px.y - rect.cy) / rect.fy, 1.0);
+  vec2 n = vec2((px.x - rect.cx) / rect.fx, (px.y - rect.cy) / rect.fy);
+  vec3 ray = vec3(rect.rect_to_source[0], rect.rect_to_source[1],
+                  rect.rect_to_source[2]) * n.x +
+             vec3(rect.rect_to_source[3], rect.rect_to_source[4],
+                  rect.rect_to_source[5]) * n.y +
+             vec3(rect.rect_to_source[6], rect.rect_to_source[7],
+                  rect.rect_to_source[8]);
   s = vec2(-1.0);
   if (ray.z <= 0.0) {
     return false;

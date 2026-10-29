@@ -44,7 +44,7 @@ constexpr std::uint32_t kSpans = 2;
 // rectify.comp's View block, under scalar layout: a ray of the rectified
 // camera in the source camera, the rectified camera and size, and the output.
 struct ViewParams {
-  float rect_to_source[9];  // column-major, as GLSL's mat3
+  float rect_to_source[9];  // column-major, as rectify.comp reads it
   float fx, fy, cx, cy;
   std::uint32_t width, height;
   std::uint32_t luma_out;  // Output::Luma8: four pixels a word
