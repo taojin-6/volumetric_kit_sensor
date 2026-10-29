@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-10-29
+## [0.4.0] - 2026-10-29
 
 ### Added
 
@@ -15,6 +15,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and the factory extrinsic, on the host's clock. librealsense 2.59.1 or
   later is a prerequisite, found through its CMake package; CI installs it
   (DECISIONS.md, the 2026-10-29 RealSense entry).
+
+## [0.3.0] - 2026-10-29
+
+### Added
+
+- **The stereo tier, `sensor_stereo`.** `StereoCalibration`, `StereoInfo`,
+  `StereoFrame` and `IStereoSensor` (`stereo/stereo_sensor.hpp`): what a
+  stereo camera's driver implements and hands out, no SDK. And
+  `StereoRectifier` (`stereo/stereo_rectifier.hpp`): the rectification
+  computed once as OpenCV's `stereoRectify` computes it (Bouguet's,
+  `CALIB_ZERO_DISPARITY`, `alpha`, any size), an already rectified pair
+  only resampled, then one Vulkan compute pass a view, every layout from
+  the host or a device buffer, `Luma8` or `Rgba8` views in device buffers
+  exported where the device exports memory (`RectifiedPair`, `StereoRig`,
+  `depth_info()`). `tools/stereo_rectify_reference.py` pins OpenCV's numbers
+  in its test (DECISIONS.md, the 2026-10-29 stereo entry).
+- **`YuvLayout::Luma`**, a mono camera's luma alone, one plane.
+  `GpuFramePrep` takes it, from the host or a buffer, and turns it grey;
+  `PictureReadback` reads it, with no chroma.
+
+### Changed
+
+- The colour pass's push constants gain `luma_only` (120 bytes), and its
+  checks and plane binding are one function the rectifier shares; a
+  `PictureReadback` YUYV refusal now reads "reads 4:2:0 pictures and luma
+  alone".
 
 ## [0.2.0] - 2026-10-29
 

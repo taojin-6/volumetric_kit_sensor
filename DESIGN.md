@@ -10,7 +10,7 @@ volumetric_kit_recon's DESIGN.md with the package (2026-10-29).
 - [Tiers](#tiers) and [names](#names)
 - [Colour at the boundary](#colour-at-the-boundary)
 - Implementation: [camera](#camera), [frame](#frame), [the interface and
-  the tiers on it](#sensor), [image I/O](#image-io)
+  the tiers on it](#sensor), [stereo](#stereo), [image I/O](#image-io)
 - [Next work](#next-work)
 
 ## Tiers
@@ -53,6 +53,11 @@ recon's examples assemble the rest.
   of all of them.
 - **`array`** — several sensors read as one (`SensorArray`, `RigSets`),
   on the GPU pass.
+- **`stereo`** — calibrated stereo pairs: what a stereo camera driver
+  implements and hands out (`IStereoSensor`, `StereoFrame`), and
+  `StereoRectifier`, the pair undistorted and rectified on the GPU for a
+  stereo matcher. On the interface; it links `prep` privately, whose colour
+  pass it shares.
 - **`io`** — image files (`sensor_image_io`, `io/image_io.hpp`): encoded
   images, depth PNGs and PNG export, on the family core's base tier alone,
   with stb private.
@@ -69,8 +74,8 @@ recon's examples assemble the rest.
 - Macros: `VS_` (`VS_PREP_API`, `VS_WITH_CUDA`); GLSL functions `vs_`.
 - CMake targets `volumetric_kit::sensor_<tier>`: `sensor_camera`,
   `sensor_frame`, `sensor_interface`, `sensor_prep`, `sensor_array`,
-  `sensor_video`, `sensor_video_syntax`, `sensor_apple`, `sensor_orbbec`
-  and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
+  `sensor_stereo`, `sensor_video`, `sensor_video_syntax`, `sensor_apple`,
+  `sensor_orbbec` and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
   `sensor`, which is why the interface's is `sensor_interface`). `io` is
   the one exception to `sensor_<tier>` and `<tier>/export.hpp`: its
   target, export header and macro are named after the image files it holds
@@ -495,8 +500,10 @@ resulting `DeviceFrame` feeds the `Buffer` overloads of grid's
 recon's `integrate` (and
 `ColorFrame::buffer`, with `coverage_in_alpha`, since a
 pixel the lens maps outside the picture is a 0 word), so nothing is
-uploaded and nothing registered. Y'CbCr colour comes as I420, NV12 or YUYV
-(4:2:2, one plane): on the device (the 2026-10-06 device-only `GpuFramePrep`
+uploaded and nothing registered. Y'CbCr colour comes as I420, NV12, YUYV
+(4:2:2, one plane) or luma alone (`YuvLayout::Luma`, a mono camera's,
+which comes out grey: R, G and B the luma's code by its range, no chroma
+read): on the device (the 2026-10-06 device-only `GpuFramePrep`
 decision), planes in a buffer (`YuvImage::device`, with per-plane offsets
 and strides) are bound where they are, from
 the first plane, once the batch has taken them over from the queue family
@@ -556,9 +563,10 @@ cached for reading), grown to the largest read, and each `PictureView` points
 into it until the next read, so the frames may go at once. A picture is
 checked by the rules `GpuFramePrep` applies to one (`yuv_planes.hpp`), with
 `TRANSFER_SRC` where the pass needs a buffer's storage usage, or images'
-`SAMPLED` usage and views. It reads 4:2:0 only: a YUYV picture, whose luma
-is no plane of its own, is refused, and a frame whose picture is on the host
-has no view.
+`SAMPLED` usage and views. It reads 4:2:0 and luma alone (its view has no
+chroma, whichever planes are asked): a YUYV picture, whose luma is no plane
+of its own, is refused, and a frame whose picture is on the host has no
+view.
 An Orbbec frame holds its SDK pair and the SDK
 context, with the models and the depth-to-colour extrinsic from the factory
 calibration (the extrinsic's rotation made one: the Femto Mega's is not, the
@@ -578,6 +586,77 @@ the opened mode (`brown-conrady-k6`, say). Each colour decoder, MJPEG's and
 H.265's, decodes on a `DecodeWorker` of its own (`decode_worker.hpp`), which
 owns its queue, what a full one drops, its thread, and the failure that ends
 decoding.
+
+### stereo
+
+`sensor_stereo` (no SDK; every platform) is a calibrated stereo pair as a
+stereo camera's driver presents it, and its rectification on the GPU. A
+consumer of depth never sees it: a depth source built on a stereo camera
+(rectification, then a matcher) is an `IRgbdSensor`.
+
+- **`stereo/stereo_sensor.hpp`** — `StereoCalibration` (the two cameras,
+  lenses included, and `left_to_right`, OpenCV's `R`, `T`), `StereoInfo`
+  (the pair and any third, colour camera with `left_to_color`),
+  `StereoFrame` (one picture from each camera as the source delivered it, in
+  any layout the GPU reads, on the host or in a device buffer; the colour to
+  fuse, a third camera's or none when the left is the colour; times as
+  `RgbdFrame`'s; `pixels` holding host planes), and `IStereoSensor`, polled
+  for the newest pair as `IRgbdSensor` is, which a RealSense's infrared
+  pair, a Blackmagic pair or a ZED implements.
+- **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` computes
+  the rectification once, on the host, as OpenCV's `stereoRectify` does with
+  `CALIB_ZERO_DISPARITY` (Bouguet's method), step for step in double: the
+  relative rotation split in half between the cameras, the baseline then
+  turned onto x, one focal length for both views (the cameras' vertical
+  ones, scaled to the rectified height), one principal point where the
+  corners, undistorted and turned, centre, and `alpha`'s scale between the
+  rectangle every view's pixels are valid in (0) and the one holding every
+  source pixel (1), from the border of a 9 x 9 grid; the undistortion of
+  corners and borders is OpenCV's own five fixed-point iterations
+  (`undistortPoints`' default). It refuses a vertical pair and one whose
+  right camera is on the left one's -x side (`TODO(sensor)`: vertical
+  pairs). A pair that is rectified already -- no rotation, no lens, one
+  camera model, the right camera along +x alone, each within 1e-9 -- is only
+  resampled: its camera scaled to the size edge to edge (`fx * w' / w`,
+  `(cx + 0.5) * w' / w - 0.5`), no rotation, alpha ignored. `rig()` is the
+  views' camera (pinhole), the baseline (metres, above 0) and
+  `rectified_to_left` (OpenCV's `R1` transposed); the right view's rotation
+  is `R1 * R^T`. `depth_info()` is the `SensorInfo` a matcher's depth is
+  prepared with: depth in the rectified left camera, colour the third camera
+  or the left one with its lens (its picture is the colour), and
+  `depth_to_color = left_to_color * rectified_to_left`.
+- **The pass** (`stereo/shaders/rectify.comp`): one dispatch a view, both in
+  one batch, one submit and its wait. Each rectified pixel's ray is turned
+  into the source camera (the view's rotation undone, from a storage buffer
+  written once at create), through the source lens (`lens.glsl`'s
+  `distort_normalized`), and the source picture is sampled there
+  bilinearly, luma and chroma at their sitings, and converted as the colour
+  pass converts: the kernel includes `undistort_color.glsl` and
+  `color_planes.glsl`, pushes the colour pass's `ColorParams` with the
+  source camera as its `cam`, and checks and binds the planes through the
+  same function (`prep/color_pass.hpp`, internal; exported for
+  `sensor_stereo`), so the two passes read pictures alike, one home for the
+  lens and the sampling. `Luma8` writes Y' by the picture's range, full
+  range, four pixels a word; `Rgba8` R'G'B' and the coverage byte, as
+  `GpuFramePrep`'s colour. A ray behind the camera or out of the picture is
+  0. Pictures in a buffer are bound where they are, taken over from
+  `YuvImage::queue_family`; host planes are copied into one persistent
+  `HostRing` slot, left then right, as `GpuFramePrep` stages them; NV12
+  plane images are refused (`TODO(sensor)`, when a stereo source decodes on
+  the GPU).
+- **The views** are device-local storage buffers the rectifier owns, leased
+  to each `RectifiedPair` as `GpuFramePrep`'s outputs are: written again only
+  once no pair holds them, so nothing is allocated a frame while no pair is
+  kept past the next. Where the device exports memory they are
+  `create_exported_buffer`'s (decided at create: one that cannot export
+  falls back to plain buffers), each `ExportedBuffer`'s descriptor open until
+  an importer takes it (CUDA through `CudaBufferMapping::map`, once a
+  buffer), and released to `VK_QUEUE_FAMILY_EXTERNAL` after the pass
+  (`RectifiedPair::queue_family`), so a reader outside Vulkan reads them as
+  they are once `rectify` returns; the next pass takes each back first. A
+  Vulkan reader takes them over from there and hands them back in its
+  batch. A submit or wait that fails leaves the rectifier refusing every
+  later frame, as the device may still run the pass.
 
 ### image I/O
 

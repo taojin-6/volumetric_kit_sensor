@@ -38,6 +38,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions | camera, frame |
 | `sensor_prep` | `prep/` | `GpuFramePrep`, `PictureReadback` | interface |
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
+| `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
 | `sensor_video_syntax` | `video/` | H.265 syntax read on the host, every build | core base |
 | `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, CUDA interop | frame |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, every Apple build | frame |
@@ -157,6 +158,26 @@ camera as an `IRgbdSensor` (`realsense/realsense_sensor.hpp`): the camera's
 own depth and its colour camera's YUYV, which `GpuFramePrep` converts on the
 device.
 
+## Stereo pairs
+
+`volumetric_kit::sensor_stereo` is built in every build with Vulkan, with
+no option and no SDK. A stereo camera's driver implements `IStereoSensor`
+(`stereo/stereo_sensor.hpp`); `StereoRectifier`
+(`stereo/stereo_rectifier.hpp`) undistorts and rectifies its pairs on the
+GPU into a row-aligned pinhole pair, `Luma8` or `Rgba8`, at the size a
+matcher takes:
+
+```cpp
+VKC_ASSIGN(auto rectifier,
+           sensor::StereoRectifier::create(
+               device, allocator, camera.info(),
+               {{960, 544}, 0.0f, sensor::StereoRectifier::Output::Luma8}));
+VKC_ASSIGN(sensor::RectifiedPair pair, rectifier->rectify(frame));
+```
+
+`tools/stereo_rectify_reference.py` regenerates the OpenCV numbers its test
+pins (OpenCV in a virtual environment; the build never needs it).
+
 ## Video decoders
 
 The HEVC and JPEG decoders (`volumetric_kit::sensor_video`) decode on the
@@ -180,7 +201,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.3.0), carried by the umbrella as
+The version is `project()`'s (0.4.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

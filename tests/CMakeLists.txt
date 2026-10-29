@@ -257,6 +257,19 @@ target_link_libraries(
 vs_target_warnings(sensor_array_process_test)
 add_test(NAME sensor_array_process COMMAND sensor_array_process_test)
 
+# The stereo tier's rectifier (sensor_stereo) on synthetic calibrated pairs: its
+# rectification against OpenCV's numbers (pinned by
+# tools/stereo_rectify_reference.py), rows aligned and the host reference of the
+# remap on a scene an independent renderer images, every layout from the host
+# and the device, a pair rectified already, the depth view, the views' lease and
+# export, the refusals, and the pass's time. Skips without a device.
+add_executable(sensor_stereo_rectifier_test sensor_stereo_rectifier_test.cpp)
+target_link_libraries(
+  sensor_stereo_rectifier_test PRIVATE volumetric_kit::sensor_stereo
+                                       volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_stereo_rectifier_test)
+add_test(NAME sensor_stereo_rectifier COMMAND sensor_stereo_rectifier_test)
+
 # RGB-D sensor defaults, frame-return helpers, copied-frame ownership and stable
 # enum names. Host-only.
 add_executable(sensor_rgbd_sensor_test sensor_rgbd_sensor_test.cpp)
@@ -373,6 +386,18 @@ if(APPLE OR VS_WITH_FFMPEG)
     vs_target_warnings(sensor_video_cuda_interop_test)
     add_test(NAME sensor_video_cuda_interop
              COMMAND sensor_video_cuda_interop_test)
+
+    # The stereo rectifier's views read through CUDA, as a stereo matcher reads
+    # them, each mapped once; it skips as the interop test does.
+    add_executable(sensor_stereo_cuda_test sensor_stereo_cuda_test.cpp)
+    target_link_libraries(
+      sensor_stereo_cuda_test
+      PRIVATE volumetric_kit::sensor_stereo volumetric_kit::sensor_video
+              volumetric_kit::core_test_policy ${CMAKE_DL_LIBS})
+    target_include_directories(sensor_stereo_cuda_test SYSTEM
+                               PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    vs_target_warnings(sensor_stereo_cuda_test)
+    add_test(NAME sensor_stereo_cuda COMMAND sensor_stereo_cuda_test)
 
     # The Status of a failed driver or nvJPEG call. It compiles the driver
     # source itself, which loads libcuda for the error's name and opens no
