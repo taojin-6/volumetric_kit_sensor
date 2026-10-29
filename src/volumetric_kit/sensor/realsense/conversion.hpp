@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 
+#include <librealsense2/h/rs_sensor.h>
 #include <librealsense2/h/rs_types.h>
 
 #include "volumetric_kit/core/base/result.hpp"
