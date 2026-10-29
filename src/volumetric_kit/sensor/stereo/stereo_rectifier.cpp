@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "../prep/color_pass.hpp"
+#include "../sharing_families.hpp"
 #include "rectify_comp.spv.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_kernel.hpp"
@@ -42,14 +43,16 @@ constexpr std::uint32_t kLocalSize = 256;
 constexpr std::uint32_t kSpans = 2;
 
 // rectify.comp's View block, under scalar layout: a ray of the rectified
-// camera in the source camera, the rectified camera and size, and the output.
+// camera in the source camera, the rectified camera and size, the output, and
+// the source lens's fold.
 struct ViewParams {
   float rect_to_source[9];  // column-major, as rectify.comp reads it
   float fx, fy, cx, cy;
   std::uint32_t width, height;
   std::uint32_t luma_out;  // Output::Luma8: four pixels a word
+  float fold_r2;           // fold_radius2's
 };
-static_assert(sizeof(ViewParams) == 64, "ViewParams must match rectify.comp");
+static_assert(sizeof(ViewParams) == 68, "ViewParams must match rectify.comp");
 
 core::Status refuse(const std::string& why) {
   return core::Status::invalid_argument(std::string(kWho) + ": " + why);
@@ -184,13 +187,18 @@ core::Result<Rectification> rectify_pair(const StereoCalibration& c,
   out.rig.camera.size = size;
 
   if (already_rectified(c)) {
-    // Resampled only: the camera scaled, edge to edge (pixel centres at
-    // integers, so an image spans [-0.5, w - 0.5]).
+    // Resampled only: the camera scaled by one factor, so its pixels keep
+    // their shape, about the centres of the picture and the view (pixel
+    // centres at integers, so an image spans [-0.5, w - 0.5]). Alpha picks
+    // the factor as for any pair: 0 fills the view, cropping the picture's
+    // longer side; 1 fits the whole picture, bordering the view's.
     const double sx = size.width / nx;
     const double sy = size.height / ny;
+    const double s = std::max(sx, sy) * (1 - alpha) + std::min(sx, sy) * alpha;
     const camera::PinholeIntrinsics& k = c.left.intrinsics;
-    out.rig.camera.intrinsics = {k.fx * sx, k.fy * sy, (k.cx + 0.5) * sx - 0.5,
-                                 (k.cy + 0.5) * sy - 0.5};
+    out.rig.camera.intrinsics = {
+        k.fx * s, k.fy * s, (size.width - 1) / 2.0 + (k.cx - (nx - 1) / 2) * s,
+        (size.height - 1) / 2.0 + (k.cy - (ny - 1) / 2) * s};
     out.rig.baseline = -c.left_to_right[3][0];
     return out;
   }
@@ -285,10 +293,45 @@ core::Result<Rectification> rectify_pair(const StereoCalibration& c,
   return out;
 }
 
+// The lens's fold: the normalized radius, squared, past which `d`'s radial
+// model stops carrying rays outward -- r * radial(r^2) stops growing, or its
+// denominator reaches 0 -- and turns back, so that rays the lens cannot image
+// would land inside the picture again; float's largest for a lens that never
+// folds. With s = r^2, numerator N and denominator D, d/dr [r N / D] has the
+// sign of g(s) = N D + 2 s (N' D - N D'), so the fold is the first s > 0 where
+// g or D stops being positive: marched out by the angle off the axis
+// (s = tan^2), 0.01 degrees a step to 89.99, then bisected.
+float fold_radius2(const camera::RationalDistortion& d) {
+  const auto folds = [&d](double angle) {
+    const double t = std::tan(angle);
+    const double s = t * t;
+    const double n = 1 + s * (d.k1 + s * (d.k2 + s * d.k3));
+    const double dn = 1 + s * (d.k4 + s * (d.k5 + s * d.k6));
+    const double n1 = d.k1 + s * (2 * d.k2 + 3 * s * d.k3);
+    const double d1 = d.k4 + s * (2 * d.k5 + 3 * s * d.k6);
+    return !(dn > 0 && n * dn + 2 * s * (n1 * dn - n * d1) > 0);
+  };
+  constexpr int kSteps = 9000;
+  const double step = std::acos(0.0) / kSteps;
+  for (int i = 1; i < kSteps; ++i) {
+    if (!folds(i * step)) continue;
+    double lo = (i - 1) * step;
+    double hi = i * step;
+    for (int k = 0; k < 60; ++k) {
+      const double mid = 0.5 * (lo + hi);
+      (folds(mid) ? hi : lo) = mid;
+    }
+    const double t = std::tan(lo);
+    return static_cast<float>(
+        std::min<double>(t * t, std::numeric_limits<float>::max()));
+  }
+  return std::numeric_limits<float>::max();
+}
+
 // The kernel's view of one rectification: the rectified ray into the source
-// camera (the transpose of `source_to_rect`).
-ViewParams view_params(const Mat3d& source_to_rect, const CameraModel& rect,
-                       bool luma_out) {
+// camera (the transpose of `source_to_rect`), and the source lens's fold.
+ViewParams view_params(const Mat3d& source_to_rect, const CameraModel& source,
+                       const CameraModel& rect, bool luma_out) {
   ViewParams v{};
   const Mat3d m = glm::transpose(source_to_rect);
   for (int col = 0; col < 3; ++col) {
@@ -303,6 +346,7 @@ ViewParams view_params(const Mat3d& source_to_rect, const CameraModel& rect,
   v.width = rect.size.width;
   v.height = rect.size.height;
   v.luma_out = luma_out ? 1u : 0u;
+  v.fold_r2 = fold_radius2(source.distortion);
   return v;
 }
 
@@ -314,14 +358,15 @@ core::Status check_pose(const char* what, const Mat4d& pose) {
 
 // A view's buffer and its lease: held while a pair shares the buffer. The
 // pair's deleter clears it with release order and ensure_output reads it with
-// acquire order, so whatever a holder did with the buffer happens before the
-// pass writes it again.
+// acquire order, so whatever a holder did with the buffer on the host happens
+// before the pass writes it again; the holder's device reads have completed
+// by then (RectifiedPair's contract). The pass takes a buffer it released to
+// VK_QUEUE_FAMILY_EXTERNAL, or that a Vulkan reader took over and kept,
+// without a transfer: it writes every word, and Vulkan lets a family take an
+// EXCLUSIVE buffer so when its contents may be left undefined.
 struct ViewBuffer {
   core::ExportedBuffer view;
   std::atomic<bool> held{false};
-  // Released to VK_QUEUE_FAMILY_EXTERNAL by the last pass that wrote it, so
-  // the next one takes it back first.
-  bool external = false;
 };
 
 }  // namespace
@@ -462,8 +507,9 @@ core::Result<std::unique_ptr<StereoRectifier>> StereoRectifier::create(
   {
     core::CommandBatch batch(device, allocator);
     for (int v = 0; v < 2; ++v) {
-      const ViewParams params =
-          view_params(impl->rectification.source_to_rect[v], rig.camera, luma);
+      const ViewParams params = view_params(
+          impl->rectification.source_to_rect[v],
+          v == 0 ? calibration.left : calibration.right, rig.camera, luma);
       VKC_TRY(batch.upload(impl->views, v * stride, &params, sizeof(params)));
     }
     VKC_TRY(batch.submit());
@@ -558,6 +604,62 @@ core::Result<Picture> check_picture(const core::Device& device,
   return out;
 }
 
+// The buffers the pass reads a frame's pictures from, each once, with the
+// queue family it is taken over from.
+struct Inputs {
+  const core::Buffer* buffer[2] = {nullptr, nullptr};
+  std::uint32_t family[2] = {kQueueFamilyIgnored, kQueueFamilyIgnored};
+  int count = 0;
+
+  // `b`'s index here, or -1.
+  int find(const core::Buffer& b) const noexcept {
+    for (int i = 0; i < count; ++i) {
+      if (buffer[i]->handle() == b.handle()) return i;
+    }
+    return -1;
+  }
+};
+
+// Each buffer `frame`'s pictures are in, taken over once (CommandBatch::acquire
+// does not merge two), from the family transfer_family names for it on `own`,
+// the pass's family: a side-by-side frame's two pictures share one, which its
+// writer released once, so both must name that writer. The colour is not
+// read, but a colour picture in that buffer is taken over with it, so it must
+// name the writer too.
+core::Result<Inputs> device_inputs(const StereoFrame& frame,
+                                   std::uint32_t own) {
+  Inputs out;
+  for (const YuvImage* image : {&frame.left, &frame.right}) {
+    if (image->device == nullptr) continue;
+    const std::uint32_t from =
+        detail::transfer_family(*image->device, image->queue_family, own);
+    const int i = out.find(*image->device);
+    if (i < 0) {
+      out.buffer[out.count] = image->device.get();
+      out.family[out.count++] = from;
+    } else if (out.family[i] != from) {
+      return refuse(
+          "the left and right pictures are in one buffer, taken over once, "
+          "but name two writers' queue families, " +
+          detail::family_name(out.family[i]) + " and " +
+          detail::family_name(from));
+    }
+  }
+  if (frame.color.device != nullptr) {
+    const int i = out.find(*frame.color.device);
+    const std::uint32_t from = detail::transfer_family(
+        *frame.color.device, frame.color.queue_family, own);
+    if (i >= 0 && out.family[i] != from) {
+      return refuse(
+          "the colour picture shares a buffer with the left or right one, "
+          "taken over once, but names queue family " +
+          detail::family_name(from) + ", not " +
+          detail::family_name(out.family[i]));
+    }
+  }
+  return out;
+}
+
 // After a batch that failed and may still run: let go of the device planes
 // it may read, which the caller may drop as soon as the call returns.
 void abandon(const StereoFrame& frame) {
@@ -592,6 +694,7 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
   VKC_ASSIGN(pictures[1],
              check_picture(*device, frame.right, calibration.right, "right",
                            max_storage_buffer_range, offset_alignment));
+  VKC_ASSIGN(const Inputs taken, device_inputs(frame, device->queue_family()));
 
   // Host pictures copied into the one slot, each from a binding's alignment;
   // the last batch, which bound it, has resolved.
@@ -624,13 +727,10 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
   if (metrics != nullptr) VKC_TRY(timer.reserve(*device, kSpans));
   core::GpuStageScope stage(metrics, timer, "stereo rectify");
   core::CommandBatch batch(*device, *allocator);
-  for (int v = 0; v < 2; ++v) {
-    if (images[v]->device != nullptr) {
-      VKC_TRY(batch.acquire(*images[v]->device, images[v]->queue_family));
-    }
-    if (out[v]->external) {
-      VKC_TRY(batch.acquire(out[v]->view.buffer, VK_QUEUE_FAMILY_EXTERNAL));
-    }
+  // Each buffer the pictures are in taken over from its writer, once; the
+  // views, which the pass writes whole, need no transfer (ViewBuffer).
+  for (int i = 0; i < taken.count; ++i) {
+    VKC_TRY(batch.acquire(*taken.buffer[i], taken.family[i]));
   }
   VkBuffer input = VK_NULL_HANDLE;
   if (slot_bytes != 0) {
@@ -652,6 +752,8 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
                            core::group_count(out_items, kLocalSize),
                            max_workgroup_count_x, &stage));
   }
+  // Exported views handed to VK_QUEUE_FAMILY_EXTERNAL, which makes the pass's
+  // writes CUDA's to read.
   if (exported) {
     for (const std::shared_ptr<ViewBuffer>& o : out) {
       VKC_TRY(batch.release(o->view.buffer, VK_QUEUE_FAMILY_EXTERNAL));
@@ -677,15 +779,18 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
           keep->held.store(false, std::memory_order_release);
         });
   };
-  for (const std::shared_ptr<ViewBuffer>& o : out) o->external = exported;
   pair.left = lease(out[0]);
   pair.right = lease(out[1]);
   pair.queue_family = exported ? kQueueFamilyExternal : kQueueFamilyIgnored;
   pair.rig = rectification.rig;
   pair.source = frame;
-  // Taken over by the pass's family.
-  for (YuvImage* image : {&pair.source.left, &pair.source.right}) {
-    if (image->device != nullptr) image->queue_family = kQueueFamilyIgnored;
+  // Taken over by the pass's family: the left and right pictures, and a
+  // colour picture in one of their buffers.
+  for (YuvImage* image :
+       {&pair.source.left, &pair.source.right, &pair.source.color}) {
+    if (image->device != nullptr && taken.find(*image->device) >= 0) {
+      image->queue_family = kQueueFamilyIgnored;
+    }
   }
   return pair;
 }

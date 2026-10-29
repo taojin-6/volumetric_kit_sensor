@@ -53,21 +53,35 @@ struct StereoRig {
 /// StereoRectifier::Options::output, rows packed: `Luma8` a byte a pixel, four
 /// to a word, the first in the low byte; `Rgba8` a word a pixel, `R | G << 8 |
 /// B << 16 | coverage << 24`, R'G'B' as the source pictures encoded it. A pixel
-/// whose ray misses its source picture is 0, coverage included. The pass has
-/// finished when the pair is handed out.
+/// whose ray misses its source picture, or passes its lens's fold (where the
+/// lens model stops carrying rays outward and turns back), is 0, coverage
+/// included. The pass has finished when the pair is handed out.
 ///
-/// The buffers are device-local storage buffers, the rectifier's own: each is
-/// written again only once no pair holds it, so a pair kept past the next
-/// one keeps its contents (the next goes to a new buffer). Where the device
-/// exports memory (`core::Device::exports_memory`), each is on memory of its
-/// own, its descriptor (`core::ExportedBuffer::fd`) open until an importer
-/// takes it -- CUDA, through `CudaBufferMapping::map`, once a buffer: an
-/// open descriptor marks a buffer not yet imported -- and handed out
-/// released to `VK_QUEUE_FAMILY_EXTERNAL` (@ref queue_family): a reader
-/// outside Vulkan reads it as it is, and a Vulkan reader takes it over from
-/// there and hands it back in the same batch (`CommandBatch::acquire`, then
-/// `CommandBatch::release`), as for any exported buffer. Elsewhere the
-/// descriptor is closed and the buffers stay with the device's queue family.
+/// The buffers are device-local storage buffers, the rectifier's own, one a
+/// view, leased to the pair. **Use each pair in turn -- rectify, read, drop
+/// -- and every pair has the same two buffers**: nothing is allocated a
+/// frame, and an importer maps each buffer once. A buffer is written again
+/// only once no pair holds it, so a pair kept past the next keeps its
+/// contents, and the next gets a new buffer -- a new allocation, and a new
+/// import for CUDA -- each frame that happens. **Drop the last copy of a pair
+/// only once every read of its views has completed** -- CUDA's work
+/// synchronized, the Vulkan batch waited: the next @ref
+/// StereoRectifier::rectify may write them as soon as it is gone.
+///
+/// Where the device exports memory (`core::Device::exports_memory`), each
+/// buffer is on memory of its own, its descriptor (`core::ExportedBuffer::fd`)
+/// open until an importer takes it. CUDA maps a view through
+/// `CudaBufferMapping::map` when its descriptor is open, a buffer not yet
+/// imported, and reuses its mapping otherwise; an address seen before may be
+/// a new buffer, so the descriptor, not the address, tells. The views are
+/// handed out released to `VK_QUEUE_FAMILY_EXTERNAL` (@ref queue_family): a
+/// reader outside Vulkan reads them as they are, and a Vulkan reader takes
+/// them over from there (`CommandBatch::acquire`) and need not hand them back
+/// -- the pass writes every word, so it takes them without a transfer.
+/// Elsewhere the descriptor is closed and the buffers stay with the device's
+/// queue family. Only `CudaBufferMapping::map` may change a view, taking its
+/// descriptor: moving or resetting its `buffer` would leave the next pass
+/// writing freed memory.
 struct RectifiedPair {
   std::shared_ptr<core::ExportedBuffer> left;   ///< The left view.
   std::shared_ptr<core::ExportedBuffer> right;  ///< The right view.
@@ -77,8 +91,10 @@ struct RectifiedPair {
   std::uint32_t queue_family = kQueueFamilyIgnored;
   StereoRig rig;  ///< The views' camera and baseline.
   /// The frame they came from: colour and times pass through, and its
-  /// pictures stay held. Its left and right pictures' `queue_family` reads
-  /// @ref kQueueFamilyIgnored once the pass has taken buffers over.
+  /// pictures stay held. A picture in a buffer the pass took over -- the left
+  /// and right ones, and a colour picture in one of their buffers -- reads
+  /// @ref kQueueFamilyIgnored here, so a later stage reads this frame, not
+  /// the one passed to @ref StereoRectifier::rectify.
   StereoFrame source;
 };
 
@@ -94,7 +110,10 @@ struct RectifiedPair {
 /// pixels and every source pixel. A pair that is rectified already -- no
 /// rotation between the cameras, no lens, one camera model, the right camera
 /// along +x alone, as a RealSense's infrared pair -- is only resampled: its
-/// camera scaled to the size, edge to edge, and alpha does not apply.
+/// camera scaled to the size by one factor, so its pixels keep their shape,
+/// about the centres; alpha chooses between filling the view, the picture
+/// cropped (0), and fitting the whole picture, the view bordered (1), which
+/// differ only where the size changes the aspect ratio.
 ///
 /// Each frame is one compute pass a view: each rectified pixel's ray turned
 /// into the source camera, through its lens, and the source picture sampled
@@ -102,8 +121,9 @@ struct RectifiedPair {
 /// same shader code). The pictures come in any layout the package reads --
 /// luma alone, YUYV, NV12, I420 -- on the host, copied into one persistent
 /// slot (`core::HostRing`) as `GpuFramePrep` stages host planes, or in a
-/// buffer on the device, taken over from `YuvImage::queue_family`. Nothing
-/// is allocated a frame while no pair is kept past the next.
+/// buffer on the device, taken over from `YuvImage::queue_family`, once a
+/// buffer. Nothing is allocated a frame while each pair is dropped before the
+/// next is rectified (@ref RectifiedPair).
 ///
 /// @code
 /// VKC_ASSIGN(auto rectifier,
@@ -129,7 +149,8 @@ class VS_STEREO_API StereoRectifier final {
     /// The rectified size; {0, 0}: the left camera's.
     camera::ImageSize size{};
     /// 0: only pixels both views see; 1: every source pixel (OpenCV's
-    /// meaning); between, between. In [0, 1].
+    /// meaning); between, between. In [0, 1]. A pair rectified already: 0
+    /// crops its picture to the view's shape, 1 fits all of it.
     float alpha = 0.0f;
     Output output = Output::Rgba8;  ///< What each view is written as.
   };
@@ -178,7 +199,12 @@ class VS_STEREO_API StereoRectifier final {
   /// @brief Rectify both views of @p frame: one submit, both passes, and its
   ///        wait.
   /// @param frame    The pair. Host planes are copied here; device planes,
-  ///                 their writer finished, are read before this returns.
+  ///                 their writer finished, are read before this returns,
+  ///                 each buffer taken over once: pictures in one buffer (a
+  ///                 side-by-side frame, a colour picture beside them) name
+  ///                 the family that wrote it. @p frame keeps the families it
+  ///                 names; hand on @ref RectifiedPair::source instead,
+  ///                 whose pictures name what the pass left them in.
   /// @param metrics  Optional: a `"stereo rectify"` row, the staging and both
   ///                 passes on the host and on the device.
   /// @return The pair; `Status::Code::InvalidArgument` for a view with no
@@ -186,7 +212,8 @@ class VS_STEREO_API StereoRectifier final {
   ///         that `GpuFramePrep` would refuse as a frame's colour (its size
   ///         not its camera's, an unknown layout or chroma location, a bad
   ///         matrix, YUYV of odd width, strides, offsets, overlap or a buffer
-  ///         it cannot bind), or a `queue_family` the device lacks;
+  ///         it cannot bind), a `queue_family` the device lacks, or pictures
+  ///         in one buffer that name different writers' queue families;
   ///         `Status::Code::OutOfMemory` for a host allocation failure; or a
   ///         buffer or submit failure, after which the rectifier refuses
   ///         every frame, as the device may still run the pass.

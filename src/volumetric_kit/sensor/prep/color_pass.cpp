@@ -53,8 +53,11 @@ core::Result<PlaneBinding> bind_planes(const YuvImage& image,
                                        VkDeviceSize max_range,
                                        VkDeviceSize offset_alignment) {
   const std::string the = std::string(who) + ": the " + what;
-  if (static_cast<unsigned>(image.chroma_location) >
-      static_cast<unsigned>(ChromaLocation::Bottom)) {
+  // Luma alone is grey: no matrix or chroma siting applies, so none is
+  // checked.
+  const bool grey = image.layout == YuvLayout::Luma;
+  if (!grey && static_cast<unsigned>(image.chroma_location) >
+                   static_cast<unsigned>(ChromaLocation::Bottom)) {
     return core::Status::invalid_argument(std::string(who) +
                                           ": unknown chroma location");
   }
@@ -64,8 +67,8 @@ core::Result<PlaneBinding> bind_planes(const YuvImage& image,
         std::to_string(image.height) + ", its camera " +
         std::to_string(size.width) + "x" + std::to_string(size.height));
   }
-  if (!(finite(image.kr) && finite(image.kb) && image.kr > 0.0f &&
-        image.kb > 0.0f && image.kr + image.kb < 1.0f)) {
+  if (!grey && !(finite(image.kr) && finite(image.kb) && image.kr > 0.0f &&
+                 image.kb > 0.0f && image.kr + image.kb < 1.0f)) {
     return core::Status::invalid_argument(
         the + " matrix's kr and kb must be positive and sum below 1");
   }

@@ -657,14 +657,18 @@ consumer of depth never sees it: a depth source built on a stereo camera
   right camera is on the left one's -x side (`TODO(sensor)`: vertical
   pairs). A pair that is rectified already -- no rotation, no lens, one
   camera model, the right camera along +x alone, each within 1e-9 -- is only
-  resampled: its camera scaled to the size edge to edge (`fx * w' / w`,
-  `(cx + 0.5) * w' / w - 0.5`), no rotation, alpha ignored. `rig()` is the
-  views' camera (pinhole), the baseline (metres, above 0) and
-  `rectified_to_left` (OpenCV's `R1` transposed); the right view's rotation
-  is `R1 * R^T`. `depth_info()` is the `SensorInfo` a matcher's depth is
-  prepared with: depth in the rectified left camera, colour the third camera
-  or the left one with its lens (its picture is the colour), and
-  `depth_to_color = left_to_color * rectified_to_left`.
+  resampled, with no rotation: its camera scaled to the size by one factor
+  `s`, so its pixels keep their shape (a learned matcher assumes square
+  ones), about the centres (`fx * s`, `(w' - 1) / 2 + (cx - (w - 1) / 2) * s`).
+  Alpha picks `s` between the larger of `w' / w` and `h' / h` (0: the view
+  filled, the picture cropped) and the smaller (1: all of the picture, the
+  view bordered); at the picture's own aspect ratio both are the scale edge
+  to edge. `rig()` is the views' camera (pinhole), the baseline (metres,
+  above 0) and `rectified_to_left` (OpenCV's `R1` transposed); the right
+  view's rotation is `R1 * R^T`. `depth_info()` is the `SensorInfo` a
+  matcher's depth is prepared with: depth in the rectified left camera,
+  colour the third camera or the left one with its lens (its picture is the
+  colour), and `depth_to_color = left_to_color * rectified_to_left`.
 - **The pass** (`stereo/shaders/rectify.comp`): one dispatch a view, both in
   one batch, one submit and its wait. Each rectified pixel's ray is turned
   into the source camera (the view's rotation undone, from a storage buffer
@@ -678,25 +682,45 @@ consumer of depth never sees it: a depth source built on a stereo camera
   `sensor_stereo`), so the two passes read pictures alike, one home for the
   lens and the sampling. `Luma8` writes Y' by the picture's range, full
   range, four pixels a word; `Rgba8` R'G'B' and the coverage byte, as
-  `GpuFramePrep`'s colour. A ray behind the camera or out of the picture is
-  0. Pictures in a buffer are bound where they are, taken over from
-  `YuvImage::queue_family`; host planes are copied into one persistent
+  `GpuFramePrep`'s colour. A ray behind the camera, past the source lens's
+  fold or out of the picture is 0. The fold is where the radial model stops
+  carrying rays outward (`r * radial(r^2)` stops growing, or its denominator
+  reaches 0); past it the model turns back and would put rays the lens
+  cannot image inside the picture, mirrored, which alpha above 0 reaches on
+  a strong lens. `create` finds it once a camera on the derivative's sign --
+  with `s = r^2`, `N D + 2 s (N' D - N D')` or `D` no longer positive --
+  marched by the angle off the axis, 0.01 degrees a step, then bisected,
+  and the pass compares one squared radius. Pictures in a buffer are bound
+  where they are, taken over from `YuvImage::queue_family` once a buffer: a
+  side-by-side frame's two pictures in one buffer, a colour picture beside
+  them, must name the family that wrote it, as `GpuFramePrep`'s inputs must
+  (`transfer_family`, `sharing_families.hpp`, which both call), and
+  `RectifiedPair::source` names the pass's family for each of them. Host planes are copied into one persistent
   `HostRing` slot, left then right, as `GpuFramePrep` stages them; NV12
   plane images are refused (`TODO(sensor)`, when a stereo source decodes on
   the GPU).
-- **The views** are device-local storage buffers the rectifier owns, leased
-  to each `RectifiedPair` as `GpuFramePrep`'s outputs are: written again only
-  once no pair holds them, so nothing is allocated a frame while no pair is
-  kept past the next. Where the device exports memory they are
-  `create_exported_buffer`'s (decided at create: one that cannot export
-  falls back to plain buffers), each `ExportedBuffer`'s descriptor open until
-  an importer takes it (CUDA through `CudaBufferMapping::map`, once a
-  buffer), and released to `VK_QUEUE_FAMILY_EXTERNAL` after the pass
-  (`RectifiedPair::queue_family`), so a reader outside Vulkan reads them as
-  they are once `rectify` returns; the next pass takes each back first. A
-  Vulkan reader takes them over from there and hands them back in its
-  batch. A submit or wait that fails leaves the rectifier refusing every
-  later frame, as the device may still run the pass.
+- **The views** are device-local storage buffers the rectifier owns, one a
+  view, leased to each `RectifiedPair` as `GpuFramePrep`'s outputs are:
+  written again only once no pair holds them. The contract is sequential:
+  rectify, read, drop, and every pair has the same two buffers, so nothing is
+  allocated a frame and CUDA maps each once; a pair kept past the next costs
+  the next a new buffer (and a new import). A reader drops a pair only once
+  its device reads have completed, as the lease orders the host alone.
+  Overlapping one pair's matching with the next's rectifying would save a
+  fraction of a millisecond against a matcher's tens of milliseconds, so no
+  pool is kept.
+  Where the device exports memory they are `create_exported_buffer`'s
+  (decided at create: one that cannot export falls back to plain buffers),
+  each `ExportedBuffer`'s descriptor open until an importer takes it (CUDA
+  through `CudaBufferMapping::map`, which an open descriptor, not an
+  address, calls for), and released to `VK_QUEUE_FAMILY_EXTERNAL` after the
+  pass (`RectifiedPair::queue_family`), so a reader outside Vulkan reads them
+  as they are once `rectify` returns. A Vulkan reader takes them over from
+  there and need not hand them back: the next pass takes them without a
+  transfer, which Vulkan allows an `EXCLUSIVE` buffer whose contents may be
+  lost, since it writes every word. A submit or wait that fails leaves the
+  rectifier refusing every later frame, as the device may still run the
+  pass.
 
 ### image I/O
 
