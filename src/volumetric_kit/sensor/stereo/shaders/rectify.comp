@@ -6,7 +6,8 @@
 // the source picture is sampled there bilinearly and converted as the colour
 // pass converts (undistort_color.glsl), from planes in a buffer
 // (color_planes.glsl). pc.cam is the source camera. A ray behind the source
-// camera, or one its lens puts outside the picture, writes 0.
+// camera, past its lens's fold, or one its lens puts outside the picture,
+// writes 0.
 
 #extension GL_GOOGLE_include_directive : require
 #include "volumetric_kit/sensor/prep/shaders/undistort_color.glsl"
@@ -29,11 +30,15 @@ layout(set = 0, binding = 2, scalar) readonly buffer Rectification {
   uint width;  // the rectified view
   uint height;
   uint luma_out;  // luma, four pixels a word; else R'G'B' words
+  // The source lens's fold, as a normalized radius squared: past it the lens
+  // model turns back and would put rays the lens cannot image inside the
+  // picture. Float's largest for a lens that never folds.
+  float fold_r2;
 } rect;
 
 // Where pixel `p` of the rectified view shows in the source picture, `s`;
-// false where its ray is behind the source camera or lands outside the
-// picture.
+// false where its ray is behind the source camera, past its lens's fold, or
+// lands outside the picture.
 bool rectified_source(uint p, out vec2 s) {
   vec2 px = vec2(float(p % rect.width), float(p / rect.width));
   vec2 n = vec2((px.x - rect.cx) / rect.fx, (px.y - rect.cy) / rect.fy);
@@ -47,7 +52,11 @@ bool rectified_source(uint p, out vec2 s) {
   if (ray.z <= 0.0) {
     return false;
   }
-  vec2 d = distort_normalized(pc.cam, ray.xy / ray.z);
+  vec2 q = ray.xy / ray.z;
+  if (dot(q, q) > rect.fold_r2) {
+    return false;
+  }
+  vec2 d = distort_normalized(pc.cam, q);
   s = vec2(d.x * pc.cam.fx + pc.cam.cx, d.y * pc.cam.fy + pc.cam.cy);
   return s.x >= -0.5 && s.y >= -0.5 && s.x <= float(pc.cam.width) - 0.5 &&
          s.y <= float(pc.cam.height) - 0.5;

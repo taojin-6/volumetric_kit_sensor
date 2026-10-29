@@ -12,17 +12,28 @@
 //     come out on one row in both views, within 0.05 px, where the rig
 //     projects them;
 //   - each view matches a host reference of the pass's remap within a code:
-//     luma from the host, and YUYV, NV12 and I420 as R'G'B' words, the
-//     coverage byte exact;
+//     luma, YUYV, NV12 and I420, as luma bytes and as R'G'B' words, the
+//     coverage byte exact, and limited-range luma;
 //   - the same pictures in device buffers give the same views, bit for bit;
+//   - past a lens's fold the pass writes 0: on the strong barrel pair at
+//     alpha 1, 5-10% of each view's rays are past it, where the lens model
+//     would put them back inside the picture, mirrored, and every one is 0,
+//     the fold found independently (the review's host replica);
+//   - pictures in device buffers are taken over from their writer's family,
+//     VK_QUEUE_FAMILY_EXTERNAL's or another of the device's, once a buffer:
+//     a side-by-side frame's one buffer, a colour picture in it too, records
+//     one transfer, and pictures in one buffer that name two families are
+//     refused;
 //   - a pair rectified already only resamples: at its own size its luma
-//     comes back byte for byte, and at another its camera is scaled edge to
-//     edge and alpha does not apply;
+//     comes back byte for byte, and at another its camera is scaled by one
+//     factor, the picture cropped at alpha 0 and fitted at alpha 1;
 //   - the depth view for GpuFramePrep (depth_info): depth in the rectified
-//     left camera, colour the left camera or the third one;
-//   - a pair kept past the next keeps its views, and a view no pair holds is
-//     written again; where the device exports memory the views are exported
-//     buffers handed out from VK_QUEUE_FAMILY_EXTERNAL;
+//     left camera, colour the left camera or the third one, and the
+//     source's id, model, clock, rate and colour exposure;
+//   - pairs used in turn have the same two buffers, a Vulkan reader keeping
+//     them or not; a pair kept past the next keeps its views, and a view no
+//     pair holds is written again; where the device exports memory the
+//     views are exported buffers handed out from VK_QUEUE_FAMILY_EXTERNAL;
 //   - what it refuses, at create and per frame;
 //   - the pass's time at 1280x720 to 960x544, both views, printed.
 // Runs on the real driver; exits 0 (skip) where no device is present.
@@ -528,21 +539,35 @@ Picture color_picture(const Scene& scene, const CameraModel& c,
   return p;
 }
 
-// The same planes in a device buffer, bound where they are, `lead` bytes in.
-sensor::YuvImage on_device(const Picture& p, std::size_t lead) {
+// `bytes` in a device buffer of their own, EXCLUSIVE, and left as a writer
+// leaves it: released to VK_QUEUE_FAMILY_EXTERNAL, as CUDA's writes come, for
+// `to` kQueueFamilyExternal, or kept, for kQueueFamilyIgnored. Null on
+// failure.
+std::shared_ptr<const vkc::Buffer> device_bytes(
+    std::vector<std::uint8_t> bytes,
+    std::uint32_t to = sensor::kQueueFamilyIgnored) {
+  bytes.resize((bytes.size() + 3) & ~std::size_t{3}, 0xEE);
+  auto made = vkc::device_storage_buffer(*g_allocator, bytes.size());
+  if (!made.ok()) return nullptr;
+  vkc::CommandBatch batch(*g_device, *g_allocator);
+  if (!batch.upload(made.value(), 0, bytes.data(), bytes.size()).ok() ||
+      !batch.release(made.value(), to).ok() || !batch.submit().ok()) {
+    return nullptr;
+  }
+  return std::make_shared<const vkc::Buffer>(std::move(made).value());
+}
+
+// The same planes in a device buffer, bound where they are, `lead` bytes in,
+// released by their writer to `to`, which the picture names.
+sensor::YuvImage on_device(const Picture& p, std::size_t lead,
+                           std::uint32_t to = sensor::kQueueFamilyIgnored) {
   std::vector<std::uint8_t> bytes(lead, 0xEE);
   bytes.insert(bytes.end(), p.bytes.begin(), p.bytes.end());
-  bytes.resize((bytes.size() + 3) & ~std::size_t{3}, 0xEE);
   sensor::YuvImage im = p.image;
   im.host = nullptr;
   for (std::uint64_t& o : im.offset) o += lead;
-  auto made = vkc::device_storage_buffer(*g_allocator, bytes.size());
-  if (!made.ok() ||
-      !vkc::test::write_back(*g_device, *g_allocator, made.value(), bytes)
-           .ok()) {
-    return {};
-  }
-  im.device = std::make_shared<const vkc::Buffer>(std::move(made).value());
+  im.device = device_bytes(std::move(bytes), to);
+  im.queue_family = to;
   return im;
 }
 
@@ -558,15 +583,16 @@ sensor::StereoFrame frame_of(const Picture& left, const Picture& right) {
 // --- Reading the views, and the host reference ------------------------------
 
 // A view's bytes, read as a Vulkan reader takes them: over from the pair's
-// queue family and handed back to it.
+// queue family and, with `hand_back`, handed back to it; without, kept, as
+// PictureReadback and GpuFramePrep keep what they take.
 std::vector<std::uint8_t> read_view(const sensor::RectifiedPair& pair,
                                     const vkc::ExportedBuffer& view,
-                                    std::size_t bytes) {
+                                    std::size_t bytes, bool hand_back = true) {
   vkc::CommandBatch batch(*g_device, *g_allocator);
   std::vector<std::uint8_t> out(bytes);
   if (!batch.acquire(view.buffer, pair.queue_family).ok() ||
       !batch.readback(view.buffer, 0, bytes, out.data()).ok() ||
-      !batch.release(view.buffer, pair.queue_family).ok() ||
+      (hand_back && !batch.release(view.buffer, pair.queue_family).ok()) ||
       !batch.submit().ok()) {
     std::fprintf(stderr, "read_view failed\n");
     return {};
@@ -581,8 +607,27 @@ std::size_t view_bytes(const sensor::StereoRig& rig, Rectifier::Output o) {
                                        : 4 * pixels;
 }
 
+// The lens's fold as the review's host replica finds it, independently of
+// the rectifier: the normalized radius at which r * radial(r^2) first stops
+// growing, marched out 1e-4 at a time (so up to 1e-4 past it); infinity for
+// none within r = 100.
+double replica_fold(const camera::RationalDistortion& d) {
+  double prev = 0.0;
+  for (int i = 1; i <= 1000000; ++i) {
+    const double r = i * 1e-4;
+    const double r2 = r * r;
+    const double v = r *
+                     (1 + d.k1 * r2 + d.k2 * r2 * r2 + d.k3 * r2 * r2 * r2) /
+                     (1 + d.k4 * r2 + d.k5 * r2 * r2 + d.k6 * r2 * r2 * r2);
+    if (!(v > prev)) return r;
+    prev = v;
+  }
+  return std::numeric_limits<double>::infinity();
+}
+
 // The pass's remap for one view, in float as the kernel computes it: each
-// rectified pixel's source position, from the rig and the calibration.
+// rectified pixel's source position, from the rig and the calibration, and
+// the source lens's fold.
 struct Remap {
   float m[3][3];  // rect_to_source, m[column][row]
   float fx, fy, cx, cy;
@@ -590,6 +635,7 @@ struct Remap {
   float k[8];
   float sfx, sfy, scx, scy;
   std::uint32_t sw, sh;
+  double fold;  // replica_fold's
 
   Remap(const sensor::StereoRig& rig, const sensor::StereoCalibration& c,
         int view) {
@@ -617,22 +663,42 @@ struct Remap {
     scy = f(s.intrinsics.cy);
     sw = s.size.width;
     sh = s.size.height;
+    fold = replica_fold(d);
   }
 
-  // Where rectified pixel (u, v) samples the source; false outside it.
-  bool source(std::uint32_t u, std::uint32_t v, float* sx, float* sy) const {
+  // Where the lens model puts rectified pixel (u, v) in the source, and the
+  // ray's normalized radius there, `*r`; false where the ray is behind the
+  // camera or lands outside the picture. The fold is not applied.
+  bool lands(std::uint32_t u, std::uint32_t v, float* sx, float* sy,
+             float* r) const {
     const float x = (static_cast<float>(u) - cx) / fx;
     const float y = (static_cast<float>(v) - cy) / fy;
     const float rx = m[0][0] * x + m[1][0] * y + m[2][0];
     const float ry = m[0][1] * x + m[1][1] * y + m[2][1];
     const float rz = m[0][2] * x + m[1][2] * y + m[2][2];
+    *r = 0.0f;
     if (rz <= 0.0f) return false;
+    const float px = rx / rz, py = ry / rz;
+    *r = std::sqrt(px * px + py * py);
     float xd = 0, yd = 0;
-    camera::distort_rational(k, rx / rz, ry / rz, &xd, &yd);
+    camera::distort_rational(k, px, py, &xd, &yd);
     *sx = xd * sfx + scx;
     *sy = yd * sfy + scy;
     return *sx >= -0.5f && *sy >= -0.5f && *sx <= sw - 0.5f && *sy <= sh - 0.5f;
   }
+
+  // Where rectified pixel (u, v) samples the source; false where the pass
+  // writes 0: behind the camera, past the fold or outside the picture. `*r`
+  // as lands'.
+  bool source(std::uint32_t u, std::uint32_t v, float* sx, float* sy,
+              float* r) const {
+    return lands(u, v, sx, sy, r) && !(*r > fold);
+  }
+
+  // Whether a ray at radius `r` is so near the fold that the rectifier's and
+  // the replica's may put it on either side (the replica's is up to 1e-4
+  // past it, and float rounds the radius).
+  bool near_fold(float r) const { return std::fabs(r - fold) < 1e-3; }
 
   // Whether (sx, sy) is so near the picture's edge that the device's and
   // the host's rounding may put it on either side.
@@ -661,6 +727,13 @@ float bilinear(const std::vector<std::uint8_t>& plane, std::uint32_t pw,
   return top + (bottom - top) * fy;
 }
 
+// The luma code the pass writes for luma `y` sampled from a picture of that
+// range: Y', full range out.
+int luma_code(float y, bool full_range) {
+  const float level = full_range ? y / 255.0f : (y - 16.0f) / 219.0f;
+  return static_cast<int>(std::lround(std::clamp(level, 0.0f, 1.0f) * 255.0f));
+}
+
 int channel_diff(std::uint32_t a, std::uint32_t b) {
   int worst = 0;
   for (int s = 0; s < 24; s += 8) {
@@ -671,12 +744,14 @@ int channel_diff(std::uint32_t a, std::uint32_t b) {
 }
 
 // A view against the host reference of the remap: luma codes, or R'G'B'
-// words from `picture`'s own planes as its layout subsamples them. Returns
-// the worst code off, -1 for a coverage mismatch; `compared` counts pixels.
+// words from `picture`'s own planes as its layout subsamples them, by its
+// range. Returns the worst code off, -1 for a coverage mismatch; `compared`
+// counts pixels.
 int compare_view(const std::vector<std::uint8_t>& got, const Remap& remap,
                  const Picture& picture, Rectifier::Output output,
                  std::size_t* compared) {
   const sensor::YuvLayout layout = picture.image.layout;
+  const bool full = picture.image.full_range;
   const std::uint32_t cw = (picture.w + 1) / 2, ch = (picture.h + 1) / 2;
   // The chroma planes as the layout holds them, at their own size.
   std::vector<std::uint8_t> cb, cr;
@@ -702,14 +777,14 @@ int compare_view(const std::vector<std::uint8_t>& got, const Remap& remap,
   for (std::uint32_t v = 0; v < remap.h; ++v) {
     for (std::uint32_t u = 0; u < remap.w; ++u) {
       const std::size_t i = std::size_t{v} * remap.w + u;
-      float sx = 0, sy = 0;
-      const bool inside = remap.source(u, v, &sx, &sy);
-      if (remap.near_edge(sx, sy)) continue;
+      float sx = 0, sy = 0, r = 0;
+      const bool inside = remap.source(u, v, &sx, &sy, &r);
+      if (remap.near_edge(sx, sy) || remap.near_fold(r)) continue;
       const float luma =
           inside ? bilinear(picture.y, picture.w, picture.w, picture.h, sx, sy)
                  : 0.0f;
       if (output == Rectifier::Output::Luma8) {
-        const int want = inside ? static_cast<int>(std::lround(luma)) : 0;
+        const int want = inside ? luma_code(luma, full) : 0;
         worst = std::max(worst, std::abs(want - static_cast<int>(got[i])));
         ++*compared;
         continue;
@@ -723,7 +798,8 @@ int compare_view(const std::vector<std::uint8_t>& got, const Remap& remap,
       if ((word >> 24) != 0xFF) return -1;
       std::uint32_t want = 0;
       if (layout == sensor::YuvLayout::Luma) {
-        const std::uint32_t g = static_cast<std::uint32_t>(std::lround(luma));
+        const std::uint32_t g =
+            static_cast<std::uint32_t>(luma_code(luma, full));
         want = g | (g << 8) | (g << 16);
       } else {
         // Chroma sited left: its first sample at luma's (0, 0.5), and on
@@ -734,7 +810,7 @@ int compare_view(const std::vector<std::uint8_t>& got, const Remap& remap,
         const float u_c = bilinear(cb, pcw, pcw, pch, cx, cy);
         const float v_c = bilinear(cr, pcw, pcw, pch, cx, cy);
         const std::array<int, 3> rgb = yuv_reference::rgb(
-            luma, u_c, v_c, sensor::VideoColorMatrix::Bt601, true);
+            luma, u_c, v_c, sensor::VideoColorMatrix::Bt601, full);
         want = static_cast<std::uint32_t>(rgb[0]) |
                (static_cast<std::uint32_t>(rgb[1]) << 8) |
                (static_cast<std::uint32_t>(rgb[2]) << 16);
@@ -853,9 +929,10 @@ int test_rows_align() {
   return 0;
 }
 
-// YUYV, NV12 and I420 from the host, and luma, as R'G'B' words match the host
-// reference within a code, the coverage byte exact; the same planes in device
-// buffers give the same words, bit for bit.
+// YUYV, NV12 and I420 from the host, and luma in either range, as R'G'B'
+// words and as luma bytes match the host reference within a code, the
+// coverage byte exact; the same planes in device buffers give the same
+// words, bit for bit.
 int test_layouts() {
   const sensor::StereoInfo info = mild_pair();
   const Scene scene;
@@ -865,39 +942,63 @@ int test_layouts() {
   // are exercised: resampled and undistorted.
   const auto rectifier =
       make(info, {{640, 360}, 0.25f, Rectifier::Output::Rgba8});
-  CHECK(rectifier != nullptr);
+  const auto luma8 = make(info, {{640, 360}, 0.25f, Rectifier::Output::Luma8});
+  CHECK(rectifier != nullptr && luma8 != nullptr);
   const sensor::StereoRig& rig = rectifier->rig();
   const std::size_t bytes = view_bytes(rig, Rectifier::Output::Rgba8);
-  for (const sensor::YuvLayout layout :
-       {sensor::YuvLayout::Yuyv, sensor::YuvLayout::Nv12,
-        sensor::YuvLayout::I420, sensor::YuvLayout::Luma}) {
-    const Picture left =
+  const std::size_t luma_bytes = view_bytes(rig, Rectifier::Output::Luma8);
+  struct Form {
+    sensor::YuvLayout layout;
+    bool full_range;
+  };
+  for (const Form form : {Form{sensor::YuvLayout::Yuyv, true},
+                          Form{sensor::YuvLayout::Nv12, true},
+                          Form{sensor::YuvLayout::I420, true},
+                          Form{sensor::YuvLayout::Luma, true},
+                          Form{sensor::YuvLayout::Luma, false}}) {
+    const sensor::YuvLayout layout = form.layout;
+    Picture left =
         layout == sensor::YuvLayout::Luma
             ? luma_picture(scene, info.calibration.left, Mat4d(1.0))
             : color_picture(scene, info.calibration.left, Mat4d(1.0), layout);
-    const Picture right =
+    Picture right =
         layout == sensor::YuvLayout::Luma
             ? luma_picture(scene, info.calibration.right, right_to_left)
             : color_picture(scene, info.calibration.right, right_to_left,
                             layout);
+    left.image.full_range = right.image.full_range = form.full_range;
     std::vector<std::uint8_t> host_views[2];
+    std::vector<std::uint8_t> luma_views[2];
     {
       auto pair = rectifier->rectify(frame_of(left, right));
       if (!pair) std::fprintf(stderr, "%s\n", pair.status().message().c_str());
       CHECK(pair.ok());
       host_views[0] = read_view(*pair, *pair->left, bytes);
       host_views[1] = read_view(*pair, *pair->right, bytes);
+      auto luma_pair = luma8->rectify(frame_of(left, right));
+      CHECK(luma_pair.ok());
+      luma_views[0] = read_view(*luma_pair, *luma_pair->left, luma_bytes);
+      luma_views[1] = read_view(*luma_pair, *luma_pair->right, luma_bytes);
     }
     for (int v = 0; v < 2; ++v) {
-      std::size_t compared = 0;
-      const int worst = compare_view(
-          host_views[v], Remap(rig, info.calibration, v), v == 0 ? left : right,
-          Rectifier::Output::Rgba8, &compared);
-      std::printf("  layout %d, %s view as R'G'B': %zu pixels, worst %d\n",
-                  static_cast<int>(layout), v == 0 ? "left" : "right", compared,
-                  worst);
+      const Remap remap(rig, info.calibration, v);
+      std::size_t compared = 0, luma_compared = 0;
+      const int worst =
+          compare_view(host_views[v], remap, v == 0 ? left : right,
+                       Rectifier::Output::Rgba8, &compared);
+      const int luma_worst =
+          compare_view(luma_views[v], remap, v == 0 ? left : right,
+                       Rectifier::Output::Luma8, &luma_compared);
+      std::printf(
+          "  layout %d, %s range, %s view: as R'G'B' %zu pixels, worst %d; "
+          "as luma %zu pixels, worst %d\n",
+          static_cast<int>(layout), form.full_range ? "full" : "limited",
+          v == 0 ? "left" : "right", compared, worst, luma_compared,
+          luma_worst);
       CHECK(compared > bytes / 8);
       CHECK(worst >= 0 && worst <= 1);
+      CHECK(luma_compared > luma_bytes / 2);
+      CHECK(luma_worst >= 0 && luma_worst <= 1);
     }
     // The same planes in device buffers, from an offset the binding rounds.
     sensor::StereoFrame dev = frame_of(left, right);
@@ -918,7 +1019,9 @@ int test_layouts() {
 
 // A pair rectified already -- no rotation, no lens, one camera, the right
 // one along +x -- is resampled only: at its own size its luma comes back byte
-// for byte; at another its camera is scaled edge to edge, whatever alpha.
+// for byte; at another its camera is scaled by one factor about the centres,
+// so its pixels stay square: at alpha 0 the larger factor, the picture
+// cropped to fill the view; at alpha 1 the smaller, all of it in the view.
 int test_already_rectified() {
   const CameraModel ir{{1280, 720}, {657.25, 657.25, 651.375, 359.0}, {}};
   sensor::StereoInfo info;
@@ -964,37 +1067,68 @@ int test_already_rectified() {
   CHECK(read_view(*pair, *pair->left, pics[0].y.size()) == pics[0].y);
   CHECK(read_view(*pair, *pair->right, pics[1].y.size()) == pics[1].y);
 
-  // To FFS's size: the camera scaled edge to edge, alpha or not.
+  // To FFS's size, 4:3 against 16:9 nearly: 960 / 1280 across, 544 / 720
+  // down. One factor, the picture's centre on the view's.
   for (const float alpha : {0.0f, 1.0f}) {
     const auto scaled =
         make(info, {{960, 544}, alpha, Rectifier::Output::Luma8});
     CHECK(scaled != nullptr);
     const camera::PinholeIntrinsics& k = scaled->rig().camera.intrinsics;
-    const double sx = 960.0 / 1280, sy = 544.0 / 720;
-    CHECK(std::fabs(k.fx - 657.25 * sx) < 1e-12);
-    CHECK(std::fabs(k.fy - 657.25 * sy) < 1e-12);
-    CHECK(std::fabs(k.cx - ((651.375 + 0.5) * sx - 0.5)) < 1e-12);
-    CHECK(std::fabs(k.cy - ((359.0 + 0.5) * sy - 0.5)) < 1e-12);
+    const double s = alpha == 0.0f ? 544.0 / 720 : 960.0 / 1280;
+    CHECK(k.fx == k.fy);
+    CHECK(std::fabs(k.fx - 657.25 * s) < 1e-12);
+    CHECK(std::fabs(k.cx - (479.5 + (651.375 - 639.5) * s)) < 1e-12);
+    CHECK(std::fabs(k.cy - (271.5 + (359.0 - 359.5) * s)) < 1e-12);
     CHECK(scaled->rig().rectified_to_left == Mat4d(1.0));
     auto resampled = scaled->rectify(frame_of(pics[0], pics[1]));
     CHECK(resampled.ok());
     const std::size_t bytes =
         view_bytes(scaled->rig(), Rectifier::Output::Luma8);
+    const Remap remap(scaled->rig(), info.calibration, 0);
     std::size_t compared = 0;
     const int worst =
-        compare_view(read_view(*resampled, *resampled->left, bytes),
-                     Remap(scaled->rig(), info.calibration, 0), pics[0],
-                     Rectifier::Output::Luma8, &compared);
+        compare_view(read_view(*resampled, *resampled->left, bytes), remap,
+                     pics[0], Rectifier::Output::Luma8, &compared);
+    // Cropped, every view pixel shows the picture; fitted, a band at the
+    // top and the bottom does not, and every picture column shows.
+    std::size_t covered = 0;
+    float first_x = 1e9f, last_x = -1e9f;
+    for (std::uint32_t v = 0; v < 544; ++v) {
+      for (std::uint32_t u = 0; u < 960; ++u) {
+        float sx = 0, sy = 0, r = 0;
+        if (!remap.source(u, v, &sx, &sy, &r)) continue;
+        ++covered;
+        first_x = std::min(first_x, sx);
+        last_x = std::max(last_x, sx);
+      }
+    }
+    std::printf(
+        "  rectified already, to 960x544 at alpha %.0f: fx %.4f, fy %.4f; "
+        "%zu of %u pixels covered, columns %.2f to %.2f of 1280; worst %d\n",
+        alpha, k.fx, k.fy, covered, 960u * 544u, first_x, last_x, worst);
     CHECK(compared == 960u * 544u);
     CHECK(worst >= 0 && worst <= 1);
+    if (alpha == 0.0f) {
+      CHECK(covered == 960u * 544u);
+      CHECK(first_x > 4.0f && last_x < 1275.0f);  // cropped across
+    } else {
+      CHECK(covered == 960u * 540u);  // two rows bordered above and below
+      CHECK(first_x < 0.5f && last_x > 1278.5f);  // every column, edge to edge
+    }
   }
   return 0;
 }
 
 // The depth view a matcher's depth is prepared with: the rectified left
-// camera; the colour camera, the left one or a third; and between them.
+// camera; the colour camera, the left one or a third; and between them. What
+// the source is -- id, model, clock, rate, colour exposure -- is its own.
 int test_depth_info() {
   sensor::StereoInfo info = mild_pair();
+  info.id = "123456789012";
+  info.model = "Intel RealSense D455";
+  info.clock = sensor::ClockDomain::Host;
+  info.fps = 30;
+  info.color_controls = camera::ColorControls{167, 60};
   const auto own = make(info, {{960, 544}, 0.0f, Rectifier::Output::Luma8});
   CHECK(own != nullptr);
   const sensor::SensorInfo& d = own->depth_info();
@@ -1004,6 +1138,11 @@ int test_depth_info() {
   CHECK(d.color->intrinsics.fx == info.calibration.left.intrinsics.fx &&
         d.color->distortion.k1 == info.calibration.left.distortion.k1);
   CHECK(d.depth_to_color == own->rig().rectified_to_left);
+  CHECK(d.id == info.id && d.model == info.model);
+  CHECK(d.clock == sensor::ClockDomain::Host && d.fps == 30);
+  CHECK(d.color_controls && *d.color_controls == *info.color_controls);
+  CHECK(d.role == sensor::SyncRole::FreeRun &&
+        d.pose == sensor::PoseSource::Fixed);
 
   info.color = CameraModel{{1280, 800}, {640.5, 640.25, 642.0, 401.5}, {}};
   info.left_to_color = Mat4d(1.0);
@@ -1017,8 +1156,12 @@ int test_depth_info() {
   return 0;
 }
 
-// A pair kept past the next keeps its views, which the next does not write;
-// a view no pair holds is written again. Exported where the device exports.
+// Pairs used in turn -- rectify, read, drop -- have the same two buffers,
+// with nothing allocated, whether a Vulkan reader hands the views back or
+// keeps them (the next pass takes them without a transfer). A pair kept past
+// the next keeps its views, which the next does not write, and the next has
+// new ones, their descriptors open where exported; a view no pair holds is
+// written again. Exported where the device exports.
 int test_pairs_hold_views() {
   const sensor::StereoInfo info = mild_pair();
   const auto rectifier =
@@ -1034,6 +1177,33 @@ int test_pairs_hold_views() {
   dark.image.host = dark.bytes.data();
   const std::size_t bytes =
       view_bytes(rectifier->rig(), Rectifier::Output::Luma8);
+
+  // In turn, the left picture bright and dark by turns, the views read and
+  // kept or handed back by turns.
+  {
+    std::vector<std::uint8_t> want[2];
+    VkBuffer handles[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::uint64_t staged = 0;  // staging buffers made after the first pair
+    for (int i = 0; i < 6; ++i) {
+      const std::uint64_t was = g_device->counters().staging_buffers;
+      auto pair = rectifier->rectify(frame_of(i % 2 == 0 ? left : dark, right));
+      CHECK(pair.ok());
+      if (i > 0) staged += g_device->counters().staging_buffers - was;
+      const std::vector<std::uint8_t> got =
+          read_view(*pair, *pair->left, bytes, i % 4 < 2);
+      CHECK(read_view(*pair, *pair->right, bytes, i % 4 < 2).size() == bytes);
+      if (i < 2) want[i] = got;
+      CHECK(got == want[i % 2]);
+      if (i == 0) {
+        handles[0] = pair->left->buffer.handle();
+        handles[1] = pair->right->buffer.handle();
+      }
+      CHECK(pair->left->buffer.handle() == handles[0] &&
+            pair->right->buffer.handle() == handles[1]);
+    }
+    CHECK(want[0] != want[1]);
+    CHECK(staged == 0);
+  }
 
   std::vector<std::uint8_t> a_left;
   const vkc::ExportedBuffer* b_left = nullptr;
@@ -1054,6 +1224,10 @@ int test_pairs_hold_views() {
     auto b = rectifier->rectify(frame_of(dark, right));
     CHECK(b.ok());
     CHECK(a->left.get() != b->left.get() && a->right.get() != b->right.get());
+    // New buffers: an importer knows them by their open descriptors.
+    if (g_device->exports_memory()) {
+      CHECK(b->left->fd.valid() && b->right->fd.valid());
+    }
     CHECK(read_view(*a, *a->left, bytes) == a_left);
     CHECK(read_view(*b, *b->left, bytes) != a_left);
     b_left = b->left.get();
@@ -1062,6 +1236,261 @@ int test_pairs_hold_views() {
   CHECK(c.ok());
   CHECK(c->left.get() == b_left);
   CHECK(read_view(*c, *c->left, bytes) == a_left);
+  return 0;
+}
+
+// A smooth luma picture of `c`'s size that never reads code 0, so a covered
+// luma pixel is never 0.
+Picture smooth_picture(const CameraModel& c, double phase) {
+  Picture p;
+  p.w = c.size.width;
+  p.h = c.size.height;
+  p.y.resize(std::size_t{p.w} * p.h);
+  for (std::uint32_t r = 0; r < p.h; ++r) {
+    for (std::uint32_t x = 0; x < p.w; ++x) {
+      p.y[std::size_t{r} * p.w + x] = to_code(
+          128 + 100 * std::sin(0.05 * x + phase) * std::cos(0.04 * r - phase));
+    }
+  }
+  p.bytes = p.y;
+  p.image.layout = sensor::YuvLayout::Luma;
+  p.image.host = p.bytes.data();
+  p.image.stride[0] = p.w;
+  p.image.width = p.w;
+  p.image.height = p.h;
+  return p;
+}
+
+// The strong barrel pair OpenCV's numbers pin, 800x600 to 640x480. Its
+// lenses fold -- r * radial(r^2) stops growing, at r = 2.05 for the left
+// one, which images no ray past r = 1.14, and 2.20 for the right -- and at
+// alpha 1 a tenth of the left view's rays and a twentieth of the right's lie
+// past the fold, where the lens model turns back and would land them inside
+// the picture, mirrored (32,417 of the left view's 307,200, by the review's
+// host replica in double). The pass writes each 0, coverage included,
+// as the host reference cut at the replica's fold has it, and the rest within
+// a code of it, as luma bytes and as R'G'B' words; at alpha 0 no ray reaches
+// the fold.
+int test_fold() {
+  const OpenCvCase& c = kOpenCvCases[3];
+  const sensor::StereoInfo info = info_of(c.left, c.right, c.rvec, c.tvec);
+  const Picture pics[2] = {smooth_picture(c.left, 0.3),
+                           smooth_picture(c.right, 1.1)};
+  for (const float alpha : {0.0f, 1.0f}) {
+    for (const Rectifier::Output output :
+         {Rectifier::Output::Rgba8, Rectifier::Output::Luma8}) {
+      const bool luma = output == Rectifier::Output::Luma8;
+      const auto rectifier = make(info, {{640, 480}, alpha, output});
+      CHECK(rectifier != nullptr);
+      const sensor::StereoRig& rig = rectifier->rig();
+      auto pair = rectifier->rectify(frame_of(pics[0], pics[1]));
+      CHECK(pair.ok());
+      const std::size_t bytes = view_bytes(rig, output);
+      for (int v = 0; v < 2; ++v) {
+        const Remap remap(rig, info.calibration, v);
+        const std::vector<std::uint8_t> view =
+            read_view(*pair, v == 0 ? *pair->left : *pair->right, bytes);
+        std::size_t compared = 0;
+        const int worst = compare_view(view, remap, pics[v], output, &compared);
+        // The rays past the fold that the lens model lands inside.
+        std::size_t past = 0, written = 0;
+        for (std::uint32_t y = 0; y < remap.h; ++y) {
+          for (std::uint32_t x = 0; x < remap.w; ++x) {
+            float sx = 0, sy = 0, r = 0;
+            if (!remap.lands(x, y, &sx, &sy, &r) || !(r > remap.fold) ||
+                remap.near_fold(r)) {
+              continue;
+            }
+            ++past;
+            const std::size_t i = std::size_t{y} * remap.w + x;
+            std::uint32_t value = view[i];
+            if (!luma) std::memcpy(&value, &view[4 * i], 4);
+            if (value != 0) ++written;
+          }
+        }
+        const std::size_t pixels = std::size_t{remap.w} * remap.h;
+        std::printf(
+            "  strong barrel lenses, alpha %.0f, %s view as %s: folds at r = "
+            "%.4f; %zu rays past it land inside, %zu written; %zu pixels, "
+            "worst %d\n",
+            alpha, v == 0 ? "left" : "right", luma ? "luma" : "R'G'B'",
+            remap.fold, past, written, compared, worst);
+        CHECK(worst >= 0 && worst <= 1);
+        CHECK(written == 0);
+        CHECK(compared > pixels / 4);
+        if (alpha == 0.0f) {
+          CHECK(past == 0);
+        } else {
+          CHECK(past > (v == 0 ? pixels / 10 : pixels / 20));
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+// A side-by-side frame's one plane, as a ZED's picture holds it:
+// row r is `l`'s row r, then `r`'s, then kPad bytes; `*stride` its bytes.
+std::vector<std::uint8_t> side_by_side_rows(const Picture& l, const Picture& r,
+                                            std::size_t* stride) {
+  *stride = 2 * std::size_t{l.w} + kPad;
+  std::vector<std::uint8_t> rows(*stride * l.h, 0xCD);
+  for (std::uint32_t y = 0; y < l.h; ++y) {
+    std::memcpy(&rows[y * *stride], &l.y[std::size_t{y} * l.w], l.w);
+    std::memcpy(&rows[y * *stride + l.w], &r.y[std::size_t{y} * r.w], r.w);
+  }
+  return rows;
+}
+
+// The frame those rows in `buffer` make, every picture naming `family`: the
+// left and right luma pictures, and a colour picture in the buffer too.
+sensor::StereoFrame side_by_side_frame(
+    const Picture& l, const Picture& r,
+    const std::shared_ptr<const vkc::Buffer>& buffer, std::size_t stride,
+    std::uint32_t family) {
+  sensor::StereoFrame f = frame_of(l, r);
+  for (sensor::YuvImage* image : {&f.left, &f.right, &f.color}) {
+    *image = l.image;
+    image->host = nullptr;
+    image->device = buffer;
+    image->offset[0] = 0;
+    image->stride[0] = stride;
+    image->queue_family = family;
+  }
+  f.right.offset[0] = l.w;
+  return f;
+}
+
+// Pictures in device buffers are taken over from the family their writer
+// released them to, each buffer once (DeviceCounters::barriers, a barrier a
+// transfer), and give the host pictures' views:
+//   - each picture in a buffer of its own, from VK_QUEUE_FAMILY_EXTERNAL, as
+//     CUDA's writes come: two transfers more than from the pass's own family;
+//   - a side-by-side frame's one buffer, released once, a colour picture in
+//     it too: one transfer more, and RectifiedPair::source's pictures read
+//     the pass's family, while a colour picture in a buffer of its own keeps
+//     its writer's;
+//   - the same buffer CONCURRENT with another of the device's families,
+//     which wrote it: none;
+//   - pictures in one buffer that name two families, the colour one's
+//     included, are refused before any work.
+int test_taken_over() {
+  const sensor::StereoInfo info = mild_pair();
+  const auto rectifier =
+      make(info, {{480, 272}, 0.0f, Rectifier::Output::Luma8});
+  CHECK(rectifier != nullptr);
+  const Scene scene;
+  const Picture left = luma_picture(scene, info.calibration.left, Mat4d(1.0));
+  const Picture right =
+      luma_picture(scene, info.calibration.right,
+                   camera::rigid_inverse(info.calibration.left_to_right));
+  const std::size_t bytes =
+      view_bytes(rectifier->rig(), Rectifier::Output::Luma8);
+  std::vector<std::uint8_t> want[2];
+  {
+    auto pair = rectifier->rectify(frame_of(left, right));
+    CHECK(pair.ok());
+    want[0] = read_view(*pair, *pair->left, bytes);
+    want[1] = read_view(*pair, *pair->right, bytes);
+  }
+  // `f` rectified: whether its views are the host pictures', the barriers
+  // its batch recorded, and its source.
+  std::uint64_t barriers = 0;
+  sensor::StereoFrame source;
+  const auto same = [&](const sensor::StereoFrame& f) {
+    const std::uint64_t was = g_device->counters().barriers;
+    auto pair = rectifier->rectify(f);
+    if (!pair) {
+      std::fprintf(stderr, "%s\n", pair.status().message().c_str());
+      return false;
+    }
+    barriers = g_device->counters().barriers - was;
+    source = pair->source;
+    return read_view(*pair, *pair->left, bytes) == want[0] &&
+           read_view(*pair, *pair->right, bytes) == want[1];
+  };
+
+  sensor::StereoFrame apart = frame_of(left, right);
+  apart.left = on_device(left, 0);
+  apart.right = on_device(right, 4);
+  CHECK(same(apart));
+  const std::uint64_t apart_own = barriers;
+  apart.left = on_device(left, 0, sensor::kQueueFamilyExternal);
+  apart.right = on_device(right, 4, sensor::kQueueFamilyExternal);
+  CHECK(same(apart));
+  CHECK(barriers == apart_own + 2);
+  CHECK(source.left.queue_family == sensor::kQueueFamilyIgnored &&
+        source.right.queue_family == sensor::kQueueFamilyIgnored);
+
+  std::size_t stride = 0;
+  const std::vector<std::uint8_t> rows =
+      side_by_side_rows(left, right, &stride);
+  const auto side_by_side = [&](std::uint32_t family) {
+    return side_by_side_frame(left, right, device_bytes(rows, family), stride,
+                              family);
+  };
+  CHECK(same(side_by_side(sensor::kQueueFamilyIgnored)));
+  const std::uint64_t together_own = barriers;
+  const sensor::StereoFrame together =
+      side_by_side(sensor::kQueueFamilyExternal);
+  CHECK(same(together));
+  CHECK(barriers == together_own + 1);
+  CHECK(source.left.queue_family == sensor::kQueueFamilyIgnored &&
+        source.right.queue_family == sensor::kQueueFamilyIgnored &&
+        source.color.queue_family == sensor::kQueueFamilyIgnored);
+  CHECK(together.left.queue_family == sensor::kQueueFamilyExternal);
+  sensor::StereoFrame own_color = side_by_side(sensor::kQueueFamilyExternal);
+  own_color.color = on_device(left, 0, sensor::kQueueFamilyExternal);
+  CHECK(same(own_color));
+  CHECK(barriers == together_own + 1);
+  CHECK(source.color.queue_family == sensor::kQueueFamilyExternal);
+  // Written on another of the device's families into a buffer CONCURRENT
+  // with the pass's: shared already, so taken with no transfer.
+  const std::uint32_t own = g_device->queue_family();
+  if (g_device->caps().queue_families().size() > 1) {
+    const std::uint32_t shared[2] = {own, own == 0 ? 1u : 0u};
+    std::vector<std::uint8_t> words = rows;
+    words.resize((words.size() + 3) & ~std::size_t{3}, 0xEE);
+    auto made =
+        vkc::device_storage_buffer(*g_allocator, words.size(), 0, shared, 2);
+    CHECK(made.ok());
+    vkc::CommandBatch batch(*g_device, *g_allocator);
+    CHECK(batch.upload(made.value(), 0, words.data(), words.size()).ok() &&
+          batch.submit().ok());
+    const auto concurrent =
+        std::make_shared<const vkc::Buffer>(std::move(made).value());
+    CHECK(same(side_by_side_frame(left, right, concurrent, stride, shared[1])));
+    CHECK(barriers == together_own);
+    CHECK(source.left.queue_family == sensor::kQueueFamilyIgnored);
+  }
+
+  const auto refused = [&](const sensor::StereoFrame& f, const char* why) {
+    const std::uint64_t submits = g_device->counters().submits;
+    const vkc::Status s = rectifier->rectify(f).status();
+    if (s.domain() != vkc::Status::Code::InvalidArgument ||
+        s.message().find(why) == std::string::npos ||
+        g_device->counters().submits != submits) {
+      std::fprintf(stderr, "rectify, expected \"%s\": %s\n", why,
+                   s.message().c_str());
+      return false;
+    }
+    return true;
+  };
+  sensor::StereoFrame split = side_by_side(sensor::kQueueFamilyExternal);
+  split.right.queue_family = sensor::kQueueFamilyIgnored;
+  CHECK(refused(split, "in one buffer, taken over once"));
+  split = side_by_side(sensor::kQueueFamilyExternal);
+  split.color.queue_family = sensor::kQueueFamilyIgnored;
+  CHECK(refused(split, "colour picture shares a buffer"));
+  CHECK(same(side_by_side(sensor::kQueueFamilyExternal)));
+  std::printf(
+      "  device pictures taken over: apart from VK_QUEUE_FAMILY_EXTERNAL "
+      "%llu barriers (%llu from the pass's family), side by side %llu "
+      "(%llu)\n",
+      static_cast<unsigned long long>(apart_own + 2),
+      static_cast<unsigned long long>(apart_own),
+      static_cast<unsigned long long>(together_own + 1),
+      static_cast<unsigned long long>(together_own));
   return 0;
 }
 
@@ -1144,12 +1573,25 @@ int test_refusals() {
   f = frame_of(left, right);
   f.left.stride[0] = 100;
   CHECK(frame_refused(f, "stride is shorter"));
-  f = frame_of(left, right);
+  // A picture with chroma needs a known siting and a matrix; luma alone,
+  // grey, needs neither, so a mono driver may leave them unset.
+  const Picture yuyv_left = color_picture(scene, good.calibration.left,
+                                          Mat4d(1.0), sensor::YuvLayout::Yuyv);
+  const Picture yuyv_right =
+      color_picture(scene, good.calibration.right,
+                    camera::rigid_inverse(good.calibration.left_to_right),
+                    sensor::YuvLayout::Yuyv);
+  f = frame_of(yuyv_left, yuyv_right);
   f.left.chroma_location = static_cast<sensor::ChromaLocation>(200);
   CHECK(frame_refused(f, "unknown chroma location"));
-  f = frame_of(left, right);
+  f = frame_of(yuyv_left, yuyv_right);
   f.left.kr = 0.9f;
   CHECK(frame_refused(f, "matrix's kr and kb"));
+  f = frame_of(left, right);
+  f.left.chroma_location = static_cast<sensor::ChromaLocation>(200);
+  f.left.kr = f.left.kb = 0.0f;
+  f.right.kr = f.right.kb = std::nanf("");
+  CHECK(rectifier->rectify(f).ok());
   f = frame_of(left, right);
   f.right = on_device(right, 0);
   CHECK(f.right.device != nullptr);
@@ -1232,6 +1674,8 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_already_rectified() != 0) return 1;
   if (test_depth_info() != 0) return 1;
   if (test_pairs_hold_views() != 0) return 1;
+  if (test_fold() != 0) return 1;
+  if (test_taken_over() != 0) return 1;
   if (test_refusals() != 0) return 1;
   if (test_timing() != 0) return 1;
   std::puts("sensor_stereo_rectifier: OK");

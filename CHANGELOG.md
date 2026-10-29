@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0] - 2026-10-29
+## [0.8.0] - 2026-10-29
 
 ### Added
 
@@ -26,6 +26,62 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `vs_target_warnings` gives its flags to C++ and Objective-C++ only, and
   CUDA sources nvcc's equivalents.
+
+## [0.7.0] - 2026-10-29
+
+### Added
+
+- **The RealSense infrared cameras as a stereo source.** `RealSenseStereo`
+  (`realsense/realsense_stereo.hpp`, in `sensor_realsense`), a RealSense
+  D400's two infrared cameras as an `IStereoSensor`: their 8-bit pictures
+  as the camera rectifies them, luma on the host, and the colour camera's
+  YUYV, the frameset held, nothing converted on the host; the projector
+  off by default; the factory calibration as `StereoInfo`; librealsense's
+  global time (DECISIONS.md, the 2026-10-29 RealSense stereo entry).
+- `IStereoSensor::set_frame_notify`, as `IRgbdSensor`'s: a source that
+  notifies nothing returns `Unsupported`, the default.
+- `StereoInfo` carries what the source is, as `SensorInfo` has it: `id`,
+  `model`, `clock`, `fps` and `color_controls`; `RealSenseStereo` fills
+  them, and `StereoRectifier::depth_info()` copies them, so a depth source
+  on a pair can join a `SensorArray`.
+
+### Changed
+
+- `RealSenseSensor` and `RealSenseStereo` run on one internal camera
+  (`realsense/camera.hpp`); a frameset is one moment when it holds a frame
+  of every mode opened, each within half a frame of the first.
+  `sensor_realsense` links `sensor_stereo` publicly.
+
+## [0.6.0] - 2026-10-29
+
+### Fixed
+
+- **`StereoRectifier`: rays past a lens's fold are 0.** Past the fold,
+  where the radial model stops carrying rays outward, the model turns back
+  and put rays the lens cannot image inside the picture, mirrored and
+  marked covered: a tenth of a strong lens's view at alpha 1. `create` finds
+  each camera's fold; the pass compares one radius.
+- **`StereoRectifier`: a buffer the pictures share is taken over once.** A
+  side-by-side frame's one buffer was taken over twice. Pictures in one
+  buffer, a colour picture beside them included, must name the family that
+  wrote it (refused otherwise), as `GpuFramePrep`'s inputs must, through
+  one shared check, and `RectifiedPair::source` names the pass's family for
+  each of them.
+
+### Changed
+
+- **`StereoRectifier`'s views are taken back with no transfer.** The pass
+  writes every word, so it no longer acquires its views back from
+  `VK_QUEUE_FAMILY_EXTERNAL`; a Vulkan reader need not hand them back.
+  `RectifiedPair` states the contract: use pairs in turn (rectify, read,
+  drop) and the views are the same two buffers, mapped once; drop a pair
+  only once its reads have completed; map a view by its open descriptor;
+  hand on `RectifiedPair::source`.
+- **A pair rectified already keeps square pixels:** it is scaled by one
+  factor about the centres, alpha choosing the picture cropped (0) or
+  fitted (1), where it was scaled across and down apart.
+- Luma alone (`YuvLayout::Luma`) is not checked for a matrix or a chroma
+  siting, in `GpuFramePrep` and the rectifier.
 
 ## [0.5.0] - 2026-10-29
 

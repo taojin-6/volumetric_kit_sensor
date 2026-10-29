@@ -9,8 +9,8 @@
 # frame; sensor_prep and then sensor_array on the interface; sensor_stereo on
 # the interface and, privately, the prep; sensor_apple and sensor_video on
 # frame; sensor_orbbec on the interface and the decoders; sensor_realsense on
-# the interface; sensor_ffs on the stereo tier and, privately, the video tier's
-# CUDA.
+# the interface and sensor_stereo; sensor_ffs on the stereo tier and, privately,
+# the video tier's CUDA.
 add_subdirectory(volumetric_kit/sensor/camera)
 set(_vs_tiers sensor_camera)
 if(NOT VS_CAMERA_ONLY)

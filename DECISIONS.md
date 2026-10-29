@@ -296,12 +296,33 @@ entries relevant to your task; later amendments supersede earlier rules.
   rectification as OpenCV's `stereoRectify` computes it, once, then a
   Vulkan pass a view that samples through the colour pass's own code, into
   views CUDA can import. `YuvLayout::Luma` for mono pairs.
+  *Amended the same day (the stereo review entry):* rays past a lens's fold
+  are 0; a shared buffer is taken over once; the views are used in turn and
+  taken back with no transfer; a pair rectified already keeps square pixels.
+  *Again (the RealSense stereo entry):* `StereoInfo` carries the source's
+  id, model, clock, rate and colour exposure, which `depth_info()` copies;
+  `IStereoSensor` gains `set_frame_notify`.
+
 - [**2026-10-29**](#2026-10-29--the-realsense-d400-driver-is-sensor_realsense-the-cameras-own-depth-and-its-colour-cameras-yuyv-on-the-host-librealsense-a-prerequisite-ci-installs-tested-against-rsutilh-with-no-camera) —
   The RealSense D400 driver is `sensor_realsense` (`RealSenseSensor`): the
   camera's own depth and its colour camera's YUYV on the host, converted on
   the device by `GpuFramePrep`; librealsense 2.59.1 a prerequisite that CI
   installs; tested against librealsense's own `rsutil.h`, with no camera and
   no virtual one.
+- [**2026-10-29**](#2026-10-29--stereorectifier-after-its-review-rays-past-a-lenss-fold-are-0-a-buffer-the-pictures-share-is-taken-over-once-and-the-views-are-used-in-turn-and-taken-back-with-no-transfer-amends-the-stereo-entry-above) —
+  `StereoRectifier` after its review: rays past a lens's fold are 0; a
+  buffer the pictures share is taken over once; the views are used in turn
+  (rectify, read, drop) with no pool, a pair dropped only once its reads
+  have completed, and taken back with no transfer; a pair rectified already
+  is scaled by one factor; luma alone needs no matrix.
+- [**2026-10-29**](#2026-10-29--a-realsenses-infrared-cameras-are-realsensestereo-an-istereosensor-luma-on-the-host-the-projector-off-the-factory-calibration-as-stereoinfo-on-the-camera-realsensesensor-runs-on) —
+  A RealSense's two infrared cameras are `RealSenseStereo`, an
+  `IStereoSensor`: their Y8 as the camera rectifies them, luma on the host,
+  and the colour camera's YUYV, the projector off by default, the factory
+  calibration as `StereoInfo`; both RealSense drivers run on one internal
+  camera; `IStereoSensor` gains `set_frame_notify`, and `StereoInfo` what
+  the source is (id, model, clock, rate, colour exposure), which
+  `StereoRectifier::depth_info()` copies.
 - [**2026-10-29**](#2026-10-29--stereo-depth-on-nvidia-ffsstereo-runs-fast-foundationstereo-on-tensorrt-between-two-cuda-kernels-from-the-rectifiers-views-straight-into-a-vulkan-depth-buffer-and-stereodepthsensor-makes-any-stereo-camera-an-irgbdsensor) —
   Stereo depth on NVIDIA (`sensor_ffs`, `VS_WITH_FFS`): `FfsStereo` runs an
   FFS export on TensorRT, its plan cached by GPU, TensorRT, model and size,
@@ -4273,6 +4294,17 @@ host besides, which this does not count.
 
 ### 2026-10-29 — Calibrated stereo pairs are the `stereo` tier's, and `StereoRectifier` rectifies them on the GPU as OpenCV's `stereoRectify` computes it, sampling through the colour pass's own code (amends the host-planes entry above).
 
+*Amended the same day (the stereo review entry, below):* rays past a lens's
+fold are 0; pictures sharing a buffer are taken over once and name the
+family that wrote it; the views are used in turn and the next pass takes them back with no
+transfer, so a Vulkan reader need not hand them back; a pair rectified
+already is scaled by one factor, alpha cropping or fitting it; luma alone is
+not checked for a matrix or a siting.
+*Amended again the same day (the RealSense stereo entry, below):*
+`StereoInfo` carries what the source is as `SensorInfo` has it (id, model,
+clock, rate, colour exposure) and `depth_info()` copies it;
+`IStereoSensor` gains `set_frame_notify`.
+
 **The rule.** A tier of its own, `sensor_stereo`, on the interface, linking
 `prep` privately; no SDK, every platform. `IStereoSensor` is what a stereo
 camera's driver implements (a RealSense's infrared pair, a Blackmagic pair,
@@ -4447,6 +4479,200 @@ without, the colour undistorted and true. The hand check found that
 librealsense's context waits forever in its destructor while its
 devices-changed callback holds the device: the driver replaces the callback
 first.
+
+### 2026-10-29 — `StereoRectifier` after its review: rays past a lens's fold are 0, a buffer the pictures share is taken over once, and the views are used in turn and taken back with no transfer (amends the stereo entry above).
+
+**The rule.**
+- **The fold.** A ray past its source lens's fold -- where `r * radial(r^2)`
+  stops growing, or the rational model's denominator reaches 0 -- is 0,
+  coverage included, like one that misses the picture. `create` finds each
+  camera's fold once, on the sign of the derivative: with `s = r^2`,
+  numerator `N` and denominator `D`, the first `s` where
+  `N D + 2 s (N' D - N D')` or `D` stops being positive, marched by the
+  angle off the axis 0.01 degrees a step to 89.99, then bisected. The view's
+  parameters carry its square (68 bytes, float's largest for no fold), and
+  the pass compares one squared radius.
+- **A buffer is taken over once.** Pictures that share a buffer -- a
+  side-by-side frame's two, a colour picture beside them -- name the family
+  that wrote it, or the frame is refused before any work: the rule
+  `GpuFramePrep` follows for its depth and planes (the device-depth entry
+  above), through the one check both call, which counts the pass's own
+  family and a `CONCURRENT` buffer's other Vulkan families as no transfer.
+  The batch takes the buffer over once, and `RectifiedPair::source` names
+  the pass's family
+  for every picture in a buffer it took over, the colour's included. The
+  frame passed to `rectify` keeps its families: later stages read
+  `source`.
+- **The views, in turn.** One buffer a view, leased to the pair, as before;
+  the contract is sequential -- rectify, read, drop -- under which every
+  pair has the same two buffers, nothing is allocated and CUDA maps each
+  once. A pair kept past the next still keeps its views and costs the next
+  new ones. A reader drops a pair only once its device reads have completed
+  (its CUDA work synchronized, its Vulkan batch waited), and maps a view
+  when its descriptor is open, not by its address; only
+  `CudaBufferMapping::map` changes a view.
+- **No take-back.** The pass no longer acquires its views back from
+  `VK_QUEUE_FAMILY_EXTERNAL`: it writes every word, so it takes them with no
+  transfer, as Vulkan lets a family take an `EXCLUSIVE` buffer whose
+  contents may be lost. It still releases them to
+  `VK_QUEUE_FAMILY_EXTERNAL` after the pass, which makes its writes CUDA's
+  to read. A Vulkan reader takes them over and need not hand them back.
+- **A pair rectified already** is scaled by one factor, about the centres,
+  so its pixels keep their shape; alpha picks the factor as for any pair,
+  the larger of the two axes' (0, the picture cropped to fill the view) or
+  the smaller (1, all of it in the view, bordered).
+- **Luma alone** is not checked for a matrix or a chroma siting, in
+  `GpuFramePrep` as in the rectifier: grey reads neither, as `YuvImage`
+  says.
+
+**Why.** The owner merged the stereo PR while its review ran and asked for
+the findings as a follow-up. The review's host replica of the pass found, on
+the strong barrel pair the OpenCV numbers pin, that at alpha 1 32,417 of the
+left view's 307,200 rays lie past the fold yet land inside the picture,
+point-mirrored and marked covered: a matcher would match them into bogus
+depth. A side-by-side frame in one buffer, the natural zero-copy frame of a
+ZED, was taken over twice, once without a matching release. The
+take-back made a view that a Vulkan reader kept (the package's own
+`PictureReadback` and `GpuFramePrep` keep what they take) an acquire of a
+buffer the family already owned; with none, every reader is legal.
+Sequential use is the consumer's shape: the stereo depth source's worker
+rectifies a pair and runs Fast-FoundationStereo on it in turn, and
+overlapping the two would save the rectify, 0.1 to 0.4 ms of host time,
+against the network's tens of milliseconds a pair on the 4090: below what
+is worth a pool of buffers and a second CUDA import each. Square pixels are what a learned
+matcher was trained on; the resample scaled each axis apart, 0.75% apart
+from 1280x720 to 960x544 and 32% from 640x480. Alternatives considered: a
+ping-pong pool of two buffers a view (no consumer needs it); keeping the
+take-back and documenting that readers hand the views back (the package's
+readers do not).
+
+**Tests.** `sensor_stereo_rectifier`:
+- the strong barrel pair at alpha 0 and 1, as `Rgba8` and `Luma8`, against
+  the host remap cut at the fold the review's replica finds independently
+  (marching `r` until `r * radial(r^2)` stops growing): every ray past it
+  is 0, the rest within a code, coverage exact; at alpha 1 32,395 of the
+  left view's rays and 16,004 of the right's are past it (folds at r = 2.047
+  and 2.204), at alpha 0 none;
+- pictures in device buffers from `VK_QUEUE_FAMILY_EXTERNAL`, released so
+  by their writer: two buffers record two transfers more than from the
+  pass's own family, a side-by-side frame's one buffer, a colour picture in
+  it too, one more, and `source` names the pass's family for all three; a
+  colour picture in its own buffer keeps its family; the same buffer
+  `CONCURRENT` with another of the device's families records none; pictures
+  in one buffer naming two families, the colour's included, are refused
+  before any submit; each gives the host pictures' views;
+- `Luma8` from YUYV, NV12, I420 and luma, and limited-range luma as `Luma8`
+  and `Rgba8`, within a code of the host reference;
+- six pairs used in turn, read by a reader that hands the views back or
+  keeps them, have the same two buffers and stage nothing new; a pair kept
+  past the next leaves the next new buffers, their descriptors open;
+- a pair rectified already to 960x544: square pixels, every view pixel
+  covered at alpha 0 (columns 4.87 to 1274.13 of 1280), the whole picture
+  at alpha 1 (two rows bordered above and below);
+- luma with its matrix and siting unset is rectified; a YUYV picture with
+  an unknown siting or a bad matrix is refused.
+`sensor_gpu_frame_prep`: luma with its matrix and siting unset comes out as
+with them set.
+
+**Validation.** RTX 4090, Ubuntu 26.04, Release with warnings as errors,
+Orbbec, RealSense, FFmpeg and CUDA, under the validation layer: 47 tests
+passed and the 2 JPEG tests skipped, as on main, of 49. recon main
+(`f794d65f`) built on this checkout passes its 42 tests. Six planted bugs
+each failed `sensor_stereo_rectifier`: the pass's fold cut removed, the fold
+found on a wrong derivative, a shared buffer taken over twice, a colour
+picture in a taken buffer keeping its family, the resample scaled across
+and down apart, and luma checked for a matrix. Timed on the 4090 with the
+box to itself, 1280x720 to 960x544, both views, a pair over 200, two runs:
+the pass alone (luma in device buffers, `Luma8`) 0.013 ms of device time,
+against 0.014-0.015 ms before; a RealSense pair's luma from the host
+0.095-0.097 ms; YUYV from the host as `Rgba8` 0.178 ms. The fold's compare
+costs nothing measurable. The Mac is CI's leg.
+
+### 2026-10-29 — A RealSense's infrared cameras are `RealSenseStereo`, an `IStereoSensor`: luma on the host, the projector off, the factory calibration as `StereoInfo`, on the camera `RealSenseSensor` runs on.
+
+**The rule.** `RealSenseStereo` (`realsense/realsense_stereo.hpp`, in
+`sensor_realsense`) is one RealSense D400's two infrared cameras as an
+`IStereoSensor`, its SDK behind a pointer:
+- Each stereo frame is both infrared cameras' 8-bit pictures (Y8) as the
+  camera rectifies them, `YuvLayout::Luma` on the host at full range, and
+  the colour camera's YUYV as `RealSenseSensor`'s. The frame holds its
+  frameset: nothing is copied or converted on the host, and
+  `StereoRectifier` uploads the pictures once.
+- `info()` is the factory calibration: each infrared camera a pinhole (a
+  lens on either is refused), `left_to_right` librealsense's extrinsic from
+  the left infrared camera (its index 1) to the right one (index 2), and the
+  colour camera with its lens and `left_to_color`. A frame's time is the
+  left infrared frame's global time, on the host's clock.
+- `StereoInfo` carries what the source is, as `SensorInfo` has it: `id`,
+  `model`, `clock`, `fps` and `color_controls` (the colour exposure read
+  back at open). `RealSenseStereo` fills them as `RealSenseSensor` does,
+  and `StereoRectifier::depth_info()` copies them, so the depth source
+  built on the pair reports them as its own.
+- The projector is off by default (`Options::emitter`).
+- It holds the newest stereo frame; its counters and a disconnect behave as
+  `RealSenseSensor`'s, and `set_frame_notify` wakes a consumer.
+  `IStereoSensor` gains `set_frame_notify`, `Unsupported` by default, as
+  `IRgbdSensor`'s.
+- Both RealSense drivers run on one internal camera
+  (`realsense/camera.hpp`): finding the camera, its modes, the projector,
+  the colour exposure, the pipeline with global time on, the disconnect
+  watch, the frame queue and the counters. A frameset is one moment
+  (`realsense::together`) when it holds a frame of every mode opened, each
+  within half a frame of the first; any other is counted failed.
+  `sensor_realsense` links `sensor_stereo` publicly.
+
+**Why.** The owner's RealSense design (rev 5, 2026-10-29): the camera's own
+depth with the projector on (`RealSenseSensor`), and its infrared cameras
+with the projector off for Fast-FoundationStereo ("FFS does not need the
+dots which adversely affects FFS estimation"); a stereo camera implements
+`IStereoSensor`, and one internal implementation serves both classes (one
+home for each function). The D455 rectifies its infrared cameras itself: on
+the lab camera the factory extrinsic has no rotation and 95.03 mm along x,
+both cameras one pinhole, so `StereoRectifier` only resamples them.
+`set_frame_notify` lets a depth source's own thread wait for a frame
+rather than poll on a timer, the hook `IRgbdSensor` has; the approved
+header did not list it. Nor did it list the source's identity, without
+which the depth source reports an empty id, the device's clock, rate 0 and
+no colour exposure, so a `SensorArray` refuses it (no id; auto exposure
+against a calibration's lock; off the host clock beside other sensors),
+even for one camera.
+
+**Tests, no hardware and no virtual camera** (the owner's choice):
+- `sensor_realsense_conversion`: the D455's infrared calibration as
+  `StereoInfo`: points at 0.5, 2 and 5 m land within 0.00009 px of
+  `rs2_project_point_to_pixel` in the right camera and within 0.0136 px in
+  the colour camera, on one row in both infrared cameras, `fx * baseline /
+  z` apart; a lens on either infrared camera, an extrinsic that is not
+  rigid and a colour lens model the pass does not undistort are refused,
+  each named; the one-moment rule (a missing mode, an extra frame, a stale
+  colour frame, frames 16 ms a step apart); a stereo frame from a plain
+  view (luma on the host at full range, rows as the camera's, the colour as
+  `RealSenseSensor`'s, nanoseconds), and views that contradict the opened
+  modes refused; the options refused before any camera is looked for;
+- `sensor_realsense_open`: `RealSenseStereo::open` refuses those options
+  before it looks, and an unknown serial as `NotFound`;
+- `sensor_stereo_rectifier`: `depth_info()` carries the source's id,
+  model, clock, rate and colour exposure.
+
+**Validation.** RTX 4090, Ubuntu 26.04, librealsense 2.59.1, Release with
+warnings as errors, Orbbec, RealSense, FFmpeg and CUDA, under the
+validation layer: 47 tests passed and the 2 JPEG tests skipped, as on the
+base, of 49. Six planted bugs each fail `sensor_realsense_conversion` (the
+one-moment rule against the previous frame, or blind to a missing mode; a
+lens on the left infrared camera accepted; the two extrinsics swapped;
+luma at limited range; rows shorter than the picture accepted). Checked by
+hand, not a test: the lab D455 (USB 3.2, firmware 5.17.0.10), the
+projector off, 300 stereo frames through `StereoRectifier` (Luma8) at
+960x544 and at 1280x720, waking on `set_frame_notify`: 30 fps (33.37 ms
+median period); 2 framesets failed at the start and none after, none
+dropped; sequence numbers rose by one every frame; a frame reached `poll`
+15.7 ms after its timestamp; `poll` took 0.016 ms; `rectify` 0.38 ms on the
+host and 0.095 ms on the device at 960x544, 0.33 ms and 0.100 ms at
+1280x720. The factory rotation is the identity exactly, so both sizes only
+resample, and at 1280x720 the views are the camera's pictures byte for
+byte. SIFT matches between the views lie 0.14 px apart vertically (median;
+1.4826 MAD 0.25 px, about 420 matches) at 1280x720 and 0.10 px at 960x544,
+as in the camera's own pictures: its factory rectification, unchanged.
 
 ### 2026-10-29 — Stereo depth on NVIDIA: `FfsStereo` runs Fast-FoundationStereo on TensorRT between two CUDA kernels, from the rectifier's views straight into a Vulkan depth buffer, and `StereoDepthSensor` makes any stereo camera an `IRgbdSensor`.
 

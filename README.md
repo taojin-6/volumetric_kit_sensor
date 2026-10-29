@@ -43,7 +43,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, CUDA interop | frame |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, every Apple build | frame |
 | `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video |
-| `sensor_realsense` | `realsense/` | `RealSenseSensor` | interface |
+| `sensor_realsense` | `realsense/` | `RealSenseSensor`, `RealSenseStereo` | interface, stereo |
 | `sensor_ffs` | `ffs/` | `FfsStereo` (Fast-FoundationStereo on TensorRT), `StereoDepthSensor` (any stereo camera as an `IRgbdSensor`); NVIDIA only | stereo; video, privately |
 | `sensor_image_io` | `io/` | image files | core base |
 
@@ -158,7 +158,9 @@ cmake -S "$sensor_root" -B "$sensor_root/build" \
 That builds `volumetric_kit::sensor_realsense` -- `RealSenseSensor`, one
 camera as an `IRgbdSensor` (`realsense/realsense_sensor.hpp`): the camera's
 own depth and its colour camera's YUYV, which `GpuFramePrep` converts on the
-device.
+device; and `RealSenseStereo`, the same camera's two infrared cameras as an
+`IStereoSensor` (`realsense/realsense_stereo.hpp`), the projector off, for a
+stereo matcher through `StereoRectifier` (below).
 
 ## Stereo pairs
 
@@ -248,7 +250,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.6.0), carried by the umbrella as
+The version is `project()`'s (0.8.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

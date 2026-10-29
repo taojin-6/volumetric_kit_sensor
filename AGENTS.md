@@ -45,9 +45,9 @@ device (`DeviceFrame`).
   GLM; `frame` the core's Vulkan tier; the interface `camera` and `frame`;
   `prep` the interface; `array` the prep; `stereo` the interface and,
   privately, the prep; `apple` `frame`; `video` `frame` (and, on Apple,
-  `apple`); `orbbec` the interface and `video`; `realsense` the interface;
-  `ffs` `stereo` and, privately, `video`; `video_syntax` and `io` the base
-  tier.
+  `apple`); `orbbec` the interface and `video`; `realsense` the interface
+  and `stereo`; `ffs` `stereo` and, privately, `video`; `video_syntax` and
+  `io` the base tier.
   Drivers, decoders and preparation stay targets of their own.
 - C++17, no compiler extensions. Namespace `volumetric_kit::sensor`, the
   camera vocabulary in `sensor::camera`; headers

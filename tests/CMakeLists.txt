@@ -477,11 +477,12 @@ vs_target_warnings(sensor_orbbec_decode_worker_test)
 add_test(NAME sensor_orbbec_decode_worker
          COMMAND sensor_orbbec_decode_worker_test)
 
-# The RealSense driver (VS_WITH_REALSENSE only), with no camera: the SDK that
-# loads is the one configured; the driver's arithmetic against librealsense's
-# own rsutil.h, its frame queue, and the options open refuses. conversion.cpp's
-# functions are not exported, so the tests that need them compile it themselves,
-# as the Orbbec tests do.
+# The RealSense drivers (VS_WITH_REALSENSE only), with no camera: the SDK that
+# loads is the one configured; the drivers' arithmetic against librealsense's
+# own rsutil.h (the camera models, the extrinsics, the infrared pair's
+# StereoInfo, the frame and the pair, the pairing rule), their frame queue, and
+# the options each open refuses. conversion.cpp's functions are not exported, so
+# the tests that need them compile it themselves, as the Orbbec tests do.
 if(VS_WITH_REALSENSE)
   set(_vs_realsense_src
       ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/realsense)

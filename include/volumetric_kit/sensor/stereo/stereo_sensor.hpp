@@ -16,11 +16,14 @@
 /// reaches no Vulkan.
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/color_controls.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
 #include "volumetric_kit/sensor/frame/color_space.hpp"
 #include "volumetric_kit/sensor/rgbd_sensor.hpp"
@@ -43,12 +46,23 @@ struct StereoCalibration {
 };
 
 /// @brief What a stereo source delivers, known when it opens: before a frame.
+///
+/// Besides the cameras, what the source is, as `SensorInfo` has it: a depth
+/// source built on it reports these as its own (`StereoRectifier::depth_info`
+/// copies them), so a sensor array can name, check and group it.
 struct StereoInfo {
   StereoCalibration calibration;  ///< The pair.
   /// A third, colour camera (a RealSense's); empty when `left` is the colour.
   std::optional<camera::CameraModel> color;
   /// A left-camera point in the colour camera; identity when there is none.
   camera::Mat4d left_to_color = camera::Mat4d(1.0);
+  std::string id;     ///< Its serial, as `SensorInfo::id`.
+  std::string model;  ///< What it is, e.g. "Intel RealSense D455".
+  ClockDomain clock = ClockDomain::Device;  ///< Its timestamps' clock.
+  std::uint32_t fps = 0;  ///< Its rate, frames a second; 0 if unknown.
+  /// The colour camera's manual exposure as read back at open, as
+  /// `SensorInfo::color_controls`; empty under auto exposure.
+  std::optional<camera::ColorControls> color_controls;
 };
 
 /// @brief One picture from each camera, taken together, as the source
@@ -59,7 +73,9 @@ struct StereoInfo {
 struct StereoFrame {
   /// The left camera's picture: any layout the GPU reads (`YuvLayout::Luma`
   /// for a mono pair, YUYV, NV12, I420), its planes on the host or in a
-  /// buffer on the device, at `StereoCalibration::left`'s size.
+  /// buffer on the device, at `StereoCalibration::left`'s size. Pictures
+  /// that share a buffer (a side-by-side frame) name one `queue_family`, the
+  /// one that wrote it.
   YuvImage left;
   YuvImage right;  ///< The right camera's, as @ref left.
   /// A third camera's picture (`StereoInfo::color`); no planes when `left` is
@@ -94,7 +110,9 @@ struct StereoFrame {
 /// @endcode
 ///
 /// @warning Not thread-safe unless an implementation says otherwise: open,
-///          start, poll and stop from one thread.
+///          start, poll and stop from one thread at a time, in order -- a
+///          thread that polls is created after @ref start and joined before
+///          @ref stop.
 class VS_STEREO_API IStereoSensor {
  public:
   virtual ~IStereoSensor() = default;
@@ -121,6 +139,22 @@ class VS_STEREO_API IStereoSensor {
 
   /// @return The counters since the last @ref start, as an `IRgbdSensor`'s.
   virtual SensorStats stats() const noexcept = 0;
+
+  /// @brief Have the source call @p notify each time a pair becomes ready for
+  ///        @ref poll, or the source fails, so a consumer -- a depth source's
+  ///        own thread, say -- can block between polls instead of sleeping.
+  ///        As `IRgbdSensor::set_frame_notify`.
+  ///
+  /// @p notify runs on whatever thread delivers the pair, after the pair is
+  /// held, so the poll it wakes finds it. It must be quick, must not call
+  /// back into the source, and may run after a later call replaced it, so it
+  /// owns whatever it touches.
+  /// @param notify  Called once for each pair held and on a failure; empty
+  ///                stops the calls.
+  /// @return OK; `Status::Code::InvalidArgument` once started;
+  ///         `Status::Code::Unsupported` for a source that notifies nothing,
+  ///         the default, whose consumer polls it.
+  virtual core::Status set_frame_notify(std::function<void()> notify);
 
  protected:
   IStereoSensor() = default;
