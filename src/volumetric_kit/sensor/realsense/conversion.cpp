@@ -14,9 +14,9 @@ namespace {
 bool positive(float v) noexcept { return std::isfinite(v) && v > 0.0f; }
 
 // What both drivers refuse of the colour camera's options.
-core::Status check_color(
-    const char* kind, const std::optional<camera::ColorControls>& controls,
-    const camera::Mat4d& color_to_world) {
+core::Status check_color(const char* kind,
+                         const std::optional<camera::ColorControls>& controls,
+                         const camera::Mat4d& color_to_world) {
   const auto refuse = [kind](const std::string& why) {
     return core::Status::invalid_argument(std::string(kind) + ": " + why);
   };
@@ -166,9 +166,9 @@ core::Result<camera::Mat4d> transform_from(const rs2_extrinsics& extrinsics,
   }
   const core::Status rigid = camera::check_rigid(m);
   if (!rigid.ok()) {
-    return core::Status::unsupported(who + ": the factory " + what +
-                                     " extrinsic is not rigid: " +
-                                     rigid.message());
+    return core::Status::unsupported(
+        who + ": the factory " + what +
+        " extrinsic is not rigid: " + rigid.message());
   }
   return m;
 }
@@ -211,11 +211,12 @@ core::Result<RgbdFrame> rgbd_frame(const FrameView& view,
                                    std::shared_ptr<const void> pixels,
                                    const std::string& who) {
   const camera::ImageSize& d = setup.depth_camera.size;
-  if (!fits(view.depth, d, 2) || view.depth.stride != 2 * std::size_t{d.width} ||
+  if (!fits(view.depth, d, 2) ||
+      view.depth.stride != 2 * std::size_t{d.width} ||
       !fits(view.color, setup.color_camera.size, 2)) {
-    return core::Status::io_error(who + ": a frameset contradicts its streams: " +
-                                  describe("depth", view.depth) + ", " +
-                                  describe("colour", view.color));
+    return core::Status::io_error(
+        who + ": a frameset contradicts its streams: " +
+        describe("depth", view.depth) + ", " + describe("colour", view.color));
   }
   RgbdFrame frame;
   frame.depth = static_cast<const std::uint16_t*>(view.depth.data);
@@ -242,11 +243,11 @@ core::Result<StereoFrame> stereo_frame(const StereoView& view,
   if (!info.color || !fits(view.left, info.calibration.left.size, 1) ||
       !fits(view.right, info.calibration.right.size, 1) ||
       !fits(view.color, info.color->size, 2)) {
-    return core::Status::io_error(
-        who + ": a frameset contradicts its streams: " +
-        describe("left infrared", view.left) + ", " +
-        describe("right infrared", view.right) + ", " +
-        describe("colour", view.color));
+    return core::Status::io_error(who +
+                                  ": a frameset contradicts its streams: " +
+                                  describe("left infrared", view.left) + ", " +
+                                  describe("right infrared", view.right) +
+                                  ", " + describe("colour", view.color));
   }
   StereoFrame frame;
   frame.left = luma_on_host(view.left);

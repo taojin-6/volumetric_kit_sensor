@@ -5,8 +5,7 @@
 
 namespace volumetric_kit::sensor {
 
-core::Status IStereoSensor::set_frame_notify(
-    std::function<void()> /*notify*/) {
+core::Status IStereoSensor::set_frame_notify(std::function<void()> /*notify*/) {
   return core::Status::unsupported(
       "IStereoSensor::set_frame_notify: this source notifies nothing; poll "
       "it");

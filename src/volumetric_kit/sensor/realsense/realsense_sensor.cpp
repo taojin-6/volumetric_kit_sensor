@@ -101,10 +101,10 @@ core::Result<RealSenseSensor> RealSenseSensor::open(
   VKC_ASSIGN(setup.color_camera,
              realsense::camera_model_from(color_profile.get_intrinsics(),
                                           "colour", true, who));
-  VKC_ASSIGN(setup.depth_to_color,
-             realsense::transform_from(
-                 depth_profile.get_extrinsics_to(color_profile),
-                 "depth-to-colour", who));
+  VKC_ASSIGN(
+      setup.depth_to_color,
+      realsense::transform_from(depth_profile.get_extrinsics_to(color_profile),
+                                "depth-to-colour", who));
   setup.color_to_world = options.color_to_world;
   setup.metres_per_unit = camera.stereo_module().get_depth_scale();
   setup.min_depth = options.min_depth;

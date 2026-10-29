@@ -230,8 +230,7 @@ core::Status Camera::set_streams(
   }
   pipeline_.emplace(context_);
   if (!config_.can_resolve(*pipeline_)) {
-    return core::Status::unsupported(who_ +
-                                     " cannot run these modes together");
+    return core::Status::unsupported(who_ + " cannot run these modes together");
   }
   fps_ = fps;
   modes_ = profiles.size();
@@ -248,8 +247,8 @@ core::Status Camera::set_streams(
 
 core::Status Camera::set_queue_depth(std::size_t frames) {
   if (frames == 0) {
-    return core::Status::invalid_argument(
-        std::string(kind_) + ": a queue holds at least one frame");
+    return core::Status::invalid_argument(std::string(kind_) +
+                                          ": a queue holds at least one frame");
   }
   if (running_) {
     return core::Status::invalid_argument(
@@ -287,8 +286,8 @@ core::Status Camera::start() {
     // matches its last depth frame with newer colour, are counted failed and
     // never queued.
     const rs2::pipeline_profile running = pipeline_->start(
-        config_, [shared = shared_, fps = fps_,
-                  modes = modes_](rs2::frame frame) {
+        config_,
+        [shared = shared_, fps = fps_, modes = modes_](rs2::frame frame) {
           const std::uint64_t arrival = now_ns();
           shared->received.fetch_add(1, std::memory_order_relaxed);
           try {

@@ -132,7 +132,8 @@ double worst_projection(const rs2_intrinsics& in,
       ++seen;
       const glm::dvec2 ours =
           project(model, glm::dvec3(point[0], point[1], point[2]));
-      worst = std::fmax(worst, std::hypot(ours.x - pixel[0], ours.y - pixel[1]));
+      worst =
+          std::fmax(worst, std::hypot(ours.x - pixel[0], ours.y - pixel[1]));
     }
   }
   return seen > 1000 ? worst : std::numeric_limits<double>::infinity();
@@ -253,7 +254,8 @@ int test_stereo_info() {
   const sensor::StereoCalibration& cal = info.calibration;
   for (const camera::CameraModel* c : {&cal.left, &cal.right}) {
     CHECK(c->size.width == 1280 && c->size.height == 720);
-    CHECK(c->intrinsics.fx == double{ir.fx} && c->intrinsics.cx == double{ir.ppx});
+    CHECK(c->intrinsics.fx == double{ir.fx} &&
+          c->intrinsics.cx == double{ir.ppx});
     CHECK(c->distortion.k1 == 0.0 && c->distortion.p2 == 0.0);
   }
   CHECK(info.color.has_value());
@@ -289,8 +291,9 @@ int test_stereo_info() {
                                        cal.left.intrinsics.fx * baseline / z));
         if (!inside(color_px, color)) continue;
         ++seen_color;
-        const glm::dvec2 c = project(
-            *info.color, glm::dvec3(info.left_to_color * glm::dvec4(point, 1.0)));
+        const glm::dvec2 c =
+            project(*info.color,
+                    glm::dvec3(info.left_to_color * glm::dvec4(point, 1.0)));
         worst_color = std::fmax(
             worst_color, std::hypot(c.x - color_px[0], c.y - color_px[1]));
       }

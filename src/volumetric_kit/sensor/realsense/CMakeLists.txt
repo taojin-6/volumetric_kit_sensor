@@ -3,11 +3,11 @@
 
 # --- sensor_realsense: the RealSense (D400) driver ---------------------------
 # RealSenseSensor, an IRgbdSensor over librealsense (the camera's own depth),
-# and RealSenseStereo, an IStereoSensor (its infrared pair), both on one camera
-# (camera.hpp), built only with VS_WITH_REALSENSE (see cmake/vs_realsense.cmake).
-# Its own target so sensor_interface stays free of the SDK (the 2026-09-26
-# decision). The SDK is PRIVATE and no SDK type reaches the public headers, but
-# linking still needs its library.
+# and RealSenseStereo, an IStereoSensor (its two infrared cameras), both on one
+# camera (camera.hpp), built only with VS_WITH_REALSENSE (see
+# cmake/vs_realsense.cmake). Its own target so sensor_interface stays free of
+# the SDK (the 2026-09-26 decision). The SDK is PRIVATE and no SDK type reaches
+# the public headers, but linking still needs its library.
 include(GenerateExportHeader)
 
 set(_vs_sensor_realsense_generated_inc
@@ -16,8 +16,9 @@ set(_vs_sensor_realsense_generated_inc
 add_library(sensor_realsense)
 add_library(volumetric_kit::sensor_realsense ALIAS sensor_realsense)
 
-target_sources(sensor_realsense PRIVATE camera.cpp conversion.cpp
-                                        realsense_sensor.cpp realsense_stereo.cpp)
+target_sources(
+  sensor_realsense PRIVATE camera.cpp conversion.cpp realsense_sensor.cpp
+                           realsense_stereo.cpp)
 
 generate_export_header(
   sensor_realsense

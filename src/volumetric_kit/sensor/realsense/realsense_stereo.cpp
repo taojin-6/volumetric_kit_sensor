@@ -93,16 +93,16 @@ core::Result<RealSenseStereo> RealSenseStereo::open(
 
   // The requested modes: both infrared cameras' Y8, as the camera rectifies
   // them, and the colour camera's YUYV.
-  VKC_ASSIGN(const rs2::video_stream_profile left,
-             camera.mode(camera.stereo_module(), RS2_STREAM_INFRARED, kLeft,
-                         RS2_FORMAT_Y8, options.infrared_width,
-                         options.infrared_height, options.fps,
-                         "Y8 left infrared"));
-  VKC_ASSIGN(const rs2::video_stream_profile right,
-             camera.mode(camera.stereo_module(), RS2_STREAM_INFRARED, kRight,
-                         RS2_FORMAT_Y8, options.infrared_width,
-                         options.infrared_height, options.fps,
-                         "Y8 right infrared"));
+  VKC_ASSIGN(
+      const rs2::video_stream_profile left,
+      camera.mode(camera.stereo_module(), RS2_STREAM_INFRARED, kLeft,
+                  RS2_FORMAT_Y8, options.infrared_width,
+                  options.infrared_height, options.fps, "Y8 left infrared"));
+  VKC_ASSIGN(
+      const rs2::video_stream_profile right,
+      camera.mode(camera.stereo_module(), RS2_STREAM_INFRARED, kRight,
+                  RS2_FORMAT_Y8, options.infrared_width,
+                  options.infrared_height, options.fps, "Y8 right infrared"));
   VKC_ASSIGN(const rs2::video_stream_profile color,
              camera.mode(camera.color_module(), RS2_STREAM_COLOR, -1,
                          RS2_FORMAT_YUYV, options.color_width,
@@ -110,12 +110,10 @@ core::Result<RealSenseStereo> RealSenseStereo::open(
 
   // The factory calibration, as the stereo tier reads it.
   VKC_ASSIGN(impl->info,
-             realsense::stereo_info(left.get_intrinsics(),
-                                    right.get_intrinsics(),
-                                    left.get_extrinsics_to(right),
-                                    color.get_intrinsics(),
-                                    left.get_extrinsics_to(color),
-                                    camera.who()));
+             realsense::stereo_info(
+                 left.get_intrinsics(), right.get_intrinsics(),
+                 left.get_extrinsics_to(right), color.get_intrinsics(),
+                 left.get_extrinsics_to(color), camera.who()));
   impl->color_to_world = options.color_to_world;
 
   // The projector and the colour exposure: last, so a camera refused above
