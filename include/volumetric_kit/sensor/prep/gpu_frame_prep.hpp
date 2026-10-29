@@ -43,10 +43,11 @@ namespace volumetric_kit::recon::sensor {
 /// @brief One frame on the device, pinhole and R'G'B', in the shapes the
 ///        fusion tiers read.
 ///
-/// Depth and colour keep their own cameras. Pass @ref depth to
-/// `allocate_from_depth` and `integrate` with @ref depth_camera, and @ref color
-/// as `ColorFrame::buffer` with @ref color_camera and
-/// `ColorFrame::coverage_in_alpha` set.
+/// Depth and colour keep their own cameras. Pass @ref depth with
+/// @ref depth_camera to `integrate` (or to fusion as a `tsdf::FrameInput`),
+/// and to `allocate_from_depth` with the camera through
+/// `tsdf::to_depth_pinhole`; pass @ref color as `ColorFrame::buffer` with
+/// @ref color_camera and `ColorFrame::coverage_in_alpha` set.
 ///
 /// The frame holds its buffers, which are `device_storage_buffer`s, so a
 /// `CommandBatch` can copy or read them back. One kept past the next
