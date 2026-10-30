@@ -54,7 +54,8 @@ struct RealSenseDeviceInfo {
 /// holds many frames starves the camera: keep a few.
 ///
 /// For depth from the infrared pair by Fast-FoundationStereo instead, with
-/// the projector off, the camera opens as a stereo source; this class is the
+/// the projector off, the camera opens as a stereo source
+/// (`RealSenseStereo`, realsense/realsense_stereo.hpp); this class is the
 /// camera's own depth, the projector on by default.
 ///
 /// @code
