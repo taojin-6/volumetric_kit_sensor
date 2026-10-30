@@ -456,11 +456,17 @@ core::Result<std::unique_ptr<StereoRectifier>> StereoRectifier::create(
   VKC_TRY(detail::check_camera(kWho, "rectified", rig.camera));
 
   // Depth in the rectified left camera; colour from the third camera, or the
-  // left one's picture through its own lens.
-  impl->depth_info.depth = rig.camera;
-  impl->depth_info.color = info.color ? *info.color : calibration.left;
-  impl->depth_info.depth_to_color =
+  // left one's picture through its own lens; what the source is, its own.
+  SensorInfo& out = impl->depth_info;
+  out.depth = rig.camera;
+  out.color = info.color ? *info.color : calibration.left;
+  out.depth_to_color =
       (info.color ? info.left_to_color : Mat4d(1.0)) * rig.rectified_to_left;
+  out.id = info.id;
+  out.model = info.model;
+  out.clock = info.clock;
+  out.fps = info.fps;
+  out.color_controls = info.color_controls;
 
   VkPhysicalDeviceProperties props{};
   vkGetPhysicalDeviceProperties(device.physical_device(), &props);

@@ -43,7 +43,8 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, CUDA interop | frame |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, every Apple build | frame |
 | `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video |
-| `sensor_realsense` | `realsense/` | `RealSenseSensor` | interface |
+| `sensor_realsense` | `realsense/` | `RealSenseSensor`, `RealSenseStereo` | interface, stereo |
+| `sensor_ffs` | `ffs/` | `FfsStereo` (Fast-FoundationStereo on TensorRT), `StereoDepthSensor` (any stereo camera as an `IRgbdSensor`); NVIDIA only | stereo; video, privately |
 | `sensor_image_io` | `io/` | image files | core base |
 
 ## Building
@@ -68,6 +69,7 @@ ctest --test-dir "$sensor_root/build" --output-on-failure
 | `VS_WITH_REALSENSE` | OFF | the RealSense driver |
 | `VS_WITH_FFMPEG` | OFF | the video decoders off Apple; needs `VS_WITH_CUDA`, refused on Apple |
 | `VS_WITH_CUDA` | OFF | NVIDIA's hardware for the decoders |
+| `VS_WITH_FFS` | OFF | `sensor_ffs`: stereo depth by FFS; needs `VS_WITH_CUDA` and TensorRT ≥ 11 |
 | `VS_SANITIZE` | empty | sanitizers, e.g. `address;undefined` |
 
 The GPU tests follow the core's test policy (its README, "Build and test"):
@@ -156,7 +158,9 @@ cmake -S "$sensor_root" -B "$sensor_root/build" \
 That builds `volumetric_kit::sensor_realsense` -- `RealSenseSensor`, one
 camera as an `IRgbdSensor` (`realsense/realsense_sensor.hpp`): the camera's
 own depth and its colour camera's YUYV, which `GpuFramePrep` converts on the
-device.
+device; and `RealSenseStereo`, the same camera's two infrared cameras as an
+`IStereoSensor` (`realsense/realsense_stereo.hpp`), the projector off, for a
+stereo matcher through `StereoRectifier` (below).
 
 ## Stereo pairs
 
@@ -177,6 +181,52 @@ VKC_ASSIGN(sensor::RectifiedPair pair, rectifier->rectify(frame));
 
 `tools/stereo_rectify_reference.py` regenerates the OpenCV numbers its test
 pins (OpenCV in a virtual environment; the build never needs it).
+
+## Stereo depth (FFS)
+
+`volumetric_kit::sensor_ffs` (`VS_WITH_FFS`, Linux, NVIDIA only) turns
+rectified pairs into depth with Fast-FoundationStereo (FFS) on TensorRT:
+`FfsStereo` reads the rectifier's views through CUDA and writes 16-bit depth
+straight into a Vulkan buffer (`RgbdFrame::depth_device`), which
+`GpuFramePrep` reads in place; `StereoDepthSensor` wraps any
+`IStereoSensor`, the rectifier and `FfsStereo` as an `IRgbdSensor`, on a
+thread of its own. It needs `VS_WITH_CUDA` (with nvcc, for its two
+kernels) and TensorRT ≥ 11, found and never fetched (`cmake/vs_ffs.cmake`;
+a tarball through `TensorRT_ROOT`):
+
+```sh
+sudo apt install libnvinfer-dev libnvonnxparsers-dev  # NVIDIA's CUDA repository
+cmake -S "$sensor_root" -B "$sensor_root/build" -DCMAKE_BUILD_TYPE=Release \
+    -DVS_WITH_FFMPEG=ON -DVS_WITH_CUDA=ON -DVS_WITH_FFS=ON
+```
+
+The model is an ONNX export of FFS that `tools/ffs/export_onnx.py` makes,
+once per checkpoint and network size, from a local checkout of NVlabs'
+[Fast-FoundationStereo](https://github.com/NVlabs/Fast-FoundationStereo) and
+its research weights (NVIDIA's, under their licence; never vendored or
+fetched). The network is the rig's size rounded up to multiples of 32
+(960 x 544 stays, 1280 x 720 is exported as 1280 x 736). `FfsStereo` builds
+its TensorRT plan once (minutes) and keeps it in a cache directory:
+
+```sh
+venv/bin/python tools/ffs/export_onnx.py --ffs ~/Fast-FoundationStereo \
+    --size 960x544 --out ffs_23-36-37_960x544.onnx
+```
+
+```cpp
+VKC_ASSIGN(auto sensor,
+           sensor::StereoDepthSensor::create(
+               device, allocator,
+               std::move(camera),  // any std::unique_ptr<IStereoSensor>
+               {{{960, 544}, 0.0f, sensor::StereoRectifier::Output::Luma8},
+                {"ffs_23-36-37_960x544.onnx", "ffs_plans"}}));
+VKC_TRY(sensor->start());  // then poll and prepare as for any IRgbdSensor
+```
+
+The tests run TensorRT and the kernels on two 593-byte models with FFS's
+inputs and output (`tests/data/ffs`, made by `tools/ffs/make_test_onnx.py`),
+and skip where CUDA does not reach the GPU unless `VS_TEST_HEVC_BACKEND`
+is set.
 
 ## Video decoders
 
@@ -201,7 +251,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.7.0), carried by the umbrella as
+The version is `project()`'s (0.9.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

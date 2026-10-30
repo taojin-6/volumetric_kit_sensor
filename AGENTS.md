@@ -8,10 +8,11 @@ of it.
 
 `volumetric_kit_sensor` is the family's camera side: the camera vocabulary
 and the rig's calibration file, the RGB-D sensor interface, GPU frame
-preparation, the sensor array, calibrated stereo pairs and their GPU
-rectification, the hardware video decoders, Apple's pixel-buffer importer,
-the Orbbec and RealSense drivers and image files. It hands consumers posed,
-undistorted RGB-D frames on the device (`DeviceFrame`).
+preparation, the sensor array, calibrated stereo pairs, their GPU
+rectification and stereo depth on NVIDIA (FFS), the hardware video
+decoders, Apple's pixel-buffer importer, the Orbbec and RealSense drivers
+and image files. It hands consumers posed, undistorted RGB-D frames on the
+device (`DeviceFrame`).
 
 - It builds on [volumetric_kit_core](https://github.com/taojin-6/volumetric_kit_core)
   alone (fetched, pinned by commit), under the core's names (`core::Status`,
@@ -44,8 +45,9 @@ undistorted RGB-D frames on the device (`DeviceFrame`).
   GLM; `frame` the core's Vulkan tier; the interface `camera` and `frame`;
   `prep` the interface; `array` the prep; `stereo` the interface and,
   privately, the prep; `apple` `frame`; `video` `frame` (and, on Apple,
-  `apple`); `orbbec` the interface and `video`; `realsense` the interface;
-  `video_syntax` and `io` the base tier.
+  `apple`); `orbbec` the interface and `video`; `realsense` the interface
+  and `stereo`; `ffs` `stereo` and, privately, `video`; `video_syntax` and
+  `io` the base tier.
   Drivers, decoders and preparation stay targets of their own.
 - C++17, no compiler extensions. Namespace `volumetric_kit::sensor`, the
   camera vocabulary in `sensor::camera`; headers

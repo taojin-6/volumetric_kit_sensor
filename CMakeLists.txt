@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(
   volumetric_kit_sensor
-  VERSION 0.7.0
+  VERSION 0.9.0
   DESCRIPTION
     "Cameras, capture and the device-frame contract for the volumetric_kit family"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_sensor"
@@ -59,6 +59,12 @@ option(
   VS_WITH_CUDA
   "Decode video on NVIDIA's hardware, onto the device (requires the CUDA toolkit)"
   OFF)
+# OFF by default too: stereo depth by Fast-FoundationStereo runs on NVIDIA's
+# GPUs alone, on TensorRT, a prerequisite you install (cmake/vs_ffs.cmake), and
+# reaches Vulkan memory through CUDA, so it needs VS_WITH_CUDA.
+option(VS_WITH_FFS
+       "Build sensor_ffs: FFS stereo depth (requires TensorRT and VS_WITH_CUDA)"
+       OFF)
 
 # Semicolon list of sanitizers (e.g. "address;undefined"); empty = off. Applied
 # globally -- see cmake/vs_sanitizers.cmake for why.
@@ -68,7 +74,7 @@ set(VS_SANITIZE
 
 if(VS_CAMERA_ONLY)
   foreach(_vs_option VS_WITH_ORBBEC VS_WITH_REALSENSE VS_WITH_FFMPEG
-                     VS_WITH_CUDA)
+                     VS_WITH_CUDA VS_WITH_FFS)
     if(${_vs_option})
       message(FATAL_ERROR "VS_CAMERA_ONLY builds the camera tier alone: "
                           "turn ${_vs_option} OFF")
@@ -94,8 +100,9 @@ if(NOT VS_CAMERA_ONLY)
   find_package(Vulkan REQUIRED)
 endif()
 
-# The Orbbec SDK (ob::OrbbecSDK), librealsense, FFmpeg and the CUDA toolkit:
-# installed once, outside the repo, and never fetched (the 2026-09-24 decision).
+# The Orbbec SDK (ob::OrbbecSDK), librealsense, FFmpeg, the CUDA toolkit and
+# TensorRT: installed once, outside the repo, and never fetched (the 2026-09-24
+# decision).
 if(VS_WITH_ORBBEC)
   include(vs_orbbec)
 endif()
@@ -107,6 +114,9 @@ if(VS_WITH_FFMPEG)
 endif()
 if(VS_WITH_CUDA)
   include(vs_cuda)
+endif()
+if(VS_WITH_FFS)
+  include(vs_ffs)
 endif()
 
 # The core this package builds with (third_party/ checks the core that arrives):

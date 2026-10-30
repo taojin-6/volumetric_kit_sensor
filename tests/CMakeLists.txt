@@ -417,6 +417,31 @@ if(APPLE OR VS_WITH_FFMPEG)
     add_test(NAME sensor_video_cuda_error COMMAND sensor_video_cuda_error_test)
   endif()
 
+  if(VS_WITH_FFS)
+    # FFS (sensor_ffs) on the test models in data/ffs
+    # (tools/ffs/make_test_onnx.py), FFS's inputs and output with a disparity
+    # worked out by hand: FfsStereo's depth units, no returns (coverage among
+    # them), padding, both view layouts, the plan cache, kept pairs' views, the
+    # depth read in place by GpuFramePrep and the refusals; and
+    # StereoDepthSensor on a test camera, as any IRgbdSensor, in a SensorArray.
+    # They skip as the interop test does.
+    foreach(_vs_ffs_test stereo depth_sensor)
+      add_executable(sensor_ffs_${_vs_ffs_test}_test
+                     sensor_ffs_${_vs_ffs_test}_test.cpp)
+      target_link_libraries(
+        sensor_ffs_${_vs_ffs_test}_test
+        PRIVATE volumetric_kit::sensor_ffs volumetric_kit::sensor_array
+                volumetric_kit::sensor_prep volumetric_kit::sensor_video
+                volumetric_kit::core_test_policy)
+      target_compile_definitions(
+        sensor_ffs_${_vs_ffs_test}_test
+        PRIVATE VS_FFS_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data/ffs")
+      vs_target_warnings(sensor_ffs_${_vs_ffs_test}_test)
+      add_test(NAME sensor_ffs_${_vs_ffs_test}
+               COMMAND sensor_ffs_${_vs_ffs_test}_test)
+    endforeach()
+  endif()
+
   if(APPLE)
     # Compile the public JPEG decoder here so the executable's native-call
     # replacements intercept it in both static and shared library builds.
@@ -454,11 +479,12 @@ vs_target_warnings(sensor_orbbec_decode_worker_test)
 add_test(NAME sensor_orbbec_decode_worker
          COMMAND sensor_orbbec_decode_worker_test)
 
-# The RealSense driver (VS_WITH_REALSENSE only), with no camera: the SDK that
-# loads is the one configured; the driver's arithmetic against librealsense's
-# own rsutil.h, its frame queue, and the options open refuses. conversion.cpp's
-# functions are not exported, so the tests that need them compile it themselves,
-# as the Orbbec tests do.
+# The RealSense drivers (VS_WITH_REALSENSE only), with no camera: the SDK that
+# loads is the one configured; the drivers' arithmetic against librealsense's
+# own rsutil.h (the camera models, the extrinsics, the infrared pair's
+# StereoInfo, the frame and the pair, the pairing rule), their frame queue, and
+# the options each open refuses. conversion.cpp's functions are not exported, so
+# the tests that need them compile it themselves, as the Orbbec tests do.
 if(VS_WITH_REALSENSE)
   set(_vs_realsense_src
       ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/realsense)
