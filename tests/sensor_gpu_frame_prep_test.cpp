@@ -28,8 +28,11 @@
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - its depth and colour outputs are shared with the queue families its
 //     config names for each, and read on another family as on its own;
-//   - with depth_within_color, depth survives only where colour recorded it,
-//     at the corrected and mixed depth;
+//   - a frame with colour keeps depth only where colour recorded it, at the
+//     corrected and mixed depth, and a frame without colour keeps all of it;
+//   - and colour only inside its depth camera's field of view, however the
+//     two cameras differ, and depth only inside the colour camera's, where
+//     it lands on colour that is kept;
 //   - depth on the device, at any even byte of its buffer, taken over or
 //     not, alone or in a set beside host depth, gives the words the same
 //     depth from the host gives, bit for bit, and holds the pass's slot;
@@ -870,8 +873,30 @@ Planes patterned(std::uint32_t w, std::uint32_t h) {
   return p;
 }
 
+// `p` as NV12 plane images, as VideoToolbox hands them out, which the pass
+// samples; BT.709 limited range.
+sensor::YuvImage nv12_images(const Planes& p) {
+  std::vector<std::uint8_t> cbcr(2 * p.cb.size());
+  for (std::size_t i = 0; i < p.cb.size(); ++i) {
+    cbcr[2 * i] = p.cb[i];
+    cbcr[2 * i + 1] = p.cr[i];
+  }
+  sensor::YuvImage images;
+  images.layout = sensor::YuvLayout::Nv12;
+  images.width = p.w;
+  images.height = p.h;
+  images.kr = 0.2126f;
+  images.kb = 0.0722f;
+  images.full_range = false;
+  images.image[0] =
+      image_of(VK_FORMAT_R8_UNORM, 1, p.w, p.h, p.y.data(), p.w, p.h, kSampled);
+  images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch, cbcr.data(),
+                             2 * p.cw, p.ch, kSampled);
+  return images;
+}
+
 // A w x h pinhole frame, its depth held by the frame, its colour patterned
-// NV12 plane images, as VideoToolbox hands them out, which the pass samples.
+// NV12 plane images (nv12_images).
 sensor::RgbdFrame image_frame(std::uint32_t w, std::uint32_t h) {
   camera::CameraModel cam = pinhole();
   cam.size = {w, h};
@@ -880,23 +905,7 @@ sensor::RgbdFrame image_frame(std::uint32_t w, std::uint32_t h) {
   sensor::RgbdFrame f = frame_of(*raw, cam);
   f.pixels = raw;
   f.color_camera = cam;
-  const Planes p = patterned(w, h);
-  std::vector<std::uint8_t> cbcr(2 * p.cb.size());
-  for (std::size_t i = 0; i < p.cb.size(); ++i) {
-    cbcr[2 * i] = p.cb[i];
-    cbcr[2 * i + 1] = p.cr[i];
-  }
-  sensor::YuvImage& images = f.color;
-  images.layout = sensor::YuvLayout::Nv12;
-  images.width = w;
-  images.height = h;
-  images.kr = 0.2126f;
-  images.kb = 0.0722f;
-  images.full_range = false;
-  images.image[0] =
-      image_of(VK_FORMAT_R8_UNORM, 1, w, h, p.y.data(), w, h, kSampled);
-  images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch, cbcr.data(),
-                             2 * p.cw, p.ch, kSampled);
+  f.color = nv12_images(patterned(w, h));
   return f;
 }
 
@@ -1748,15 +1757,13 @@ int test_luma(sensor::GpuFramePrep& prep) {
 // too few passes are refused.
 int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   constexpr std::size_t kCams = 5;
-  sensor::GpuFramePrepConfig masked;
-  masked.depth_within_color = true;
   std::vector<sensor::GpuFramePrep> preps;
   for (std::size_t c = 0; c < kCams; ++c) {
-    auto made = sensor::GpuFramePrep::create(device, allocator, masked);
+    auto made = sensor::GpuFramePrep::create(device, allocator);
     CHECK(made.ok());
     preps.push_back(std::move(made).value());
   }
-  auto alone = sensor::GpuFramePrep::create(device, allocator, masked);
+  auto alone = sensor::GpuFramePrep::create(device, allocator);
   CHECK(alone.ok());
   // A pincushion colour lens misses the corners, which the mask zeroes.
   camera::CameraModel pincushion = pinhole();
@@ -2114,7 +2121,6 @@ int test_device_depth(vkc::Device& device, vkc::Allocator& allocator) {
   const auto invalid = vkc::Status::Code::InvalidArgument;
   sensor::GpuFramePrepConfig config;
   config.depth_offset_m = 0.0123f;
-  config.depth_within_color = true;  // where a frame has colour
   auto made = sensor::GpuFramePrep::create(device, allocator, config);
   auto made_reference = sensor::GpuFramePrep::create(device, allocator, config);
   CHECK(made.ok() && made_reference.ok());
@@ -2853,25 +2859,144 @@ int test_cross_family() {
   return 0;
 }
 
-// GpuFramePrepConfig::depth_within_color keeps depth only where the colour
-// camera recorded it.
+// Whether coordinate `p` rounds, half up, into [0, n); `*edge` is set within
+// a hair of where the rounding changes, where either answer is the float's.
+bool rounds_into(float p, std::uint32_t n, bool* edge) {
+  const float r = p + 0.5f;
+  if (std::fabs(r - std::round(r)) < 1e-3f) *edge = true;
+  return std::floor(r) >= 0.0f && std::floor(r) < static_cast<float>(n);
+}
+
+// Whether source coordinate `s` lies in the colour pass's bounds for an
+// n-pixel axis, [-0.5, n - 0.5]; `*edge` is set within a hair of either end.
+bool within_picture(float s, std::uint32_t n, bool* edge) {
+  const float hi = static_cast<float>(n) - 0.5f;
+  if (std::fabs(s + 0.5f) < 1e-3f || std::fabs(s - hi) < 1e-3f) *edge = true;
+  return s >= -0.5f && s <= hi;
+}
+
+// Whether the depth pass covers point `q` of depth camera `d`'s frame, on the
+// host: in front of it, on a pinhole pixel that rounds into the picture, whose
+// source in the captured image does too.
+bool depth_covers(const camera::CameraModel& d, sensor::Vec3f q, bool* edge) {
+  if (!(q.z > 0.0f)) return false;
+  const float u = f32(d.intrinsics.fx) * (q.x / q.z) + f32(d.intrinsics.cx);
+  const float v = f32(d.intrinsics.fy) * (q.y / q.z) + f32(d.intrinsics.cy);
+  if (!(rounds_into(u, d.size.width, edge) &&
+        rounds_into(v, d.size.height, edge))) {
+    return false;
+  }
+  const sensor::Vec2f s =
+      source_pixel(d, std::floor(u + 0.5f), std::floor(v + 0.5f));
+  return rounds_into(s.x, d.size.width, edge) &&
+         rounds_into(s.y, d.size.height, edge);
+}
+
+// Colour pixel (u, v)'s ray direction in `f`'s colour camera's frame.
+sensor::Vec3f color_ray(const sensor::RgbdFrame& f, std::uint32_t u,
+                        std::uint32_t v) {
+  const camera::PinholeIntrinsics& k = f.color_camera.intrinsics;
+  return sensor::Vec3f((static_cast<float>(u) - f32(k.cx)) / f32(k.fx),
+                       (static_cast<float>(v) - f32(k.cy)) / f32(k.fy), 1.0f);
+}
+
+// Whether `f`'s depth camera's field of view holds colour pixel (u, v)'s ray,
+// on the host: its direction, turned into the depth camera's frame by the
+// rotation of rigid_inverse(depth_to_color), the baseline left out, is
+// covered by the depth pass.
+bool depth_sees(const sensor::RgbdFrame& f, std::uint32_t u, std::uint32_t v,
+                bool* edge) {
+  const sensor::Mat4f to_depth(camera::rigid_inverse(f.depth_to_color));
+  return depth_covers(f.depth_camera,
+                      sensor::Mat3f(to_depth) * color_ray(f, u, v), edge);
+}
+
+// Whether the depth camera covers colour pixel (u, v)'s ray where it lies `z`
+// metres deep for the depth camera, a point the baseline moves: what a test
+// that kept the baseline would ask.
+bool depth_covers_at(const sensor::RgbdFrame& f, std::uint32_t u,
+                     std::uint32_t v, float z, bool* edge) {
+  const sensor::Mat4f to_depth(camera::rigid_inverse(f.depth_to_color));
+  const sensor::Vec3f dir = sensor::Mat3f(to_depth) * color_ray(f, u, v);
+  const sensor::Vec3f origin(to_depth[3]);
+  const float t = (z - origin.z) / dir.z;
+  if (!(t > 0.0f)) return false;
+  return depth_covers(f.depth_camera, origin + t * dir, edge);
+}
+
+// Whether the colour pass's lens finds `f`'s colour pixel (u, v) in the
+// picture, on the host.
+bool recorded(const sensor::RgbdFrame& f, std::uint32_t u, std::uint32_t v,
+              bool* edge) {
+  const camera::CameraModel& c = f.color_camera;
+  const sensor::Vec2f s =
+      source_pixel(c, static_cast<float>(u), static_cast<float>(v));
+  return within_picture(s.x, c.size.width, edge) &&
+         within_picture(s.y, c.size.height, edge);
+}
+
+// The colour pixel point or direction `q` of `f`'s colour camera's frame
+// rounds to, on the host, in (*cu, *cv); false where `q` is behind the camera
+// or rounds outside the picture.
+bool rounds_to(const sensor::RgbdFrame& f, sensor::Vec3f q, std::uint32_t* cu,
+               std::uint32_t* cv, bool* edge) {
+  if (!(q.z > 0.0f)) return false;
+  const camera::CameraModel& c = f.color_camera;
+  const float pu = f32(c.intrinsics.fx) * (q.x / q.z) + f32(c.intrinsics.cx);
+  const float pv = f32(c.intrinsics.fy) * (q.y / q.z) + f32(c.intrinsics.cy);
+  if (!(rounds_into(pu, c.size.width, edge) &&
+        rounds_into(pv, c.size.height, edge))) {
+    return false;
+  }
+  *cu = static_cast<std::uint32_t>(std::floor(pu + 0.5f));
+  *cv = static_cast<std::uint32_t>(std::floor(pv + 0.5f));
+  return true;
+}
+
+// The colour pixel `f`'s depth pixel (u, v), `z` metres deep, lands on, on
+// the host, as rounds_to.
+bool lands_on(const sensor::RgbdFrame& f, std::uint32_t u, std::uint32_t v,
+              float z, std::uint32_t* cu, std::uint32_t* cv, bool* edge) {
+  const camera::PinholeIntrinsics& d = f.depth_camera.intrinsics;
+  const sensor::Vec4f p((static_cast<float>(u) - f32(d.cx)) * z / f32(d.fx),
+                        (static_cast<float>(v) - f32(d.cy)) * z / f32(d.fy), z,
+                        1.0f);
+  return rounds_to(f, sensor::Vec3f(sensor::Mat4f(f.depth_to_color) * p), cu,
+                   cv, edge);
+}
+
+// The colour pixel `f`'s depth pixel (u, v)'s direction, turned into the
+// colour camera's frame by depth_to_color's rotation, the baseline left out,
+// points at, on the host, as rounds_to.
+bool points_at(const sensor::RgbdFrame& f, std::uint32_t u, std::uint32_t v,
+               std::uint32_t* cu, std::uint32_t* cv, bool* edge) {
+  const camera::PinholeIntrinsics& d = f.depth_camera.intrinsics;
+  const sensor::Vec3f dir((static_cast<float>(u) - f32(d.cx)) / f32(d.fx),
+                          (static_cast<float>(v) - f32(d.cy)) / f32(d.fy),
+                          1.0f);
+  return rounds_to(f, sensor::Mat3f(sensor::Mat4f(f.depth_to_color)) * dir, cu,
+                   cv, edge);
+}
+
+// A frame with colour keeps depth only where its colour camera recorded it.
 //   - Same intrinsics and pose, a pincushion colour lens: each depth pixel
 //     lands on the colour pixel it shares, so depth must be zeroed exactly
 //     where the colour's coverage byte is 0 -- the corners the lens missed.
-//   - A narrower colour camera 10 cm to the right: the depth kept is the
-//     region a host projection puts inside its image. A mask that ignored the
-//     pose would keep a region 39 px to one side of it.
+//   - A narrower colour camera 10 cm to the right, inside the depth camera's
+//     view, so all the colour is kept: the depth kept is where a host
+//     projection puts both its point and its direction, the baseline left
+//     out, inside the colour image. The point sets the left edge and the
+//     direction the right, 26 columns inside where the other would.
 //   - The same cameras with a depth offset: the mask tests the corrected
-//     depth, where one testing the raw depth gets pixels wrong in every row.
+//     depth, where one testing the raw depth gets pixels wrong in every row
+//     along the edge the point sets.
 //   - A colour principal point a fraction of a pixel off: the image's edges
 //     are where the rounded colour pixel leaves it, not the pixel itself.
-//   - Off, and on a frame without colour, every depth pixel is kept.
+//   - A frame without colour keeps every depth pixel, the same cameras'
+//     included.
 int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
-  sensor::GpuFramePrepConfig on;
-  on.depth_within_color = true;
-  auto masked = sensor::GpuFramePrep::create(device, allocator, on);
-  auto plain = sensor::GpuFramePrep::create(device, allocator);
-  CHECK(masked.ok() && plain.ok());
+  auto masked = sensor::GpuFramePrep::create(device, allocator);
+  CHECK(masked.ok());
   std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
   Planes planes = make_planes();
 
@@ -2909,53 +3034,18 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   aside.depth_to_color[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
   out = masked->prepare(aside);
   CHECK(out.ok());
+  // The depth camera's view holds every colour pixel's ray, so all the
+  // colour is kept.
+  for (const std::uint32_t word : color_of(out.value())) {
+    CHECK((word >> 24) == 0xFFu);
+  }
   const std::vector<float> e = depth_of(out.value());
   const camera::PinholeIntrinsics dc = pinhole().intrinsics;
   const camera::PinholeIntrinsics nc = narrow.intrinsics;
-  std::size_t inside = 0, off = 0;
-  for (std::uint32_t v = 0; v < kHeight; ++v) {
-    for (std::uint32_t u = 0; u < kWidth; ++u) {
-      const float x = (static_cast<float>(u) - f32(dc.cx)) / f32(dc.fx) - 0.1f;
-      const float y = (static_cast<float>(v) - f32(dc.cy)) / f32(dc.fy);
-      const float pu = f32(nc.fx) * x + f32(nc.cx) + 0.5f;
-      const float pv = f32(nc.fy) * y + f32(nc.cy) + 0.5f;
-      // Within a hair of a rounding edge either answer is the float's.
-      const float edge = std::fmin(std::fabs(pu - std::round(pu)),
-                                   std::fabs(pv - std::round(pv)));
-      if (edge < 1e-3f) continue;
-      const bool in = std::floor(pu) >= 0.0f && std::floor(pu) < kWidth &&
-                      std::floor(pv) >= 0.0f && std::floor(pv) < kHeight;
-      inside += in ? 1 : 0;
-      const float got = e[std::size_t{v} * kWidth + u];
-      if (in ? got != 1000.0f * kScale : got != 0.0f) ++off;
-    }
-  }
-  CHECK(off == 0);
-  CHECK(inside > 1000 && inside < std::size_t{kWidth} * kHeight / 2);
-
-  // The mask tests the corrected depth: the same cameras, a return at 1 m
-  // that reads 5 cm too far. At 0.95 m the point lands about 2 px further
-  // left in the colour camera (390 px x 0.1 m x (1 / 0.95 - 1)), so a mask
-  // that tested the raw depth would get a column or two wrong at each side
-  // of the kept region, in every row it spans.
-  sensor::GpuFramePrepConfig offset_on = on;
-  offset_on.depth_offset_m = 0.05f;
-  auto offset_masked =
-      sensor::GpuFramePrep::create(device, allocator, offset_on);
-  CHECK(offset_masked.ok());
-  const std::vector<std::uint16_t> metre(raw.size(), 1024);
-  sensor::RgbdFrame distant = frame_of(metre, pinhole());
-  distant.metres_per_unit = kExactScale;
-  distant.color = planes.image(0.299f, 0.114f, true);
-  distant.color_camera = narrow;
-  distant.color_to_world[3] = glm::dvec4(0.1, 0.0, 0.0, 1.0);
-  distant.depth_to_color[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
-  out = offset_masked->prepare(distant);
-  CHECK(out.ok());
-  const std::vector<float> corrected_depth = depth_of(out.value());
-  const float corrected = 1.0f - 0.05f;
-  // Whether depth pixel (u, v) at depth z lands in the colour image; false
-  // within a hair of a rounding edge, where either answer is the float's.
+  // Whether depth pixel (u, v)'s point at depth z lands in the colour image,
+  // the point 0.1 m to the left for the colour camera; at an infinite z, its
+  // direction. *edge is set within a hair of a rounding edge, where either
+  // answer is the float's.
   const auto lands_in = [&](std::uint32_t u, std::uint32_t v, float z,
                             bool* edge) {
     const float x =
@@ -2968,12 +3058,66 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
     return std::floor(pu) >= 0.0f && std::floor(pu) < kWidth &&
            std::floor(pv) >= 0.0f && std::floor(pv) < kHeight;
   };
+  // Whether depth pixel (u, v) at depth z is kept: its point and its
+  // direction both land in the colour image (all of which is kept).
+  const auto kept_at = [&](std::uint32_t u, std::uint32_t v, float z,
+                           bool* edge) {
+    bool point_edge = false, direction_edge = false;
+    const bool point = lands_in(u, v, z, &point_edge);
+    const bool direction = lands_in(u, v, INFINITY, &direction_edge);
+    *edge = point_edge || direction_edge;
+    return point && direction;
+  };
+  std::size_t inside = 0, off = 0, point_alone = 0, direction_alone = 0;
+  for (std::uint32_t v = 0; v < kHeight; ++v) {
+    for (std::uint32_t u = 0; u < kWidth; ++u) {
+      bool edge = false, point_edge = false, direction_edge = false;
+      const float z = 1000.0f * kScale;
+      const bool in = kept_at(u, v, z, &edge);
+      const bool point = lands_in(u, v, z, &point_edge);
+      const bool direction = lands_in(u, v, INFINITY, &direction_edge);
+      if (edge || point_edge || direction_edge) continue;
+      inside += in ? 1 : 0;
+      point_alone += point != in ? 1 : 0;
+      direction_alone += direction != in ? 1 : 0;
+      const float got = e[std::size_t{v} * kWidth + u];
+      if (in ? got != z : got != 0.0f) ++off;
+    }
+  }
+  std::printf(
+      "  depth within colour, aside: %zu kept, %zu off; the point alone gets "
+      "%zu wrong, the direction alone %zu\n",
+      inside, off, point_alone, direction_alone);
+  CHECK(off == 0);
+  CHECK(inside > 1000 && inside < std::size_t{kWidth} * kHeight / 2);
+  CHECK(point_alone > 10 * kHeight && direction_alone > 10 * kHeight);
+
+  // The mask tests the corrected depth: the same cameras, a return at 1 m
+  // that reads 5 cm too far. At 0.95 m the point lands about 2 px further
+  // left in the colour camera (390 px x 0.1 m x (1 / 0.95 - 1)), so a mask
+  // that tested the raw depth would get a column wrong at the side of the
+  // kept region the point sets, in every row it spans.
+  sensor::GpuFramePrepConfig offset;
+  offset.depth_offset_m = 0.05f;
+  auto offset_masked = sensor::GpuFramePrep::create(device, allocator, offset);
+  CHECK(offset_masked.ok());
+  const std::vector<std::uint16_t> metre(raw.size(), 1024);
+  sensor::RgbdFrame distant = frame_of(metre, pinhole());
+  distant.metres_per_unit = kExactScale;
+  distant.color = planes.image(0.299f, 0.114f, true);
+  distant.color_camera = narrow;
+  distant.color_to_world[3] = glm::dvec4(0.1, 0.0, 0.0, 1.0);
+  distant.depth_to_color[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
+  out = offset_masked->prepare(distant);
+  CHECK(out.ok());
+  const std::vector<float> corrected_depth = depth_of(out.value());
+  const float corrected = 1.0f - 0.05f;
   std::size_t off_corrected = 0, raw_would_differ = 0;
   for (std::uint32_t v = 0; v < kHeight; ++v) {
     for (std::uint32_t u = 0; u < kWidth; ++u) {
       bool edge = false, raw_edge = false;
-      const bool in = lands_in(u, v, corrected, &edge);
-      const bool raw_in = lands_in(u, v, 1.0f, &raw_edge);
+      const bool in = kept_at(u, v, corrected, &edge);
+      const bool raw_in = kept_at(u, v, 1.0f, &raw_edge);
       if (edge || raw_edge) continue;
       raw_would_differ += in != raw_in ? 1 : 0;
       const float got = corrected_depth[std::size_t{v} * kWidth + u];
@@ -2985,7 +3129,7 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
       "gets wrong\n",
       off_corrected, raw_would_differ);
   CHECK(off_corrected == 0);
-  CHECK(raw_would_differ > kHeight);
+  CHECK(raw_would_differ > kHeight / 2);
 
   // The bounds are the rounded colour pixel's, as the colour pass marks
   // coverage, not the pixel's own: a colour principal point `shift` px off the
@@ -3020,10 +3164,11 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   // The mask tests the depth the pass writes, mixed: raw columns alternating
   // 0.5 and 0.535 m through the barrel lens (the same intrinsics), so every
   // block mixes, up to 17.5 mm from its nearest pixel's depth, and the
-  // narrower colour camera 10 cm aside. Masked, each pixel is the unmasked
-  // pass's depth where the host puts that depth's point in the colour image,
-  // and 0 where not. A mask that tested the nearest pixel's depth would decide
-  // pixels along both sides of the kept region differently, about 190 of them.
+  // narrower colour camera 10 cm aside. Each pixel is the depth the same
+  // frame without colour gives where the host puts that depth's point and its
+  // direction in the colour image, and 0 where not. A mask that tested the
+  // nearest pixel's depth would decide pixels along the side the point sets
+  // differently, about 100 of them.
   {
     const camera::CameraModel lens = lensed();
     std::vector<std::uint16_t> stripes(std::size_t{kWidth} * kHeight);
@@ -3032,15 +3177,18 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
     }
     sensor::RgbdFrame striped = frame_of(stripes, lens);
     striped.metres_per_unit = kFineScale;
+    auto all = masked->prepare(striped);  // no colour yet: nothing masked
+    CHECK(all.ok());
+    const std::vector<float> unmasked = depth_of(all.value());
     striped.color = planes.image(0.299f, 0.114f, true);
     striped.color_camera = narrow;
     striped.color_to_world[3] = glm::dvec4(0.1, 0.0, 0.0, 1.0);
     striped.depth_to_color[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
-    auto all = plain->prepare(striped);
-    CHECK(all.ok());
-    const std::vector<float> unmasked = depth_of(all.value());
     out = masked->prepare(striped);
     CHECK(out.ok());
+    for (const std::uint32_t word : color_of(out.value())) {
+      CHECK((word >> 24) == 0xFFu);
+    }
     const std::vector<float> m = depth_of(out.value());
     CHECK(m.size() == unmasked.size());
     std::size_t kept_mixed = 0, off_mixed = 0, nearest_would_differ = 0;
@@ -3048,13 +3196,13 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
       for (std::uint32_t u = 0; u < kWidth; ++u) {
         const std::size_t i = std::size_t{v} * kWidth + u;
         bool edge = false, nearest_edge = false;
-        const bool in = lands_in(u, v, unmasked[i], &edge);
+        const bool in = kept_at(u, v, unmasked[i], &edge);
         if (edge || unmasked[i] == 0.0f) continue;
         kept_mixed += in ? 1 : 0;
         if (in ? m[i] != unmasked[i] : m[i] != 0.0f) ++off_mixed;
         const DepthSample ref =
             reference_depth(stripes, lens, kFineScale, 0.0f, u, v);
-        const bool nearest_in = lands_in(u, v, ref.nearest, &nearest_edge);
+        const bool nearest_in = kept_at(u, v, ref.nearest, &nearest_edge);
         nearest_would_differ += !nearest_edge && nearest_in != in ? 1 : 0;
       }
     }
@@ -3064,16 +3212,297 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
         kept_mixed, off_mixed, nearest_would_differ);
     CHECK(off_mixed == 0);
     CHECK(kept_mixed > 1000 && kept_mixed < std::size_t{kWidth} * kHeight / 2);
-    CHECK(nearest_would_differ > 100);
+    CHECK(nearest_would_differ > 50);
   }
 
-  // Off, and a frame with no colour: nothing zeroed.
-  const sensor::RgbdFrame depth_only = frame_of(raw, pinhole());
-  for (sensor::GpuFramePrep* check : {&plain.value(), &masked.value()}) {
-    auto all = check->prepare(check == &plain.value() ? aside : depth_only);
-    CHECK(all.ok());
-    for (const float z : depth_of(all.value())) CHECK(z == 1000.0f * kScale);
+  // The aside frame without its colour: nothing zeroed.
+  sensor::RgbdFrame depth_only = aside;
+  depth_only.color = {};
+  CHECK(!depth_only.has_color());
+  auto all = masked->prepare(depth_only);
+  CHECK(all.ok());
+  for (const float z : depth_of(all.value())) CHECK(z == 1000.0f * kScale);
+  return 0;
+}
+
+// A frame with colour keeps only what both its cameras see, by their fields
+// of view: colour where its ray's direction lies inside the depth camera's
+// view, the baseline left out, a 0 word elsewhere, and depth where its
+// direction lies inside the colour camera's view and its point lands on
+// colour that is kept. Each case is held to the host's tests at every pixel
+// off a rounding edge, the kept colour to the words the same picture gives
+// beside a depth camera that sees all of it (the colour camera's own, in its
+// place), and every kept depth pixel to colour with its coverage byte set:
+//   - a narrower depth camera 5 cm to the right: colour dropped around the
+//     depth camera's view, where a test of the ray's point at 0.25 m or 1 m,
+//     which the baseline moves, would decide hundreds of pixels otherwise;
+//     depth zeroed at its right, where the colour its point lands on is
+//     dropped; for planes in a buffer and NV12 plane images alike, and the
+//     same words and depth whatever the frame's depth range;
+//   - colour narrower than depth, 2 cm aside: every colour pixel kept, and
+//     depth zeroed where its direction leaves the colour view, a few columns
+//     more than its point would;
+//   - a pincushion depth lens beside the same camera undistorted: colour
+//     dropped where the depth lens misses the picture, the corners;
+//   - colour wider than depth, as a RealSense D455's (90 x 65 degrees against
+//     87 x 58), 1.5 cm apart: all four edges dropped; with the depth on the
+//     device, the same words and depth;
+//   - a Femto Mega's cameras, scaled down, the depth camera tilted 6.3 degrees
+//     below the colour's axis: depth loses a band at the top and a wider one
+//     at the bottom, outside the colour camera's view, and its left side,
+//     where the colour its point lands on 1 m away is dropped; colour loses
+//     its sides, outside the depth camera's view.
+// A frame with colour and no depth is refused, so no colour goes unmasked.
+int test_color_within_depth(sensor::GpuFramePrep& prep) {
+  const std::vector<std::uint16_t> raw(std::size_t{320} * 288, 1000);  // 1 m
+  const float metre = 1000.0f * kScale;
+  struct Crop {
+    // colour: kept, dropped, wrong, and those the ray's point 0.25 m or 1 m
+    // deep for the depth camera would decide otherwise
+    std::size_t kept = 0, dropped = 0, off = 0, at_near = 0, at_metre = 0;
+    // depth: kept; zeroed where its colour is dropped; zeroed where its point
+    // lands on the colour picture but its direction does not; wrong; and kept
+    // on a colour pixel whose coverage byte is 0
+    std::size_t depth_kept = 0, cropped = 0, aimed_out = 0, depth_off = 0,
+                stranded = 0;
+    bool held() const { return off == 0 && depth_off == 0 && stranded == 0; }
+  };
+  // `f` prepared with colour `color`, against the host's tests; its colour in
+  // `words` and its depth in `depth`.
+  const auto crop_of = [&](sensor::RgbdFrame f, const sensor::YuvImage& color,
+                           std::vector<std::uint32_t>* words,
+                           std::vector<float>* depth) {
+    Crop c;
+    f.color = color;
+    sensor::RgbdFrame whole = f;
+    whole.depth_camera = f.color_camera;
+    whole.depth_to_color = camera::Mat4d(1.0);
+    auto all = prep.prepare(whole);
+    auto out = prep.prepare(f);
+    if (!out) std::fprintf(stderr, "%s\n", out.status().message().c_str());
+    if (!all.ok() || !out.ok()) {
+      c.off = ~std::size_t{0};
+      return c;
+    }
+    const std::vector<std::uint32_t> unmasked = color_of(all.value());
+    *words = color_of(out.value());
+    *depth = depth_of(out.value());
+    const std::uint32_t w = f.color_camera.size.width;
+    for (std::uint32_t v = 0; v < f.color_camera.size.height; ++v) {
+      for (std::uint32_t u = 0; u < w; ++u) {
+        const std::size_t i = std::size_t{v} * w + u;
+        if ((unmasked[i] >> 24) != 0xFFu) ++c.off;  // the whole picture kept
+        bool edge = false;
+        const bool in = depth_sees(f, u, v, &edge);
+        const bool near_in = depth_covers_at(f, u, v, 0.25f, &edge);
+        const bool metre_in = depth_covers_at(f, u, v, metre, &edge);
+        if (edge) continue;
+        (in ? c.kept : c.dropped) += 1;
+        if ((*words)[i] != (in ? unmasked[i] : 0u)) ++c.off;
+        c.at_near += near_in != in ? 1 : 0;
+        c.at_metre += metre_in != in ? 1 : 0;
+      }
+    }
+    const camera::CameraModel& d = f.depth_camera;
+    for (std::uint32_t v = 0; v < d.size.height; ++v) {
+      for (std::uint32_t u = 0; u < d.size.width; ++u) {
+        const float got = (*depth)[std::size_t{v} * d.size.width + u];
+        std::uint32_t cu = 0, cv = 0, au = 0, av = 0;
+        bool edge = false;
+        if (got > 0.0f) {  // the device's own depth and colour agree
+          const bool on = lands_on(f, u, v, got, &cu, &cv, &edge);
+          if (!edge &&
+              !(on && ((*words)[std::size_t{cv} * w + cu] >> 24) == 0xFFu)) {
+            ++c.stranded;
+          }
+        }
+        // Whether the lens returns the pixel, its point lands on a pixel the
+        // colour camera records, its direction does too, and the colour pass
+        // keeps the pixel its point lands on.
+        edge = false;
+        const sensor::Vec2f s =
+            source_pixel(d, static_cast<float>(u), static_cast<float>(v));
+        const bool returned = rounds_into(s.x, d.size.width, &edge) &&
+                              rounds_into(s.y, d.size.height, &edge);
+        const bool lands = returned &&
+                           lands_on(f, u, v, metre, &cu, &cv, &edge) &&
+                           recorded(f, cu, cv, &edge);
+        const bool aimed = returned && points_at(f, u, v, &au, &av, &edge) &&
+                           recorded(f, au, av, &edge);
+        const bool keep = lands && aimed && depth_sees(f, cu, cv, &edge);
+        if (edge) continue;
+        c.depth_kept += keep ? 1 : 0;
+        c.cropped += lands && aimed && !keep ? 1 : 0;
+        c.aimed_out += lands && !aimed ? 1 : 0;
+        if (got != (keep ? metre : 0.0f)) ++c.depth_off;
+      }
+    }
+    return c;
+  };
+  const auto report = [](const char* name, const Crop& c) {
+    std::printf(
+        "  colour within depth, %s: colour %zu kept, %zu dropped, %zu off; "
+        "depth %zu kept, %zu zeroed under dropped colour, %zu outside the "
+        "colour view, %zu off, %zu kept on dropped colour\n",
+        name, c.kept, c.dropped, c.off, c.depth_kept, c.cropped, c.aimed_out,
+        c.depth_off, c.stranded);
+  };
+  const auto colored = [&](const camera::CameraModel& depth,
+                           const camera::CameraModel& color, double right) {
+    sensor::RgbdFrame f = frame_of(raw, depth);
+    f.color_camera = color;
+    f.depth_to_color[3] = glm::dvec4(right, 0.0, 0.0, 1.0);
+    return f;
+  };
+  const auto camera_of = [](std::uint32_t w, std::uint32_t h, double f,
+                            double cx, double cy) {
+    camera::CameraModel c;
+    c.size = {w, h};
+    c.intrinsics = {f, f, cx, cy};
+    return c;
+  };
+  const auto word = [](const std::vector<std::uint32_t>& words, std::uint32_t w,
+                       std::uint32_t u, std::uint32_t v) {
+    return words[std::size_t{v} * w + u];
+  };
+  std::vector<std::uint32_t> words;
+  std::vector<float> depth;
+
+  // The depth camera narrower, 5 cm to the right.
+  {
+    camera::CameraModel narrower = pinhole();
+    narrower.intrinsics.fx *= 1.25;
+    narrower.intrinsics.fy *= 1.25;
+    sensor::RgbdFrame f = colored(narrower, pinhole(), 0.05);
+    const Planes planes = patterned(kWidth, kHeight);
+    for (const sensor::YuvImage& color :
+         {planes.image(0.2126f, 0.0722f, false), nv12_images(planes)}) {
+      const Crop c = crop_of(f, color, &words, &depth);
+      report(color.image[0] != nullptr ? "images" : "buffer", c);
+      std::printf(
+          "    the ray's point 0.25 m deep gets %zu wrong, 1 m deep %zu\n",
+          c.at_near, c.at_metre);
+      CHECK(c.held());
+      CHECK(c.kept > 20000 && c.dropped > 20000);
+      CHECK(c.at_near > kHeight && c.at_metre > kHeight);
+      CHECK(c.depth_kept > 20000 && c.cropped > kHeight);
+    }
+    // The depth range has no part in the overlap.
+    f.color = planes.image(0.2126f, 0.0722f, false);
+    auto wide = prep.prepare(f);
+    CHECK(wide.ok());
+    words = color_of(wide.value());
+    depth = depth_of(wide.value());
+    f.min_depth = 0.5f;
+    f.max_depth = 4.0f;
+    auto ranged = prep.prepare(f);
+    CHECK(ranged.ok() && color_of(ranged.value()) == words &&
+          depth_of(ranged.value()) == depth);
   }
+
+  // Colour narrower than depth, 2 cm aside: no colour dropped, and depth
+  // where its direction leaves the colour view, at one side a few columns
+  // inside where its point does.
+  {
+    camera::CameraModel narrow = pinhole();
+    narrow.intrinsics.fx *= 1.5;
+    narrow.intrinsics.fy *= 1.5;
+    const sensor::RgbdFrame f = colored(pinhole(), narrow, 0.02);
+    const Crop c =
+        crop_of(f, patterned(kWidth, kHeight).image(0.2126f, 0.0722f, false),
+                &words, &depth);
+    report("narrower colour", c);
+    CHECK(c.held() && c.dropped == 0 && c.cropped == 0);
+    CHECK(c.aimed_out > kHeight);
+  }
+
+  // A pincushion depth lens, the colour camera the same one undistorted, in
+  // the same place: colour is dropped exactly where the depth lens misses the
+  // picture.
+  {
+    camera::CameraModel pincushion = pinhole();
+    pincushion.distortion.k1 = 0.3f;
+    const sensor::RgbdFrame f = colored(pincushion, pinhole(), 0.0);
+    const Crop c =
+        crop_of(f, patterned(kWidth, kHeight).image(0.2126f, 0.0722f, false),
+                &words, &depth);
+    report("depth lens", c);
+    CHECK(c.held() && c.dropped > 1000 && c.kept > 50000);
+    CHECK(word(words, kWidth, 0, 0) == 0u);
+    CHECK((word(words, kWidth, kWidth / 2, kHeight / 2) >> 24) == 0xFFu);
+  }
+
+  // Colour wider than depth, as a RealSense D455's: 87 x 56 degrees of depth
+  // at 320 x 180, 90 x 64 of colour at 320 x 200.
+  {
+    const camera::CameraModel d455 = camera_of(320, 180, 168.6, 159.5, 89.5);
+    const camera::CameraModel color = camera_of(320, 200, 160.0, 159.5, 99.5);
+    const sensor::RgbdFrame f = colored(d455, color, -0.015);
+    const sensor::YuvImage picture =
+        patterned(320, 200).image(0.2126f, 0.0722f, false);
+    const Crop c = crop_of(f, picture, &words, &depth);
+    report("wider colour", c);
+    CHECK(c.held());
+    CHECK(word(words, 320, 0, 100) == 0u && word(words, 320, 319, 100) == 0u);
+    CHECK(word(words, 320, 160, 0) == 0u && word(words, 320, 160, 199) == 0u);
+    CHECK((word(words, 320, 160, 100) >> 24) == 0xFFu);
+    // The depth on the device: the same colour and depth.
+    sensor::RgbdFrame device = on_device_depth(
+        f,
+        depth_buffer(
+            std::vector<std::uint16_t>(raw.begin(), raw.begin() + 320 * 180), 0,
+            0),
+        0);
+    device.color = picture;
+    auto got = prep.prepare(device);
+    CHECK(got.ok() && color_of(got.value()) == words &&
+          depth_of(got.value()) == depth);
+  }
+
+  // A Femto Mega's cameras, scaled down: depth 640 x 576 at f 504 by 2,
+  // colour 3840 x 2160 at f 2239 by 12, from the cameras' intrinsics, the
+  // colour camera 32 mm to the depth camera's right, and the depth camera
+  // turned 0.11 rad down about x, as the factory calibrations have it.
+  {
+    const camera::CameraModel femto = camera_of(320, 288, 252.0, 159.5, 167.0);
+    const camera::CameraModel color = camera_of(320, 180, 186.6, 159.5, 86.6);
+    sensor::RgbdFrame f = colored(femto, color, -0.032);
+    f.depth_to_color =
+        camera::Mat4d(camera::rotation_from_rodrigues({-0.11, 0.0, 0.0}));
+    f.depth_to_color[3] = glm::dvec4(-0.032, -0.002, 0.004, 1.0);
+    const Crop c = crop_of(
+        f, patterned(320, 180).image(0.2126f, 0.0722f, false), &words, &depth);
+    report("Femto Mega", c);
+    CHECK(c.held() && c.cropped > 1000);
+    CHECK(word(words, 320, 0, 90) == 0u && word(words, 320, 319, 90) == 0u);
+    CHECK((word(words, 320, 160, 0) >> 24) == 0xFFu);
+    CHECK((word(words, 320, 160, 179) >> 24) == 0xFFu);
+    // The depth: whole rows zeroed at the top and the bottom, and the left
+    // side of the rows between, the baseline's parallax 1 m away.
+    const auto zero_row = [&](std::uint32_t v) {
+      const auto row = depth.begin() + std::ptrdiff_t{v} * 320;
+      return std::all_of(row, row + 320, [](float z) { return z == 0.0f; });
+    };
+    std::uint32_t top = 0, bottom = 0, left = 0;
+    while (top < 288 && zero_row(top)) ++top;
+    while (bottom < 288 && zero_row(287 - bottom)) ++bottom;
+    const float* mid = depth.data() + std::size_t{144} * 320;
+    while (left < 320 && mid[left] == 0.0f) ++left;
+    std::printf(
+        "    depth's top %u and bottom %u rows zeroed, and row 144's first "
+        "%u\n",
+        top, bottom, left);
+    CHECK(top > 10 && top < 18 && bottom > 22 && bottom < 32);
+    CHECK(left > 4 && left < 12 && mid[160] == metre && mid[319] == metre);
+  }
+
+  // Colour with no depth.
+  sensor::RgbdFrame color_only = frame_of(raw, pinhole());
+  color_only.depth = nullptr;
+  color_only.color = make_planes().image(0.299f, 0.114f, true);
+  color_only.color_camera = pinhole();
+  CHECK(prep.prepare(color_only).status().domain() ==
+        vkc::Status::Code::InvalidArgument);
   return 0;
 }
 
@@ -3116,6 +3545,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_queue_families(gpu.device, gpu.allocator) != 0) return 1;
   if (test_cross_family() != 0) return 1;
   if (test_depth_within_color(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_color_within_depth(prep.value()) != 0) return 1;
   if (test_device_depth(gpu.device, gpu.allocator) != 0) return 1;
 
   sensor::GpuFramePrep moved = std::move(prep).value();

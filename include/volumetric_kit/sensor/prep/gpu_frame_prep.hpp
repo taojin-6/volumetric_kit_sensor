@@ -79,23 +79,6 @@ struct GpuFramePrepConfig {
   /// @ref GpuFramePrep::create as for @ref color_queue_family_count.
   std::uint32_t depth_queue_family_count = 0;
 
-  /// @brief Keep depth only where the colour camera recorded it.
-  ///
-  /// A depth sensor's field of view and its colour camera's rarely match: a
-  /// Femto Mega's depth covers about 65 degrees vertically and its 16:9
-  /// colour about 51. Depth past the colour's view fuses into surfaces no
-  /// colour camera sees, which carry no colour and cannot be textured. With
-  /// this set, a frame with colour has every depth pixel zeroed -- the pass's
-  /// "no return" -- whose point, moved into the colour camera by the two
-  /// poses, is behind it or lands on a pixel the colour pass marks uncovered
-  /// (@ref DeviceFrame::color's coverage byte, black where the lens saw
-  /// nothing). What survives is the two cameras' overlap. The test is the
-  /// colour camera's view, not its line of sight: a point inside the view
-  /// that a nearer surface hides from the colour camera is kept. A frame
-  /// without colour keeps all its depth. Off (the default) keeps all of it
-  /// always, as the pass always did.
-  bool depth_within_color = false;
-
   /// @brief Metres the sensor's depth reads too far (+) or too near (-),
   ///        subtracted from every return.
   ///
@@ -105,8 +88,8 @@ struct GpuFramePrepConfig {
   /// the offset takes to 0 or below is no return (0), and 0 stays no return
   /// whatever the sign, so a negative offset never makes a hole a surface.
   /// It is subtracted from each raw pixel before the depth mix, so a return
-  /// it takes to 0 is a hole the mix skips, and before
-  /// @ref depth_within_color's test, which sees the corrected depth. 0, the
+  /// it takes to 0 is a hole the mix skips, and before the colour-view test
+  /// (@ref GpuFramePrep), which sees the corrected depth. 0, the
   /// default, leaves depth as the sensor reported it. Finite, or
   /// @ref GpuFramePrep::create refuses it.
   float depth_offset_m = 0.0f;
@@ -144,12 +127,30 @@ struct GpuFramePrepConfig {
 /// queue family, with no copy. A buffer is taken over once a batch, however
 /// many depths and pictures of its frames it holds -- a frame's depth and
 /// planes, or every camera's depth -- so they must all name the family that
-/// wrote it. A frame's host depth and host colour are
-/// copied into the pass's persistent slot (`core::HostRing`), which its batch
-/// binds: in place where the device's mapped memory is cached (Apple,
-/// lavapipe), and through one copy of the used range elsewhere (a discrete
-/// GPU). Nothing else goes up from the host, and nothing is allocated per
-/// frame.
+/// wrote it.
+///
+/// A frame with colour keeps only what both its cameras see, so each pixel
+/// handed out is in both views: a depth sensor's field of view and its colour
+/// camera's rarely match, and the overlap is each sensor's own, from its
+/// intrinsics and extrinsic. A view test turns a pixel's direction into the
+/// other camera by the extrinsic's rotation alone.
+/// - Colour is a 0 word, coverage and all, where its direction lies outside
+///   the depth camera's view: on no pixel the depth pass covers.
+/// - Depth, wherever it came from, is zeroed, the pass's "no return", where
+///   its direction lies outside the colour camera's view, or where its point,
+///   moved into the colour camera by the two poses, is behind it or lands on
+///   a colour pixel that is not kept, so kept depth always lands on colour
+///   with its coverage byte set.
+///
+/// Both test a camera's view, not its line of sight: a point inside the view
+/// that a nearer surface hides from it is kept. A frame without colour keeps
+/// all its depth (every frame has depth).
+///
+/// A frame's host depth and host colour are copied into the pass's persistent
+/// slot (`core::HostRing`), which its batch binds: in place where the device's
+/// mapped memory is cached (Apple, lavapipe), and through one copy of the used
+/// range elsewhere (a discrete GPU). Nothing else goes up from the host, and
+/// nothing is allocated per frame.
 ///
 /// Every check on the frame is made before anything is recorded, so a refused
 /// frame leaves the pass and the frames it handed out as they were.
@@ -165,7 +166,7 @@ class VS_PREP_API GpuFramePrep {
   /// @param allocator  The allocator its buffers come from (must outlive
   ///                   this object and every frame it hands out).
   /// @param config     Which queue families read the colour and the depth
-  ///                   outputs, and how depth is corrected and masked (see
+  ///                   outputs, and how depth is corrected (see
   ///                   @ref GpuFramePrepConfig).
   /// @return The pass; `Status::Code::InvalidArgument` for a
   ///         `color_queue_family_count` or a `depth_queue_family_count` past
@@ -390,9 +391,9 @@ class VS_PREP_API GpuFramePrep {
   // the slot (core::HostAccess::SequentialWrite), so where the ring is
   // copied, as on a discrete GPU, it is write-combined staging.
   std::unique_ptr<core::HostRing> inputs_;
-  // The colour camera and the depth-to-colour transform the depth pass masks
-  // by (GpuFramePrepConfig::depth_within_color), written inline each frame
-  // that uses them; bound once, at create.
+  // The two cameras and the transform between them, which both passes mask
+  // a frame with colour by, written inline each such frame; bound once, at
+  // create.
   core::Buffer overlap_;
   // The outputs the fusion tiers read, device-local, leased to the
   // DeviceFrames handed out; reused only once no frame holds the lease.
