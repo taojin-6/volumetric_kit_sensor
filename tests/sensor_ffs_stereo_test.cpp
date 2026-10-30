@@ -7,7 +7,9 @@
 // each check reaches through the whole path: the rectifier's views read by
 // CUDA, the input kernel's normalisation and padding, TensorRT, and the depth
 // kernel's units and refusals, into a Vulkan buffer read as Vulkan readers
-// read it -- taken over from outside Vulkan -- and through GpuFramePrep. The
+// read it -- taken over from outside Vulkan -- and through GpuFramePrep. Each
+// frame states the noise its options' disparity sigma makes over the rig's fx
+// and baseline, or none for none, and GpuFramePrep hands it on. The
 // plan cache is checked by what it loads: another model's plan put under a
 // model's name is the one that runs. Rgba8 coverage is checked on views made
 // here, and pairs kept past the next on the rectifier's new views.
@@ -25,6 +27,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -318,6 +321,8 @@ int depth_units(Fixture& t) {
   CHECK(f.depth_device.buffer->size() >= 64 * 32 * 2);
   CHECK(f.metres_per_unit == 1e-4f);
   CHECK(f.min_depth == o.min_depth && f.max_depth == o.max_depth);
+  // No disparity sigma stated: the noise is unknown.
+  CHECK(f.depth_noise == sensor::DepthNoise{});
   CHECK(f.depth_camera.size.width == 64 && f.depth_camera.size.height == 32);
   CHECK(f.depth_camera.intrinsics.fx == rectifier->rig().camera.intrinsics.fx);
   const sensor::SensorInfo& d = rectifier->depth_info();
@@ -344,6 +349,7 @@ int depth_units(Fixture& t) {
   sensor::FfsStereo::Options far = o;
   far.max_depth = 10.0f;
   far.min_depth = 0.105f;
+  far.disparity_sigma = 0.04f;
   auto own = rectifier_for(t, info, Output::Luma8);
   CHECK(own != nullptr);
   auto wide = ffs_for(t, *own, far);
@@ -352,6 +358,15 @@ int depth_units(Fixture& t) {
   CHECK(run_luma(t, *own, *wide, far, 3, 1.0, &w) == 0);
   CHECK(w->metres_per_unit == 10.0f / 65535.0f);
   std::puts("  a 10 m range: a unit of max_depth / 65535");
+  // A disparity sigma of 0.04 px over the rig's fx and baseline (40 px and
+  // 0.1 m: the pair is rectified already): c = 0.04 / 4 = 0.01 per metre.
+  const sensor::StereoRig& rig = own->rig();
+  CHECK(w->depth_noise == sensor::DepthNoise::stereo(
+                              0.04f, rig.camera.intrinsics.fx, rig.baseline));
+  CHECK(w->depth_noise.a == 0.0f && w->depth_noise.b == 0.0f);
+  std::printf("  disparity sigma 0.04 px: c %.6g per metre (fx %.3f, B %.4f)\n",
+              w->depth_noise.c, rig.camera.intrinsics.fx, rig.baseline);
+  CHECK(std::abs(w->depth_noise.c - 0.01f) < 1e-6f);
   return 0;
 }
 
@@ -768,7 +783,8 @@ int into_prep(Fixture& t) {
   const sensor::StereoInfo info = pair_info(64, 32);
   auto rectifier = rectifier_for(t, info, Output::Luma8);
   CHECK(rectifier != nullptr);
-  const sensor::FfsStereo::Options o = options_for(kModel, t.scratch / "prep");
+  sensor::FfsStereo::Options o = options_for(kModel, t.scratch / "prep");
+  o.disparity_sigma = 0.1f;
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
   auto prep = sensor::GpuFramePrep::create(t.gpu.device, t.gpu.allocator);
@@ -786,6 +802,8 @@ int into_prep(Fixture& t) {
       std::fprintf(stderr, "%s\n", prepared.status().message().c_str());
     }
     CHECK(prepared.ok());
+    CHECK(frame->depth_noise.known());
+    CHECK(prepared->depth_noise == frame->depth_noise);
     auto metres = vkc::test::read_back<float>(t.gpu.device, t.gpu.allocator,
                                               *prepared->depth, 64 * 32);
     CHECK(metres.ok());
@@ -823,6 +841,12 @@ int refusals(Fixture& t) {
   o.min_depth = 0.5f;
   o.max_depth = 0.5f;
   CHECK(code(o) == vkc::Status::Code::InvalidArgument);
+  for (const float sigma : {-0.01f, std::numeric_limits<float>::quiet_NaN(),
+                            std::numeric_limits<float>::infinity()}) {
+    o = options_for(kModel, cache);
+    o.disparity_sigma = sigma;
+    CHECK(code(o) == vkc::Status::Code::InvalidArgument);
+  }
   o = options_for(kData / "no_such_model.onnx", cache);
   CHECK(code(o) == vkc::Status::Code::NotFound);
   {
@@ -837,8 +861,8 @@ int refusals(Fixture& t) {
   o.plan_cache = t.scratch / "junk.onnx" / "plans";
   CHECK(code(o) == vkc::Status::Code::IoError);
   std::puts(
-      "  a bad depth range, no model, a model TensorRT cannot parse, no plan "
-      "cache or one that cannot be made");
+      "  a bad depth range or disparity sigma, no model, a model TensorRT "
+      "cannot parse, no plan cache or one that cannot be made");
 
   o = options_for(kModel, cache);
   auto ffs = ffs_for(t, *rectifier, o);

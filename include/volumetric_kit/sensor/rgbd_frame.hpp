@@ -26,6 +26,7 @@
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
 #include "volumetric_kit/sensor/frame/color_space.hpp"
+#include "volumetric_kit/sensor/frame/depth_noise.hpp"
 #include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace volumetric_kit::sensor {
@@ -105,6 +106,7 @@ struct DeviceDepth {
 /// frame.depth_camera = factory_depth_model;  // lens included
 /// frame.min_depth = 0.25f;
 /// frame.max_depth = 5.0f;
+/// frame.depth_noise = {0.0f, 0.95e-3f, 0.0f};  // what the driver measured
 /// frame.color = decoded_picture.yuv;         // Y'CbCr, on the device
 /// frame.color_camera = factory_color_model;
 /// frame.depth_to_color = factory_extrinsic;  // depth camera -> colour camera
@@ -126,6 +128,10 @@ struct RgbdFrame {
   /// zeros rather than fuse nothing.
   float min_depth = 0.0f;
   float max_depth = 0.0f;  ///< Farther samples are dropped (metres).
+  /// The depth's noise, as the driver knows its sensor in this mode: what
+  /// `GpuFramePrep` hands on as `DeviceFrame::depth_noise`. All zero, the
+  /// default, when it does not know it.
+  DepthNoise depth_noise{};
 
   /// The colour picture; with none of `color.device`, `color.image`,
   /// `color.host` or @ref color_packed set, the frame has none. Its size is

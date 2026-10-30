@@ -188,6 +188,16 @@ target_link_libraries(sensor_frame_color_space_test
 vs_target_warnings(sensor_frame_color_space_test)
 add_test(NAME sensor_frame_color_space COMMAND sensor_frame_color_space_test)
 
+# The depth noise a producer states with every frame (frame/depth_noise.hpp):
+# sigma(z), what known() takes as a model, rectified stereo's model against hand
+# values, and a frame's default, unknown. Host math on sensor_frame alone, as
+# recon's libraries link it, so it always runs.
+add_executable(sensor_frame_depth_noise_test frame_depth_noise_test.cpp)
+target_link_libraries(sensor_frame_depth_noise_test
+                      PRIVATE volumetric_kit::sensor_frame)
+vs_target_warnings(sensor_frame_depth_noise_test)
+add_test(NAME sensor_frame_depth_noise COMMAND sensor_frame_depth_noise_test)
+
 # frame/shaders/pinhole.glsl, the GLSL pinhole the package exports, built
 # through INCLUDE_TARGETS volumetric_kit::sensor_frame as a consumer's kernels
 # are, against the host's arithmetic in double (shaders/pinhole_cases.comp,

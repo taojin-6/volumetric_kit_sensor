@@ -5,8 +5,9 @@
 
 // Internal (not installed): the arithmetic between the Orbbec SDK's types and
 // this package's -- the camera models, the extrinsic, the sync settings -- the
-// option checks, and the colour controls' write and read-back, kept out of the
-// driver's .cpp so host tests pin them with no camera attached.
+// option checks, the colour controls' write and read-back, and the depth noise
+// every frame states, kept out of the driver's .cpp so host tests pin them
+// with no camera attached.
 
 #include <cstdint>
 #include <optional>
@@ -20,10 +21,22 @@
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/camera/color_controls.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/frame/depth_noise.hpp"
 #include "volumetric_kit/sensor/orbbec/orbbec_stream.hpp"
 #include "volumetric_kit/sensor/orbbec/orbbec_sync_config.hpp"
 
 namespace volumetric_kit::sensor::orbbec {
+
+/// The Femto Mega's depth noise, which `OrbbecSensor` states on every frame
+/// (`RgbdFrame::depth_noise`) in every depth mode: b = 0.95 mm per metre, the
+/// frame-to-frame sigma of one sample face on, measured 2026-10-27 on four
+/// Femto Megas' 640 x 576 unbinned depth, prepared with nearest-pixel
+/// sampling; pooled, each camera within 0.82-1.15x of it, so no camera needs
+/// its own. The other modes (wide, binned) are not measured and state the
+/// same; every rig runs the 640 x 576 default, and a mode measured otherwise
+/// gets its own value. The driver opens any Orbbec camera, which states the
+/// Femto Mega's too.
+inline constexpr DepthNoise kFemtoMegaDepthNoise{0.0f, 0.95e-3f, 0.0f};
 
 /// A stream's camera as it captures, for the GPU pass: its intrinsics and its
 /// lens. The SDK sizes an image in `int16_t`, so a width or height that is not

@@ -22,6 +22,18 @@ namespace {
 
 constexpr const char* kWho = "RealSenseSensor";
 
+// The right infrared camera's stream, whose extrinsic from the depth camera is
+// the baseline: any of its modes, since an extrinsic is a stream's. Empty for
+// a camera without one.
+std::optional<rs2::stream_profile> right_infrared(const rs2::sensor& module) {
+  for (const rs2::stream_profile& p : module.get_stream_profiles()) {
+    if (p.stream_type() == RS2_STREAM_INFRARED && p.stream_index() == 2) {
+      return p;
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 struct RealSenseSensor::Impl {
@@ -109,6 +121,13 @@ core::Result<RealSenseSensor> RealSenseSensor::open(
   setup.metres_per_unit = camera.stereo_module().get_depth_scale();
   setup.min_depth = options.min_depth;
   setup.max_depth = options.max_depth;
+  // Its noise, from the depth camera's fx and the baseline; unknown for a
+  // camera with no right infrared stream to measure the baseline to.
+  if (const std::optional<rs2::stream_profile> right =
+          right_infrared(camera.stereo_module())) {
+    setup.depth_noise = realsense::chip_depth_noise(
+        setup.depth_camera, depth_profile.get_extrinsics_to(*right));
+  }
 
   // The projector and the colour exposure: last, so a camera refused above
   // gets no write; then the modes start opens.

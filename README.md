@@ -34,7 +34,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | Target | Headers | What | Links |
 | --- | --- | --- | --- |
 | `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file; no Vulkan | core base, GLM |
-| `sensor_frame` | `frame/` | `DeviceFrame`, the pinhole cameras, `ColorEncoding` and the sRGB curve, `pinhole.glsl`, `device_requirements()`; header-only | core Vulkan |
+| `sensor_frame` | `frame/` | `DeviceFrame`, the pinhole cameras, `DepthNoise`, `ColorEncoding` and the sRGB curve, `pinhole.glsl`, `device_requirements()`; header-only | core Vulkan |
 | `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions | camera, frame |
 | `sensor_prep` | `prep/` | `GpuFramePrep`, `PictureReadback` | interface |
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
@@ -223,6 +223,11 @@ VKC_ASSIGN(auto sensor,
 VKC_TRY(sensor->start());  // then poll and prepare as for any IRgbdSensor
 ```
 
+Each frame states its depth noise from `FfsStereo::Options::disparity_sigma`,
+the disparity's frame-to-frame sigma that the caller measured on its camera
+(`DepthNoise::stereo` over the rig's fx and baseline); left at 0, the noise
+is unknown, and a consumer that needs one refuses the frames.
+
 The tests run TensorRT and the kernels on two 593-byte models with FFS's
 inputs and output (`tests/data/ffs`, made by `tools/ffs/make_test_onnx.py`),
 and skip where CUDA does not reach the GPU unless `VS_TEST_HEVC_BACKEND`
@@ -251,7 +256,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.9.0), carried by the umbrella as
+The version is `project()`'s (0.10.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

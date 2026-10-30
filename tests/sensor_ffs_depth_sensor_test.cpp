@@ -254,6 +254,7 @@ sensor::StereoDepthSensor::Options options_for(const fs::path& cache) {
   o.ffs.plan_cache = cache;
   o.ffs.min_depth = 0.05f;
   o.ffs.max_depth = 2.0f;
+  o.ffs.disparity_sigma = 0.05f;
   return o;
 }
 
@@ -310,6 +311,10 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
   const sensor::RgbdFrame& frame = **newest;
   CHECK(frame.sequence == 3 && frame.timestamp_ns == 3'000'000 &&
         frame.arrival_ns == 10);
+  // The noise FFS states, over the rig's fx and baseline.
+  CHECK(frame.depth_noise ==
+        sensor::DepthNoise::stereo(0.05f, kFocal, kBaseline));
+  CHECK(frame.depth_noise.known());
   auto centre = centre_depth(gpu, frame);
   CHECK(centre.ok());
   std::printf("  centre depth %u units (disparity 13: %u)\n", *centre,

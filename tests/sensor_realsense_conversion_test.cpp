@@ -14,11 +14,14 @@
 //     it in the left, right and colour cameras, on one row in both infrared
 //     ones, fx * baseline / z apart; a lens on either infrared camera and a
 //     non-rigid extrinsic are refused, each named;
+//   - the camera's own depth states rectified stereo's noise: 0.13 px over
+//     the depth camera's fx and the baseline, the length of the extrinsic to
+//     the right infrared camera, in any direction; unknown for no baseline;
 //   - a frameset is one moment when it holds a frame of each mode opened,
 //     each within half a frame of the first;
 //   - a frame points into the view, YUYV on the host coded as librealsense
-//     converts it, stamped in nanoseconds; a view that contradicts its
-//     streams is refused;
+//     converts it, stamped in nanoseconds, with the setup's range and noise;
+//     a view that contradicts its streams is refused;
 //   - a stereo frame points into the view: each infrared picture luma on the
 //     host, full range, its rows as the camera's; the colour as the frame's;
 //     a view that contradicts its streams is refused;
@@ -338,6 +341,40 @@ int test_stereo_info() {
   return 0;
 }
 
+int test_depth_noise() {
+  auto depth =
+      realsense::camera_model_from(d455_infrared(), "depth", false, kWho);
+  CHECK(depth.ok());
+  // The lab D455 at 1280x720: 0.13 / (657.271 px x 95.03 mm) = 2.08e-3 /m.
+  const sensor::DepthNoise noise =
+      realsense::chip_depth_noise(*depth, d455_left_to_right());
+  CHECK(realsense::kChipDisparitySigma == 0.13);
+  CHECK((noise == sensor::DepthNoise::stereo(0.13, 657.271, 0.0950313)));
+  CHECK(noise.a == 0.0f && noise.b == 0.0f);
+  CHECK(std::fabs(noise.c - 2.0812881e-3f) < 1e-8f);
+  CHECK(noise.known());
+  // The baseline is the translation's length, whichever way it points.
+  rs2_extrinsics tilted{};
+  tilted.rotation[0] = tilted.rotation[4] = tilted.rotation[8] = 1.0f;
+  tilted.translation[0] = 0.06f;
+  tilted.translation[1] = -0.08f;  // 0.1 m in all
+  const sensor::DepthNoise along = realsense::chip_depth_noise(*depth, tilted);
+  CHECK(std::fabs(along.c - static_cast<float>(0.13 / (657.271 * 0.1))) <
+        1e-8f);
+  // Twice the focal length, as at twice the size, halves it.
+  camera::CameraModel wide = *depth;
+  wide.intrinsics.fx *= 2.0;
+  CHECK(std::fabs(realsense::chip_depth_noise(wide, d455_left_to_right()).c -
+                  noise.c / 2.0f) < 1e-9f);
+  // No baseline, or one that is not a number: unknown.
+  rs2_extrinsics none = d455_left_to_right();
+  none.translation[0] = 0.0f;
+  CHECK(realsense::chip_depth_noise(*depth, none) == sensor::DepthNoise{});
+  none.translation[0] = std::numeric_limits<float>::quiet_NaN();
+  CHECK(realsense::chip_depth_noise(*depth, none) == sensor::DepthNoise{});
+  return 0;
+}
+
 int test_moment() {
   CHECK(realsense::same_moment(1000.0, 1000.04, 30));
   CHECK(realsense::same_moment(1000.0, 1016.6, 30));
@@ -376,6 +413,7 @@ int test_frame() {
   setup.metres_per_unit = 0.001f;
   setup.min_depth = 0.3f;
   setup.max_depth = 6.0f;
+  setup.depth_noise = {0.0f, 0.0f, 0.0021f};
   std::vector<std::uint16_t> depth(8, 1000);
   std::vector<std::uint8_t> color(2 * 16, 128);  // rows padded to 16 bytes
   realsense::FrameView view;
@@ -390,6 +428,7 @@ int test_frame() {
   const sensor::RgbdFrame& f = frame.value();
   CHECK(f.depth == depth.data() && f.metres_per_unit == 0.001f);
   CHECK(f.min_depth == 0.3f && f.max_depth == 6.0f);
+  CHECK((f.depth_noise == sensor::DepthNoise{0.0f, 0.0f, 0.0021f}));
   CHECK(f.depth_camera.size.width == 4 && f.color_camera.size.width == 6);
   CHECK(f.color.layout == sensor::YuvLayout::Yuyv);
   CHECK(f.color.host == color.data() && f.color.offset[0] == 0 &&
@@ -427,6 +466,11 @@ int test_frame() {
   bad = view;
   bad.color.data = nullptr;
   CHECK(contradicts(bad));
+  // A setup that states no noise hands on none.
+  realsense::FrameSetup unknown = setup;
+  unknown.depth_noise = {};
+  auto plain = realsense::rgbd_frame(view, unknown, held, kWho);
+  CHECK(plain.ok() && !plain->depth_noise.known());
   return 0;
 }
 
@@ -565,6 +609,7 @@ int main() {
   if (test_lenses() != 0) return 1;
   if (test_extrinsic() != 0) return 1;
   if (test_stereo_info() != 0) return 1;
+  if (test_depth_noise() != 0) return 1;
   if (test_moment() != 0) return 1;
   if (test_frame() != 0) return 1;
   if (test_stereo_frame() != 0) return 1;

@@ -36,6 +36,8 @@ namespace volumetric_kit::sensor {
 /// made one; the 2026-10-06 sensor-frame decision). Nothing on the host
 /// undistorts, registers or converts: `sensor/utils`'s GPU pass does. Either
 /// codec is decoded here, by the video decoders VS_WITH_ORBBEC builds with.
+/// Every frame states the Femto Mega's depth noise (`RgbdFrame::depth_noise`):
+/// 0.95 mm per metre, measured face on at 640 x 576, in every depth mode.
 ///
 /// A frame holds the SDK pair it was read from, so it outlives the next
 /// poll; the SDK has the pair's buffers back once every copy of the frame is

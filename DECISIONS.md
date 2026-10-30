@@ -347,6 +347,16 @@ entries relevant to your task; later amendments supersede earlier rules.
   colour, nor colours surfaces only another camera's depth saw; the owner
   chose that.
 
+- [**2026-10-30**](#2026-10-30--a-frame-states-its-depths-noise-depthnoise-the-frame-to-frame-sigma-its-producer-measured-on-rgbdframe-and-deviceframe-all-zero-meaning-unknown-and-every-producer-states-its-own) —
+  A frame states its depth's noise: `DepthNoise {a, b, c}`
+  (`frame/depth_noise.hpp`), the frame-to-frame sigma of one sample,
+  `a + b z + c z^2` metres, on `RgbdFrame` and `DeviceFrame`, which
+  `GpuFramePrep` copies; all zero means unknown, with no default, and a
+  consumer that needs a model refuses it. Every producer states its own: the
+  Femto Mega b = 0.95 mm/m in every mode, a RealSense's own depth stereo's
+  model at 0.13 px, and FFS the disparity sigma its caller states
+  (`FfsStereo::Options::disparity_sigma`, 0 unknown by default).
+
 ## Decision record
 
 ### 2026-08-02 — The `sensor` tier is a *contract*, not a driver collection: a capture driver lives here only if this repo can build
@@ -5000,3 +5010,117 @@ the validation layer: the 19 tests that build or run the pass succeed. CI
 runs the whole suite and is the NVIDIA leg. Of `sensor_frame`, which recon's libraries
 link alone, this changes only `DeviceFrame::color`'s comment; recon's
 `rig_viewer` sets the field this removes, so recon drops that at its re-pin.
+
+### 2026-10-30 — A frame states its depth's noise, `DepthNoise`: the frame-to-frame sigma its producer measured, on `RgbdFrame` and `DeviceFrame`, all zero meaning unknown, and every producer states its own.
+
+**The rule.** `DepthNoise {a, b, c}` (`frame/depth_noise.hpp`, header-only,
+so recon's libraries, which link `sensor_frame` alone, read it) is the
+frame-to-frame standard deviation of one depth sample, `sigma(z) = a + b z +
+c z^2` metres at z metres. `known()` is a model: every term finite and at
+least 0, one above 0. `DepthNoise::stereo(sigma_d, f, B)` is rectified
+stereo's, `c = sigma_d / (f B)`, unknown unless all three are finite and
+above 0. A driver states it on each `RgbdFrame::depth_noise`, as it states
+`min_depth`; `GpuFramePrep::finish` copies it to `DeviceFrame::depth_noise`
+unchanged and judges no model. Both fields default to all zero, unknown,
+and nothing fills one in: a consumer that needs a model refuses a frame
+without one. The producers:
+
+- `OrbbecSensor`: `{0, 0.95e-3, 0}` in every depth mode
+  (`orbbec::kFemtoMegaDepthNoise`, in `frame_conversion.hpp`).
+- `RealSenseSensor`: `DepthNoise::stereo(0.13, fx, B)`, fx the depth
+  camera's at the mode it streams and B the length of the factory extrinsic
+  from the depth camera to the right infrared camera, read at open from any
+  of that camera's modes (`realsense::chip_depth_noise`, in
+  `conversion.hpp`). A camera with no right infrared stream states none.
+- `FfsStereo`, and so `StereoDepthSensor`: `DepthNoise::stereo` of
+  `Options::disparity_sigma` and the rectified rig's fx and baseline, made at
+  `create`, which refuses a sigma that is not finite and at least 0. Its
+  default, 0, states none.
+
+**Why.** The owner (2026-10-30): "yeah move the per-camera noise model into
+sensor package", then "let's not consider confidence for now". recon's
+change detector floors each pixel's learned temporal sigma with a model,
+and recon's `sender::fuse_inputs` gave every camera recon's default, the
+Femto Mega's, stereo depth included: only the producer knows its noise, as
+it knows its depth range, and `GpuFramePrep` never sees a sensor type.
+
+**Temporal, not total.** The field is how one pixel's depth varies from
+frame to frame on a still surface. Its only consumer, recon's change test,
+compares each pixel with its own past, where an error that repeats every
+frame cancels; and the Femto Mega's 0.95 mm/m is that sigma, so its rig
+fuses exactly as before. For FFS on a D455 the spatial sigma (a plane's
+residual: its fixed pattern) is 3-10x the temporal one. A consumer that
+compares one camera's depth with another's, or weights fusion by
+1/sigma^2, needs a total sigma; that is a field of its own when that
+consumer comes, not a reading of this one.
+
+**Unknown is all zero; no default.** A default model is the Femto Mega's
+floor on a stereo camera again, and `std::optional` adds nothing when no
+depth camera has zero noise.
+
+**Per frame, on `RgbdFrame`.** It reaches every `DeviceFrame` through the
+one place that builds them, and needs no `SensorArray` wiring, prep config
+or calibration-file key. A key, as `depth_offset_m` has, comes only when
+one unit is measured to differ from its model's value.
+
+**The values.**
+- **Femto Mega**: b = 0.95 mm/m, a = c = 0, measured 2026-10-27 on the lab
+  rig's four cameras at 640 x 576 unbinned, face on (b is the median of
+  sigma sqrt(cos theta) / z), on depth prepared with nearest-pixel
+  sampling. Each camera is within 0.82-1.15x of the pooled fit, so none
+  needs its own. The depth mix since (the 2026-10-29 depth-mix entry) only
+  lowers the noise. The wide and binned modes are not measured and state the
+  same: binning likely makes it high there, and a noisier mode would make it
+  low. Every rig runs the 640 x 576 default; a mode measured otherwise gets
+  its own value. The driver opens any Orbbec camera and states the Femto
+  Mega's for all.
+- **RealSense, the camera's own depth**: sigma_d = 0.13 px, measured
+  2026-10-29 on a D455 at 1280 x 720, projector on and off, pooled over
+  0.33-3 m (0.10-0.17 px a bin; 0.135 and 0.127 px on and off): c =
+  0.13 / (657.27 px x 95.03 mm) = 2.08e-3 per metre. It is low where it
+  counts most: it was measured on pixels with a return in all 30 frames,
+  and past 3 m (the examples fuse to 5 m) the bins read 0.18-0.27 px. The
+  other modes, and the other D400s the driver opens, state the same in
+  their pixels, not measured. It is averaged over a room's slants, not face
+  on.
+- **FFS**: none built in. sigma_d depends on the camera, the checkpoint and
+  the size, and FFS takes any calibrated pair, so a default measured on one
+  pair is silently wrong for the next; a pair not yet measured is left
+  unknown, which a consumer that needs a model refuses. Measured on a D455's
+  infrared pair, projector off, with the 23-36-37 checkpoint at 1280 x 720:
+  0.04 px temporal, pooled over 0.33-3 m (0.076, 0.042 and 0.016 px a bin);
+  whoever opens that pair states it.
+
+Against recon's Femto Mega floor on stereo depth until now, the
+RealSense's c z^2 crosses 0.95 mm/m at z = b/c = 0.46 m and is higher beyond
+it, so the change test there alarms less, not more.
+
+**Not in it.** A per-pixel sigma: no producer has a confidence (the Femto
+Mega driver streams no infrared, and FFS has no confidence output); the
+owner set confidence aside. A `SensorInfo` field: recon's libraries cannot
+read the interface tier. An incidence term: each producer states the slant
+its value was measured at, and a consumer that knows a surface's slant adds
+its own term.
+
+**Tests.** `sensor_frame_depth_noise` (host, `sensor_frame` alone):
+`sigma`, each term and all three; `known()` for the default, zero, -0, a
+negative, NaN or infinite term in each place, and each positive term alone;
+`stereo()` against hand values (the D455's 2.08e-3, 0.04 / (40 x 0.1) =
+0.01), its scaling in each input, and unknown for 0, a negative, NaN or an
+infinite input in each place; `==` and `!=` term by term; a `DeviceFrame`'s
+default unknown. `sensor_gpu_frame_prep`: a frame stating three distinct
+terms is prepared with them, and with every other field and both buffers'
+words as the same frame stating none, which hands on none; a NaN model goes
+on as stated; five cameras in one batch each keep their own, one unknown.
+`sensor_orbbec_conversion`: the constant is exactly `{0, 0.00095f, 0}`, b
+the float 0x3A79096C. `sensor_realsense_conversion`: `chip_depth_noise` on
+the lab D455's calibration is `stereo(0.13, 657.271, 0.0950313)`, the
+baseline is the translation's length in any direction, twice fx halves
+it, no baseline or NaN is unknown; `rgbd_frame` carries the setup's noise.
+`sensor_ffs_stereo`: no sigma states none; 0.04 px on the 40 px x 0.1 m
+rig states c = 0.01; the prep hands FFS's noise on; a negative, NaN or
+infinite sigma is refused. `sensor_ffs_depth_sensor`: a polled frame states
+the options' sigma over the rig.
+
+**Validation.** Apple M5 Max, macOS, Release with warnings as errors, the
+Orbbec driver built, under the validation layer: the whole suite passes.

@@ -26,6 +26,9 @@
 //     colours come out as librealsense's own YUY2 conversion makes them;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
+//   - the driver's depth noise is handed on unchanged, alone and in a set,
+//     each camera its own, with nothing else in the frame changed, and a
+//     frame that states none hands on none;
 //   - its depth and colour outputs are shared with the queue families its
 //     config names for each, and read on another family as on its own;
 //   - a frame with colour keeps depth only where colour recorded it, at the
@@ -1787,6 +1790,10 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
     frames[c] = frame_of(raws[c], lensed());
     frames[c]->color = planes[c].image(0.2126f, 0.0722f, false);
     frames[c]->color_camera = pincushion;
+    // Each camera's own noise; camera 0 states none.
+    if (c > 0) {
+      frames[c]->depth_noise = {0.0f, 0.001f * static_cast<float>(c), 0.0f};
+    }
   }
   frames[2].reset();  // a camera whose frame never arrived
   for (const auto& f : frames) CHECK(!f || f->has_color());
@@ -1831,6 +1838,9 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
       CHECK(depth.size() == raws[c].size() && depth == depth_of(one.value()));
       CHECK(color.size() == raws[c].size() && color == color_of(one.value()));
       CHECK(std::count(depth.begin(), depth.end(), 0.0f) > 0);  // masked
+      CHECK(set.value()[c]->depth_noise == frames[c]->depth_noise);
+      CHECK(one->depth_noise == frames[c]->depth_noise);
+      CHECK(set.value()[c]->depth_noise.known() == (c > 0));
     }
   }
   // A set with no frame is nothing to do.
@@ -1856,6 +1866,68 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   CHECK(
       sensor::GpuFramePrep::prepare_batch(too_few, frames).status().domain() ==
       vkc::Status::Code::InvalidArgument);
+  return 0;
+}
+
+// The driver's depth noise, as GpuFramePrep::finish hands it on: unchanged,
+// term by term, with every other field and both buffers' words as the same
+// frame stating none gives; a frame that states none hands on unknown, as a
+// default RgbdFrame states. The set form is test_prepare_batch's.
+int test_depth_noise(sensor::GpuFramePrep& prep) {
+  CHECK(sensor::RgbdFrame{}.depth_noise == sensor::DepthNoise{});
+  std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight);
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    raw[i] = static_cast<std::uint16_t>(700 + (i * 31u) % 900u);
+  }
+  Planes p = make_planes();
+  sensor::RgbdFrame f = frame_of(raw, lensed());
+  f.color = p.image(0.2126f, 0.0722f, false);
+  f.color_camera = pinhole();
+  f.color_to_world[3] = glm::dvec4(0.5, -0.25, 2.0, 1.0);
+  auto none = prep.prepare(f);
+  CHECK(none.ok());
+  CHECK(none->depth_noise == sensor::DepthNoise{});
+  CHECK(!none->depth_noise.known());
+  const std::vector<float> depth = depth_of(none.value());
+  const std::vector<std::uint32_t> color = color_of(none.value());
+
+  // Three distinct terms, so a swapped or dropped one shows.
+  const sensor::DepthNoise stated{0.0011f, 0.00095f, 0.0021f};
+  f.depth_noise = stated;
+  auto out = prep.prepare(f);
+  CHECK(out.ok());
+  const sensor::DeviceFrame& d = out.value();
+  CHECK(d.depth_noise == stated);
+  CHECK(d.depth_noise.a == 0.0011f && d.depth_noise.b == 0.00095f &&
+        d.depth_noise.c == 0.0021f);
+  // Nothing else changes.
+  const sensor::DeviceFrame& n = none.value();
+  CHECK(d.depth_camera.fx == n.depth_camera.fx &&
+        d.depth_camera.fy == n.depth_camera.fy &&
+        d.depth_camera.cx == n.depth_camera.cx &&
+        d.depth_camera.cy == n.depth_camera.cy &&
+        d.depth_camera.min_depth == n.depth_camera.min_depth &&
+        d.depth_camera.max_depth == n.depth_camera.max_depth &&
+        d.depth_camera.width == n.depth_camera.width &&
+        d.depth_camera.height == n.depth_camera.height &&
+        d.depth_camera.cam_to_world == n.depth_camera.cam_to_world);
+  CHECK(d.color_camera.fx == n.color_camera.fx &&
+        d.color_camera.fy == n.color_camera.fy &&
+        d.color_camera.cx == n.color_camera.cx &&
+        d.color_camera.cy == n.color_camera.cy &&
+        d.color_camera.width == n.color_camera.width &&
+        d.color_camera.height == n.color_camera.height &&
+        d.color_camera.cam_to_world == n.color_camera.cam_to_world);
+  CHECK(d.color_encoding == n.color_encoding);
+  CHECK(d.timestamp_ns == n.timestamp_ns && d.has_color());
+  CHECK(depth_of(d) == depth && color_of(d) == color);
+
+  // A model the pass does not judge: what the driver stated, NaN and all.
+  f.depth_noise = {std::numeric_limits<float>::quiet_NaN(), -1.0f, 0.0f};
+  auto odd = prep.prepare(f);
+  CHECK(odd.ok());
+  CHECK(std::isnan(odd->depth_noise.a) && odd->depth_noise.b == -1.0f &&
+        odd->depth_noise.c == 0.0f);
   return 0;
 }
 
@@ -3539,6 +3611,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_poses(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;
   if (test_frames_hold_buffers(prep.value()) != 0) return 1;
+  if (test_depth_noise(prep.value()) != 0) return 1;
   if (test_prepare_batch(gpu.device, gpu.allocator) != 0) return 1;
   if (test_record(gpu.device, gpu.allocator) != 0) return 1;
   if (test_batch_timing(gpu.device, gpu.allocator) != 0) return 1;

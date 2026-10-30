@@ -301,6 +301,7 @@ struct FfsStereo::Impl {
   StereoRig rig;
   SensorInfo depth_info;
   Options options;
+  DepthNoise depth_noise;  // every frame's, from the options and the rig
   float metres_per_unit = 0.0f;
   std::uint32_t net_width = 0, net_height = 0;
 
@@ -368,6 +369,11 @@ core::Result<std::unique_ptr<FfsStereo>> FfsStereo::create(
         options.min_depth > 0.0f && options.min_depth < options.max_depth)) {
     return refuse("the depth range needs 0 < min_depth < max_depth");
   }
+  if (!(std::isfinite(options.disparity_sigma) &&
+        options.disparity_sigma >= 0.0f)) {
+    return refuse(
+        "disparity_sigma must be finite and at least 0 (0: unknown noise)");
+  }
   if (options.plan_cache.empty()) {
     return refuse("no plan_cache: the plan takes minutes to build");
   }
@@ -383,6 +389,9 @@ core::Result<std::unique_ptr<FfsStereo>> FfsStereo::create(
   impl->rig = rectifier.rig();
   impl->depth_info = rectifier.depth_info();
   impl->options = options;
+  impl->depth_noise =
+      DepthNoise::stereo(options.disparity_sigma,
+                         impl->rig.camera.intrinsics.fx, impl->rig.baseline);
   impl->metres_per_unit = std::max(1e-4f, options.max_depth / 65535.0f);
   const camera::ImageSize size = impl->rig.camera.size;
   impl->net_width = round_up(size.width, kNetMultiple);
@@ -711,6 +720,7 @@ core::Result<RgbdFrame> FfsStereo::Impl::depth(const RectifiedPair& pair,
   frame.depth_camera = rig.camera;
   frame.min_depth = options.min_depth;
   frame.max_depth = options.max_depth;
+  frame.depth_noise = depth_noise;
   const StereoFrame& source = pair.source;
   frame.color = has_planes(source.color) ? source.color : source.left;
   frame.color_camera = *depth_info.color;

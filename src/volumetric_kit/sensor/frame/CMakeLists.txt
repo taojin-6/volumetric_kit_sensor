@@ -5,10 +5,11 @@
 # DeviceFrame and DeviceFrameSet, the posed, undistorted RGB-D frame on the
 # device that fusion, texturing and a sender read, in the vocabulary they are
 # written in: the float pinhole cameras (camera_params.hpp) with their GLSL
-# mirror (shaders/pinhole.glsl, exported), the colour encoding (color_space.hpp)
-# and the package's GLM aliases; and what the package requires of a device
-# (device_requirements.hpp). Header-only, over the core's vulkan tier: a
-# consumer of frames links this tier alone, whoever produced them.
+# mirror (shaders/pinhole.glsl, exported), the depth noise its producer states
+# (depth_noise.hpp), the colour encoding (color_space.hpp) and the package's GLM
+# aliases; and what the package requires of a device (device_requirements.hpp).
+# Header-only, over the core's vulkan tier: a consumer of frames links this tier
+# alone, whoever produced them.
 
 # The core's device serializes submits with std::mutex and the sensor tiers run
 # capture threads, so everything above needs the platform threading runtime.
