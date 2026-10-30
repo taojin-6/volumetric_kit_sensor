@@ -356,6 +356,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   Femto Mega b = 0.95 mm/m in every mode, a RealSense's own depth stereo's
   model at 0.13 px, and FFS the disparity sigma its caller states
   (`FfsStereo::Options::disparity_sigma`, 0 unknown by default).
+- [**2026-10-30**](#2026-10-30--audio-sources-are-the-sensor-packages-iaudiosensor-on-the-interface-tier-microphone-over-portaudio-behind-vs_with_portaudio-and-audio-is-host-io) —
+  Audio sources are the sensor package's: `IAudioSensor` in
+  `sensor_interface`, polled, chunks of 16-bit PCM each stamped on the host
+  clock; `Microphone` (`sensor_microphone`, `VS_WITH_PORTAUDIO`), any OS
+  input through PortAudio, a prerequisite found through pkg-config. Audio is
+  host I/O: PCM in host memory, never on the GPU or in the per-frame GPU
+  path; a CPU audio codec (Opus) needs owner approval.
 
 ## Decision record
 
@@ -5135,3 +5142,82 @@ another namespace. Planted bugs each fail a test: `finish` dropping the
 copy, `stereo()` multiplying, the Femto Mega's b at 0.96 mm/m, `rgbd_frame`
 dropping the setup's noise, and FFS's frame dropping its own. No camera was
 opened.
+
+### 2026-10-30 — Audio sources are the sensor package's: `IAudioSensor` on the interface tier, `Microphone` over PortAudio behind `VS_WITH_PORTAUDIO`, and audio is host I/O.
+
+**The rule.** An audio source is an `IAudioSensor` (`audio_sensor.hpp`,
+header-only in `sensor_interface`), as an RGB-D one is an `IRgbdSensor`:
+- What it is, fixed at open, is its `AudioInfo` (id, model, clock, rate,
+  channels, nominal chunk length). It hands out `AudioChunk`s: interleaved
+  signed 16-bit samples, the first one's capture time on that clock, never
+  below the chunk before's, and a number since the start.
+- Polled: `drain` appends every chunk held, oldest first. `start` and `stop`
+  are idempotent, `stop` drops what is held, `stats` counts chunks in
+  `SensorStats`. Not thread-safe across callers.
+- A running source that delivers nothing for 1 s fails every drain until a
+  chunk arrives: the device has gone. It fails with `IoError`, as a
+  disconnected camera does; the core has no "unavailable" code.
+- `Microphone` (`audio/microphone.hpp`, target `sensor_microphone`, option
+  `VS_WITH_PORTAUDIO`, off by default) is any OS input through PortAudio,
+  each chunk stamped on `system_clock` from PortAudio's ADC time; a full
+  queue lets the chunk arriving go. How: DESIGN.md, audio.
+- PortAudio is a prerequisite, found through pkg-config (`portaudio-2.0`),
+  never fetched: Homebrew's `portaudio` on macOS (the Mac leg checks it),
+  `portaudio19-dev` on Ubuntu, which every Ubuntu build leg installs.
+- **Audio is host I/O: PCM in host memory, never on the GPU or in the
+  per-frame GPU path; a CPU audio codec (Opus) needs owner approval.**
+
+**Why.** The owner's audio design (2026-10-29/30): synced audio from any
+mic, a generic interface so camera mics plug in later (`IAudioSensor`, the
+owner's choice of name; "track" stays the file format's word), raw PCM in
+v1. No camera the family uses has a mic (the Femto Mega, the D455), so the
+first source is a USB or built-in mic on the sender's host. PortAudio is one
+backend for macOS and Linux, and the only one surveyed that hands over a
+host-referenced ADC time; only the difference of its times is used, so its
+stream clock never has to be mapped to `system_clock`. Every chunk is
+stamped, never `t0 + n / rate`, so a crystal's drift (20-100 ppm) never
+accumulates. The ring cannot drop its oldest without the writer moving the
+reader's index, so the chunk arriving goes; a lost chunk is placed by its
+neighbours' stamps. Audio is 96 KB/s for 48 kHz mono, no arithmetic worth a
+kernel, and the OS hands it over in host memory: the GPU-only rule does not
+reach it, and this line says so rather than making an exception.
+
+**Tests, no device and no `Pa_Initialize`** (which looks for devices), on
+synthetic tones:
+- `sensor_audio_capture` (every build): the stamp against hand values, a
+  wait PortAudio cannot report (none, NaN, negative, 1 s or more) taken as
+  none, a host clock that steps back clamped; the formats refused; the ring
+  oldest first, full (the chunk arriving goes), too long, silence for a null
+  buffer, 1000 chunks through 3 entries; the counts; a producer thread feeding
+  4000 stereo chunks while the test drains, waiting for a drain after a
+  dropped push: every chunk delivered or dropped once, in order, with its
+  own samples and stamp (ThreadSanitizer on the Mac's Debug leg, which sees
+  each entry's stamp and length but not the samples' `memcpy`; the samples
+  share the entry's ordering);
+- `sensor_audio_sensor` (every build): the contract on a fake on the same
+  capture: drain order and numbering, idempotent start and stop, the counts
+  kept through a stop and restarted by a start, and 1 s of silence failing
+  drains at 1000 ms but not 999 ms, until a chunk arrives, on a clock the
+  test sets;
+- `sensor_microphone` (`VS_WITH_PORTAUDIO`): PortAudio 19 loads; `open`
+  refuses 3 channels and empty chunks before PortAudio starts; the input an
+  option names: the default, an exact name before a part of one, several
+  matches refused naming them, none refused naming every input; the stream
+  callback, called with made-up times, stamps a 40 ms wait, counts
+  `paInputOverflow` and no other flag, takes a null buffer as silence and no
+  times as no wait, and clamps a 900 ms wait to the chunk before.
+
+`tools/mic_check` checks a mic by hand: the inputs, or a few seconds'
+chunks, losses, stamp steps and the last chunk's age.
+
+**Validation.** Apple M5 Max, macOS 27.2, Release with warnings as errors:
+with `VS_WITH_PORTAUDIO` (Homebrew PortAudio 19.7.0) the whole suite, 40
+tests, passes; without it, 39. The three audio tests pass under
+ThreadSanitizer in Release and in Debug, CI's. Planted bugs each fail a
+test: no clamp, the wait added rather than subtracted, a full ring's drop
+not counted, the callback counting `paInputUnderflow` instead of
+`paInputOverflow`, the exact name not tried first, several matches taken,
+and the ring publishing its writes relaxed. Debug ThreadSanitizer reports
+the last only since the ring writes an entry field by field; written as one
+struct it passed 3 runs of 3. No mic was opened and `mic_check` was not
+run.

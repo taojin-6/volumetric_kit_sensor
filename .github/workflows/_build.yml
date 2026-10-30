@@ -75,6 +75,15 @@ on:
         required: false
         type: string
         default: ''
+      portaudio:
+        description: >-
+          Install PortAudio (Ubuntu: portaudio19-dev; macOS: the runner's
+          Homebrew formula, checked) and build with VS_WITH_PORTAUDIO=ON, so
+          this leg builds the microphone driver and its hand-check tool and
+          runs its test.
+        required: false
+        type: boolean
+        default: false
       build_types:
         description: >-
           JSON array of the CMAKE_BUILD_TYPEs this leg builds and tests, one
@@ -170,6 +179,10 @@ jobs:
           if [ "${{ inputs.ffmpeg }}" = "true" ]; then
             pkgs="$pkgs pkg-config libavcodec-dev libavutil-dev"
           fi
+          # PortAudio, found through pkg-config (cmake/vs_portaudio.cmake).
+          if [ "${{ inputs.portaudio }}" = "true" ]; then
+            pkgs="$pkgs pkg-config portaudio19-dev"
+          fi
           # shellcheck disable=SC2086  # intentional: split $pkgs into separate args
           sudo apt-get install -y --no-install-recommends $pkgs
           # The CUDA toolkit for VS_WITH_CUDA (cmake/vs_cuda.cmake): cuda.h,
@@ -235,6 +248,10 @@ jobs:
           # librealsense for VS_WITH_REALSENSE (cmake/vs_realsense.cmake).
           if [ "${{ inputs.realsense_sdk }}" = "true" ]; then
             pkgs="$pkgs librealsense"
+          fi
+          # PortAudio for VS_WITH_PORTAUDIO (cmake/vs_portaudio.cmake).
+          if [ "${{ inputs.portaudio }}" = "true" ]; then
+            pkgs="$pkgs portaudio"
           fi
           echo "formulae=$pkgs" >> "$GITHUB_OUTPUT"
           # Without brew every formula would look missing.
@@ -367,7 +384,8 @@ jobs:
                 -DVS_WITH_REALSENSE=${{ inputs.realsense_sdk && 'ON' || 'OFF' }} \
                 -DVS_WITH_FFMPEG=${{ inputs.ffmpeg && 'ON' || 'OFF' }} \
                 -DVS_WITH_CUDA=${{ inputs.cuda && 'ON' || 'OFF' }} \
-                -DVS_WITH_FFS=${{ inputs.ffs && 'ON' || 'OFF' }}; then
+                -DVS_WITH_FFS=${{ inputs.ffs && 'ON' || 'OFF' }} \
+                -DVS_WITH_PORTAUDIO=${{ inputs.portaudio && 'ON' || 'OFF' }}; then
               ok=1
               break
             fi
@@ -403,12 +421,14 @@ jobs:
         run: ctest --test-dir build --output-on-failure --no-tests=error
 
       # The tests whose code runs threads again under ThreadSanitizer: the
-      # Orbbec decode workers, which the sanitizer job, on address and
-      # undefined only and with no Orbbec SDK, never runs. In a tree of their
-      # own that reuses the sources FetchContent fetched for build/, built for
-      # those tests alone (sensor_tsan_tests, tests/CMakeLists.txt), with the
-      # Orbbec SDK as this leg has it. Debug only: the races do not depend on
-      # the build type.
+      # Orbbec decode workers and the audio capture's queue, whose races the
+      # sanitizer job, on address and undefined only and with no Orbbec SDK,
+      # never sees. In a tree of their own that reuses the sources
+      # FetchContent fetched for build/, built for those tests alone
+      # (sensor_tsan_tests, tests/CMakeLists.txt), with the Orbbec SDK as this
+      # leg has it. Debug only, where Apple clang's ThreadSanitizer misses a
+      # racing memcpy or struct copy: shared fields are written one by one
+      # (audio/chunk_ring.hpp).
       - name: Threaded tests under ThreadSanitizer (macOS)
         if: runner.os == 'macOS' && matrix.build_type == 'Debug'
         env:
@@ -433,7 +453,7 @@ jobs:
             --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}" \
             --target sensor_tsan_tests
           ctest --test-dir build-tsan --output-on-failure --no-tests=error \
-            -R '^sensor_orbbec_(decode_worker|jpeg|hevc|open_sensors)$'
+            -R '^(sensor_orbbec_(decode_worker|jpeg|hevc|open_sensors)|sensor_audio_capture)$'
 
       # sensor_apple and sensor_video, with the H.265 syntax they read
       # (sensor_video_syntax), promise an iOS build (DECISIONS.md, 2026-10-08

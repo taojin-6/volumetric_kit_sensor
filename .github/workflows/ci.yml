@@ -71,6 +71,10 @@ jobs:
       # repository, installed per job) on 24.04, the CUDA leg; its tests fail
       # rather than skip there for the same promise. The Mac has no CUDA.
       #
+      # `portaudio` builds the microphone driver (VS_WITH_PORTAUDIO) on every
+      # leg, 24.04's PortAudio 19.6 the oldest; the sanitizer job builds
+      # without it.
+      #
       # Every leg runs the tests under the Khronos validation layer, and
       # `sync_validation` adds synchronization validation on the NVIDIA legs,
       # as the sanitizer job does on lavapipe.
@@ -87,6 +91,7 @@ jobs:
             cuda: true
             ffs: true
             hevc_backend: cuda
+            portaudio: true
             sync_validation: true
           - os: ubuntu-26.04
             runner: vk-linux-gpu
@@ -94,6 +99,7 @@ jobs:
             container: '{"image":"ubuntu@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c","options":"--gpus all","env":{"NVIDIA_DRIVER_CAPABILITIES":"all","CMAKE_BUILD_PARALLEL_LEVEL":"4","CTEST_PARALLEL_LEVEL":"4","__GL_SHADER_DISK_CACHE_PATH":"/__w/_tool/nvidia-glcache","__GL_SHADER_DISK_CACHE_SKIP_CLEANUP":"1"}}'
             build_types: '["Release"]'
             realsense_sdk: true
+            portaudio: true
             sync_validation: true
           - os: macos-26
             runner: mac
@@ -101,6 +107,7 @@ jobs:
             build_types: '["Debug","Release"]'
             orbbec_sdk: true
             realsense_sdk: true
+            portaudio: true
             hevc_backend: videotoolbox
     uses: ./.github/workflows/_build.yml
     with:
@@ -113,6 +120,7 @@ jobs:
       ffmpeg: ${{ matrix.ffmpeg || false }}
       cuda: ${{ matrix.cuda || false }}
       ffs: ${{ matrix.ffs || false }}
+      portaudio: ${{ matrix.portaudio || false }}
       hevc_backend: ${{ matrix.hevc_backend || '' }}
       sync_validation: ${{ matrix.sync_validation || false }}
 
