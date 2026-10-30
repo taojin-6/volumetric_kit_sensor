@@ -133,14 +133,14 @@ struct GpuFramePrepConfig {
 /// handed out is in both views: a depth sensor's field of view and its colour
 /// camera's rarely match, and the overlap is each sensor's own, from its
 /// intrinsics and extrinsic.
+/// - Colour is a 0 word, coverage and all, where the depth camera does not
+///   see its ray over the frame's whole depth range: the ray's points
+///   @ref RgbdFrame::min_depth and @ref RgbdFrame::max_depth deep for the
+///   depth camera must both lie on pixels the depth pass covers.
 /// - Depth, wherever it came from, is zeroed, the pass's "no return", where
 ///   its point, moved into the colour camera by the two poses, is behind it
-///   or lands on a pixel its lens did not record.
-/// - Colour is a 0 word, coverage and all, where the depth camera does not
-///   see its ray over the frame's whole depth range: the ray's points at
-///   @ref RgbdFrame::min_depth and @ref RgbdFrame::max_depth along the colour
-///   camera's axis must both lie in front of the depth camera, on pixels the
-///   depth pass covers.
+///   or lands on a colour pixel that is not kept, so kept depth always lands
+///   on colour with its coverage byte set.
 ///
 /// Both test a camera's view, not its line of sight: a point inside the view
 /// that a nearer surface hides from it is kept. A frame without colour keeps

@@ -15,13 +15,15 @@
 // below is no return, and 0 stays no return whatever the offset's sign.
 //
 // With pc.within_color, set for a frame with colour, the pixel is also kept
-// only where the colour camera recorded its point, at the corrected depth:
-// moved into the colour camera by the two poses, the point must lie in front
-// of it and on a pinhole pixel whose source the colour pass finds in the
-// picture -- its rounding and its lens test. Elsewhere it is 0, no return, so
-// what is fused lies inside the colour camera's view. Its view, not its line
-// of sight: nothing here tests whether a nearer surface hides the point from
-// it. The colour pass tests the converse (rgbd_overlap.glsl's depth_sees).
+// only where the colour pass keeps the colour pixel its point lands on, at
+// the corrected depth: moved into the colour camera by the two poses, the
+// point must lie in front of it, on a pinhole pixel whose source the colour
+// pass finds in the picture (its rounding and its lens test) and whose ray
+// the depth camera sees over the frame's range (rgbd_overlap.glsl's
+// depth_sees, the colour pass's own test). Elsewhere it is 0, no return, so
+// depth survives only where it lands on colour with its coverage byte set.
+// The colour camera's view, not its line of sight: nothing here tests whether
+// a nearer surface hides the point from it.
 
 #extension GL_GOOGLE_include_directive : require
 #include "rgbd_overlap.glsl"
@@ -49,13 +51,13 @@ layout(push_constant, scalar) uniform Params {
   uint raw_first;  // the image's first sample in the binding
 } pc;
 
-// Whether the colour camera recorded the depth camera's point at pinhole pixel
-// `pixel`, depth `z` metres: the colour pass's lens test at the colour pixel
-// the point rounds to. The pinhole is sensor/frame/shaders/pinhole.glsl's; the
+// Whether the colour pass keeps the colour pixel the depth camera's point at
+// pinhole pixel `pixel`, depth `z` metres, rounds to: its lens test and its
+// depth_sees there. The pinhole is sensor/frame/shaders/pinhole.glsl's; the
 // bounds are the colour pass's, so the rounded pixel must lie in the image
 // ([-0.5, width - 0.5) before rounding), not the pixel itself as
 // vs_project_pinhole asks.
-bool color_recorded(vec2 pixel, float z) {
+bool color_kept(vec2 pixel, float z) {
   vec3 p = vs_unproject_pinhole(
       pixel, z, vec4(pc.cam.fx, pc.cam.fy, pc.cam.cx, pc.cam.cy));
   vec3 q = (overlap.depth_to_color * vec4(p, 1.0)).xyz;
@@ -65,9 +67,10 @@ bool color_recorded(vec2 pixel, float z) {
       !rounds_into(px, c.width, c.height)) {
     return false;
   }
-  vec2 s = source_pixel(c, floor(px + 0.5));
+  vec2 r = floor(px + 0.5);
+  vec2 s = source_pixel(c, r);
   return s.x >= -0.5 && s.y >= -0.5 && s.x <= float(c.width) - 0.5 &&
-         s.y <= float(c.height) - 0.5;
+         s.y <= float(c.height) - 0.5 && depth_sees(overlap, r);
 }
 
 // The largest depth range, in metres, across the four raw pixels of a block
@@ -127,7 +130,7 @@ void main() {
     }
   }
   if (pc.within_color != 0u && z > 0.0 &&
-      !color_recorded(vec2(float(gid % w), float(gid / w)), z)) {
+      !color_kept(vec2(float(gid % w), float(gid / w)), z)) {
     z = 0.0;
   }
   depth[gid] = z;

@@ -562,11 +562,12 @@ preserving previously returned frames.
 A frame with colour keeps only what both its cameras see (the 2026-10-29
 same-view decision), from one buffer of both cameras, their transforms each
 way and the frame's depth range, which both passes bind
-(`rgbd_overlap.glsl`): its depth, from the host or the device, is zeroed
-where the colour pass's rounding and lens test miss the pixel's point, and
-its colour is a 0 word where the depth pass does not cover both ends of the
-pixel's ray, at `min_depth` and `max_depth`. A frame without colour keeps
-all its depth. `depth_offset_m`
+(`rgbd_overlap.glsl`): its colour is a 0 word where the depth pass does not
+cover both ends of the pixel's ray, `min_depth` and `max_depth` deep for the
+depth camera, and its depth, from the host or the device, is zeroed where
+the pixel's point lands on colour the colour pass does not keep, by that
+pass's rounding, lens test and ray test. A frame without colour keeps all
+its depth. `depth_offset_m`
 (0 by default) is subtracted from every raw return in the depth pass, before
 the mix and that test: for `z > 0`, `z = max(z - offset, 0)`, so 0 stays no
 return whatever the sign; a `SensorArray` sets it per sensor from the

@@ -2,11 +2,11 @@
 // Copyright (c) 2026 Tao Jin
 
 // A frame's two cameras, for the passes that keep only what both see: the
-// depth pass zeroes depth outside the colour camera's view
-// (undistort_depth.comp), and the colour pass zeroes colour outside the depth
-// camera's (undistort_color.comp, undistort_color_images.comp). Both bind one
-// buffer, gpu_frame_prep.cpp's OverlapParams, written for every frame with
-// colour.
+// colour pass zeroes colour outside the depth camera's view
+// (undistort_color.comp, undistort_color_images.comp), and the depth pass
+// zeroes depth on any colour pixel the colour pass does not keep
+// (undistort_depth.comp). Both bind one buffer, gpu_frame_prep.cpp's
+// OverlapParams, written for every frame with colour.
 
 #ifndef VS_PREP_RGBD_OVERLAP_GLSL
 #define VS_PREP_RGBD_OVERLAP_GLSL
@@ -46,18 +46,36 @@ bool depth_covers(LensCamera d, vec3 q) {
   return rounds_into(source_pixel(d, floor(px + 0.5)), d.width, d.height);
 }
 
+// The point `q`, in the depth camera's frame, where colour pinhole pixel
+// `pixel`'s ray lies `z` metres deep for the depth camera, a depth that
+// changes linearly along the ray. False where the ray reaches that depth
+// only behind the colour camera, or never.
+bool ray_at_depth(RgbdOverlap o, vec2 pixel, float z, out vec3 q) {
+  vec2 n =
+      (pixel - vec2(o.color.cx, o.color.cy)) / vec2(o.color.fx, o.color.fy);
+  vec3 dir = mat3(o.color_to_depth) * vec3(n, 1.0);
+  vec3 origin = o.color_to_depth[3].xyz;
+  float t = (z - origin.z) / dir.z;
+  if (!(t > 0.0)) {
+    return false;  // behind the colour camera, or not a number
+  }
+  q = origin + t * dir;
+  return true;
+}
+
 // Whether the depth camera sees colour pinhole pixel `pixel`'s ray over the
-// whole depth range: its points at near_m and far_m along the colour camera's
-// axis are both covered. The undistorted depth picture is a pinhole image, so
-// what it sees is a convex cone, and a segment lies inside it when both its
-// ends do; a lens that misses part of the picture is tested at the ends alone.
+// frame's whole depth range: its points near_m and far_m deep for the depth
+// camera, the ends of the part of the ray a depth sample can lie on, are both
+// covered. The undistorted depth picture is a pinhole image, so what it sees
+// is a convex cone, and a segment lies inside it when both its ends do; a
+// lens that misses part of the picture is tested at the ends alone.
 bool depth_sees(RgbdOverlap o, vec2 pixel) {
-  vec4 k = vec4(o.color.fx, o.color.fy, o.color.cx, o.color.cy);
-  vec3 near_end = vs_unproject_pinhole(pixel, o.near_m, k);
-  vec3 far_end = vs_unproject_pinhole(pixel, o.far_m, k);
-  return depth_covers(o.depth,
-                      (o.color_to_depth * vec4(near_end, 1.0)).xyz) &&
-         depth_covers(o.depth, (o.color_to_depth * vec4(far_end, 1.0)).xyz);
+  vec3 near_end;
+  vec3 far_end;
+  return ray_at_depth(o, pixel, o.near_m, near_end) &&
+         depth_covers(o.depth, near_end) &&
+         ray_at_depth(o, pixel, o.far_m, far_end) &&
+         depth_covers(o.depth, far_end);
 }
 
 #endif  // VS_PREP_RGBD_OVERLAP_GLSL
