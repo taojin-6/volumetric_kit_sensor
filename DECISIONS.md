@@ -5122,5 +5122,16 @@ rig states c = 0.01; the prep hands FFS's noise on; a negative, NaN or
 infinite sigma is refused. `sensor_ffs_depth_sensor`: a polled frame states
 the options' sigma over the rig.
 
-**Validation.** Apple M5 Max, macOS, Release with warnings as errors, the
-Orbbec driver built, under the validation layer: the whole suite passes.
+**Validation.** Apple M5 Max, macOS 27.2, Release with warnings as errors,
+the Orbbec driver built, under the validation layer: the whole suite, 45
+tests, passes. RTX 4090, Ubuntu 26.04, Release with warnings as errors and
+every option (Orbbec, FFmpeg, CUDA, FFS on TensorRT 11.4, RealSense on
+librealsense 2.59.1), under the validation layer with a device and the CUDA
+decoders required: 52 tests pass, the two JPEG tests skipping as that GPU
+has no JPEG engine. recon's suite at its main (`8f1cb772`), built on the M5
+Max against this checkout with the Orbbec driver, passes unchanged, 43
+tests: both fields are defaulted, and recon's own `tsdf::DepthNoise` is in
+another namespace. Planted bugs each fail a test: `finish` dropping the
+copy, `stereo()` multiplying, the Femto Mega's b at 0.96 mm/m, `rgbd_frame`
+dropping the setup's noise, and FFS's frame dropping its own. No camera was
+opened.
