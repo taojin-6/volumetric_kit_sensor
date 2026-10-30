@@ -251,7 +251,8 @@ the prepared one. The producers, each its own value:
   model's, so whoever opens a camera states it.
 
 No per-pixel sigma, no `SensorInfo` field and no calibration-file key: no
-producer has a per-pixel confidence, recon's libraries cannot read
+producer has a calibrated per-pixel confidence (FFS's spread is not one; it
+only gates pixels inside `FfsStereo`, below), recon's libraries cannot read
 `SensorInfo`, and no unit has been measured to differ from its model.
 `device_requirements()` names what the package's kernels and decoders need
 (`scalarBlockLayout`; `VK_KHR_external_memory_fd` and `VK_EXT_metal_objects`
@@ -792,9 +793,18 @@ loads libcuda at run time) are private.
   once per checkpoint and size against a local NVlabs checkout; research
   use, the 23-36-37 checkpoint by default): inputs `left_image` and
   `right_image`, float `1 x 3 x H x W`, ImageNet-normalised R'G'B'; output
-  `disparity`, float `1 x 1 x H x W`. H and W are the rig's size rounded up
-  to multiples of 32; `create` refuses a model of another size, checking the
-  parsed network before the build.
+  `disparity`, float `1 x 1 x H x W`, and, optionally, `disparity_spread`,
+  float `1 x 1 x H x W`: the range of the quarter-resolution disparity over
+  the network's last four refinement states (after GRU steps 5 to 8 of 8),
+  times 4, resized bilinearly with half-pixel centres, in FP32. The export
+  traces a copy of the checkout's test-mode forward that keeps those
+  states, checked against the checkout's own forward before it exports. H
+  and W are the rig's size rounded up to multiples of 32; `create` refuses a
+  model of another size, a spread of another shape and any other tensor,
+  checking the parsed network before the build and the plan's own tensors
+  after a load (a cached plan may hold another model's); and an
+  `Options::max_disparity_spread` above 0 for a model without the spread,
+  as early.
 - **The plan cache.** `create` names a plan for the GPU (CUDA's UUID), the
   TensorRT version, the model's bytes (64-bit FNV-1a) and the network's
   size, loads it from `Options::plan_cache` if TensorRT takes it, and else
@@ -821,12 +831,15 @@ loads libcuda at run time) are private.
      the view's pixel at the clamped position (padding repeats the last row
      and column), luma in all three channels or R, G, B, each
      `(value - mean) / deviation`, into TensorRT's input buffers, which are
-     CUDA's own, allocated at create.
+     CUDA's own, allocated at create, as its outputs are (the spread's for
+     a model that has one, gate or no gate: TensorRT writes every output).
   3. TensorRT (`enqueueV3`) on the same stream.
   4. the depth kernel: a thread a rig pixel, `z = fx * baseline / d` at
      `(x, y)` of the network's disparity; 0 where `d` is not above 0 (NaN
-     included), `d > x` (the match is off the right view), or `z` is outside
-     `[min_depth, max_depth]`, and, for `Rgba8` views, where the left view's
+     included), `d > x` (the match is off the right view), `z` is outside
+     `[min_depth, max_depth]`, or, with `Options::max_disparity_spread`
+     above 0, the spread at `(x, y)` is above it (NaN included: the network
+     had not settled), and, for `Rgba8` views, where the left view's
      coverage byte at `(x, y)` or the right view's at `(rint(x - d), y)` is
      0 (the rectifier saw nothing there, and the network matched black);
      else `rint(z / metres_per_unit)`, clamped to 1..65535, with
@@ -955,7 +968,8 @@ which sets what a lost frame costs (`camera_stream.cpp`). The rig's next consume
 viewer, showing its synchronised sets.
 
 **Depth noise, later.** A per-pixel sigma once a producer has a confidence
-(the Femto Mega's infrared amplitude, which needs an infrared stream); a
+(the Femto Mega's infrared amplitude, which needs an infrared stream; FFS's
+spread, which gates today, after a mapping to a sigma is fitted); a
 total (spatial) sigma, a field of its own beside the temporal one, with the
 consumer that needs it, such as a 1/sigma^2 fusion weight; and measured
 values for the Femto Mega's other depth modes and the D455's other modes.

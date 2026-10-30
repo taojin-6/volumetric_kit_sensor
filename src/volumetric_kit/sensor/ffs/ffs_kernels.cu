@@ -41,16 +41,19 @@ __global__ void input_kernel(const void* left, const void* right,
 }
 
 // One thread a view pixel.
-__global__ void depth_kernel(const float* disparity, const unsigned* left,
-                             const unsigned* right, unsigned short* depth,
-                             DepthParams p) {
+__global__ void depth_kernel(const float* disparity, const float* spread,
+                             const unsigned* left, const unsigned* right,
+                             unsigned short* depth, DepthParams p) {
   const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= p.width * p.height) return;
   const unsigned x = i % p.width, y = i / p.width;
-  const float d = disparity[y * p.net_width + x];
+  const unsigned at = y * p.net_width + x;
+  const float d = disparity[at];
+  // A disparity the network was still moving is no return. NaN fails every
+  // comparison, so a NaN spread or disparity is no return too.
+  const bool settled = spread == nullptr || spread[at] <= p.max_spread;
   unsigned short out = 0;
-  // NaN fails every comparison, so it is no return too.
-  if (d > 0.0f && d <= static_cast<float>(x)) {
+  if (settled && d > 0.0f && d <= static_cast<float>(x)) {
     const float z = p.focal_baseline / d;
     // A pixel the left view did not see, or matched where the right one did
     // not, was matched against the views' black: no return.
@@ -85,12 +88,13 @@ cudaError_t make_input(const void* left, const void* right, float* left_input,
   return cudaGetLastError();
 }
 
-cudaError_t make_depth(const float* disparity, const void* left,
-                       const void* right, std::uint16_t* depth,
-                       const DepthParams& params, cudaStream_t stream) {
+cudaError_t make_depth(const float* disparity, const float* spread,
+                       const void* left, const void* right,
+                       std::uint16_t* depth, const DepthParams& params,
+                       cudaStream_t stream) {
   const unsigned pixels = params.width * params.height;
   depth_kernel<<<(pixels + kBlock - 1) / kBlock, kBlock, 0, stream>>>(
-      disparity, static_cast<const unsigned*>(left),
+      disparity, spread, static_cast<const unsigned*>(left),
       static_cast<const unsigned*>(right),
       reinterpret_cast<unsigned short*>(depth), params);
   return cudaGetLastError();
