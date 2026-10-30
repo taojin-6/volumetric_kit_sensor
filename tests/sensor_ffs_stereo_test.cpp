@@ -12,7 +12,10 @@
 // and baseline, or none for none, and GpuFramePrep hands it on. The
 // plan cache is checked by what it loads: another model's plan put under a
 // model's name is the one that runs. Rgba8 coverage is checked on views made
-// here, and pairs kept past the next on the rectifier's new views.
+// here, and pairs kept past the next on the rectifier's new views. The spread
+// gate runs on a model whose disparity_spread is a sixteenth of the right
+// view, so the pixels it drops are known exactly, on a rig of the network's
+// size and on a smaller one.
 //
 // Where CUDA does not reach the device's GPU, or the device exports no
 // memory, the test skips; VS_TEST_HEVC_BACKEND, which CI sets on the NVIDIA
@@ -62,6 +65,11 @@ using Output = sensor::StereoRectifier::Output;
 const fs::path kData = VS_FFS_DATA;
 const fs::path kModel = kData / "difference_64x32.onnx";
 const fs::path kHalfModel = kData / "half_difference_64x32.onnx";
+// The model's disparity and a disparity_spread of a sixteenth of the right
+// view's weighted value; the spread at 8 x 16, and named otherwise.
+const fs::path kSpreadModel = kData / "spread_64x32.onnx";
+const fs::path kQuarterSpreadModel = kData / "spread_quarter_64x32.onnx";
+const fs::path kOtherOutputModel = kData / "other_output_64x32.onnx";
 constexpr double kFocal = 40.0;
 constexpr double kBaseline = 0.1;
 // The test model's channel weights.
@@ -821,6 +829,152 @@ int into_prep(Fixture& t) {
   return 0;
 }
 
+// --- The spread gate: what the network had not settled has no return -------
+
+// A luma pair for the spread model: the right view 16 to 79, so its spread, a
+// sixteenth of it, runs from 1 to 4.9375 px in steps of 1/16; the left one 4
+// to 43 above it, but for row 0 (0) and row 1 (5 below), so luma_pair's no
+// returns come too.
+std::shared_ptr<Pictures> spread_pair(std::uint32_t w, std::uint32_t h) {
+  auto p = std::make_shared<Pictures>();
+  p->left.resize(std::size_t{w} * h);
+  p->right.resize(p->left.size());
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const int right = 16 + static_cast<int>((x * 5 + y * 11) % 64);
+      int v = 4 + static_cast<int>((x * 7 + y * 3) % 40);
+      if (y == 0) v = 0;
+      if (y == 1) v = -5;
+      const std::size_t i = std::size_t{y} * w + x;
+      p->right[i] = static_cast<std::uint8_t>(right);
+      p->left[i] = static_cast<std::uint8_t>(right + v);
+    }
+  }
+  return p;
+}
+
+// The returns a gate dropped, and those it kept.
+struct Gated {
+  int dropped = 0;
+  int kept = 0;
+};
+
+// Match the spread pair on a w x h rig on the spread model with
+// `max_spread`, and check every sample: no return where the spread is above
+// a gate, else the disparity's depth. On a rig smaller than the network, the
+// spread is read where the network has the view's pixel, as the disparity
+// is: anywhere else is another pixel's spread.
+int run_gated(Fixture& t, std::uint32_t w, std::uint32_t h, float max_spread,
+              Gated* gated) {
+  // A rectifier of its own: the first matcher to read a view maps it.
+  auto rectifier = rectifier_for(t, pair_info(w, h), Output::Luma8);
+  CHECK(rectifier != nullptr);
+  sensor::FfsStereo::Options o =
+      options_for(kSpreadModel, t.scratch / "spread");
+  o.max_disparity_spread = max_spread;
+  auto ffs = ffs_for(t, *rectifier, o);
+  CHECK(ffs != nullptr);
+  const std::shared_ptr<Pictures> p = spread_pair(w, h);
+  auto pair = rectifier->rectify(frame_of(p, sensor::YuvLayout::Luma, w, h, 0));
+  CHECK(pair.ok());
+  auto frame = ffs->depth(*pair);
+  if (!frame) std::fprintf(stderr, "%s\n", frame.status().message().c_str());
+  CHECK(frame.ok());
+  auto got = read_depth(t.gpu, *frame);
+  CHECK(got.ok());
+
+  std::vector<std::optional<std::uint16_t>> want(std::size_t{w} * h);
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    const double d =
+        static_cast<double>(p->left[i]) - static_cast<double>(p->right[i]);
+    want[i] = expected_depth(d, static_cast<std::uint32_t>(i % w),
+                             kFocal * kBaseline, o, 1e-4);
+    const bool returns = want[i] && *want[i] != 0;
+    if (max_spread > 0.0f && p->right[i] / 16.0 > max_spread) {
+      gated->dropped += returns;
+      want[i] = 0;
+    } else {
+      gated->kept += returns;
+    }
+  }
+  const Compared c = compare(*got, want);
+  std::printf(
+      "    %u x %u, max_disparity_spread %g: %d samples, %d returns, %d off; "
+      "%d returns dropped\n",
+      w, h, static_cast<double>(max_spread), c.compared, c.returns,
+      c.mismatches, gated->dropped);
+  CHECK(c.mismatches == 0);
+  CHECK(c.compared > static_cast<int>(w * h) * 9 / 10);
+  return 0;
+}
+
+int spread_gate(Fixture& t) {
+  std::puts("the spread gate: exactly the pixels above it, no return");
+  // Off: a model with the spread matches as one without, its spread bound
+  // and not read.
+  Gated off, between, above, padded;
+  CHECK(run_gated(t, 64, 32, 0.0f, &off) == 0);
+  CHECK(off.dropped == 0 && off.kept > 64 * 32 / 4);
+  // Between two spreads, 2.5 and 2.5625 px: those above it go, the rest
+  // stay.
+  CHECK(run_gated(t, 64, 32, 2.53125f, &between) == 0);
+  CHECK(between.dropped > 200 && between.kept > 200);
+  CHECK(between.dropped + between.kept == off.kept);
+  // Above every spread (4.9375 px at most): none go.
+  CHECK(run_gated(t, 64, 32, 5.0f, &above) == 0);
+  CHECK(above.dropped == 0 && above.kept == off.kept);
+  // A 60 x 30 rig on the 64 x 32 network: the network's rows are wider than
+  // the view's, so a spread read at the view's index gates other pixels.
+  CHECK(run_gated(t, 60, 30, 2.53125f, &padded) == 0);
+  CHECK(padded.dropped > 200 && padded.kept > 200);
+  std::puts(
+      "  off, between two spreads and above all, and between on a padded "
+      "rig: each sample right");
+
+  auto rectifier = rectifier_for(t, pair_info(64, 32), Output::Luma8);
+  CHECK(rectifier != nullptr);
+  const auto refused = [&](const sensor::FfsStereo::Options& o) {
+    return sensor::FfsStereo::create(t.gpu.device, t.gpu.allocator, *rectifier,
+                                     o)
+        .status();
+  };
+  const auto refused_naming = [&](const sensor::FfsStereo::Options& o,
+                                  const std::string& text) {
+    const vkc::Status s = refused(o);
+    if (s.message().find(text) == std::string::npos) {
+      std::fprintf(stderr, "  refusal without \"%s\": %s\n", text.c_str(),
+                   s.message().c_str());
+    }
+    return s.domain() == vkc::Status::Code::InvalidArgument &&
+           s.message().find(text) != std::string::npos;
+  };
+  // A gate on a model without the spread: refused before the build, and on
+  // that model's cached plan, whose own tensors are what runs.
+  const fs::path cache = t.scratch / "no_spread";
+  sensor::FfsStereo::Options o = options_for(kModel, cache);
+  o.max_disparity_spread = 0.2f;
+  CHECK(refused_naming(o, "no disparity_spread output"));
+  CHECK(plans_in(cache).empty());
+  o.max_disparity_spread = 0.0f;
+  CHECK(ffs_for(t, *rectifier, o) != nullptr);
+  CHECK(plans_in(cache).size() == 1);
+  o.max_disparity_spread = 0.2f;
+  CHECK(refused_naming(o, "no disparity_spread output"));
+  // A spread of another shape, or a fourth tensor not the spread: refused,
+  // with or without a gate.
+  for (const float gate : {0.0f, 0.2f}) {
+    o = options_for(kQuarterSpreadModel, cache);
+    o.max_disparity_spread = gate;
+    CHECK(refused_naming(o, "disparity_spread is 1 x 1 x 8 x 16"));
+    o.model = kOtherOutputModel;
+    CHECK(refused_naming(o, "the model has 4 inputs and outputs"));
+  }
+  std::puts(
+      "  a gate without the spread, before the build and from a cached plan; "
+      "a spread of another shape; a fourth tensor of another name");
+  return 0;
+}
+
 // --- Refusals ---------------------------------------------------------------
 
 int refusals(Fixture& t) {
@@ -841,10 +995,13 @@ int refusals(Fixture& t) {
   o.min_depth = 0.5f;
   o.max_depth = 0.5f;
   CHECK(code(o) == vkc::Status::Code::InvalidArgument);
-  for (const float sigma : {-0.01f, std::numeric_limits<float>::quiet_NaN(),
-                            std::numeric_limits<float>::infinity()}) {
+  for (const float bad : {-0.01f, std::numeric_limits<float>::quiet_NaN(),
+                          std::numeric_limits<float>::infinity()}) {
     o = options_for(kModel, cache);
-    o.disparity_sigma = sigma;
+    o.disparity_sigma = bad;
+    CHECK(code(o) == vkc::Status::Code::InvalidArgument);
+    o = options_for(kSpreadModel, cache);
+    o.max_disparity_spread = bad;
     CHECK(code(o) == vkc::Status::Code::InvalidArgument);
   }
   o = options_for(kData / "no_such_model.onnx", cache);
@@ -861,8 +1018,8 @@ int refusals(Fixture& t) {
   o.plan_cache = t.scratch / "junk.onnx" / "plans";
   CHECK(code(o) == vkc::Status::Code::IoError);
   std::puts(
-      "  a bad depth range or disparity sigma, no model, a model TensorRT "
-      "cannot parse, no plan cache or one that cannot be made");
+      "  a bad depth range, disparity sigma or spread gate, no model, a model "
+      "TensorRT cannot parse, no plan cache or one that cannot be made");
 
   o = options_for(kModel, cache);
   auto ffs = ffs_for(t, *rectifier, o);
@@ -940,6 +1097,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   CHECK(coverage(t) == 0);
   CHECK(kept_pairs(t) == 0);
   CHECK(into_prep(t) == 0);
+  CHECK(spread_gate(t) == 0);
   CHECK(refusals(t) == 0);
   std::puts("sensor_ffs_stereo: OK");
   return 0;

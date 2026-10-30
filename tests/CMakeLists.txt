@@ -460,12 +460,12 @@ if(APPLE OR VS_WITH_FFMPEG)
 
   if(VS_WITH_FFS)
     # FFS (sensor_ffs) on the test models in data/ffs
-    # (tools/ffs/make_test_onnx.py), FFS's inputs and output with a disparity
-    # worked out by hand: FfsStereo's depth units, no returns (coverage among
-    # them), padding, both view layouts, the plan cache, kept pairs' views, the
-    # depth read in place by GpuFramePrep and the refusals; and
-    # StereoDepthSensor on a test camera, as any IRgbdSensor, in a SensorArray.
-    # They skip as the interop test does.
+    # (tools/ffs/make_test_onnx.py), FFS's inputs and outputs with a disparity
+    # and spread worked out by hand: FfsStereo's depth units, no returns
+    # (coverage and the spread gate among them), padding, both view layouts, the
+    # plan cache, kept pairs' views, the depth read in place by GpuFramePrep and
+    # the refusals; and StereoDepthSensor on a test camera, as any IRgbdSensor,
+    # in a SensorArray. They skip as the interop test does.
     foreach(_vs_ffs_test stereo depth_sensor)
       add_executable(sensor_ffs_${_vs_ffs_test}_test
                      sensor_ffs_${_vs_ffs_test}_test.cpp)

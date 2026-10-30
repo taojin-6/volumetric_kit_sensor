@@ -260,8 +260,15 @@ the disparity's frame-to-frame sigma that the caller measured on its camera
 (`DepthNoise::stereo` over the rig's fx and baseline); left at 0, the noise
 is unknown, and a consumer that needs one refuses the frames.
 
-The tests run TensorRT and the kernels on two 593-byte models with FFS's
-inputs and output (`tests/data/ffs`, made by `tools/ffs/make_test_onnx.py`),
+The export also writes `disparity_spread`: how far FFS's last refinement
+steps still moved each pixel's disparity.
+`FfsStereo::Options::max_disparity_spread`, above 0, makes every pixel
+whose spread is above it "no return"; it is measured on the camera, as the
+sigma is, and 0, the default, keeps every pixel. An export without the
+output still runs, with no gate.
+
+The tests run TensorRT and the kernels on five small models with FFS's
+inputs and outputs (`tests/data/ffs`, made by `tools/ffs/make_test_onnx.py`),
 and skip where CUDA does not reach the GPU unless `VS_TEST_HEVC_BACKEND`
 is set.
 
@@ -288,7 +295,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.11.0), carried by the umbrella as
+The version is `project()`'s (0.12.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

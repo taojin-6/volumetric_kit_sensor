@@ -41,16 +41,21 @@ struct DepthParams {
   float units_per_metre = 0.0f;  // 1 / metres_per_unit
   // Rgba8 views: their coverage bytes (the top byte of each word) are read.
   bool coverage = false;
+  // With a spread: a pixel whose spread is above this, or NaN, is no return.
+  float max_spread = 0.0f;
 };
 
 // The view's width x height pixels of `disparity` (net_width a row) as 16-bit
 // depth, rows packed; 0 where the disparity is not above 0, points off the
-// right view, or gives a depth outside [min_depth, max_depth], and, with
-// `coverage`, where the left view's pixel or the right view's pixel it
-// matched (the nearest) has coverage 0. `left` and `right` are the views,
-// read only with `coverage`.
-cudaError_t make_depth(const float* disparity, const void* left,
-                       const void* right, std::uint16_t* depth,
-                       const DepthParams& params, cudaStream_t stream);
+// right view, or gives a depth outside [min_depth, max_depth]; with `spread`
+// (the network's disparity_spread, laid out as `disparity`), where it is
+// above `max_spread` or NaN; and, with `coverage`, where the left view's
+// pixel or the right view's pixel it matched (the nearest) has coverage 0.
+// `spread` null gates nothing; `left` and `right` are the views, read only
+// with `coverage`.
+cudaError_t make_depth(const float* disparity, const float* spread,
+                       const void* left, const void* right,
+                       std::uint16_t* depth, const DepthParams& params,
+                       cudaStream_t stream);
 
 }  // namespace volumetric_kit::sensor::ffs

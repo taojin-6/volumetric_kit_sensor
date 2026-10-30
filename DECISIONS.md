@@ -333,7 +333,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   writing 16-bit depth into a Vulkan buffer (`RgbdFrame::depth_device`);
   `StereoDepthSensor` is any `IStereoSensor` as an `IRgbdSensor`, on a
   thread of its own. Research use: NVlabs' code and the 23-36-37 weights,
-  exported by `tools/ffs/export_onnx.py`, never vendored.
+  exported by `tools/ffs/export_onnx.py`, never vendored. *Amended
+  2026-10-30:* the export writes a second output, `disparity_spread`, which
+  `FfsStereo` takes or does without, and gates on (the spread-gate entry).
 - [**2026-10-29**](#2026-10-29--a-frame-with-colour-keeps-only-what-both-its-cameras-see-depth-outside-the-colour-cameras-view-and-colour-outside-the-depth-cameras-are-dropped-wherever-the-depth-comes-from-and-gpuframeprepconfigdepth_within_color-goes-amends-the-2026-09-28-gpu-pre-processing-entry) —
   A frame with colour keeps only what both its cameras see by their fields
   of view, each sensor's overlap from its own intrinsics and extrinsic, the
@@ -363,6 +365,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   input through PortAudio, a prerequisite found through pkg-config. Audio is
   host I/O: PCM in host memory, never on the GPU or in the per-frame GPU
   path; a CPU audio codec (Opus) needs owner approval.
+- [**2026-10-30**](#2026-10-30--ffs-drops-the-pixels-it-has-not-settled-disparity_spread-the-range-of-its-last-four-refinement-states-and-ffsstereooptionsmax_disparity_spread-a-gate-that-makes-a-pixel-above-it-no-return-0-off-by-default-amends-the-2026-10-29-stereo-depth-entry) —
+  FFS drops the pixels it has not settled: the export writes
+  `disparity_spread`, the range of FFS's disparity over its last four
+  refinement states in pixels; `FfsStereo` takes a model with or without
+  it, and `Options::max_disparity_spread`, above 0, makes a pixel whose
+  spread is above it "no return". 0, off, is the default: the value is the
+  camera's, measured on it. The frame contract is unchanged.
 
 ## Decision record
 
@@ -5221,3 +5230,122 @@ and the ring publishing its writes relaxed. Debug ThreadSanitizer reports
 the last only since the ring writes an entry field by field; written as one
 struct it passed 3 runs of 3. No mic was opened and `mic_check` was not
 run.
+
+### 2026-10-30 — FFS drops the pixels it has not settled: `disparity_spread`, the range of its last four refinement states, and `FfsStereo::Options::max_disparity_spread`, a gate that makes a pixel above it "no return", 0 (off) by default (amends the 2026-10-29 stereo-depth entry).
+
+**The rule.**
+- `tools/ffs/export_onnx.py` writes a second output, `disparity_spread`,
+  float `1 x 1 x H x W`: the range (largest less smallest) of FFS's
+  quarter-resolution disparity over its last four refinement states (after
+  GRU steps 5 to 8 at the export's default 8 iterations, which every
+  measurement below used; fewer than 4 are refused), times 4 into
+  full-resolution pixels, resized bilinearly with half-pixel centres to the
+  disparity's size, in FP32. FFS keeps those states inside its forward, so
+  the export traces a copy of the checkout's test-mode forward (476f424)
+  that keeps them, and refuses to export if the copy's disparity is more
+  than 0.01 px from the checkout's own forward's on the trace's input.
+- `FfsStereo` takes a model with or without it. A fourth tensor must be
+  output `disparity_spread`, float, at the disparity's shape; any other is
+  refused, on the parsed network before the build and on the plan's own
+  tensors after a load. Its buffer is allocated and bound whenever the
+  model has it (TensorRT writes every output) and read only with a gate.
+- `Options::max_disparity_spread`, pixels at the rig's size, finite and at
+  least 0: above 0, the depth kernel writes "no return" (0) wherever the
+  spread is above it or NaN. 0, the default, gates nothing; above 0 for a
+  model without the output is refused at `create`, before any build.
+- The frame contract is unchanged: `RgbdFrame`, `DeviceFrame` and
+  `DepthNoise` gain nothing, and a gated pixel is a "no return" every
+  consumer handles already.
+
+**Why.** The owner, asking how to get confidence from FFS (2026-10-30),
+then: "You can try the refinement as confidence". FFS gives none: test mode
+returns the disparity alone, and nothing in its code, its model card or
+NVIDIA's commercial ONNX is trained or named as one. The confidence study
+(2026-10-30) scored 14 derived signals against ground truth on 32 synthetic
+pairs, a cut-out person before textured and plain Middlebury walls. The
+refinement's motion leads: the spread's ROC AUC for a pixel more than 1 px
+wrong is 0.92, tied with the summed update size (0.91), ahead of a
+left-right check (0.90, a second network run) and of the cost volume's
+softmax (0.87-0.88). Of the tied pair, the spread is the one measured
+through the family's path: exported in the graph and built as `FfsStereo`
+builds, its AUC is 0.911 in TensorRT FP16 against 0.912 in PyTorch AMP and
+FP32, and no extra output moved the disparity more than a rebuild does
+(0.025 px mean). A fixed cut drops more where FFS is worse: at 0.2 px it
+keeps 92% of textured walls and 77% of plain ones, removing 43% and 78% of
+their pixels more than 1 px wrong.
+
+**A gate, not a weight or a sigma.** recon's fusion builds a surface in
+voxels at weight 0, empty or just reset, from any sample, however weighted;
+only a sample that never arrives keeps invented depth out. The spread is
+not calibrated as a sigma, which a per-pixel sigma on the frame would need
+with a field of its own; the frame keeps the owner's "let's not consider
+confidence for now" (the depth-noise entry). The gate drops input pixels
+only, before fusion, and removes nothing from a map.
+
+**No default but 0.** The value is the camera's and the model's, as
+`disparity_sigma` is, and FFS takes any pair. Measured so far, at 0.2 px:
+- in recon's change-driven fusion of the simulated scenes, the surface
+  invented before and behind a plain wall around a walking person shrinks
+  from 0.27 to 0.11 m² and from 0.87 to 0.28 m² (Middlebury Piano); the
+  person is 93% drawn in their first frame (97% ungated) and evicted when
+  they leave; the price is more holes, mostly on the plain wall;
+- on the lab D455's infrared pair, projector off, at 960 x 544, it drops 9%
+  of the valid pixels a frame (those `FfsStereo` already returns), 90% of
+  the bad ones on a bright plain wall, and 0.7-7.4% of the textured walls;
+  fused over 300 frames of the empty room, the wrong surface on that wall
+  falls from 31.6% to 16.3%, and 2.7% of the image is left empty.
+
+The D455's 0.2 px is set by recon's opener in a later recon PR, measured on
+the rig, beside its disparity sigma; this package states no value.
+
+**Known effects.** A gated pixel is a dropout to recon's change detector,
+so two in a row on a pixel with history can reset the surface on that ray
+(0.07% of the image over 11 s of the empty D455 room; nothing behind the
+surface is cleared, and it refills when the pixel returns). Depth edges are
+the spread's weak spot (AUC 0.58-0.68 there). The export always writes
+the output: a rig that never gates gets one more float plane (2 MB at
+960 x 544) and no network time that can be measured. On an RTX 5090 at
+960 x 544, the network's median is 12.562 ms with it and 12.587 ms without
+(two TensorRT builds; one plan in two processes differs by 0.023 ms), under
+the 0.5 ms or 5% that would have earned an export switch to leave it out;
+the depth kernel takes 0.004 ms with the gate at 0 and at 0.2 px. Not
+measured: a moving person on real infrared.
+
+**Tests.** Three more models from `tools/ffs/make_test_onnx.py`, with the
+first model's disparity and a spread of a sixteenth of the right view's
+weighted value: `spread_64x32.onnx` (`disparity_spread`), and, refused,
+`spread_quarter_64x32.onnx` (the spread at 8 x 16) and
+`other_output_64x32.onnx` (it named `confidence`); the two models before
+are byte-identical. `sensor_ffs_stereo`: on a pair whose spread runs from 1
+to 4.9375 px in sixteenths, every sample against its expectation with the
+gate off (the spread bound, not read), between two spreads (2.53125 px:
+exactly the pixels above it no return, the rest unchanged) and above all
+(none dropped), and between on a 60 x 30 rig, whose network rows are wider
+than its views' (the spread read where the disparity is); a gate on a
+model without the spread refused, before the build (no plan written) and
+on that model's cached plan; the quarter spread and the fourth output of
+another name refused, with and without a gate, naming them; a negative,
+NaN or infinite gate refused.
+
+**Validation.** Apple M5 Max, macOS 27.2, Release with warnings as errors:
+the suite, 39 tests, passes (no `sensor_ffs`: Linux, CUDA and TensorRT
+only); the three new models and the first checked in ONNX Runtime on the
+test's pair (disparity within 2.4e-6 px, spread exact), and the gate
+test's four rounds met by the depth kernel's rule run on those outputs in
+FP32 (a spread read at the view's index instead misses 343 samples of the
+60 x 30 round and none of the others); and the export's new code traced on
+a stand-in network with the copy's module names, its ONNX spread within
+4e-6 px of the studies' own definition. RTX 5090, Linux, CUDA 13.4,
+TensorRT 11.4, Release with warnings as errors and every option: the suite,
+55 tests, passes with validation and synchronization validation, and
+`sensor_ffs_stereo`'s four gate rounds give the counts worked out on the
+Mac; it fails with each of four planted bugs (the gate ignored; the spread
+read at the view's index, caught by the 60 x 30 round alone, 343 samples
+off; a gate taken on a model without the spread; the spread's shape
+unchecked). FFS itself (23-36-37, 960 x 544) exports with the spread, the
+copy's disparity 0.0 px from the checkout's forward's. Built as `FfsStereo`
+builds and run on the D455 take (projector off, 30 frames, 0.25-6.5 m):
+ungated, the returns with the output are those without it on 99.9975% of
+the samples (|dz| median 0.3 mm, p99 2.4 mm: a rebuild's noise); two
+processes on one plan give the same bits; and the gate at 0.2 px drops
+9.03% of the returns, adds none and leaves every kept one bit-identical.

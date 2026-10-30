@@ -38,10 +38,12 @@ using Clock = std::chrono::steady_clock;
 using video::CudaContextScope;
 
 constexpr const char* kWho = "FfsStereo";
-// The network's inputs and output, as tools/ffs/export_onnx.py names them.
+// The network's inputs and outputs, as tools/ffs/export_onnx.py names them;
+// the spread is optional.
 constexpr const char* kLeft = "left_image";
 constexpr const char* kRight = "right_image";
 constexpr const char* kDisparity = "disparity";
+constexpr const char* kSpread = "disparity_spread";
 // FFS's sides are multiples of this.
 constexpr std::uint32_t kNetMultiple = 32;
 // Views mapped into CUDA at most, the least recently read let go first: the
@@ -199,23 +201,29 @@ std::string dims_text(const nvinfer1::Dims& dims) {
   return out;
 }
 
-// The two inputs and the output tools/ffs/export_onnx.py writes, at the
-// network's size.
-core::Status check_signature(const std::vector<Tensor>& tensors,
-                             std::uint32_t net_width,
-                             std::uint32_t net_height) {
+// The two inputs and the outputs tools/ffs/export_onnx.py writes, at the
+// network's size, the spread optional and shaped as the disparity: whether
+// the model has the spread.
+core::Result<bool> check_signature(const std::vector<Tensor>& tensors,
+                                   std::uint32_t net_width,
+                                   std::uint32_t net_height) {
+  const std::string plane =
+      std::to_string(net_height) + " x " + std::to_string(net_width);
   const std::string expected =
-      "inputs left_image and right_image, float 1 x 3 x " +
-      std::to_string(net_height) + " x " + std::to_string(net_width) +
-      ", and output disparity, float 1 x 1 x " + std::to_string(net_height) +
-      " x " + std::to_string(net_width) +
+      "inputs left_image and right_image, float 1 x 3 x " + plane +
+      ", and output disparity, float 1 x 1 x " + plane +
+      ", with or without output disparity_spread, float 1 x 1 x " + plane +
       " (the rig's size rounded up to a multiple of 32)";
-  if (tensors.size() != 3) {
+  const bool spread =
+      std::any_of(tensors.begin(), tensors.end(),
+                  [](const Tensor& t) { return t.name == kSpread; });
+  if (tensors.size() != (spread ? 4u : 3u)) {
     return refuse("the model has " + std::to_string(tensors.size()) +
                   " inputs and outputs; it needs " + expected);
   }
-  for (const char* name : {kLeft, kRight, kDisparity}) {
-    const bool input = name != kDisparity;
+  for (const char* name : {kLeft, kRight, kDisparity, kSpread}) {
+    if (name == kSpread && !spread) continue;
+    const bool input = name == kLeft || name == kRight;
     const auto it =
         std::find_if(tensors.begin(), tensors.end(),
                      [&](const Tensor& t) { return t.name == name; });
@@ -234,7 +242,7 @@ core::Status check_signature(const std::vector<Tensor>& tensors,
           "; it needs " + expected);
     }
   }
-  return {};
+  return spread;
 }
 
 std::vector<Tensor> tensors_of(const nvinfer1::INetworkDefinition& network) {
@@ -311,10 +319,13 @@ struct FfsStereo::Impl {
   TrtPtr<nvinfer1::IRuntime> runtime;
   TrtPtr<nvinfer1::ICudaEngine> engine;
   TrtPtr<nvinfer1::IExecutionContext> execution;
-  // The network's inputs and output, CUDA's own.
+  // The network's inputs and outputs, CUDA's own; the spread's only for a
+  // model that has it, gate or no gate, as TensorRT writes every output.
+  bool has_spread = false;
   float* left_input = nullptr;
   float* right_input = nullptr;
   float* disparity = nullptr;
+  float* spread = nullptr;
   // Around the input kernel, the network and the depth kernel.
   cudaEvent_t events[4] = {nullptr, nullptr, nullptr, nullptr};
   // The frame's end, which the host waits on asleep (a blocking-sync event):
@@ -332,6 +343,7 @@ struct FfsStereo::Impl {
   Impl& operator=(const Impl&) = delete;
   ~Impl();
 
+  core::Status check_model(const std::vector<Tensor>& tensors);
   core::Status load_or_build(const fs::path& model);
   core::Status prepare_execution();
   core::Result<const void*> map_view(core::ExportedBuffer& view);
@@ -348,7 +360,7 @@ FfsStereo::Impl::~Impl() {
   execution.reset();
   engine.reset();
   runtime.reset();
-  for (float* p : {left_input, right_input, disparity}) {
+  for (float* p : {left_input, right_input, disparity, spread}) {
     if (p != nullptr) cudaFree(p);
   }
   for (cudaEvent_t e : events) {
@@ -373,6 +385,11 @@ core::Result<std::unique_ptr<FfsStereo>> FfsStereo::create(
         options.disparity_sigma >= 0.0f)) {
     return refuse(
         "disparity_sigma must be finite and at least 0 (0: unknown noise)");
+  }
+  if (!(std::isfinite(options.max_disparity_spread) &&
+        options.max_disparity_spread >= 0.0f)) {
+    return refuse(
+        "max_disparity_spread must be finite and at least 0 (0: no gate)");
   }
   if (options.plan_cache.empty()) {
     return refuse("no plan_cache: the plan takes minutes to build");
@@ -417,6 +434,17 @@ core::Result<std::unique_ptr<FfsStereo>> FfsStereo::create(
   return core::Status::out_of_memory("FfsStereo: out of host memory");
 } catch (const fs::filesystem_error& e) {
   return core::Status::io_error(std::string(kWho) + ": " + e.what());
+}
+
+// The model's signature, and a gate only on a model with the spread.
+core::Status FfsStereo::Impl::check_model(const std::vector<Tensor>& tensors) {
+  VKC_ASSIGN(has_spread, check_signature(tensors, net_width, net_height));
+  if (!has_spread && options.max_disparity_spread > 0.0f) {
+    return refuse(
+        "max_disparity_spread is above 0, but the model has no "
+        "disparity_spread output (tools/ffs/export_onnx.py writes it)");
+  }
+  return {};
 }
 
 core::Status FfsStereo::Impl::load_or_build(const fs::path& model) {
@@ -486,7 +514,7 @@ core::Status FfsStereo::Impl::load_or_build(const fs::path& model) {
       return refuse("TensorRT cannot parse the model " + path + ": " + why);
     }
     // Checked before the build, which takes minutes.
-    VKC_TRY(check_signature(tensors_of(*network), net_width, net_height));
+    VKC_TRY(check_model(tensors_of(*network)));
     core::log_message(
         core::LogLevel::Info, "sensor_ffs",
         "FfsStereo: building " + plan.string() + " (minutes, once)");
@@ -505,7 +533,9 @@ core::Status FfsStereo::Impl::load_or_build(const fs::path& model) {
     engine.reset(runtime->deserializeCudaEngine(built->data(), built->size()));
     if (engine == nullptr) return tensorrt_failure("did not load its plan");
   }
-  return check_signature(tensors_of(*engine), net_width, net_height);
+  // The plan's own tensors are what runs, as a cached plan may hold another
+  // model's.
+  return check_model(tensors_of(*engine));
 }
 
 core::Status FfsStereo::Impl::prepare_execution() {
@@ -514,16 +544,19 @@ core::Status FfsStereo::Impl::prepare_execution() {
   const std::size_t plane = std::size_t{net_width} * net_height;
   for (auto [p, floats] :
        {std::pair{&left_input, 3 * plane}, std::pair{&right_input, 3 * plane},
-        std::pair{&disparity, plane}}) {
+        std::pair{&disparity, plane},
+        std::pair{&spread, has_spread ? plane : 0}}) {
+    if (floats == 0) continue;
     if (const cudaError_t e =
             cudaMalloc(reinterpret_cast<void**>(p), floats * sizeof(float));
         e != cudaSuccess) {
-      return cuda_failure("allocating the network's inputs and output", e);
+      return cuda_failure("allocating the network's inputs and outputs", e);
     }
   }
   if (!execution->setTensorAddress(kLeft, left_input) ||
       !execution->setTensorAddress(kRight, right_input) ||
-      !execution->setTensorAddress(kDisparity, disparity)) {
+      !execution->setTensorAddress(kDisparity, disparity) ||
+      (has_spread && !execution->setTensorAddress(kSpread, spread))) {
     return tensorrt_failure("did not take the network's buffers");
   }
   for (cudaEvent_t& e : events) {
@@ -664,6 +697,9 @@ core::Result<RgbdFrame> FfsStereo::Impl::depth(const RectifiedPair& pair,
   out.max_depth = options.max_depth;
   out.units_per_metre = 1.0f / metres_per_unit;
   out.coverage = !in.luma;
+  out.max_spread = options.max_disparity_spread;
+  // The gate is on above 0, and create refused that for a model without it.
+  const float* gate = options.max_disparity_spread > 0.0f ? spread : nullptr;
 
   const cudaStream_t s = stream->handle();
   const bool timed = metrics != nullptr;
@@ -676,7 +712,7 @@ core::Result<RgbdFrame> FfsStereo::Impl::depth(const RectifiedPair& pair,
   if (e == cudaSuccess) enqueued = execution->enqueueV3(s);
   if (enqueued && timed) e = cudaEventRecord(events[2], s);
   if (enqueued && e == cudaSuccess) {
-    e = ffs::make_depth(disparity, left, right, depth_out, out, s);
+    e = ffs::make_depth(disparity, gate, left, right, depth_out, out, s);
   }
   if (enqueued && e == cudaSuccess && timed) e = cudaEventRecord(events[3], s);
   // Whatever was queued, waited for asleep.

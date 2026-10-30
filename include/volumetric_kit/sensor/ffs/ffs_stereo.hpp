@@ -30,7 +30,10 @@ namespace volumetric_kit::sensor {
 /// The model is an ONNX export of FFS (`tools/ffs/export_onnx.py` makes it,
 /// once per checkpoint and size): inputs `left_image` and `right_image`, float
 /// `1 x 3 x H x W`, R'G'B' less ImageNet's mean over its deviation; output
-/// `disparity`, float `1 x 1 x H x W`, in pixels. Its size is the rig's
+/// `disparity`, float `1 x 1 x H x W`, in pixels, and, optionally,
+/// `disparity_spread`, float `1 x 1 x H x W`: how far the network's last
+/// refinement steps still moved each pixel's disparity, in pixels, which
+/// @ref Options::max_disparity_spread gates on. Its size is the rig's
 /// rounded up to a multiple of 32, which FFS needs: the views are padded by
 /// repeating their last row and column, and the padding cut off again.
 ///
@@ -51,13 +54,14 @@ namespace volumetric_kit::sensor {
 /// @ref kQueueFamilyExternal). A disparity that is not above 0, that points
 /// off the right view (`x - d < 0`), or whose depth is outside
 /// [@ref Options::min_depth, @ref Options::max_depth] is "no return" (0); so
-/// is, in `Rgba8` views, a pixel the rectifier did not see (coverage 0) in
-/// the left view, or matched to one in the right view. `Luma8` views carry
-/// no coverage: a border the rectifier leaves -- alpha above 0, or alpha 1 on
-/// a pair rectified already whose aspect the size changes -- is matched as
-/// black picture, so take `Rgba8` or alpha 0 there. The host only orders the
-/// work and waits for it, asleep; nothing is allocated a frame while no frame
-/// is kept past the next.
+/// is one whose spread is above @ref Options::max_disparity_spread, when that
+/// is above 0; and, in `Rgba8` views, a pixel the rectifier did not see
+/// (coverage 0) in the left view, or matched to one in the right view. `Luma8`
+/// views carry no coverage: a border the rectifier leaves -- alpha above 0, or
+/// alpha 1 on a pair rectified already whose aspect the size changes -- is
+/// matched as black picture, so take `Rgba8` or alpha 0 there. The host only
+/// orders the work and waits for it, asleep; nothing is allocated a frame while
+/// no frame is kept past the next.
 ///
 /// Up to eight views stay mapped, the least recently read let go first, and
 /// a view read again after its mapping went is refused. A view the rectifier
@@ -82,8 +86,8 @@ namespace volumetric_kit::sensor {
 ///          this object and every frame it hands out. Not thread-safe.
 class VS_FFS_API FfsStereo final {
  public:
-  /// @brief The model, where its plans are kept, the depths kept, and the
-  ///        disparity's noise.
+  /// @brief The model, where its plans are kept, the depths kept, the
+  ///        disparity's noise, and the pixels the network has not settled.
   struct Options {
     /// The FFS ONNX (`tools/ffs/export_onnx.py`).
     std::filesystem::path model;
@@ -103,6 +107,14 @@ class VS_FFS_API FfsStereo final {
     /// 1280 x 720, its projector off, measured 0.04 px. Finite and at least
     /// 0.
     float disparity_sigma = 0.0f;
+    /// Pixels whose disparity the network was still moving in its last
+    /// refinement steps -- the range over its last four, in pixels at the
+    /// rig's size -- by more than this are "no return" (0), as is a spread
+    /// that is not a number. 0, the default, keeps them all; above 0 needs a
+    /// model with the `disparity_spread` output. It is the camera's and the
+    /// model's, measured on the camera, like @ref disparity_sigma. Finite and
+    /// at least 0.
+    float max_disparity_spread = 0.0f;
   };
 
   /// @brief Build or load the plan for @p rectifier's views.
@@ -115,13 +127,15 @@ class VS_FFS_API FfsStereo final {
   ///                   baseline) and its depth view (`depth_info()`: the
   ///                   colour camera and where the depth camera sits from
   ///                   it), read here.
-  /// @param options    The model, the plan cache, the depth range and the
-  ///                   disparity's noise.
+  /// @param options    The model, the plan cache, the depth range, the
+  ///                   disparity's noise and its spread gate.
   /// @return The matcher; `Status::Code::InvalidArgument` for a depth range
   ///         that is not `0 < min_depth < max_depth`, a `disparity_sigma`
-  ///         that is not finite and at least 0, no plan cache, a model
-  ///         that TensorRT cannot parse, or whose inputs and output are not
-  ///         those above at the rig's size rounded up to 32;
+  ///         or `max_disparity_spread` that is not finite and at least 0,
+  ///         no plan cache, a model that TensorRT cannot parse, or whose
+  ///         inputs and outputs are not those above at the rig's size
+  ///         rounded up to 32, or a `max_disparity_spread` above 0 for a
+  ///         model without `disparity_spread`;
   ///         `Status::Code::NotFound` for no model file;
   ///         `Status::Code::IoError` for a plan cache that cannot be made,
   ///         before any build; `Status::Code::Unsupported` where CUDA does
