@@ -216,7 +216,8 @@ venv/bin/python tools/ffs/export_onnx.py --ffs ~/Fast-FoundationStereo \
 ```cpp
 VKC_ASSIGN(auto sensor,
            sensor::StereoDepthSensor::create(
-               device, allocator, std::move(camera),  // any IStereoSensor
+               device, allocator,
+               std::move(camera),  // any std::unique_ptr<IStereoSensor>
                {{{960, 544}, 0.0f, sensor::StereoRectifier::Output::Luma8},
                 {"ffs_23-36-37_960x544.onnx", "ffs_plans"}}));
 VKC_TRY(sensor->start());  // then poll and prepare as for any IRgbdSensor

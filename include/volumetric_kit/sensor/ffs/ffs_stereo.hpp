@@ -37,7 +37,8 @@ namespace volumetric_kit::sensor {
 /// @ref create builds the model into a TensorRT plan, which takes minutes, and
 /// keeps it in @ref Options::plan_cache, named for the GPU, the TensorRT
 /// version, the model's bytes and its size; a later create on the same GPU
-/// loads it in seconds. A plan TensorRT will not load is built again.
+/// loads it in seconds. A plan TensorRT will not load is built again; one
+/// that cannot be written runs unkept, with a warning.
 ///
 /// Each @ref depth reads the rectifier's views in place, through CUDA
 /// (`CudaBufferMapping`, each buffer mapped once, by the first matcher that
@@ -49,9 +50,19 @@ namespace volumetric_kit::sensor {
 /// Vulkan buffer of its own (`RgbdFrame::depth_device`, taken over from
 /// @ref kQueueFamilyExternal). A disparity that is not above 0, that points
 /// off the right view (`x - d < 0`), or whose depth is outside
-/// [@ref Options::min_depth, @ref Options::max_depth] is "no return" (0). The
-/// host only orders the work and waits for it; nothing is allocated a frame
-/// while no frame is kept past the next.
+/// [@ref Options::min_depth, @ref Options::max_depth] is "no return" (0); so
+/// is, in `Rgba8` views, a pixel the rectifier did not see (coverage 0) in
+/// the left view, or matched to one in the right view. `Luma8` views carry
+/// no coverage: a border the rectifier leaves -- alpha above 0, or alpha 1 on
+/// a pair rectified already whose aspect the size changes -- is matched as
+/// black picture, so take `Rgba8` or alpha 0 there. The host only orders the
+/// work and waits for it, asleep; nothing is allocated a frame while no frame
+/// is kept past the next.
+///
+/// Up to eight views stay mapped, the least recently read let go first, and
+/// a view read again after its mapping went is refused. A view the rectifier
+/// replaced -- each frame a pair is kept past the next -- keeps its mapping,
+/// and its memory, until then.
 ///
 /// @code
 /// VKC_ASSIGN(auto rectifier, StereoRectifier::create(
@@ -74,7 +85,7 @@ class VS_FFS_API FfsStereo final {
   struct Options {
     /// The FFS ONNX (`tools/ffs/export_onnx.py`).
     std::filesystem::path model;
-    /// The directory built plans are kept in, made if missing.
+    /// The directory built plans are kept in, made if missing; not empty.
     std::filesystem::path plan_cache;
     /// Nearer depth is "no return" (metres); above 0.
     float min_depth = 0.3f;
@@ -95,12 +106,14 @@ class VS_FFS_API FfsStereo final {
   ///                   it), read here.
   /// @param options    The model, the plan cache and the depth range.
   /// @return The matcher; `Status::Code::InvalidArgument` for a depth range
-  ///         that is not `0 < min_depth < max_depth`, a model that TensorRT
-  ///         cannot parse, or whose inputs and output are not those above at
-  ///         the rig's size rounded up to 32; `Status::Code::NotFound` for no
-  ///         model file; `Status::Code::Unsupported` where CUDA does not reach
-  ///         the device's GPU or the device does not export memory; or a CUDA,
-  ///         TensorRT, file or buffer failure.
+  ///         that is not `0 < min_depth < max_depth`, no plan cache, a model
+  ///         that TensorRT cannot parse, or whose inputs and output are not
+  ///         those above at the rig's size rounded up to 32;
+  ///         `Status::Code::NotFound` for no model file;
+  ///         `Status::Code::IoError` for a plan cache that cannot be made,
+  ///         before any build; `Status::Code::Unsupported` where CUDA does
+  ///         not reach the device's GPU or the device does not export memory;
+  ///         or a CUDA, TensorRT, file or buffer failure.
   static core::Result<std::unique_ptr<FfsStereo>> create(
       const core::Device& device, core::Allocator& allocator,
       const StereoRectifier& rectifier, const Options& options);
@@ -126,7 +139,8 @@ class VS_FFS_API FfsStereo final {
   ///                 time, the wait included.
   /// @return The frame; `Status::Code::InvalidArgument` for a pair of another
   ///         size, views that are not exported or not `Luma8` or `Rgba8` at
-  ///         that size, or a view imported by something else; or a CUDA,
+  ///         that size, or a view imported by something else or whose
+  ///         mapping was let go; or a CUDA,
   ///         TensorRT or buffer failure, after which every pair is refused,
   ///         as the GPU may still be writing.
   core::Result<RgbdFrame> depth(const RectifiedPair& pair,

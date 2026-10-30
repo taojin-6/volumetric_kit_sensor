@@ -39,12 +39,18 @@ struct DepthParams {
   float focal_baseline = 0.0f;          // fx * baseline: depth = this / d
   float min_depth = 0.0f, max_depth = 0.0f;
   float units_per_metre = 0.0f;  // 1 / metres_per_unit
+  // Rgba8 views: their coverage bytes (the top byte of each word) are read.
+  bool coverage = false;
 };
 
 // The view's width x height pixels of `disparity` (net_width a row) as 16-bit
 // depth, rows packed; 0 where the disparity is not above 0, points off the
-// right view, or gives a depth outside [min_depth, max_depth].
-cudaError_t make_depth(const float* disparity, std::uint16_t* depth,
+// right view, or gives a depth outside [min_depth, max_depth], and, with
+// `coverage`, where the left view's pixel or the right view's pixel it
+// matched (the nearest) has coverage 0. `left` and `right` are the views,
+// read only with `coverage`.
+cudaError_t make_depth(const float* disparity, const void* left,
+                       const void* right, std::uint16_t* depth,
                        const DepthParams& params, cudaStream_t stream);
 
 }  // namespace volumetric_kit::sensor::ffs

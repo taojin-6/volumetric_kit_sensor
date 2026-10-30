@@ -44,8 +44,12 @@ constexpr const char* kRight = "right_image";
 constexpr const char* kDisparity = "disparity";
 // FFS's sides are multiples of this.
 constexpr std::uint32_t kNetMultiple = 32;
-// Views mapped into CUDA at most: the rectifier writes two buffers while no
-// pair is kept past the next, more while pairs are kept.
+// Views mapped into CUDA at most, the least recently read let go first: the
+// rectifier writes two buffers while no pair is kept past the next, and a new
+// pair of them for each frame one is kept. A buffer it has replaced is freed
+// with the last pair holding it, which this matcher cannot see; its mapping
+// stays until let go here, and keeps its memory (the import holds the
+// descriptor's reference), so CUDA never reads freed memory.
 constexpr std::size_t kMaxViews = 8;
 
 core::Status refuse(const std::string& why) {
@@ -312,6 +316,10 @@ struct FfsStereo::Impl {
   float* disparity = nullptr;
   // Around the input kernel, the network and the depth kernel.
   cudaEvent_t events[4] = {nullptr, nullptr, nullptr, nullptr};
+  // The frame's end, which the host waits on asleep (a blocking-sync event):
+  // a stream synchronize in the primary context spins a core for the whole
+  // network run.
+  cudaEvent_t done = nullptr;
   std::vector<ViewMapping> views;
   std::vector<std::shared_ptr<DepthBuffer>> depths;
   std::uint64_t frames = 0;
@@ -345,6 +353,7 @@ FfsStereo::Impl::~Impl() {
   for (cudaEvent_t e : events) {
     if (e != nullptr) cudaEventDestroy(e);
   }
+  if (done != nullptr) cudaEventDestroy(done);
 }
 
 FfsStereo::FfsStereo(std::unique_ptr<Impl> impl) noexcept
@@ -358,6 +367,9 @@ core::Result<std::unique_ptr<FfsStereo>> FfsStereo::create(
   if (!(std::isfinite(options.min_depth) && std::isfinite(options.max_depth) &&
         options.min_depth > 0.0f && options.min_depth < options.max_depth)) {
     return refuse("the depth range needs 0 < min_depth < max_depth");
+  }
+  if (options.plan_cache.empty()) {
+    return refuse("no plan_cache: the plan takes minutes to build");
   }
   if (!device.exports_memory()) {
     return core::Status::unsupported(
@@ -414,6 +426,15 @@ core::Status FfsStereo::Impl::load_or_build(const fs::path& model) {
   for (int i = 0; i < 8; ++i) {
     hash_bytes[i] = static_cast<unsigned char>(model_hash >> (56 - 8 * i));
   }
+  // Made before anything is built, so a cache that cannot be made costs no
+  // build.
+  std::error_code ec;
+  fs::create_directories(options.plan_cache, ec);
+  if (ec) {
+    return core::Status::io_error(std::string(kWho) + ": cannot make " +
+                                  options.plan_cache.string() + ": " +
+                                  ec.message());
+  }
   const fs::path plan =
       options.plan_cache /
       ("ffs-" + hex(hash_bytes, 8) + "-" + std::to_string(net_width) + "x" +
@@ -428,7 +449,6 @@ core::Status FfsStereo::Impl::load_or_build(const fs::path& model) {
 
   // A plan TensorRT will not load -- written by another version, or cut
   // short -- is built again.
-  std::error_code ec;
   if (fs::is_regular_file(plan, ec)) {
     VKC_ASSIGN(const std::vector<char> bytes, read_file(plan, "plan"));
     engine.reset(runtime->deserializeCudaEngine(bytes.data(), bytes.size()));
@@ -466,8 +486,13 @@ core::Status FfsStereo::Impl::load_or_build(const fs::path& model) {
     TrtPtr<nvinfer1::IHostMemory> built(
         builder->buildSerializedNetwork(*network, *config));
     if (built == nullptr) return tensorrt_failure("did not build the model");
-    fs::create_directories(options.plan_cache);
-    VKC_TRY(write_plan(plan, built->data(), built->size()));
+    // A plan that cannot be kept still runs: the next create builds again.
+    if (const core::Status written =
+            write_plan(plan, built->data(), built->size());
+        !written.ok()) {
+      core::log_message(core::LogLevel::Warning, "sensor_ffs",
+                        written.message() + "; running the plan unkept");
+    }
     engine.reset(runtime->deserializeCudaEngine(built->data(), built->size()));
     if (engine == nullptr) return tensorrt_failure("did not load its plan");
   }
@@ -496,6 +521,11 @@ core::Status FfsStereo::Impl::prepare_execution() {
     if (const cudaError_t r = cudaEventCreate(&e); r != cudaSuccess) {
       return cuda_failure("making the timing events", r);
     }
+  }
+  if (const cudaError_t r = cudaEventCreateWithFlags(
+          &done, cudaEventBlockingSync | cudaEventDisableTiming);
+      r != cudaSuccess) {
+    return cuda_failure("making the frame's event", r);
   }
   return {};
 }
@@ -531,7 +561,8 @@ core::Result<const void*> FfsStereo::Impl::map_view(
   }
   return refuse(
       "a view was imported by something else: its descriptor is closed and "
-      "this matcher never mapped it");
+      "this matcher has no mapping of it (never made, or let go: eight views "
+      "stay mapped)");
 }
 
 core::Result<std::shared_ptr<DepthBuffer>> FfsStereo::Impl::take_depth() {
@@ -623,6 +654,7 @@ core::Result<RgbdFrame> FfsStereo::Impl::depth(const RectifiedPair& pair,
   out.min_depth = options.min_depth;
   out.max_depth = options.max_depth;
   out.units_per_metre = 1.0f / metres_per_unit;
+  out.coverage = !in.luma;
 
   const cudaStream_t s = stream->handle();
   const bool timed = metrics != nullptr;
@@ -635,12 +667,14 @@ core::Result<RgbdFrame> FfsStereo::Impl::depth(const RectifiedPair& pair,
   if (e == cudaSuccess) enqueued = execution->enqueueV3(s);
   if (enqueued && timed) e = cudaEventRecord(events[2], s);
   if (enqueued && e == cudaSuccess) {
-    e = ffs::make_depth(disparity, depth_out, out, s);
+    e = ffs::make_depth(disparity, left, right, depth_out, out, s);
   }
   if (enqueued && e == cudaSuccess && timed) e = cudaEventRecord(events[3], s);
+  // Whatever was queued, waited for asleep.
   const Clock::time_point waiting = Clock::now();
-  const cudaError_t waited = cudaStreamSynchronize(s);
-  const Clock::time_point done = Clock::now();
+  cudaError_t waited = cudaEventRecord(done, s);
+  if (waited == cudaSuccess) waited = cudaEventSynchronize(done);
+  const Clock::time_point finished = Clock::now();
   if (e == cudaSuccess) e = waited;
   if (!enqueued || e != cudaSuccess) {
     // What was queued may still run: the views and the depth buffer are let
@@ -661,8 +695,8 @@ core::Result<RgbdFrame> FfsStereo::Impl::depth(const RectifiedPair& pair,
         metrics->add_gpu(kRows[i], ms);
       }
     }
-    metrics->add_cpu("ffs", ms_between(start, done));
-    metrics->add_wait("ffs", ms_between(waiting, done));
+    metrics->add_cpu("ffs", ms_between(start, finished));
+    metrics->add_wait("ffs", ms_between(waiting, finished));
   }
 
   RgbdFrame frame;

@@ -35,20 +35,25 @@ namespace volumetric_kit::sensor {
 /// runs FFS, then holds the frame for @ref poll or @ref drain and calls the
 /// @ref set_frame_notify callback: @ref poll stays "the newest frame held",
 /// a frame one FFS run (28 ms at 960 x 544 on an RTX 4090) after its pair.
-/// Its timestamps are the pair's capture times. Its @ref info is the
-/// rectifier's `depth_info()`: depth in the rectified left camera, and the
-/// colour camera.
+/// The thread sleeps between pairs, woken by the camera's
+/// `IStereoSensor::set_frame_notify`; a camera that notifies nothing is asked
+/// again every millisecond. Its timestamps are the pair's capture times. Its
+/// @ref info is the rectifier's `depth_info()`: depth in the rectified left
+/// camera, the colour camera, and the camera's id, model, clock, rate and
+/// colour exposure.
 ///
 /// The camera is called from one thread at a time, never two at once:
 /// @ref start and @ref stop call its `start` and `stop` on the caller's thread,
-/// the thread its `poll` while it runs. The thread's Vulkan submits share the
-/// device's queue with the caller's (`core::Device` serialises them).
+/// the thread its `poll` and `stats` while it runs. The thread's Vulkan
+/// submits share the device's queue with the caller's (`core::Device`
+/// serialises them).
 ///
 /// @code
-/// VKC_ASSIGN(auto camera, RealSenseStereo::open({}));  // any IStereoSensor
+/// VKC_ASSIGN(RealSenseStereo camera, RealSenseStereo::open({}));
 /// VKC_ASSIGN(std::unique_ptr<IRgbdSensor> sensor,
 ///            StereoDepthSensor::create(
-///                device, allocator, std::move(camera),
+///                device, allocator,
+///                std::make_unique<RealSenseStereo>(std::move(camera)),
 ///                {{{960, 544}, 0.0f, StereoRectifier::Output::Luma8},
 ///                 {model, cache}}));
 /// VKC_ASSIGN(auto prep, GpuFramePrep::create(device, allocator,
@@ -75,7 +80,8 @@ class VS_FFS_API StereoDepthSensor final : public IRgbdSensor {
   /// @param device     The device (must outlive this object and its frames).
   /// @param allocator  Where the views and depth come from (must outlive this
   ///                   object and its frames).
-  /// @param camera     The stereo camera, opened; not null.
+  /// @param camera     The stereo camera, opened, not started; not null. Its
+  ///                   frame notification is set here.
   /// @param options    The rectification and FFS.
   /// @return The sensor; or why @ref StereoRectifier::create or
   ///         @ref FfsStereo::create refused.
@@ -90,7 +96,9 @@ class VS_FFS_API StereoDepthSensor final : public IRgbdSensor {
   StereoDepthSensor& operator=(StereoDepthSensor&&) = delete;
 
   /// @return The rectifier's `depth_info()`: depth in the rectified left
-  ///         camera, the colour camera, and between them.
+  ///         camera, the colour camera, and between them; the camera's id,
+  ///         model, clock, rate and colour exposure, so a `SensorArray`
+  ///         takes it as any sensor.
   const SensorInfo& info() const noexcept override;
 
   core::Status set_queue_depth(std::size_t frames) override;
@@ -100,20 +108,25 @@ class VS_FFS_API StereoDepthSensor final : public IRgbdSensor {
   core::Status start() override;
 
   /// @brief Stop the thread, after the pair it is matching, then the camera;
-  ///        the frames held are dropped.
+  ///        the frames held are let go, uncounted, as any sensor's stop.
   void stop() noexcept override;
 
   /// @return The newest frame held; or, once the camera's poll or the GPU
-  ///         has failed, that failure, until the next @ref start.
+  ///         has failed, that failure, until @ref stop and @ref start. After
+  ///         a GPU failure the rectifier and FFS refuse every pair, so it
+  ///         takes a new sensor.
   core::Result<std::optional<RgbdFrame>> poll() override;
 
   /// @return OK with every frame held appended, oldest first; or the
   ///         failure, as @ref poll.
   core::Status drain(std::vector<RgbdFrame>* out) override;
 
-  /// @return Since the last @ref start: `received` pairs taken from the
-  ///         camera; `failed` pairs the rectifier or FFS refused; frames
-  ///         `delivered` and `dropped` as any sensor counts them.
+  /// @return Since the last @ref start: `received` the camera's pairs;
+  ///         `dropped` the pairs the camera replaced before the thread took
+  ///         them, and the frames replaced here before a poll took them;
+  ///         `failed` the camera's failures, and the pairs the rectifier or
+  ///         FFS refused; `delivered` the frames handed out. The camera's
+  ///         counts are as of the thread's last poll.
   SensorStats stats() const noexcept override;
 
   /// @brief Called on the thread once a frame is held, and on a failure.

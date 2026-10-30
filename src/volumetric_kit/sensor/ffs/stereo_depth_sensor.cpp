@@ -20,9 +20,19 @@ namespace {
 
 constexpr const char* kWho = "StereoDepthSensor";
 
-// How long the thread waits before asking the camera again when it had no new
-// pair: IStereoSensor is polled and tells no one.
+// How long the thread waits before asking again a camera that does not
+// notify, when it had no new pair.
 constexpr std::chrono::milliseconds kIdle{1};
+
+// What wakes the thread: a stop, or the camera's notification, which may run
+// on the camera's own thread even after the camera let it go, so it holds
+// this.
+struct Wake {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool stopping = false;  // guarded by mutex
+  bool pair = false;      // guarded by mutex: the camera holds a new pair
+};
 
 }  // namespace
 
@@ -33,6 +43,9 @@ struct StereoDepthSensor::Impl {
   std::unique_ptr<StereoRectifier> rectifier;
   std::unique_ptr<FfsStereo> ffs;
   SensorInfo info;
+  // Whether the camera calls the notification; else it is asked every kIdle.
+  bool camera_notifies = false;
+  std::shared_ptr<Wake> wake = std::make_shared<Wake>();
 
   // The caller's thread alone.
   std::thread worker;
@@ -41,12 +54,13 @@ struct StereoDepthSensor::Impl {
   std::function<void()> notify;
 
   std::mutex mutex;
-  std::condition_variable wake;  // the worker's stop
-  bool stopping = false;         // guarded by mutex
-  std::deque<RgbdFrame> held;    // guarded by mutex; oldest first
-  std::size_t depth = 1;         // guarded by mutex
-  core::Status failure;          // guarded by mutex
-  SensorStats counts;            // guarded by mutex
+  std::deque<RgbdFrame> held;  // guarded by mutex; oldest first
+  std::size_t depth = 1;       // guarded by mutex
+  core::Status failure;        // guarded by mutex
+  // Frames delivered and dropped here, pairs refused here.
+  SensorStats counts;  // guarded by mutex
+  // The camera's own, as the thread last read them.
+  SensorStats camera_counts;  // guarded by mutex
 
   void run();
   void fail(core::Status status);
@@ -63,22 +77,31 @@ void StereoDepthSensor::Impl::fail(core::Status status) {
 void StereoDepthSensor::Impl::run() {
   for (;;) {
     {
-      const std::lock_guard<std::mutex> lock(mutex);
-      if (stopping) return;
+      const std::lock_guard<std::mutex> lock(wake->mutex);
+      if (wake->stopping) return;
+      // A pair held from here on wakes the wait below.
+      wake->pair = false;
     }
     core::Result<std::optional<StereoFrame>> polled = camera->poll();
     if (!polled) {
       fail(polled.status().with_context(kWho));
       return;
     }
-    if (!polled->has_value()) {
-      std::unique_lock<std::mutex> lock(mutex);
-      wake.wait_for(lock, kIdle, [this] { return stopping; });
-      continue;
-    }
+    // On this thread, as the poll: the camera is called from one at a time.
+    const SensorStats seen = camera->stats();
     {
       const std::lock_guard<std::mutex> lock(mutex);
-      ++counts.received;
+      camera_counts = seen;
+    }
+    if (!polled->has_value()) {
+      std::unique_lock<std::mutex> lock(wake->mutex);
+      const auto woken = [this] { return wake->stopping || wake->pair; };
+      if (camera_notifies) {
+        wake->cv.wait(lock, woken);
+      } else {
+        wake->cv.wait_for(lock, kIdle, woken);
+      }
+      continue;
     }
     // The pair goes with this scope, so the rectifier writes its views again.
     core::Result<RgbdFrame> made = [&]() -> core::Result<RgbdFrame> {
@@ -129,6 +152,17 @@ core::Result<std::unique_ptr<StereoDepthSensor>> StereoDepthSensor::create(
   VKC_ASSIGN(impl->ffs, FfsStereo::create(device, allocator, *impl->rectifier,
                                           options.ffs));
   impl->info = impl->rectifier->depth_info();
+  // The thread sleeps until the camera has a pair, where the camera says so.
+  impl->camera_notifies =
+      impl->camera
+          ->set_frame_notify([wake = impl->wake] {
+            {
+              const std::lock_guard<std::mutex> lock(wake->mutex);
+              wake->pair = true;
+            }
+            wake->cv.notify_one();
+          })
+          .ok();
   return std::unique_ptr<StereoDepthSensor>(
       new StereoDepthSensor(std::move(impl)));
 } catch (const std::bad_alloc&) {
@@ -167,7 +201,11 @@ core::Status StereoDepthSensor::start() {
     s.held.clear();
     s.failure = {};
     s.counts = {};
-    s.stopping = false;
+    s.camera_counts = {};
+  }
+  {
+    const std::lock_guard<std::mutex> lock(s.wake->mutex);
+    s.wake->stopping = false;
   }
   VKC_TRY(s.camera->start());
   try {
@@ -185,10 +223,10 @@ void StereoDepthSensor::stop() noexcept {
   Impl& s = *impl_;
   if (!s.running) return;
   {
-    const std::lock_guard<std::mutex> lock(s.mutex);
-    s.stopping = true;
+    const std::lock_guard<std::mutex> lock(s.wake->mutex);
+    s.wake->stopping = true;
   }
-  s.wake.notify_all();
+  s.wake->cv.notify_all();
   // The thread finishes the pair it is matching; only then is the camera
   // called from here.
   try {
@@ -198,8 +236,8 @@ void StereoDepthSensor::stop() noexcept {
   }
   s.camera->stop();
   {
+    // Let go uncounted, as any sensor's stop does: the counters' gap.
     const std::lock_guard<std::mutex> lock(s.mutex);
-    s.counts.dropped += s.held.size();
     s.held.clear();
   }
   s.running = false;
@@ -231,7 +269,12 @@ core::Status StereoDepthSensor::drain(std::vector<RgbdFrame>* out) {
 
 SensorStats StereoDepthSensor::stats() const noexcept {
   const std::lock_guard<std::mutex> lock(impl_->mutex);
-  return impl_->counts;
+  const SensorStats& camera = impl_->camera_counts;
+  SensorStats out = impl_->counts;
+  out.received = camera.received;
+  out.dropped += camera.dropped;
+  out.failed += camera.failed;
+  return out;
 }
 
 }  // namespace volumetric_kit::sensor

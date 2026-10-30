@@ -9,20 +9,25 @@
 // kernel's units and refusals, into a Vulkan buffer read as Vulkan readers
 // read it -- taken over from outside Vulkan -- and through GpuFramePrep. The
 // plan cache is checked by what it loads: another model's plan put under a
-// model's name is the one that runs.
+// model's name is the one that runs. Rgba8 coverage is checked on views made
+// here, and pairs kept past the next on the rectifier's new views.
 //
 // Where CUDA does not reach the device's GPU, or the device exports no
 // memory, the test skips; VS_TEST_HEVC_BACKEND, which CI sets on the NVIDIA
 // leg, makes it fail instead, as for the decoders.
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +40,7 @@
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/sensor/ffs/ffs_stereo.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
@@ -403,6 +409,23 @@ int plan_cache(Fixture& t) {
   CHECK(ffs_for(t, *rectifier, options_for(kHalfModel, cache)) != nullptr);
   CHECK(plans_in(cache).size() == 2);
   std::puts("  another model: a plan of its own");
+
+  // A cache that cannot be written runs the plan it built, unkept (a root
+  // user writes it anyway).
+  const fs::path locked = t.scratch / "locked";
+  fs::create_directories(locked);
+  fs::permissions(locked, fs::perms::owner_read | fs::perms::owner_exec,
+                  fs::perm_options::replace);
+  auto fourth = rectifier_for(t, info, Output::Luma8);
+  CHECK(fourth != nullptr);
+  auto unkept = ffs_for(t, *fourth, options_for(kModel, locked));
+  const bool kept_anyway = !plans_in(locked).empty();
+  fs::permissions(locked, fs::perms::owner_all, fs::perm_options::replace);
+  CHECK(unkept != nullptr);
+  CHECK(kept_anyway == (::geteuid() == 0));
+  CHECK(run_luma(t, *fourth, *unkept, options_for(kModel, locked), 3, 1.0) ==
+        0);
+  std::puts("  a cache it cannot write: the plan runs unkept");
   return 0;
 }
 
@@ -502,6 +525,242 @@ int rgba_views(Fixture& t) {
   return 0;
 }
 
+// --- Rgba8 coverage: what a view did not see has no return ----------------
+
+// Words as the rectifier hands its views out: in an exported buffer of their
+// own, released to VK_QUEUE_FAMILY_EXTERNAL.
+vkc::Result<std::shared_ptr<vkc::ExportedBuffer>> exported_view(
+    vkc::test::GpuContext& gpu, const std::vector<std::uint32_t>& words) {
+  const std::size_t bytes = words.size() * sizeof(std::uint32_t);
+  VKC_ASSIGN(vkc::ExportedBuffer made,
+             vkc::create_exported_buffer(gpu.device, gpu.allocator, bytes));
+  auto view = std::make_shared<vkc::ExportedBuffer>(std::move(made));
+  vkc::CommandBatch batch(gpu.device, gpu.allocator);
+  VKC_TRY(batch.upload(view->buffer, 0, words.data(), bytes));
+  VKC_TRY(batch.release(view->buffer, VK_QUEUE_FAMILY_EXTERNAL));
+  VKC_TRY(batch.submit());
+  return view;
+}
+
+// Luma bytes as a Luma8 view: four to a word, the first in the low byte.
+vkc::Result<std::shared_ptr<vkc::ExportedBuffer>> luma_view(
+    vkc::test::GpuContext& gpu, const std::vector<std::uint8_t>& bytes) {
+  std::vector<std::uint32_t> words((bytes.size() + 3) / 4);
+  std::memcpy(words.data(), bytes.data(), bytes.size());
+  return exported_view(gpu, words);
+}
+
+// A pair of Luma8 views made here from `p`, on `rig`, as the rectifier hands
+// them out.
+vkc::Result<sensor::RectifiedPair> made_pair(vkc::test::GpuContext& gpu,
+                                             const sensor::StereoRig& rig,
+                                             const std::shared_ptr<Pictures>& p,
+                                             std::uint32_t sequence) {
+  sensor::RectifiedPair pair;
+  VKC_ASSIGN(pair.left, luma_view(gpu, p->left));
+  VKC_ASSIGN(pair.right, luma_view(gpu, p->right));
+  pair.queue_family = sensor::kQueueFamilyExternal;
+  pair.rig = rig;
+  const camera::ImageSize size = rig.camera.size;
+  pair.source =
+      frame_of(p, sensor::YuvLayout::Luma, size.width, size.height, sequence);
+  return pair;
+}
+
+int coverage(Fixture& t) {
+  std::puts("Rgba8 coverage: no return where either view saw nothing");
+  constexpr std::uint32_t kW = 64, kH = 32;
+  const sensor::StereoInfo info = pair_info(kW, kH);
+  auto rectifier = rectifier_for(t, info, Output::Rgba8);
+  CHECK(rectifier != nullptr);
+
+  // The left view `k` above the right one in every channel, so the
+  // disparity is k; coverage 0 on a lattice of left pixels and on a band of
+  // right columns, whose colour stays.
+  std::vector<std::uint32_t> left(std::size_t{kW} * kH), right(left.size());
+  std::vector<int> disparity(left.size());
+  const auto seen_left = [](std::uint32_t x, std::uint32_t y) {
+    return (x + 2 * y) % 5 != 0;
+  };
+  const auto seen_right = [](std::uint32_t x) { return x < 20 || x >= 26; };
+  const auto grey = [](std::uint32_t v, bool seen) {
+    return v | v << 8 | v << 16 | (seen ? 0xFFu << 24 : 0u);
+  };
+  for (std::uint32_t y = 0; y < kH; ++y) {
+    for (std::uint32_t x = 0; x < kW; ++x) {
+      const std::size_t i = std::size_t{y} * kW + x;
+      disparity[i] = 10 + static_cast<int>((x * 7 + y * 3) % 28);
+      left[i] = grey(50 + disparity[i], seen_left(x, y));
+      right[i] = grey(50, seen_right(x));
+    }
+  }
+  auto left_view = exported_view(t.gpu, left);
+  auto right_view = exported_view(t.gpu, right);
+  CHECK(left_view.ok() && right_view.ok());
+  const sensor::FfsStereo::Options o =
+      options_for(kModel, t.scratch / "coverage");
+  auto ffs = ffs_for(t, *rectifier, o);
+  CHECK(ffs != nullptr);
+
+  sensor::RectifiedPair pair;
+  pair.left = *left_view;
+  pair.right = *right_view;
+  pair.queue_family = sensor::kQueueFamilyExternal;
+  pair.rig = rectifier->rig();
+  pair.source =
+      frame_of(luma_pair(kW, kH, 0), sensor::YuvLayout::Luma, kW, kH, 0);
+  auto frame = ffs->depth(pair);
+  if (!frame) std::fprintf(stderr, "%s\n", frame.status().message().c_str());
+  CHECK(frame.ok());
+  auto got = read_depth(t.gpu, *frame);
+  CHECK(got.ok());
+
+  std::vector<std::optional<std::uint16_t>> want(left.size());
+  int unseen_left = 0, unseen_right = 0;
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    const auto x = static_cast<std::uint32_t>(i % kW);
+    const auto y = static_cast<std::uint32_t>(i / kW);
+    want[i] = expected_depth(disparity[i], x, kFocal * kBaseline, o, 1e-4);
+    if (!want[i] || *want[i] == 0) continue;
+    if (!seen_left(x, y)) {
+      want[i] = 0;
+      ++unseen_left;
+    } else if (!seen_right(x - static_cast<std::uint32_t>(disparity[i]))) {
+      want[i] = 0;
+      ++unseen_right;
+    }
+  }
+  const Compared c = compare(*got, want);
+  std::printf(
+      "  %d samples, %d returns, %d off; no return unseen on the left %d, "
+      "matched where the right saw nothing %d\n",
+      c.compared, c.returns, c.mismatches, unseen_left, unseen_right);
+  CHECK(c.mismatches == 0 && c.returns > 400);
+  CHECK(unseen_left > 50 && unseen_right > 50);
+  return 0;
+}
+
+// --- Pairs kept past the next: the rectifier's new views ------------------
+
+int kept_pairs(Fixture& t) {
+  std::puts("pairs kept past the next: each new view mapped, eight at most");
+  const sensor::StereoInfo info = pair_info(64, 32);
+  auto rectifier = rectifier_for(t, info, Output::Luma8);
+  CHECK(rectifier != nullptr);
+  const sensor::FfsStereo::Options o = options_for(kModel, t.scratch / "kept");
+  auto ffs = ffs_for(t, *rectifier, o);
+  CHECK(ffs != nullptr);
+
+  // Rectify and match round `r`, checking every sample; the pair, kept, and
+  // whether its views were new.
+  const auto match = [&](sensor::StereoRectifier& rect,
+                         sensor::FfsStereo& matcher, std::uint32_t r,
+                         std::optional<sensor::RectifiedPair>* out,
+                         bool* fresh) -> int {
+    const std::shared_ptr<Pictures> p = luma_pair(64, 32, r);
+    auto pair = rect.rectify(frame_of(p, sensor::YuvLayout::Luma, 64, 32, r));
+    CHECK(pair.ok());
+    *fresh = pair->left->fd.valid();
+    auto frame = matcher.depth(*pair);
+    if (!frame) std::fprintf(stderr, "%s\n", frame.status().message().c_str());
+    CHECK(frame.ok());
+    auto got = read_depth(t.gpu, *frame);
+    CHECK(got.ok());
+    CHECK(compare(*got, luma_expected(*p, 64, 32, o, 1.0)).mismatches == 0);
+    *out = std::move(pair).value();
+    return 0;
+  };
+
+  // Five pairs kept at once: ten views, each new and matched right; the
+  // first pair's, the least recently read, let go for the last two.
+  std::vector<std::optional<sensor::RectifiedPair>> kept(5);
+  std::set<const void*> views;
+  for (std::uint32_t r = 0; r < 5; ++r) {
+    bool fresh = false;
+    CHECK(match(*rectifier, *ffs, r, &kept[r], &fresh) == 0);
+    CHECK(fresh);
+    views.insert(kept[r]->left.get());
+    views.insert(kept[r]->right.get());
+  }
+  CHECK(views.size() == 10);
+  const auto refused = ffs->depth(*kept[0]);
+  CHECK(refused.status().domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(refused.status().message().find("imported by something else") !=
+        std::string::npos);
+  CHECK(ffs->depth(*kept[1]).ok());
+  std::puts("  five kept: ten views mapped; the first pair's let go");
+
+  // Each kept one frame: every frame's views are new, often where freed ones
+  // were, whose mappings go; then, used in turn, the newest are reused.
+  kept.clear();
+  std::optional<sensor::RectifiedPair> held;
+  int fresh_frames = 0, reused_addresses = 0;
+  for (std::uint32_t r = 5; r < 15; ++r) {
+    std::optional<sensor::RectifiedPair> next;
+    bool fresh = false;
+    CHECK(match(*rectifier, *ffs, r, &next, &fresh) == 0);
+    if (fresh) {
+      ++fresh_frames;
+      reused_addresses += views.count(next->left.get()) != 0;
+    }
+    views.insert(next->left.get());
+    views.insert(next->right.get());
+    held = std::move(next);
+  }
+  held.reset();
+  for (std::uint32_t r = 15; r < 18; ++r) {
+    std::optional<sensor::RectifiedPair> next;
+    bool fresh = true;
+    CHECK(match(*rectifier, *ffs, r, &next, &fresh) == 0);
+    CHECK(!fresh);
+  }
+  std::printf(
+      "  kept one frame each: %d frames on new views, %d at a freed view's "
+      "address; then reused in turn\n",
+      fresh_frames, reused_addresses);
+  CHECK(fresh_frames == 9);
+
+  // A new buffer at a mapped view's address -- the descriptor tells, not the
+  // address -- takes its old mapping's place, and no other mapping goes for
+  // it: four pairs of views made here, mapped (eight), then one view's buffer
+  // replaced where it is; the pair read least recently is still mapped. A
+  // matcher of its own, for a mapping count of its own.
+  auto own = rectifier_for(t, info, Output::Luma8);
+  CHECK(own != nullptr);
+  auto matcher = ffs_for(t, *own, o);
+  CHECK(matcher != nullptr);
+  const auto check = [&](const sensor::RectifiedPair& pair,
+                         const Pictures& p) -> int {
+    auto frame = matcher->depth(pair);
+    if (!frame) std::fprintf(stderr, "%s\n", frame.status().message().c_str());
+    CHECK(frame.ok());
+    auto got = read_depth(t.gpu, *frame);
+    CHECK(got.ok());
+    CHECK(compare(*got, luma_expected(p, 64, 32, o, 1.0)).mismatches == 0);
+    return 0;
+  };
+  std::vector<sensor::RectifiedPair> made;
+  std::vector<std::shared_ptr<Pictures>> pictures;
+  for (std::uint32_t r = 30; r < 34; ++r) {
+    pictures.push_back(luma_pair(64, 32, r));
+    auto pair = made_pair(t.gpu, own->rig(), pictures.back(), r);
+    CHECK(pair.ok());
+    made.push_back(std::move(pair).value());
+    CHECK(check(made.back(), *pictures.back()) == 0);
+  }
+  auto replacement = luma_view(t.gpu, pictures[3]->left);
+  CHECK(replacement.ok());
+  const vkc::ExportedBuffer* at = made[3].left.get();
+  *made[3].left = std::move(**replacement);
+  CHECK(made[3].left.get() == at && made[3].left->fd.valid());
+  CHECK(check(made[3], *pictures[3]) == 0);
+  CHECK(check(made[0], *pictures[0]) == 0);
+  std::puts(
+      "  a new buffer at a mapped view's address: its mapping replaced, the "
+      "rest kept");
+  return 0;
+}
+
 // --- Into GpuFramePrep ------------------------------------------------------
 
 int into_prep(Fixture& t) {
@@ -572,7 +831,14 @@ int refusals(Fixture& t) {
   }
   o.model = t.scratch / "junk.onnx";
   CHECK(code(o) == vkc::Status::Code::InvalidArgument);
-  std::puts("  a bad depth range, no model, a model TensorRT cannot parse");
+  o = options_for(kModel, fs::path());
+  CHECK(code(o) == vkc::Status::Code::InvalidArgument);
+  // Under a file: refused before anything is built.
+  o.plan_cache = t.scratch / "junk.onnx" / "plans";
+  CHECK(code(o) == vkc::Status::Code::IoError);
+  std::puts(
+      "  a bad depth range, no model, a model TensorRT cannot parse, no plan "
+      "cache or one that cannot be made");
 
   o = options_for(kModel, cache);
   auto ffs = ffs_for(t, *rectifier, o);
@@ -647,6 +913,8 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   CHECK(plan_cache(t) == 0);
   CHECK(padding(t) == 0);
   CHECK(rgba_views(t) == 0);
+  CHECK(coverage(t) == 0);
+  CHECK(kept_pairs(t) == 0);
   CHECK(into_prep(t) == 0);
   CHECK(refusals(t) == 0);
   std::puts("sensor_ffs_stereo: OK");

@@ -4,12 +4,15 @@
 // StereoDepthSensor as any IRgbdSensor: a test camera (an IStereoSensor fed
 // from here, not hardware) through the rectifier and FFS on the test model
 // (tests/data/ffs, whose disparity is left less right on grey pairs), on the
-// sensor's own thread. Checked: info is the rectifier's depth view; poll
-// holds the newest frame, drain every frame oldest first; frame
-// notifications, the pairs' times, the counters; a pair the rectifier
-// refuses counted and passed over, a camera that fails reported; the camera
-// polled on the thread alone and never called from two at once; stop and a
-// restart; a frame kept while the next is made.
+// sensor's own thread. Checked: info is the rectifier's depth view and the
+// camera's identity, which a SensorArray takes; poll holds the newest frame,
+// drain every frame oldest first; frame notifications, the pairs' times, the
+// counters, the camera's own among them; a pair the rectifier refuses
+// counted and passed over, a camera that fails reported; the thread asleep
+// between a notifying camera's pairs, and asking a camera that does not
+// notify every millisecond; the camera polled on the thread alone and never
+// called from two at once; stop and a restart; a frame kept while the next
+// is made.
 //
 // It skips where CUDA does not reach the GPU, as sensor_ffs_stereo does.
 
@@ -36,6 +39,7 @@
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/sensor/array/sensor_array.hpp"
 #include "volumetric_kit/sensor/ffs/stereo_depth_sensor.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "volumetric_kit/sensor/video/cuda_interop.hpp"
@@ -50,6 +54,8 @@ namespace {
 
 constexpr std::uint32_t kW = 64, kH = 32;
 constexpr double kFocal = 40.0, kBaseline = 0.1;
+// The test camera's colour exposure, as opened.
+constexpr camera::ColorControls kControls{167, 60};
 
 // A pair whose left luma is `disparity` above the right one everywhere.
 struct Pictures {
@@ -78,13 +84,18 @@ sensor::StereoFrame pair_frame(std::uint8_t disparity, std::uint64_t sequence,
 }
 
 // A stereo camera fed by the test: pairs pushed here come out of poll, once
-// each. It records which thread calls it, and any two calls that overlap.
+// each, and are counted; a notifying one calls its notification for each,
+// and on a fault. It records which thread calls it, and any two calls that
+// overlap.
 class TestCamera final : public sensor::IStereoSensor {
  public:
   struct Log {
     std::mutex mutex;
     std::deque<sensor::StereoFrame> pending;  // guarded by mutex
     std::optional<vkc::Status> fault;         // guarded by mutex
+    // Its counters since its start; the test adds drops and failures.
+    sensor::SensorStats counts;    // guarded by mutex
+    std::function<void()> notify;  // guarded by mutex
     std::atomic<int> in_call{0};
     std::atomic<int> overlaps{0};
     std::atomic<int> starts{0}, stops{0}, polls{0};
@@ -93,10 +104,16 @@ class TestCamera final : public sensor::IStereoSensor {
     std::atomic<bool> started_on_main{true}, stopped_on_main{true};
   };
 
-  explicit TestCamera(std::shared_ptr<Log> log) : log_(std::move(log)) {
+  TestCamera(std::shared_ptr<Log> log, std::string id, bool notifies)
+      : log_(std::move(log)), notifies_(notifies) {
     info_.calibration.left = info_.calibration.right = camera::CameraModel{
         {kW, kH}, {kFocal, kFocal, (kW - 1) / 2.0, (kH - 1) / 2.0}, {}};
     info_.calibration.left_to_right[3] = glm::dvec4(-kBaseline, 0.0, 0.0, 1.0);
+    info_.id = std::move(id);
+    info_.model = "Test stereo camera";
+    info_.clock = sensor::ClockDomain::Host;
+    info_.fps = 30;
+    info_.color_controls = kControls;
   }
 
   const sensor::StereoInfo& info() const noexcept override { return info_; }
@@ -105,6 +122,8 @@ class TestCamera final : public sensor::IStereoSensor {
     const Call call(*log_);
     ++log_->starts;
     if (std::this_thread::get_id() != log_->main) log_->started_on_main = false;
+    const std::lock_guard<std::mutex> lock(log_->mutex);
+    log_->counts = {};
     return {};
   }
 
@@ -123,10 +142,23 @@ class TestCamera final : public sensor::IStereoSensor {
     if (log_->pending.empty()) return std::optional<sensor::StereoFrame>{};
     sensor::StereoFrame f = std::move(log_->pending.front());
     log_->pending.pop_front();
+    ++log_->counts.delivered;
     return std::optional<sensor::StereoFrame>{std::move(f)};
   }
 
-  sensor::SensorStats stats() const noexcept override { return {}; }
+  sensor::SensorStats stats() const noexcept override {
+    const Call call(*log_);
+    const std::lock_guard<std::mutex> lock(log_->mutex);
+    return log_->counts;
+  }
+
+  vkc::Status set_frame_notify(std::function<void()> notify) override {
+    const Call call(*log_);
+    if (!notifies_) return IStereoSensor::set_frame_notify(std::move(notify));
+    const std::lock_guard<std::mutex> lock(log_->mutex);
+    log_->notify = std::move(notify);
+    return {};
+  }
 
  private:
   // Counts a call in, and finds another already in.
@@ -140,6 +172,7 @@ class TestCamera final : public sensor::IStereoSensor {
   };
 
   std::shared_ptr<Log> log_;
+  bool notifies_;
   sensor::StereoInfo info_;
 };
 
@@ -164,9 +197,35 @@ struct Notes {
   }
 };
 
+// A pair the camera holds, counted, then its notification (if any), as a
+// driver's thread does.
 void push(TestCamera::Log& log, sensor::StereoFrame f) {
-  const std::lock_guard<std::mutex> lock(log.mutex);
-  log.pending.push_back(std::move(f));
+  std::function<void()> notify;
+  {
+    const std::lock_guard<std::mutex> lock(log.mutex);
+    log.pending.push_back(std::move(f));
+    ++log.counts.received;
+    notify = log.notify;
+  }
+  if (notify) notify();
+}
+
+// The camera's failure, then its notification.
+void fault(TestCamera::Log& log, vkc::Status status) {
+  std::function<void()> notify;
+  {
+    const std::lock_guard<std::mutex> lock(log.mutex);
+    log.fault = std::move(status);
+    notify = log.notify;
+  }
+  if (notify) notify();
+}
+
+// How many times the camera is polled while no pair comes for 100 ms.
+int idle_polls(const TestCamera::Log& log) {
+  const int before = log.polls;
+  std::this_thread::sleep_for(100ms);
+  return log.polls - before;
 }
 
 // The frame's depth at its centre, read as a Vulkan reader reads it.
@@ -207,18 +266,23 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
             .status()
             .domain() == vkc::Status::Code::InvalidArgument);
   auto made = sensor::StereoDepthSensor::create(
-      gpu.device, gpu.allocator, std::make_unique<TestCamera>(log), options);
+      gpu.device, gpu.allocator,
+      std::make_unique<TestCamera>(log, "test-pair", true), options);
   if (!made) std::fprintf(stderr, "%s\n", made.status().message().c_str());
   CHECK(made.ok());
   sensor::IRgbdSensor& s = **made;
 
-  // Its info: depth in the rectified left camera, the left one the colour.
+  // Its info: depth in the rectified left camera, the left one the colour;
+  // the camera's identity.
   const sensor::SensorInfo& info = s.info();
   CHECK(info.depth && info.color);
   CHECK(info.depth->size.width == kW && info.depth->size.height == kH);
   CHECK(info.depth->intrinsics.fx == kFocal);
   CHECK(info.color->size.width == kW);
-  std::puts("info: the rectifier's depth view");
+  CHECK(info.id == "test-pair" && info.model == "Test stereo camera");
+  CHECK(info.clock == sensor::ClockDomain::Host && info.fps == 30);
+  CHECK(info.color_controls == kControls);
+  std::puts("info: the rectifier's depth view, the camera's identity");
 
   // Newest first: three pairs, one frame held, two dropped.
   Notes notes;
@@ -233,6 +297,10 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
     auto none = s.poll();
     CHECK(none.ok() && !none->has_value());
   }
+  // Between pairs the thread sleeps until the camera notifies.
+  const int asleep = idle_polls(*log);
+  std::printf("  idle 100 ms: %d polls\n", asleep);
+  CHECK(asleep <= 2);
   for (std::uint64_t i = 1; i <= 3; ++i) {
     push(*log, pair_frame(static_cast<std::uint8_t>(10 + i), i));
     CHECK(notes.wait_for(static_cast<int>(i)));
@@ -275,19 +343,21 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
   CHECK(st.received == 6 && st.failed == 1);
   std::puts("a refused pair: counted failed, and the next one matched");
 
-  // Stop: the thread, then the camera, on this thread; frames held dropped.
+  // Stop: the thread, then the camera, on this thread; the frame held let go
+  // uncounted, as any sensor's stop: the counters' gap.
   push(*log, pair_frame(12, 7));
   CHECK(notes.wait_for(6));
   s.stop();
   s.stop();  // idempotent
   CHECK(log->stops == 1);
   st = s.stats();
-  CHECK(st.dropped == 3);  // two at the first poll, one held at the stop
+  CHECK(st.received == 7 && st.delivered == 3 && st.dropped == 2 &&
+        st.failed == 1);
   {
     auto none = s.poll();
     CHECK(none.ok() && !none->has_value());
   }
-  std::puts("stop: the frame held dropped");
+  std::puts("stop: the frame held let go, uncounted");
 
   // A restart with a deeper queue: drain hands every frame, oldest first;
   // the counters start again.
@@ -306,12 +376,22 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
   CHECK(st.received == 3 && st.delivered == 3 && st.dropped == 0);
   std::puts("drain: three frames, oldest first, after a restart");
 
-  // The camera's failure is the sensor's, and a notification.
+  // The pairs the camera replaced or failed on count as the sensor's.
   {
     const std::lock_guard<std::mutex> lock(log->mutex);
-    log->fault = vkc::Status::io_error("the cable is out");
+    log->counts.dropped += 4;
+    log->counts.failed += 2;
   }
+  push(*log, pair_frame(9, 11));
   CHECK(notes.wait_for(10));
+  st = s.stats();
+  CHECK(st.received == 4 && st.delivered == 3 && st.dropped == 4 &&
+        st.failed == 2);
+  std::puts("stats: the camera's drops and failures added");
+
+  // The camera's failure is the sensor's, and a notification.
+  fault(*log, vkc::Status::io_error("the cable is out"));
+  CHECK(notes.wait_for(11));
   auto failed = s.poll();
   CHECK(!failed.ok());
   CHECK(failed.status().message().find("the cable is out") !=
@@ -328,6 +408,43 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
   CHECK(log->overlaps == 0);
   std::printf("camera: %d polls off this thread, no two calls at once\n",
               log->polls.load());
+
+  // A camera that does not notify is asked again every millisecond.
+  auto quiet_log = std::make_shared<TestCamera::Log>();
+  auto quiet = sensor::StereoDepthSensor::create(
+      gpu.device, gpu.allocator,
+      std::make_unique<TestCamera>(quiet_log, "quiet-pair", false), options);
+  CHECK(quiet.ok());
+  Notes quiet_notes;
+  CHECK((*quiet)->set_frame_notify(quiet_notes.callback()).ok());
+  CHECK((*quiet)->start().ok());
+  const int asked = idle_polls(*quiet_log);
+  std::printf("  idle 100 ms, no notification: %d polls\n", asked);
+  CHECK(asked >= 10);
+  push(*quiet_log, pair_frame(14, 1));
+  CHECK(quiet_notes.wait_for(1));
+  auto polled = (*quiet)->poll();
+  CHECK(polled.ok() && polled->has_value() && (*polled)->sequence == 1);
+  (*quiet)->stop();
+  CHECK(quiet_log->overlaps == 0 && quiet_log->polled_off_main);
+  std::puts("a camera that does not notify: asked every millisecond");
+
+  // A SensorArray takes it as any sensor: an id, and the exposure a
+  // calibration holds the array to.
+  std::vector<std::unique_ptr<sensor::IRgbdSensor>> sensors;
+  sensors.push_back(std::move(quiet).value());
+  sensor::SensorArray::Options array_options;
+  array_options.calibration.color_controls = camera::ColorControls{100, 60};
+  CHECK(sensor::SensorArray::open(std::move(sensors), array_options)
+            .status()
+            .domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(sensors.size() == 1 && sensors[0] != nullptr);
+  array_options.calibration.color_controls = kControls;
+  auto array = sensor::SensorArray::open(std::move(sensors), array_options);
+  if (!array) std::fprintf(stderr, "%s\n", array.status().message().c_str());
+  CHECK(array.ok() && array->size() == 1);
+  CHECK(array->sensor(0).info().id == "quiet-pair");
+  std::puts("a SensorArray opens on it, its exposure checked");
   return 0;
 }
 

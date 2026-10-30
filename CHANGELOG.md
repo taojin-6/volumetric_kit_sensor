@@ -15,9 +15,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   GPU, TensorRT version, model and size: a CUDA kernel makes the network's
   input from a `StereoRectifier`'s views, read in place, and another turns
   its disparity into 16-bit depth written straight into a Vulkan buffer,
-  the frame's `RgbdFrame::depth_device`. `StereoDepthSensor`
-  (`ffs/stereo_depth_sensor.hpp`) is any `IStereoSensor` as an
-  `IRgbdSensor`, rectifying and matching on a thread of its own.
+  the frame's `RgbdFrame::depth_device`, with no return where an `Rgba8`
+  view saw nothing; the host sleeps through the network run.
+  `StereoDepthSensor` (`ffs/stereo_depth_sensor.hpp`) is any
+  `IStereoSensor` as an `IRgbdSensor`, rectifying and matching on a thread
+  of its own that the camera's frame notification wakes; it reports the
+  camera's identity, so a `SensorArray` takes it, and the camera's drops.
   `tools/ffs/export_onnx.py` exports FFS from a local NVlabs checkout with
   the changes TensorRT needs; `tools/ffs/make_test_onnx.py` makes the
   tests' models (DECISIONS.md, the 2026-10-29 FFS entry).

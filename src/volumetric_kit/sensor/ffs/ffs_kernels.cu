@@ -41,7 +41,8 @@ __global__ void input_kernel(const void* left, const void* right,
 }
 
 // One thread a view pixel.
-__global__ void depth_kernel(const float* disparity, unsigned short* depth,
+__global__ void depth_kernel(const float* disparity, const unsigned* left,
+                             const unsigned* right, unsigned short* depth,
                              DepthParams p) {
   const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= p.width * p.height) return;
@@ -51,7 +52,15 @@ __global__ void depth_kernel(const float* disparity, unsigned short* depth,
   // NaN fails every comparison, so it is no return too.
   if (d > 0.0f && d <= static_cast<float>(x)) {
     const float z = p.focal_baseline / d;
-    if (z >= p.min_depth && z <= p.max_depth) {
+    // A pixel the left view did not see, or matched where the right one did
+    // not, was matched against the views' black: no return.
+    const bool seen =
+        !p.coverage ||
+        ((left[i] >> 24) != 0u &&
+         (right[y * p.width +
+                static_cast<unsigned>(rintf(static_cast<float>(x) - d))] >>
+          24) != 0u);
+    if (seen && z >= p.min_depth && z <= p.max_depth) {
       const float units = rintf(z * p.units_per_metre);
       out = static_cast<unsigned short>(fminf(fmaxf(units, 1.0f), 65535.0f));
     }
@@ -76,11 +85,14 @@ cudaError_t make_input(const void* left, const void* right, float* left_input,
   return cudaGetLastError();
 }
 
-cudaError_t make_depth(const float* disparity, std::uint16_t* depth,
+cudaError_t make_depth(const float* disparity, const void* left,
+                       const void* right, std::uint16_t* depth,
                        const DepthParams& params, cudaStream_t stream) {
   const unsigned pixels = params.width * params.height;
   depth_kernel<<<(pixels + kBlock - 1) / kBlock, kBlock, 0, stream>>>(
-      disparity, reinterpret_cast<unsigned short*>(depth), params);
+      disparity, static_cast<const unsigned*>(left),
+      static_cast<const unsigned*>(right),
+      reinterpret_cast<unsigned short*>(depth), params);
   return cudaGetLastError();
 }
 
