@@ -668,6 +668,7 @@ core::Result<std::optional<RgbdFrame>> CameraStream::read(
     frame.depth_camera = depth_camera_;
     frame.min_depth = min_depth_;
     frame.max_depth = max_depth_;
+    frame.depth_noise = kFemtoMegaDepthNoise;
     // The picture as the decoder coded it: the stream's matrix and range when
     // it names them, the Femto Mega's unlabelled BT.601 full range otherwise,
     // and the transfer and primaries it declares.

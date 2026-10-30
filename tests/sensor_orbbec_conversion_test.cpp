@@ -4,13 +4,14 @@
 // The Orbbec driver's arithmetic, with no camera: the SDK's camera models and
 // extrinsic to recon's, the lens models' names, the sync-mode mapping, the
 // option checks open() makes before it touches the SDK, colour controls among
-// them, and the colour queue families taken from the options -- each a place
-// the driver can be silently wrong.
+// them, the colour queue families taken from the options, and the depth noise
+// every frame states -- each a place the driver can be silently wrong.
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <string>
@@ -19,6 +20,7 @@
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/sensor/camera/color_controls.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/frame/depth_noise.hpp"
 #include "volumetric_kit/sensor/frame/vector_types.hpp"
 #include "volumetric_kit/sensor/orbbec/orbbec_sensor.hpp"
 #include "volumetric_kit/sensor/orbbec/orbbec_stream.hpp"
@@ -51,6 +53,20 @@ constexpr const char* kWho = "OrbbecSensor: camera CL2A141000G";
 
 bool names_camera(const vkc::Status& s) {
   return s.message().find(kWho) != std::string::npos;
+}
+
+// The Femto Mega's noise is exactly the model recon's change detector was
+// tuned on: b 0.95 mm per metre (the float 0x3A79096C), a and c 0, so a
+// consumer reading the frame's noise floors its test where it did.
+int test_depth_noise() {
+  constexpr sensor::DepthNoise noise = orbbec::kFemtoMegaDepthNoise;
+  CHECK((noise == sensor::DepthNoise{0.0f, 0.00095f, 0.0f}));
+  std::uint32_t bits = 0;
+  std::memcpy(&bits, &noise.b, sizeof bits);
+  CHECK(bits == 0x3A79096Cu);
+  CHECK(noise.a == 0.0f && noise.c == 0.0f);
+  CHECK(noise.known());
+  return 0;
 }
 
 int test_sync_mode() {
@@ -358,6 +374,7 @@ int main() {
   if (test_validate_streams() != 0) return 1;
   if (test_color_queue_families() != 0) return 1;
   if (test_sensor_open() != 0) return 1;
+  if (test_depth_noise() != 0) return 1;
   std::printf("orbbec conversion tests passed\n");
   return 0;
 }

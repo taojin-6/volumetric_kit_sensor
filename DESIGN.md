@@ -30,7 +30,8 @@ recon's examples assemble the rest.
 - **`frame`** — the contract recon's fusion, texturing and sender read,
   header-only on the family core's Vulkan tier: `DeviceFrame` and
   `DeviceFrameSet` (`frame/device_frame.hpp`), the posed pinhole
-  `DepthCameraParams`/`ColorCameraParams` (`frame/camera_params.hpp`),
+  `DepthCameraParams`/`ColorCameraParams` (`frame/camera_params.hpp`), the
+  depth noise each producer states (`frame/depth_noise.hpp`),
   `ColorEncoding`, `is_canonical` and the sRGB curve
   (`frame/color_space.hpp`), and the GLSL pinhole it exports; beside them
   the package's GLM aliases and `device_requirements()`.
@@ -216,6 +217,37 @@ consumer's `VkDevice`, written completely before the frame is handed over,
 owned by the producer's queue family or shared CONCURRENT with the families
 it was given, and held by the frame, so the producer reuses a buffer only
 once no frame holds it. `GpuFramePrep` is today's producer.
+
+Every producer also states its depth's noise, `DeviceFrame::depth_noise`
+(`frame/depth_noise.hpp`, the 2026-10-30 depth-noise decision): a
+`DepthNoise {a, b, c}`, the frame-to-frame standard deviation of one sample,
+`sigma(z) = a + b z + c z^2` metres. It is temporal, so an error that
+repeats every frame (calibration, a matcher's fixed pattern) is not in it.
+All zero, the default, means unknown, and a consumer that needs a model
+refuses such a frame (`DepthNoise::known`); nothing defaults it.
+`DepthNoise::stereo(sigma_d, f, B)` is rectified stereo's model, `c =
+sigma_d / (f B)`. A driver states it on `RgbdFrame::depth_noise` for each
+frame, as it states its depth range, and `GpuFramePrep::finish` copies it
+unchanged; its depth mix only lowers the noise, so the stated value bounds
+the prepared one. The producers, each its own value:
+
+- `OrbbecSensor`: `{0, 0.95e-3, 0}` in every depth mode
+  (`kFemtoMegaDepthNoise`, internal): measured face on at 640 x 576, the
+  other modes not measured.
+- `RealSenseSensor`: `DepthNoise::stereo(0.13, fx, B)`, the depth camera's
+  fx at the mode it streams and B the length of its factory extrinsic to the
+  right infrared camera, read at open (`realsense::chip_depth_noise`,
+  internal); 0.13 px is a D455's measured value at 1280 x 720, averaged
+  over a room's slants.
+- `FfsStereo` (and so `StereoDepthSensor`):
+  `DepthNoise::stereo(Options::disparity_sigma, fx, B)` of the rectified rig,
+  made at `create`, which refuses a `disparity_sigma` that is not finite and
+  at least 0; it defaults to 0, unknown, since it is the camera's and the
+  model's, so whoever opens a camera states it.
+
+No per-pixel sigma, no `SensorInfo` field and no calibration-file key: no
+producer has a per-pixel confidence, recon's libraries cannot read
+`SensorInfo`, and no unit has been measured to differ from its model.
 `device_requirements()` names what the package's kernels and decoders need
 (`scalarBlockLayout`; `VK_KHR_external_memory_fd` and `VK_EXT_metal_objects`
 where offered); an application opening one device for recon and this package
@@ -274,6 +306,7 @@ only recon's examples and tests name. No test opens a camera (the 2026-10-06
 no-hardware decision); recon's `fuse_orbbec` is how one is checked. Behind it is the
 internal `CameraStream`, and the types of `orbbec_stream.hpp`: the stream
 options, the camera's report, and its counters (`OrbbecStreamStats`).
+Every frame states the Femto Mega's depth noise (above, "### frame").
 H.265 at 3840x2160 and 25 fps, depth 640x576, is the default
 (`color_codec = Hevc`; `Mjpeg` stays selectable, for calibration captures
 and diagnostics): each camera's
@@ -418,7 +451,9 @@ decision). Each frame is the camera's own depth (Z16, in the left infrared
 camera, rectified, so the factory model has no lens) and its colour camera's
 YUYV on the host (`YuvImage::host`, BT.601 limited range, chroma sited left:
 what librealsense converts by), which `GpuFramePrep` stages and converts on
-the device; nothing converts on the host. The factory colour lens,
+the device; nothing converts on the host. Each frame states the depth noise
+the setup holds, rectified stereo's model from the depth camera's fx and the
+baseline (above, "### frame"). The factory colour lens,
 librealsense's inverse Brown-Conrady, is taken as OpenCV's (k1, k2, p1, p2,
 k3): it projects within 0.016 px of `rs2_project_point_to_pixel` over the
 D455's picture, the difference being the tangential term applied after the
@@ -583,8 +618,9 @@ buffers through a lease, and the pass reuses one only once no frame holds
 it, so a frame kept past the next is still itself; the whole frame is
 checked before anything is recorded or timed, a depth range from 0 and a
 plane's queue family included, and `prepare` is `prepare_batch` over a set
-of one. Both return `OutOfMemory` for a host allocation failure,
-preserving previously returned frames.
+of one. The driver's depth range, depth noise and times go on as stated;
+the pass judges no noise model. Both return `OutOfMemory` for a host
+allocation failure, preserving previously returned frames.
 A frame with colour keeps only what both its cameras see by their fields of
 view (the 2026-10-29 same-view decision), from one buffer of both cameras
 and the transform between them, which both passes bind
@@ -801,7 +837,8 @@ loads libcuda at run time) are private.
   The frame's `depth_device` is that buffer, `kQueueFamilyExternal`, its
   writer finished; colour (the third camera's picture, or the left one's),
   `color_encoding`, `color_to_world` and times come from the pair, the
-  colour camera and `depth_to_color` from the rectifier's `depth_info()`.
+  colour camera and `depth_to_color` from the rectifier's `depth_info()`,
+  and its depth noise from the rig (above, "### frame").
   The depth buffers are leased as the rectifier's views are: one is written
   again only once no frame holds it, and is not handed back from the family
   that read it, since CUDA writes every sample (as the decoders' pictures).
@@ -889,3 +926,9 @@ codec, VideoToolbox's and NVDEC's plane images sampled where they are. For
 H.265: the camera's encoder settings, its key-frame interval above all,
 which sets what a lost frame costs (`camera_stream.cpp`). The rig's next consumer is calib's
 viewer, showing its synchronised sets.
+
+**Depth noise, later.** A per-pixel sigma once a producer has a confidence
+(the Femto Mega's infrared amplitude, which needs an infrared stream); a
+total (spatial) sigma, a field of its own beside the temporal one, with the
+consumer that needs it, such as a 1/sigma^2 fusion weight; and measured
+values for the Femto Mega's other depth modes and the D455's other modes.

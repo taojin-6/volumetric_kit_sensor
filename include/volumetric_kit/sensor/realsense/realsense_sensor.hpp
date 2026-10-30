@@ -43,7 +43,10 @@ struct RealSenseDeviceInfo {
 /// infrared pair, in the left infrared camera: rectified, so no lens) and its
 /// colour camera's picture as the camera sends it, YUYV on the host
 /// (`YuvImage::host`), with each camera's factory model and the factory
-/// depth-to-colour extrinsic. Nothing on the host undistorts, registers or
+/// depth-to-colour extrinsic. Its depth noise (`RgbdFrame::depth_noise`) is
+/// rectified stereo's, `DepthNoise::stereo` at the D455's measured disparity
+/// sigma of 0.13 px over the depth camera's fx and the factory baseline,
+/// averaged over a room's slants. Nothing on the host undistorts, registers or
 /// converts: `GpuFramePrep` uploads both and converts the colour on the
 /// device. The timestamps are librealsense's global time, on the host's
 /// `std::chrono::system_clock` (`ClockDomain::Host`).

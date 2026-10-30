@@ -4,10 +4,10 @@
 #pragma once
 
 // Internal (not installed): the arithmetic between librealsense's types and
-// this package's -- the camera models, the extrinsics, a frame and a stereo
-// frame -- and the option checks, kept out of the drivers' .cpp so host tests
-// pin them, with librealsense's own rsutil.h as the reference, and no camera
-// attached.
+// this package's -- the camera models, the extrinsics, the depth's noise, a
+// frame and a stereo frame -- and the option checks, kept out of the drivers'
+// .cpp so host tests pin them, with librealsense's own rsutil.h as the
+// reference, and no camera attached.
 
 #include <cstddef>
 #include <cstdint>
@@ -20,6 +20,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/frame/depth_noise.hpp"
 #include "volumetric_kit/sensor/realsense/realsense_sensor.hpp"
 #include "volumetric_kit/sensor/realsense/realsense_stereo.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
@@ -72,6 +73,23 @@ core::Result<StereoInfo> stereo_info(const rs2_intrinsics& left,
                                      const rs2_extrinsics& left_to_color,
                                      const std::string& who);
 
+// The disparity's frame-to-frame sigma of the camera's own depth, in pixels:
+// 0.13, measured 2026-10-29 on a D455 at 1280x720, its projector on and off,
+// pooled over 0.33-3 m (0.10-0.17 px a bin), on the pixels with a return in
+// every frame. So it is low where it counts most: past 3 m the bins read
+// 0.18-0.27 px, and pixels that come and go are noisier. TODO(sensor): its
+// other modes, and the other D400s the driver opens, are not measured and
+// state the same in their pixels.
+inline constexpr double kChipDisparitySigma = 0.13;
+
+// The noise of the camera's own depth, which every frame states: rectified
+// stereo's (DepthNoise::stereo), kChipDisparitySigma over the depth camera's fx
+// and the baseline, the length of `depth_to_right`'s translation (the depth
+// camera is the left infrared camera, and `depth_to_right` its extrinsic to
+// the right one). Unknown (all zero) where either is not finite and above 0.
+DepthNoise chip_depth_noise(const camera::CameraModel& depth_camera,
+                            const rs2_extrinsics& depth_to_right) noexcept;
+
 // Whether two frames stamped `a_ms` and `b_ms` are of one moment: no more
 // than half a frame apart at `fps`. As it starts, the D455 restarts its
 // depth for about 1.2 s, and librealsense's pipeline matches its last depth
@@ -111,13 +129,15 @@ struct FrameSetup {
   float metres_per_unit = 0.001f;
   float min_depth = 0.0f;
   float max_depth = 0.0f;
+  DepthNoise depth_noise{};  // chip_depth_noise's
 };
 
 // The frame, pointing into `view`'s pixels, which `pixels` holds: the depth
-// as it is, the colour as YUYV on the host (BT.601, limited range, chroma
-// sited left: what librealsense converts by), the time in nanoseconds. A view
-// whose sizes differ from the cameras', or whose depth rows are not packed,
-// contradicts its stream: IoError, naming `who`.
+// as it is, with the setup's range and noise, the colour as YUYV on the host
+// (BT.601, limited range, chroma sited left: what librealsense converts by),
+// the time in nanoseconds. A view whose sizes differ from the cameras', or
+// whose depth rows are not packed, contradicts its stream: IoError, naming
+// `who`.
 core::Result<RgbdFrame> rgbd_frame(const FrameView& view,
                                    const FrameSetup& setup,
                                    std::shared_ptr<const void> pixels,

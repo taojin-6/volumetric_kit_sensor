@@ -50,14 +50,17 @@ namespace volumetric_kit::sensor {
 ///
 /// @code
 /// VKC_ASSIGN(RealSenseStereo camera, RealSenseStereo::open({}));
+/// StereoDepthSensor::Options options;
+/// options.rectify = {{960, 544}, 0.0f, StereoRectifier::Output::Luma8};
+/// options.ffs.model = model;
+/// options.ffs.plan_cache = cache;
+/// options.ffs.disparity_sigma = 0.04f;  // a D455's, measured at 1280 x 720
 /// VKC_ASSIGN(std::unique_ptr<IRgbdSensor> sensor,
 ///            StereoDepthSensor::create(
 ///                device, allocator,
 ///                std::make_unique<RealSenseStereo>(std::move(camera)),
-///                {{{960, 544}, 0.0f, StereoRectifier::Output::Luma8},
-///                 {model, cache}}));
-/// VKC_ASSIGN(auto prep, GpuFramePrep::create(device, allocator,
-///                                            sensor->info()));
+///                options));
+/// VKC_ASSIGN(auto prep, GpuFramePrep::create(device, allocator));
 /// VKC_TRY(sensor->start());
 /// // poll, prep->prepare(*frame), fuse, as for any IRgbdSensor
 /// @endcode
@@ -72,7 +75,8 @@ class VS_FFS_API StereoDepthSensor final : public IRgbdSensor {
   struct Options {
     /// The rectified size, alpha and views (`Luma8` for a mono pair).
     StereoRectifier::Options rectify;
-    FfsStereo::Options ffs;  ///< The model, its plan cache, the depth range.
+    /// The model, its plan cache, the depth range and the disparity's noise.
+    FfsStereo::Options ffs;
   };
 
   /// @brief Make the rectifier and FFS for @p camera's pair (building FFS's

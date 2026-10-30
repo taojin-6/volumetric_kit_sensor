@@ -193,6 +193,15 @@ core::Result<StereoInfo> stereo_info(const rs2_intrinsics& left,
   return info;
 }
 
+DepthNoise chip_depth_noise(const camera::CameraModel& depth_camera,
+                            const rs2_extrinsics& depth_to_right) noexcept {
+  const float* t = depth_to_right.translation;
+  const double baseline = std::sqrt(double{t[0]} * t[0] + double{t[1]} * t[1] +
+                                    double{t[2]} * t[2]);
+  return DepthNoise::stereo(kChipDisparitySigma, depth_camera.intrinsics.fx,
+                            baseline);
+}
+
 bool same_moment(double a_ms, double b_ms, std::uint32_t fps) noexcept {
   return fps > 0 && std::fabs(a_ms - b_ms) <= 500.0 / fps;
 }
@@ -224,6 +233,7 @@ core::Result<RgbdFrame> rgbd_frame(const FrameView& view,
   frame.depth_camera = setup.depth_camera;
   frame.min_depth = setup.min_depth;
   frame.max_depth = setup.max_depth;
+  frame.depth_noise = setup.depth_noise;
   frame.color = yuyv_on_host(view.color);
   frame.color_camera = setup.color_camera;
   frame.color_to_world = setup.color_to_world;

@@ -683,6 +683,7 @@ DeviceFrame GpuFramePrep::finish(const RgbdFrame& frame) const {
     out.color_encoding = frame.color_encoding;
   }
   out.timestamp_ns = frame.timestamp_ns;
+  out.depth_noise = frame.depth_noise;
   return out;
 }
 

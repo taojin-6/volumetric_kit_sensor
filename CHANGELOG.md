@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-10-30
+
+### Added
+
+- **A frame states its depth's noise.** `DepthNoise {a, b, c}`
+  (`frame/depth_noise.hpp`, in `sensor_frame`): the frame-to-frame standard
+  deviation of one depth sample, `sigma(z) = a + b z + c z^2` metres;
+  `known()`, and `DepthNoise::stereo(sigma_d, f, B)` for rectified stereo,
+  `c = sigma_d / (f B)`. All zero, the default, means unknown.
+  `RgbdFrame::depth_noise` is the driver's, and `GpuFramePrep` copies it to
+  the new `DeviceFrame::depth_noise` unchanged. Both default to unknown, so
+  no source breaks; a consumer that needs a model refuses a frame without
+  one (DECISIONS.md, the 2026-10-30 depth-noise entry).
+- Every producer states its own: `OrbbecSensor` the Femto Mega's 0.95 mm per
+  metre (`{0, 0.95e-3, 0}`) in every depth mode; `RealSenseSensor`
+  `DepthNoise::stereo(0.13, fx, B)` from the depth camera's fx and the
+  factory baseline it now reads at open; `FfsStereo` and
+  `StereoDepthSensor` `DepthNoise::stereo` of the new
+  `FfsStereo::Options::disparity_sigma` over the rectified rig, which
+  defaults to 0, unknown: the caller states the camera's measured value.
+  `FfsStereo::create` refuses a `disparity_sigma` that is not finite and at
+  least 0.
+
+### Fixed
+
+- The `FfsStereo` and `StereoDepthSensor` examples call
+  `GpuFramePrep::create(device, allocator)`, as its signature is.
+
 ## [0.9.0] - 2026-10-29
 
 ### Changed

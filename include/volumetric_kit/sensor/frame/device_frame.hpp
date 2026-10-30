@@ -17,7 +17,9 @@
 /// - they are owned by the queue family the producer was created for, or
 ///   shared CONCURRENT with the families it was given;
 /// - a frame holds its buffers: the producer reuses one only once no frame
-///   holds it, and the `Allocator` outlives every frame.
+///   holds it, and the `Allocator` outlives every frame;
+/// - the producer states the depth's noise (@ref DepthNoise), or leaves it
+///   unknown.
 
 #include <cstdint>
 #include <memory>
@@ -27,6 +29,7 @@
 #include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/sensor/frame/camera_params.hpp"
 #include "volumetric_kit/sensor/frame/color_space.hpp"
+#include "volumetric_kit/sensor/frame/depth_noise.hpp"
 
 namespace volumetric_kit::sensor {
 
@@ -57,6 +60,10 @@ struct DeviceFrame {
   ColorCameraParams color_camera{};  ///< The undistorted colour camera.
   ColorEncoding color_encoding{};    ///< What @ref color is encoded as.
   std::uint64_t timestamp_ns = 0;    ///< The raw frame's.
+  /// The depth's noise as its producer states it (`RgbdFrame::depth_noise`,
+  /// which `GpuFramePrep` hands on unchanged: its depth mix only lowers the
+  /// noise); all zero when the producer does not know it.
+  DepthNoise depth_noise{};
 
   /// @return `true` if this frame carries colour.
   bool has_color() const noexcept { return color != nullptr; }

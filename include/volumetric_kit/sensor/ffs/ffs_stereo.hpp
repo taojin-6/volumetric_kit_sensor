@@ -68,10 +68,11 @@ namespace volumetric_kit::sensor {
 /// VKC_ASSIGN(auto rectifier, StereoRectifier::create(
 ///     device, allocator, camera.info(),
 ///     {{960, 544}, 0.0f, StereoRectifier::Output::Luma8}));
+/// FfsStereo::Options options{model, cache};
+/// options.disparity_sigma = 0.04f;  // a D455's, measured at 1280 x 720
 /// VKC_ASSIGN(auto ffs, FfsStereo::create(device, allocator, *rectifier,
-///                                        {model, cache}));
-/// VKC_ASSIGN(auto prep, GpuFramePrep::create(device, allocator,
-///                                            rectifier->depth_info()));
+///                                        options));
+/// VKC_ASSIGN(auto prep, GpuFramePrep::create(device, allocator));
 /// VKC_ASSIGN(RectifiedPair pair, rectifier->rectify(frame));
 /// VKC_ASSIGN(RgbdFrame rgbd, ffs->depth(pair));
 /// VKC_ASSIGN(const DeviceFrame prepared, prep->prepare(rgbd));
@@ -81,7 +82,8 @@ namespace volumetric_kit::sensor {
 ///          this object and every frame it hands out. Not thread-safe.
 class VS_FFS_API FfsStereo final {
  public:
-  /// @brief The model, where its plans are kept, and the depths kept.
+  /// @brief The model, where its plans are kept, the depths kept, and the
+  ///        disparity's noise.
   struct Options {
     /// The FFS ONNX (`tools/ffs/export_onnx.py`).
     std::filesystem::path model;
@@ -92,6 +94,15 @@ class VS_FFS_API FfsStereo final {
     /// Farther depth is "no return" (metres); above @ref min_depth. The
     /// depth's unit is the larger of 0.1 mm and `max_depth / 65535`.
     float max_depth = 6.0f;
+    /// The disparity's frame-to-frame standard deviation, in pixels at the
+    /// rig's size, which every frame's noise is made from
+    /// (`RgbdFrame::depth_noise`: @ref DepthNoise::stereo with the rig's fx
+    /// and baseline). It is the camera's and the model's, measured on the
+    /// camera, so FFS has no default: 0, the default, leaves the frames'
+    /// noise unknown. A D455's infrared pair with the 23-36-37 checkpoint at
+    /// 1280 x 720, its projector off, measured 0.04 px. Finite and at least
+    /// 0.
+    float disparity_sigma = 0.0f;
   };
 
   /// @brief Build or load the plan for @p rectifier's views.
@@ -104,9 +115,11 @@ class VS_FFS_API FfsStereo final {
   ///                   baseline) and its depth view (`depth_info()`: the
   ///                   colour camera and where the depth camera sits from
   ///                   it), read here.
-  /// @param options    The model, the plan cache and the depth range.
+  /// @param options    The model, the plan cache, the depth range and the
+  ///                   disparity's noise.
   /// @return The matcher; `Status::Code::InvalidArgument` for a depth range
-  ///         that is not `0 < min_depth < max_depth`, no plan cache, a model
+  ///         that is not `0 < min_depth < max_depth`, a `disparity_sigma`
+  ///         that is not finite and at least 0, no plan cache, a model
   ///         that TensorRT cannot parse, or whose inputs and output are not
   ///         those above at the rig's size rounded up to 32;
   ///         `Status::Code::NotFound` for no model file;
@@ -130,8 +143,10 @@ class VS_FFS_API FfsStereo final {
   /// camera (`depth_camera`, the rig's), its writer finished and its queue
   /// family @ref kQueueFamilyExternal. Its colour is the pair's third
   /// camera's picture, or else the left one's, and its colour camera and
-  /// `depth_to_color` the rectifier's `depth_info()`'s; its colour encoding,
-  /// pose and times are the pair's; it holds the pair's pictures.
+  /// `depth_to_color` the rectifier's `depth_info()`'s; its depth noise
+  /// @ref DepthNoise::stereo of @ref Options::disparity_sigma and the rig's
+  /// fx and baseline; its colour encoding, pose and times are the pair's; it
+  /// holds the pair's pictures.
   /// @param pair     A pair from the rectifier @ref create was given, its
   ///                 views exported (@ref kQueueFamilyExternal).
   /// @param metrics  Optional: `"ffs input"`, `"ffs network"` and `"ffs
