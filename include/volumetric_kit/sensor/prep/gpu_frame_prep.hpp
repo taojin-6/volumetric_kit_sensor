@@ -132,9 +132,8 @@ struct GpuFramePrepConfig {
 /// A frame with colour keeps only what both its cameras see, so each pixel
 /// handed out is in both views: a depth sensor's field of view and its colour
 /// camera's rarely match, and the overlap is each sensor's own, from its
-/// intrinsics and extrinsic. A field of view is a set of directions, so a
-/// view test turns a pixel's direction into the other camera by the
-/// extrinsic's rotation alone, leaving the baseline out.
+/// intrinsics and extrinsic. A view test turns a pixel's direction into the
+/// other camera by the extrinsic's rotation alone.
 /// - Colour is a 0 word, coverage and all, where its direction lies outside
 ///   the depth camera's view: on no pixel the depth pass covers.
 /// - Depth, wherever it came from, is zeroed, the pass's "no return", where

@@ -4915,15 +4915,19 @@ depth that lands on it.
 
 **What it keeps.** On a Femto Mega's factory calibrations, colour keeps
 74 % of its width (75 % of the pixels its lens records) whatever the
-surface's depth. Depth loses a band at the top and a wider one at the
-bottom, outside the colour view (17-33 and 57-71 of its 576 rows, the
-tilt), and at one side the columns whose colour is dropped, by parallax: of
-the depth inside the colour picture, 10.6 % for a wall at 0.25 m (63-64 of
-its 640 columns), 5.4 % at 0.5 m, 2.7 % at 1 m and 0.7 % at 4 m. A D455-like
-camera (the lab D455's depth at 1280 x 720 and colour at 1280 x 800, 59 mm
-apart) keeps 98 % of its colour's width and 86 % of its pixels, its top and
-bottom bands outside the depth camera's 58 degrees, and drops 0.7-0.8 % of
-its depth, 9 columns at one side, at every depth.
+surface's depth. Of the depth its lens records, a wall keeps 76 % at
+0.25 m, 80 % at 0.5 m, 82 % at 1 m and 84 % at 4 m. It loses a band at the
+top and a wider one at the bottom, outside the colour view (17-33 and 58-71
+of its 576 rows, the tilt), and at one side the columns whose colour is
+dropped, by parallax: of the depth inside the colour picture, 10.6 % at
+0.25 m (63-64 of its 640 columns), 5.4 % at 0.5 m, 2.7 % at 1 m and 0.7 %
+at 4 m. A D455-like camera (the lab D455's depth at 1280 x 720 and colour
+at 1280 x 800, 59 mm apart) keeps 98 % of its colour's width and 86 % of
+its pixels, its top and bottom bands outside the depth camera's 58 degrees,
+and of its depth 88 % at 0.25 m, 94 % at 0.5 m, 97 % at 1 m and 99 % at
+4 m. Near the camera most of that loss is depth whose point lands beside
+the colour picture, by parallax; the crop itself takes 9 columns at one
+side, 0.7-0.8 % of the depth inside the colour picture, at every depth.
 
 **The cost, the owner's choice.** In a multi-camera rig a camera no longer
 fuses depth that only another camera's colour could colour, nor colours
@@ -4944,6 +4948,16 @@ their rotation) would save at most that 0.01-0.09 ms a 4K camera, less its
 own read, so the test runs inline. The depth pass runs two colour lookups
 and the view test on at most 0.37 M depth pixels beside the colour's 8.3 M,
 not measured apart.
+
+**No `precise`.** The colour pass and the depth pass are separate shader
+modules, and kept depth lands only on kept colour while both compute a
+colour pixel's test (its lens test and `depth_sees`) to the same bits.
+GLSL lets a compiler fuse a multiply and an add in one module and not in
+the other; `precise` forbids that, but MoltenVK turns every such operation
+into an unoptimised call: on the M5 Max, the same 4K picture and depth with
+every colour pixel kept took 1.52 ms a prepare instead of 0.254 ms, and
+1.46 instead of 0.221 ms on the Femto Mega's cameras. The tests count kept
+depth on dropped colour instead, 0 in every case, on Apple and on CI.
 
 **Tests.** `sensor_gpu_frame_prep` runs the within-colour cases on a default
 pass: the pincushion colour lens; the narrower colour camera 10 cm aside,

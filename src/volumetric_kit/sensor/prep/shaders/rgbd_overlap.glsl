@@ -45,9 +45,8 @@ bool depth_covers(LensCamera d, vec3 q) {
 
 // Whether the depth camera's field of view holds colour pinhole pixel
 // `pixel`'s ray: its direction, turned into the depth camera's frame by R^T,
-// the rotation of rigid_inverse(depth_to_color), is covered by the depth
-// pass. A field of view is a set of directions, so the baseline between the
-// cameras is left out.
+// the rotation of rigid_inverse(depth_to_color) with no translation, is
+// covered by the depth pass.
 bool depth_sees(RgbdOverlap o, vec2 pixel) {
   vec2 n =
       (pixel - vec2(o.color.cx, o.color.cy)) / vec2(o.color.fx, o.color.fy);

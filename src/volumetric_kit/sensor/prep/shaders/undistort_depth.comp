@@ -17,16 +17,15 @@
 // With pc.within_color, set for a frame with colour, the pixel is also kept
 // only inside the colour camera's field of view and where the colour pass
 // keeps the colour pixel its point lands on. Its direction, turned into the
-// colour camera's frame (the baseline left out, as rgbd_overlap.glsl's
-// depth_sees leaves it out), must lie on a pinhole pixel whose source the
-// colour pass finds in the picture (its rounding and its lens test). Its
-// point, at the corrected depth, moved into the colour camera by the two
-// poses, must lie in front of it, on a pinhole pixel the same test passes
-// and whose ray's direction the depth camera's view holds (depth_sees, the
-// colour pass's own test). Elsewhere it is 0, no return, so depth survives
-// only where it lands on colour with its coverage byte set. The colour
-// camera's view, not its line of sight: nothing here tests whether a nearer
-// surface hides the point from it.
+// colour camera's frame by the rotation alone, must lie on a pinhole pixel
+// whose source the colour pass finds in the picture (its rounding and its
+// lens test). Its point, at the corrected depth, moved into the colour
+// camera by the two poses, must lie in front of it, on a pinhole pixel the
+// same test passes and whose ray's direction the depth camera's view holds
+// (depth_sees, the colour pass's own test). Elsewhere it is 0, no return, so
+// depth survives only where it lands on colour with its coverage byte set.
+// The colour camera's view, not its line of sight: nothing here tests
+// whether a nearer surface hides the point from it.
 
 #extension GL_GOOGLE_include_directive : require
 #include "rgbd_overlap.glsl"

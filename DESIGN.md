@@ -589,8 +589,8 @@ A frame with colour keeps only what both its cameras see by their fields of
 view (the 2026-10-29 same-view decision), from one buffer of both cameras
 and the transform between them, which both passes bind
 (`rgbd_overlap.glsl`). A pixel's direction is turned into the other camera
-by the extrinsic's rotation alone, the baseline left out. Its colour is a 0
-word where that direction lands on no pixel the depth pass covers. Its
+by the extrinsic's rotation alone. Its colour is a 0 word where that
+direction lands on no pixel the depth pass covers. Its
 depth, from the host or the device, is zeroed where that direction lands
 outside the colour picture (the colour pass's rounding and lens test), or
 where its point lands on colour the colour pass does not keep. A frame
