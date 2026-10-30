@@ -5320,11 +5320,10 @@ build (no plan written) and on that model's cached plan; the quarter spread
 and the fourth output of another name refused, with and without a gate,
 naming them; a negative, NaN or infinite gate refused.
 
-**Validation.** Apple M5 Max, macOS 27.2: the package configured and built
-in Release with warnings as errors (no `sensor_ffs`: Linux, CUDA and
-TensorRT only) and its suite run; the five models checked in ONNX Runtime
-on the test's pair (disparity within 2.4e-6 px, spread exact); and the
-export's new code traced on a stand-in network with the copy's module
-names, its ONNX spread within 4e-6 px of the studies' own definition. Not
-yet run: `sensor_ffs` built and tested on NVIDIA, and an export of FFS
-itself.
+**Validation.** Apple M5 Max, macOS 27.2, Release with warnings as errors:
+the suite, 39 tests, passes (no `sensor_ffs`: Linux, CUDA and TensorRT
+only); the three new models and the first checked in ONNX Runtime on the
+test's pair (disparity within 2.4e-6 px, spread exact); and the export's
+new code traced on a stand-in network with the copy's module names, its
+ONNX spread within 4e-6 px of the studies' own definition. Not yet run:
+`sensor_ffs` built and tested on NVIDIA, and an export of FFS itself.
