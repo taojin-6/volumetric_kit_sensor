@@ -4660,10 +4660,12 @@ validation layer: 47 tests passed and the 2 JPEG tests skipped, as on the
 base, of 49. Six planted bugs each fail `sensor_realsense_conversion` (the
 one-moment rule against the previous frame, or blind to a missing mode; a
 lens on the left infrared camera accepted; the two extrinsics swapped;
-luma at limited range; rows shorter than the picture accepted). Checked by
-hand, not a test: the lab D455 (USB 3.2, firmware 5.17.0.10), the
-projector off, 300 stereo frames through `StereoRectifier` (Luma8) at
-960x544 and at 1280x720, waking on `set_frame_notify`: 30 fps (33.37 ms
+luma at limited range; rows shorter than the picture accepted); three more
+each fail `sensor_stereo_rectifier` (`depth_info()` dropping the id, the
+clock or the colour exposure). Checked by hand, not a test: the lab D455
+(USB 3.2, firmware 5.17.0.10), the projector off, 300 stereo frames through
+`StereoRectifier` (Luma8) at 960x544 and at 1280x720, waking on
+`set_frame_notify`: 30 fps (33.37 ms
 median period); 2 framesets failed at the start and none after, none
 dropped; sequence numbers rose by one every frame; a frame reached `poll`
 15.7 ms after its timestamp; `poll` took 0.016 ms; `rectify` 0.38 ms on the
@@ -4673,6 +4675,9 @@ resample, and at 1280x720 the views are the camera's pictures byte for
 byte. SIFT matches between the views lie 0.14 px apart vertically (median;
 1.4826 MAD 0.25 px, about 420 matches) at 1280x720 and 0.10 px at 960x544,
 as in the camera's own pictures: its factory rectification, unchanged.
+Opened again with its colour exposure locked at 167/60, `info()` and
+`depth_info()` both carried the camera's serial, "RealSense D455", the
+host's clock, 30 fps and 167/60 as read back.
 
 ### 2026-10-29 — Stereo depth on NVIDIA: `FfsStereo` runs Fast-FoundationStereo on TensorRT between two CUDA kernels, from the rectifier's views straight into a Vulkan depth buffer, and `StereoDepthSensor` makes any stereo camera an `IRgbdSensor`.
 
@@ -4689,12 +4694,11 @@ before the build; the plan is named for the GPU, the TensorRT version, the
 model's bytes and that size; loaded if TensorRT takes it, else built (and
 written whole, by rename) if not. The cache must be named and is made
 before any build; a plan that cannot be written runs unkept, with a
-warning. `depth` maps each view into CUDA once,
-pads and normalises it into the network's input with one kernel, runs
-TensorRT, and writes `fx * baseline / d` with another, 16-bit in
-`max(0.1 mm, max_depth / 65535)` units, into an exported Vulkan buffer
-mapped at creation, leased to the frame as `depth_device`
-(`kQueueFamilyExternal`); 0 for a disparity not above 0, past its column
+warning. `depth` maps each view into CUDA once, pads and normalises it into
+the network's input with one kernel, runs TensorRT, and writes
+`fx * baseline / d` with another, 16-bit in `max(0.1 mm, max_depth / 65535)`
+units, into an exported Vulkan buffer mapped at creation, leased to the
+frame as `depth_device` (`kQueueFamilyExternal`); 0 for a disparity not above 0, past its column
 (off the right view) or outside the depth range, and, for `Rgba8` views,
 where the left pixel or the right pixel it matched has coverage 0. One
 stream, one wait, asleep on a blocking-sync event; no host copy and no
@@ -4706,10 +4710,11 @@ every 1 ms); a refused pair counts `failed`, any other failure is the
 sensor's, until `stop` and `start`. Its `info` is `depth_info()`, the
 camera's id, model, clock, rate and colour exposure included, so a
 `SensorArray` takes it; its `stats` add the camera's pairs, drops and
-failures to its own, and a stop lets the frames held go uncounted. `tools/ffs/export_onnx.py` exports FFS,
-research use, from a local NVlabs checkout: the 23-36-37 checkpoint, 8
-iterations, 192 pixels of disparity, the four TensorRT changes, traced under
-AMP. `vs_target_warnings` keys its flags by language, so nvcc gets its own.
+failures to its own, and a stop lets the frames held go uncounted.
+`tools/ffs/export_onnx.py` exports FFS, research use, from a local NVlabs
+checkout: the 23-36-37 checkpoint, 8 iterations, 192 pixels of disparity,
+the four TensorRT changes, traced under AMP. `vs_target_warnings` keys its
+flags by language, so nvcc gets its own.
 
 **Why.** The owner's decisions of 2026-10-29: FFS runs on NVIDIA only and
 takes any calibrated pair, not the RealSense's alone; downstream sees
@@ -4754,8 +4759,8 @@ reader finished before its frame let it go, the decoders' rule
 (`IStereoSensor` is not thread-safe): `start` and `stop` on the caller's,
 `poll` and `stats` on the sensor's thread, joined before `stop` calls it;
 the camera's notification may run on its own thread after the camera let it
-go, so it holds the wake-up it signals. The thread's
-Vulkan submits and the caller's need nothing more: `core::Device` gives each
+go, so it holds the wake-up it signals. The thread's Vulkan submits and the
+caller's need nothing more: `core::Device` gives each
 submit its own pool and serialises `vkQueueSubmit` under the queue's mutex,
 and the allocator locks its own state.
 
