@@ -11,7 +11,7 @@ volumetric_kit_recon's DESIGN.md with the package (2026-10-29).
 - [Colour at the boundary](#colour-at-the-boundary)
 - Implementation: [camera](#camera), [frame](#frame), [the interface and
   the tiers on it](#sensor), [stereo](#stereo), [stereo depth
-  (FFS)](#stereo-depth-ffs), [image I/O](#image-io)
+  (FFS)](#stereo-depth-ffs), [audio](#audio), [image I/O](#image-io)
 - [Next work](#next-work)
 
 ## Tiers
@@ -64,6 +64,10 @@ recon's examples assemble the rest.
   Fast-FoundationStereo on TensorRT with CUDA kernels either side, and
   `StereoDepthSensor`, a stereo camera as an `IRgbdSensor`. On `stereo`; it
   links `video` privately, for CUDA's view of Vulkan memory.
+- **`audio`** — audio sources: `IAudioSensor` and its chunks
+  (`audio_sensor.hpp`, in `sensor_interface`), and `Microphone`, an OS input
+  through PortAudio (`sensor_microphone`, `VS_WITH_PORTAUDIO`), on the
+  interface.
 - **`io`** — image files (`sensor_image_io`, `io/image_io.hpp`): encoded
   images, depth PNGs and PNG export, on the family core's base tier alone,
   with stb private.
@@ -81,12 +85,13 @@ recon's examples assemble the rest.
 - CMake targets `volumetric_kit::sensor_<tier>`: `sensor_camera`,
   `sensor_frame`, `sensor_interface`, `sensor_prep`, `sensor_array`,
   `sensor_stereo`, `sensor_video`, `sensor_video_syntax`, `sensor_apple`,
-  `sensor_orbbec`, `sensor_realsense`, `sensor_ffs` and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
-  `sensor`, which is why the interface's is `sensor_interface`). `io` is
-  the one exception to `sensor_<tier>` and `<tier>/export.hpp`: its
-  target, export header and macro are named after the image files it holds
-  (`sensor_image_io`, `io/image_io_export.hpp`, `VS_IMAGE_IO_API`), as they
-  were in recon.
+  `sensor_orbbec`, `sensor_realsense`, `sensor_ffs`, `sensor_microphone` and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
+  `sensor`, which is why the interface's is `sensor_interface`). `io` and
+  `audio` are the exceptions to `sensor_<tier>` and `<tier>/export.hpp`:
+  their targets, export headers and macros are named after what they hold
+  (`sensor_image_io`, `io/image_io_export.hpp`, `VS_IMAGE_IO_API`, as they
+  were in recon; `sensor_microphone`, `audio/microphone_export.hpp`,
+  `VS_MICROPHONE_API`).
 - Package-wide headers: `version.hpp` at the root, built by `sensor_camera`
   so camera-only builds have it; `frame/device_requirements.hpp` and
   `frame/vector_types.hpp` in `frame`, the lowest tier on Vulkan and the one
@@ -868,6 +873,28 @@ loads libcuda at run time) are private.
   (`GpuFramePrep`): `core::Device` gives every submit a pool of its own and
   serialises `vkQueueSubmit` under its queue's mutex, and the allocator
   locks its own state.
+
+### audio
+
+`Microphone` holds PortAudio behind a pointer. Its stream callback
+(`audio/portaudio_callback.hpp`), on PortAudio's realtime thread, reads
+`system_clock` and hands the chunk to `audio::Capture::on_input`
+(`audio/capture.hpp`), which takes no lock, allocates nothing and logs
+nothing:
+- It stamps the chunk with `chunk_pts_ns`:
+  `now - (currentTime - inputBufferAdcTime)`. Both times are on
+  PortAudio's stream clock, so only their difference crosses clocks; a wait
+  that is not finite, negative or 1 s or more counts as 0. The stamp is
+  clamped to the chunk before's.
+- It copies the chunk into `audio::ChunkRing`, a ring of
+  `Options::queue_chunks` entries allocated at `open`, one writer and one
+  reader. A full ring refuses the push.
+
+`drain` copies the chunks out on the caller's thread and runs the 1 s
+silence check on a steady time passed in. `Capture` holds no PortAudio, so
+its tests run in every build. The input opens at its default high latency:
+a deeper host buffer rides out a late callback, and the ADC time places
+each chunk whatever the latency.
 
 ### image I/O
 

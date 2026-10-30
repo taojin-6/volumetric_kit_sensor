@@ -288,6 +288,37 @@ target_link_libraries(sensor_rgbd_sensor_test
 vs_target_warnings(sensor_rgbd_sensor_test)
 add_test(NAME sensor_rgbd_sensor COMMAND sensor_rgbd_sensor_test)
 
+# The audio source contract and what the microphone driver does with each chunk
+# (audio/capture.hpp: the stamps, the queue, the counters, a producer thread),
+# on synthetic tones. capture.cpp holds no PortAudio, so they compile it
+# themselves and run in every build; sensor_microphone, below, is the PortAudio
+# side.
+set(_vs_audio_src ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/audio)
+foreach(_vs_audio_test sensor_audio_capture sensor_audio_sensor)
+  add_executable(${_vs_audio_test}_test ${_vs_audio_test}_test.cpp
+                                        ${_vs_audio_src}/capture.cpp)
+  target_link_libraries(${_vs_audio_test}_test
+                        PRIVATE volumetric_kit::sensor_interface)
+  target_include_directories(${_vs_audio_test}_test PRIVATE ${_vs_audio_src})
+  vs_target_warnings(${_vs_audio_test}_test)
+  add_test(NAME ${_vs_audio_test} COMMAND ${_vs_audio_test}_test)
+endforeach()
+
+# The microphone driver's PortAudio side (VS_WITH_PORTAUDIO only): the library
+# that loads, open's refusals, the input an option names, and the stream
+# callback called as PortAudio calls it. No test calls Pa_Initialize, which
+# looks for devices, or opens a mic.
+if(VS_WITH_PORTAUDIO)
+  add_executable(sensor_microphone_test sensor_microphone_test.cpp
+                                        ${_vs_audio_src}/capture.cpp)
+  target_link_libraries(
+    sensor_microphone_test PRIVATE volumetric_kit::sensor_microphone
+                                   PkgConfig::VS_PORTAUDIO)
+  target_include_directories(sensor_microphone_test PRIVATE ${_vs_audio_src})
+  vs_target_warnings(sensor_microphone_test)
+  add_test(NAME sensor_microphone COMMAND sensor_microphone_test)
+endif()
+
 # Apple's pixel buffers imported as images (sensor_apple, any Apple build, with
 # or without FFmpeg): buffers made here, read back in place, prepared as a
 # frame's colour, what the import allocates in Metal (metal_allocation.mm), and
@@ -678,11 +709,12 @@ target_link_libraries(
 vs_target_warnings(sensor_io_image_test)
 add_test(NAME sensor_io_image COMMAND sensor_io_image_test)
 
-# The tests whose code runs threads -- the Orbbec decode workers -- which CI
-# builds and runs again under ThreadSanitizer (.github/workflows/_build.yml):
-# one target to build them.
+# The tests whose code runs threads -- the Orbbec decode workers and the audio
+# capture's queue -- which CI builds and runs again under ThreadSanitizer
+# (.github/workflows/_build.yml): one target to build them.
 add_custom_target(sensor_tsan_tests)
-add_dependencies(sensor_tsan_tests sensor_orbbec_decode_worker_test)
+add_dependencies(sensor_tsan_tests sensor_orbbec_decode_worker_test
+                 sensor_audio_capture_test)
 if(VS_WITH_ORBBEC)
   add_dependencies(sensor_tsan_tests sensor_orbbec_jpeg_test
                    sensor_orbbec_hevc_test sensor_orbbec_open_sensors_test)

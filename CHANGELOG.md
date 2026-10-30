@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-10-30
+
+### Added
+
+- **Audio sources.** `IAudioSensor` (`audio_sensor.hpp`, in
+  `sensor_interface`): any audio source, polled as `IRgbdSensor` is; `drain`
+  appends every `AudioChunk` held, oldest first, each interleaved signed
+  16-bit samples stamped with its first sample's capture time
+  (`AudioInfo::clock`) and numbered since the start; a running source that
+  delivers nothing for 1 s fails its drains (`IoError`). DECISIONS.md, the
+  2026-10-30 audio entry.
+- **`Microphone`** (`audio/microphone.hpp`, `sensor_microphone`, new option
+  `VS_WITH_PORTAUDIO`, off by default): any OS input through PortAudio
+  (Core Audio, ALSA), a prerequisite found through pkg-config, never
+  fetched; `Microphone::inputs()` lists the inputs and `overflows()` counts
+  input the backend lost. `tools/mic_check` checks a mic by hand, built
+  with the tests.
+
 ## [0.10.0] - 2026-10-30
 
 ### Added

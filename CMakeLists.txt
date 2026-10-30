@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(
   volumetric_kit_sensor
-  VERSION 0.10.0
+  VERSION 0.11.0
   DESCRIPTION
     "Cameras, capture and the device-frame contract for the volumetric_kit family"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_sensor"
@@ -65,6 +65,10 @@ option(
 option(VS_WITH_FFS
        "Build sensor_ffs: FFS stereo depth (requires TensorRT and VS_WITH_CUDA)"
        OFF)
+# OFF by default too: PortAudio is a prerequisite you install
+# (cmake/vs_portaudio.cmake).
+option(VS_WITH_PORTAUDIO
+       "Build the microphone driver (requires an installed PortAudio)" OFF)
 
 # Semicolon list of sanitizers (e.g. "address;undefined"); empty = off. Applied
 # globally -- see cmake/vs_sanitizers.cmake for why.
@@ -74,7 +78,7 @@ set(VS_SANITIZE
 
 if(VS_CAMERA_ONLY)
   foreach(_vs_option VS_WITH_ORBBEC VS_WITH_REALSENSE VS_WITH_FFMPEG
-                     VS_WITH_CUDA VS_WITH_FFS)
+                     VS_WITH_CUDA VS_WITH_FFS VS_WITH_PORTAUDIO)
     if(${_vs_option})
       message(FATAL_ERROR "VS_CAMERA_ONLY builds the camera tier alone: "
                           "turn ${_vs_option} OFF")
@@ -100,9 +104,9 @@ if(NOT VS_CAMERA_ONLY)
   find_package(Vulkan REQUIRED)
 endif()
 
-# The Orbbec SDK (ob::OrbbecSDK), librealsense, FFmpeg, the CUDA toolkit and
-# TensorRT: installed once, outside the repo, and never fetched (the 2026-09-24
-# decision).
+# The Orbbec SDK (ob::OrbbecSDK), librealsense, FFmpeg, the CUDA toolkit,
+# TensorRT and PortAudio: installed once, outside the repo, and never fetched
+# (the 2026-09-24 decision).
 if(VS_WITH_ORBBEC)
   include(vs_orbbec)
 endif()
@@ -118,6 +122,9 @@ endif()
 if(VS_WITH_FFS)
   include(vs_ffs)
 endif()
+if(VS_WITH_PORTAUDIO)
+  include(vs_portaudio)
+endif()
 
 # The core this package builds with (third_party/ checks the core that arrives):
 # 0.29.0, whose vulkan/fwd.hpp the public headers include, with 0.27.0's
@@ -130,4 +137,9 @@ add_subdirectory(src)
 if(VS_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
   enable_testing()
   add_subdirectory(tests)
+  # The microphone's hand check, built with the tests and never run by them: it
+  # opens a mic.
+  if(VS_WITH_PORTAUDIO)
+    add_subdirectory(tools/mic_check)
+  endif()
 endif()

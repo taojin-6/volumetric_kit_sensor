@@ -5,8 +5,8 @@
 Cameras, capture and the device-frame contract of the `volumetric_kit`
 family: the camera vocabulary and the rig's calibration file, the RGB-D
 sensor interface, GPU frame preparation, the sensor array, the hardware video
-decoders, Apple's pixel-buffer importer, the Orbbec and RealSense drivers
-and image files.
+decoders, Apple's pixel-buffer importer, the Orbbec and RealSense drivers,
+the audio source interface and a microphone driver, and image files.
 A camera stack is anything that produces `DeviceFrame`s, the posed,
 undistorted RGB-D frames on the device that fusion reads.
 
@@ -35,7 +35,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | --- | --- | --- | --- |
 | `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file; no Vulkan | core base, GLM |
 | `sensor_frame` | `frame/` | `DeviceFrame`, the pinhole cameras, `DepthNoise`, `ColorEncoding` and the sRGB curve, `pinhole.glsl`, `device_requirements()`; header-only | core Vulkan |
-| `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions | camera, frame |
+| `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions; `IAudioSensor`, `AudioChunk` | camera, frame |
 | `sensor_prep` | `prep/` | `GpuFramePrep`, `PictureReadback` | interface |
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
 | `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
@@ -45,6 +45,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video |
 | `sensor_realsense` | `realsense/` | `RealSenseSensor`, `RealSenseStereo` | interface, stereo |
 | `sensor_ffs` | `ffs/` | `FfsStereo` (Fast-FoundationStereo on TensorRT), `StereoDepthSensor` (any stereo camera as an `IRgbdSensor`); NVIDIA only | stereo; video, privately |
+| `sensor_microphone` | `audio/` | `Microphone` (an OS audio input through PortAudio) | interface |
 | `sensor_image_io` | `io/` | image files | core base |
 
 ## Building
@@ -70,6 +71,7 @@ ctest --test-dir "$sensor_root/build" --output-on-failure
 | `VS_WITH_FFMPEG` | OFF | the video decoders off Apple; needs `VS_WITH_CUDA`, refused on Apple |
 | `VS_WITH_CUDA` | OFF | NVIDIA's hardware for the decoders |
 | `VS_WITH_FFS` | OFF | `sensor_ffs`: stereo depth by FFS; needs `VS_WITH_CUDA` and TensorRT ≥ 11 |
+| `VS_WITH_PORTAUDIO` | OFF | `sensor_microphone` and `mic_check`; needs PortAudio |
 | `VS_SANITIZE` | empty | sanitizers, e.g. `address;undefined` |
 
 The GPU tests follow the core's test policy (its README, "Build and test"):
@@ -161,6 +163,36 @@ own depth and its colour camera's YUYV, which `GpuFramePrep` converts on the
 device; and `RealSenseStereo`, the same camera's two infrared cameras as an
 `IStereoSensor` (`realsense/realsense_stereo.hpp`), the projector off, for a
 stereo matcher through `StereoRectifier` (below).
+
+## Microphone driver
+
+`Microphone` (`audio/microphone.hpp`, `volumetric_kit::sensor_microphone`),
+an `IAudioSensor` (`audio_sensor.hpp`), is any OS input through
+[PortAudio](https://www.portaudio.com), off by default and found through
+pkg-config, never fetched:
+
+```sh
+brew install portaudio                          # macOS
+sudo apt install portaudio19-dev pkg-config     # Ubuntu
+cmake -S "$sensor_root" -B "$sensor_root/build" \
+    -DCMAKE_BUILD_TYPE=Release -DVS_WITH_PORTAUDIO=ON
+```
+
+```cpp
+VKC_ASSIGN(sensor::Microphone mic, sensor::Microphone::open({}));  // default input
+VKC_TRY(mic.start());
+std::vector<sensor::AudioChunk> chunks;
+VKC_TRY(mic.drain(&chunks));  // every chunk since, oldest first
+```
+
+`mic_check`, built with the tests, checks a mic by hand and saves no audio:
+`--list` prints the inputs, otherwise it records `--seconds` (5) from
+`--device` (the default input) and prints the chunks, losses, the step
+between chunk stamps and the last chunk's age.
+
+```sh
+"$sensor_root/build/tools/mic_check/mic_check" --list
+```
 
 ## Stereo pairs
 
@@ -256,7 +288,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.10.0), carried by the umbrella as
+The version is `project()`'s (0.11.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

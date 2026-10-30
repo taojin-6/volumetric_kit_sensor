@@ -2,11 +2,11 @@
 # Copyright (c) 2026 Tao Jin
 
 # --- sensor_interface: the sensor interface ----------------------------------
-# IRgbdSensor, the RgbdFrame it hands out, and the camera- and colour-convention
-# conversions. The calibration file is the camera tier's
-# (camera/array_calibration.hpp). Carries no driver itself: one ships in this
-# package only if it can build *and* test it (the 2026-08-02 decision), and the
-# one that does, Orbbec, is its own target (orbbec/, below).
+# IRgbdSensor, the RgbdFrame it hands out, IAudioSensor (header-only), and the
+# camera- and colour-convention conversions. The calibration file is the camera
+# tier's (camera/array_calibration.hpp). Carries no driver itself: one ships in
+# this package only if it can build *and* test it (the 2026-08-02 decision), and
+# the one that does, Orbbec, is its own target (orbbec/, below).
 #
 # Depends on sensor_camera and sensor_frame alone -- the whole tier is host
 # types and arithmetic. That is what makes the interface implementable from
@@ -95,4 +95,9 @@ endif()
 # CUDA, NVIDIA only; see ffs/CMakeLists.txt.
 if(VS_WITH_FFS)
   add_subdirectory(ffs)
+endif()
+
+# The microphone driver, on the interface; see audio/CMakeLists.txt.
+if(VS_WITH_PORTAUDIO)
+  add_subdirectory(audio)
 endif()
