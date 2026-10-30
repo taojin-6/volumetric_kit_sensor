@@ -26,7 +26,6 @@
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/shader.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
-#include "volumetric_kit/sensor/camera/geometry.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 
 namespace volumetric_kit::sensor {
@@ -56,23 +55,18 @@ static_assert(offsetof(DepthParams, raw_first) == 68,
               "DepthParams layout drift");
 
 // shaders/rgbd_overlap.glsl's RgbdOverlap, which both passes bind: the two
-// cameras, the rigid transforms between their frames (column-major, as the
-// shader's mat4), and the frame's depth range.
+// cameras, and the rigid transform from the depth camera's frame into the
+// colour camera's (column-major, as the shader's mat4).
 struct OverlapParams {
   LensParams color;
   Mat4f depth_to_color;
   LensParams depth;
-  Mat4f color_to_depth;
-  float near_m;
-  float far_m;
 };
-static_assert(sizeof(OverlapParams) == 2 * (56 + 64) + 8,
+static_assert(sizeof(OverlapParams) == 56 + 64 + 56,
               "OverlapParams layout drift");
 static_assert(offsetof(OverlapParams, depth_to_color) == 56,
               "OverlapParams layout drift");
-static_assert(offsetof(OverlapParams, color_to_depth) == 176,
-              "OverlapParams layout drift");
-static_assert(offsetof(OverlapParams, near_m) == 240,
+static_assert(offsetof(OverlapParams, depth) == 120,
               "OverlapParams layout drift");
 
 // rgbd_frame.hpp spells Vulkan's special queue families without Vulkan.
@@ -574,15 +568,11 @@ core::Status GpuFramePrep::record_inputs(core::CommandBatch& batch,
   // word a frame with nothing on the host claims, so the batch holds it.
   VKC_ASSIGN(*input, batch.input(slot, 0, layout.slot_bytes));
   // The overlap both passes mask a frame with colour by, written inline: the
-  // two cameras, the transforms each way, and the depth range.
+  // two cameras and the transform between them.
   if (frame.has_color()) {
-    const OverlapParams overlap{
-        lens_params(frame.color_camera),
-        Mat4f(frame.depth_to_color),
-        lens_params(frame.depth_camera),
-        Mat4f(camera::rigid_inverse(frame.depth_to_color)),
-        frame.min_depth,
-        frame.max_depth};
+    const OverlapParams overlap{lens_params(frame.color_camera),
+                                Mat4f(frame.depth_to_color),
+                                lens_params(frame.depth_camera)};
     VKC_TRY(batch.upload(overlap_, 0, &overlap, sizeof(overlap)));
   }
   return {};

@@ -503,8 +503,8 @@ resulting `DeviceFrame` feeds the `Buffer` overloads of grid's
 `allocate_from_depth` (its camera through recon's `to_depth_pinhole`) and
 recon's `integrate` (and
 `ColorFrame::buffer`, with `coverage_in_alpha`, since a
-pixel the lens maps outside the picture, or the depth camera does not see,
-is a 0 word), so nothing is
+pixel the lens maps outside the picture, or outside the depth camera's
+view, is a 0 word), so nothing is
 uploaded and nothing registered. Y'CbCr colour comes as I420, NV12, YUYV
 (4:2:2, one plane) or luma alone (`YuvLayout::Luma`, a mono camera's,
 which comes out grey: R, G and B the luma's code by its range, no chroma
@@ -559,15 +559,16 @@ checked before anything is recorded or timed, a depth range from 0 and a
 plane's queue family included, and `prepare` is `prepare_batch` over a set
 of one. Both return `OutOfMemory` for a host allocation failure,
 preserving previously returned frames.
-A frame with colour keeps only what both its cameras see (the 2026-10-29
-same-view decision), from one buffer of both cameras, their transforms each
-way and the frame's depth range, which both passes bind
-(`rgbd_overlap.glsl`): its colour is a 0 word where the depth pass does not
-cover both ends of the pixel's ray, `min_depth` and `max_depth` deep for the
-depth camera, and its depth, from the host or the device, is zeroed where
-the pixel's point lands on colour the colour pass does not keep, by that
-pass's rounding, lens test and ray test. A frame without colour keeps all
-its depth. `depth_offset_m`
+A frame with colour keeps only what both its cameras see by their fields of
+view (the 2026-10-29 same-view decision), from one buffer of both cameras
+and the transform between them, which both passes bind
+(`rgbd_overlap.glsl`). A pixel's direction is turned into the other camera
+by the extrinsic's rotation alone, the baseline left out. Its colour is a 0
+word where that direction lands on no pixel the depth pass covers. Its
+depth, from the host or the device, is zeroed where that direction lands
+outside the colour picture (the colour pass's rounding and lens test), or
+where its point lands on colour the colour pass does not keep. A frame
+without colour keeps all its depth. `depth_offset_m`
 (0 by default) is subtracted from every raw return in the depth pass, before
 the mix and that test: for `z > 0`, `z = max(z - offset, 0)`, so 0 stays no
 return whatever the sign; a `SensorArray` sets it per sensor from the
