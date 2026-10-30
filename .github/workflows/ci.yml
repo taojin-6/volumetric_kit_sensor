@@ -67,6 +67,10 @@ jobs:
       # hardware each must decode on, so their tests fail rather than skip
       # without it. 26.04 builds without them.
       #
+      # `ffs` builds sensor_ffs (VS_WITH_FFS, TensorRT from the CUDA
+      # repository, installed per job) on 24.04, the CUDA leg; its tests fail
+      # rather than skip there for the same promise. The Mac has no CUDA.
+      #
       # Every leg runs the tests under the Khronos validation layer, and
       # `sync_validation` adds synchronization validation on the NVIDIA legs,
       # as the sanitizer job does on lavapipe.
@@ -81,6 +85,7 @@ jobs:
             realsense_sdk: true
             ffmpeg: true
             cuda: true
+            ffs: true
             hevc_backend: cuda
             sync_validation: true
           - os: ubuntu-26.04
@@ -107,6 +112,7 @@ jobs:
       realsense_sdk: ${{ matrix.realsense_sdk || false }}
       ffmpeg: ${{ matrix.ffmpeg || false }}
       cuda: ${{ matrix.cuda || false }}
+      ffs: ${{ matrix.ffs || false }}
       hevc_backend: ${{ matrix.hevc_backend || '' }}
       sync_validation: ${{ matrix.sync_validation || false }}
 

@@ -10,7 +10,8 @@ volumetric_kit_recon's DESIGN.md with the package (2026-10-29).
 - [Tiers](#tiers) and [names](#names)
 - [Colour at the boundary](#colour-at-the-boundary)
 - Implementation: [camera](#camera), [frame](#frame), [the interface and
-  the tiers on it](#sensor), [stereo](#stereo), [image I/O](#image-io)
+  the tiers on it](#sensor), [stereo](#stereo), [stereo depth
+  (FFS)](#stereo-depth-ffs), [image I/O](#image-io)
 - [Next work](#next-work)
 
 ## Tiers
@@ -58,6 +59,10 @@ recon's examples assemble the rest.
   `StereoRectifier`, the pair undistorted and rectified on the GPU for a
   stereo matcher. On the interface; it links `prep` privately, whose colour
   pass it shares.
+- **`ffs`** — stereo depth on NVIDIA's GPUs (`VS_WITH_FFS`): `FfsStereo`,
+  Fast-FoundationStereo on TensorRT with CUDA kernels either side, and
+  `StereoDepthSensor`, a stereo camera as an `IRgbdSensor`. On `stereo`; it
+  links `video` privately, for CUDA's view of Vulkan memory.
 - **`io`** — image files (`sensor_image_io`, `io/image_io.hpp`): encoded
   images, depth PNGs and PNG export, on the family core's base tier alone,
   with stb private.
@@ -75,7 +80,7 @@ recon's examples assemble the rest.
 - CMake targets `volumetric_kit::sensor_<tier>`: `sensor_camera`,
   `sensor_frame`, `sensor_interface`, `sensor_prep`, `sensor_array`,
   `sensor_stereo`, `sensor_video`, `sensor_video_syntax`, `sensor_apple`,
-  `sensor_orbbec`, `sensor_realsense` and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
+  `sensor_orbbec`, `sensor_realsense`, `sensor_ffs` and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
   `sensor`, which is why the interface's is `sensor_interface`). `io` is
   the one exception to `sensor_<tier>` and `<tier>/export.hpp`: its
   target, export header and macro are named after the image files it holds
@@ -725,6 +730,99 @@ consumer of depth never sees it: a depth source built on a stereo camera
   lost, since it writes every word. A submit or wait that fails leaves the
   rectifier refusing every later frame, as the device may still run the
   pass.
+
+### stereo depth (FFS)
+
+`sensor_ffs` (`VS_WITH_FFS`: Linux, `VS_WITH_CUDA`, TensorRT ≥ 11 and nvcc;
+`cmake/vs_ffs.cmake`) is depth from any rectified pair by
+Fast-FoundationStereo, NVIDIA only. No CUDA or TensorRT type reaches its
+headers; TensorRT (shared libraries) and the CUDA runtime (static, which
+loads libcuda at run time) are private.
+
+- **The model** is an ONNX export of FFS (`tools/ffs/export_onnx.py`, run
+  once per checkpoint and size against a local NVlabs checkout; research
+  use, the 23-36-37 checkpoint by default): inputs `left_image` and
+  `right_image`, float `1 x 3 x H x W`, ImageNet-normalised R'G'B'; output
+  `disparity`, float `1 x 1 x H x W`. H and W are the rig's size rounded up
+  to multiples of 32; `create` refuses a model of another size, checking the
+  parsed network before the build.
+- **The plan cache.** `create` names a plan for the GPU (CUDA's UUID), the
+  TensorRT version, the model's bytes (64-bit FNV-1a) and the network's
+  size, loads it from `Options::plan_cache` if TensorRT takes it, and else
+  builds it (TensorRT's defaults, strongly typed, as the export's AMP casts
+  say), writes it under a name of this process's and renames it. A plan
+  TensorRT will not load is built again. The cache must be named, and is
+  made before anything is built; a plan that cannot be written is logged
+  and runs unkept.
+- **A frame** (`depth`), on one CUDA stream, in the primary context of the
+  device's GPU (`CudaContext`, made current around each call through the
+  video tier's internal `CudaContextScope`), then one wait:
+  1. the rectifier's two views, read in place: each `ExportedBuffer` mapped
+     into CUDA once (`CudaBufferMapping`, which takes its descriptor, so the
+     first matcher to read a rectifier's views is their one reader), the
+     mappings kept for up to 8 buffers, least recently read let go first; a
+     view whose descriptor is closed and that this matcher has no mapping of
+     is refused. A new descriptor at a mapped view's address is a new buffer,
+     whose old mapping goes. A buffer the rectifier replaced (a pair kept
+     past the next) is freed with its last pair, unseen here: its mapping,
+     and its memory with it (the import holds the descriptor's reference),
+     stays until let go. Their layout is read from their size (`Luma8` a
+     byte a pixel, `Rgba8` a word).
+  2. the input kernel (`ffs_kernels.cu`): a thread a network pixel and view,
+     the view's pixel at the clamped position (padding repeats the last row
+     and column), luma in all three channels or R, G, B, each
+     `(value - mean) / deviation`, into TensorRT's input buffers, which are
+     CUDA's own, allocated at create.
+  3. TensorRT (`enqueueV3`) on the same stream.
+  4. the depth kernel: a thread a rig pixel, `z = fx * baseline / d` at
+     `(x, y)` of the network's disparity; 0 where `d` is not above 0 (NaN
+     included), `d > x` (the match is off the right view), or `z` is outside
+     `[min_depth, max_depth]`, and, for `Rgba8` views, where the left view's
+     coverage byte at `(x, y)` or the right view's at `(rint(x - d), y)` is
+     0 (the rectifier saw nothing there, and the network matched black);
+     else `rint(z / metres_per_unit)`, clamped to 1..65535, with
+     `metres_per_unit = max(0.1 mm, max_depth / 65535)`. Written as 16-bit
+     samples, rows packed, straight into an exported Vulkan buffer that CUDA
+     mapped when it was made. `Luma8` has no coverage: a border (alpha above
+     0, or 1 on a pair rectified already whose aspect changes) is matched as
+     picture.
+  5. the wait: a blocking-sync event recorded after the depth kernel, so
+     the host sleeps through the network run (a stream synchronize in the
+     primary context, whose flags the decoders share and this leaves alone,
+     spins a core for all of it).
+  The frame's `depth_device` is that buffer, `kQueueFamilyExternal`, its
+  writer finished; colour (the third camera's picture, or the left one's),
+  `color_encoding`, `color_to_world` and times come from the pair, the
+  colour camera and `depth_to_color` from the rectifier's `depth_info()`.
+  The depth buffers are leased as the rectifier's views are: one is written
+  again only once no frame holds it, and is not handed back from the family
+  that read it, since CUDA writes every sample (as the decoders' pictures).
+  A launch or wait that fails lets that frame's views and buffer go rather
+  than reusing them, and every later frame is refused. Optional metrics:
+  `ffs input`, `ffs network` and `ffs depth` device rows (CUDA events) and
+  an `ffs` host row with its wait.
+- **`StereoDepthSensor`** owns the camera, a rectifier and an `FfsStereo`
+  and runs a thread from `start` to `stop`: it polls the camera and, when
+  nothing is new, sleeps until the camera's `set_frame_notify` (set at
+  `create`) wakes it, or 1 ms for a camera that notifies nothing; then
+  rectifies, runs FFS, and holds the frame (`set_queue_depth`, oldest let
+  go), then calls the frame notification. The camera's notification may
+  run on its own thread after the camera let it go, so it owns what it
+  touches (a shared wake-up). The camera is called from one thread at a
+  time: `start` and `stop` on the caller's, `poll` and `stats` on the
+  thread, which `stop` joins first. Its `info` is the rectifier's
+  `depth_info()`, with the camera's id, model, clock, rate and colour
+  exposure, so a `SensorArray` takes it. Its `stats` are the camera's
+  `received`, its own `delivered`, and both's `dropped` and `failed` (the
+  camera's as of the thread's last poll); a stop lets the frames held go
+  uncounted, as every driver's. A pair the rectifier or FFS refuses
+  (`InvalidArgument`) is counted `failed` and passed over; any other
+  failure -- the camera's poll, a GPU or CUDA failure, after which the
+  rectifier and FFS refuse every pair, so it takes a new sensor -- ends the
+  thread and is what `poll` and `drain` return until `stop` and `start`. The thread's Vulkan submits share the queue with the caller's
+  (`GpuFramePrep`): `core::Device` gives every submit a pool of its own and
+  serialises `vkQueueSubmit` under its queue's mutex, and the allocator
+  locks its own state.
 
 ### image I/O
 

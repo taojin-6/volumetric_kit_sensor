@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-10-29
+
+### Added
+
+- **Stereo depth by Fast-FoundationStereo, `sensor_ffs`** (`VS_WITH_FFS`,
+  Linux, NVIDIA only; needs `VS_WITH_CUDA` and TensorRT ≥ 11, found by
+  `cmake/vs_ffs.cmake`, never fetched). `FfsStereo` (`ffs/ffs_stereo.hpp`)
+  runs an FFS ONNX export on TensorRT, its plan built once and cached by
+  GPU, TensorRT version, model and size: a CUDA kernel makes the network's
+  input from a `StereoRectifier`'s views, read in place, and another turns
+  its disparity into 16-bit depth written straight into a Vulkan buffer,
+  the frame's `RgbdFrame::depth_device`, with no return where an `Rgba8`
+  view saw nothing; the host sleeps through the network run.
+  `StereoDepthSensor` (`ffs/stereo_depth_sensor.hpp`) is any
+  `IStereoSensor` as an `IRgbdSensor`, rectifying and matching on a thread
+  of its own that the camera's frame notification wakes; it reports the
+  camera's identity, so a `SensorArray` takes it, and the camera's drops.
+  `tools/ffs/export_onnx.py` exports FFS from a local NVlabs checkout with
+  the changes TensorRT needs; `tools/ffs/make_test_onnx.py` makes the
+  tests' models (DECISIONS.md, the 2026-10-29 FFS entry).
+
+### Changed
+
+- `vs_target_warnings` gives its flags to C++ and Objective-C++ only, and
+  CUDA sources nvcc's equivalents.
+
 ## [0.7.0] - 2026-10-29
 
 ### Added

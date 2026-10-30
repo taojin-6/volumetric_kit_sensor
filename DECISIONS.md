@@ -323,6 +323,14 @@ entries relevant to your task; later amendments supersede earlier rules.
   camera; `IStereoSensor` gains `set_frame_notify`, and `StereoInfo` what
   the source is (id, model, clock, rate, colour exposure), which
   `StereoRectifier::depth_info()` copies.
+- [**2026-10-29**](#2026-10-29--stereo-depth-on-nvidia-ffsstereo-runs-fast-foundationstereo-on-tensorrt-between-two-cuda-kernels-from-the-rectifiers-views-straight-into-a-vulkan-depth-buffer-and-stereodepthsensor-makes-any-stereo-camera-an-irgbdsensor) —
+  Stereo depth on NVIDIA (`sensor_ffs`, `VS_WITH_FFS`): `FfsStereo` runs an
+  FFS export on TensorRT, its plan cached by GPU, TensorRT, model and size,
+  between a CUDA kernel reading the rectifier's views in place and one
+  writing 16-bit depth into a Vulkan buffer (`RgbdFrame::depth_device`);
+  `StereoDepthSensor` is any `IStereoSensor` as an `IRgbdSensor`, on a
+  thread of its own. Research use: NVlabs' code and the 23-36-37 weights,
+  exported by `tools/ffs/export_onnx.py`, never vendored.
 
 ## Decision record
 
@@ -4670,3 +4678,165 @@ as in the camera's own pictures: its factory rectification, unchanged.
 Opened again with its colour exposure locked at 167/60, `info()` and
 `depth_info()` both carried the camera's serial, "RealSense D455", the
 host's clock, 30 fps and 167/60 as read back.
+
+### 2026-10-29 — Stereo depth on NVIDIA: `FfsStereo` runs Fast-FoundationStereo on TensorRT between two CUDA kernels, from the rectifier's views straight into a Vulkan depth buffer, and `StereoDepthSensor` makes any stereo camera an `IRgbdSensor`.
+
+**The rule.** A target of its own, `sensor_ffs` (`VS_WITH_FFS`, which needs
+`VS_WITH_CUDA`; Linux, NVIDIA only), on `stereo`, linking `video` privately
+for CUDA's view of Vulkan memory. TensorRT ≥ 11 (headers, `libnvinfer`,
+`libnvonnxparser`) is found by `cmake/vs_ffs.cmake` and never fetched; nvcc
+compiles the two kernels; the CUDA runtime is linked static and TensorRT's
+libraries shared, privately. No CUDA or TensorRT type reaches a header.
+`FfsStereo::create` takes the `StereoRectifier` whose pairs come in (its rig
+and `depth_info()`), an FFS ONNX and a plan cache directory: the network is
+the rig's size rounded up to multiples of 32, checked on the parsed network
+before the build; the plan is named for the GPU, the TensorRT version, the
+model's bytes and that size; loaded if TensorRT takes it, else built (and
+written whole, by rename) if not. The cache must be named and is made
+before any build; a plan that cannot be written runs unkept, with a
+warning. `depth` maps each view into CUDA once, pads and normalises it into
+the network's input with one kernel, runs TensorRT, and writes
+`fx * baseline / d` with another, 16-bit in `max(0.1 mm, max_depth / 65535)`
+units, into an exported Vulkan buffer mapped at creation, leased to the
+frame as `depth_device` (`kQueueFamilyExternal`); 0 for a disparity not above 0, past its column
+(off the right view) or outside the depth range, and, for `Rgba8` views,
+where the left pixel or the right pixel it matched has coverage 0. One
+stream, one wait, asleep on a blocking-sync event; no host copy and no
+allocation a frame while no frame is kept past the next.
+`StereoDepthSensor` owns the camera, the rectifier and the matcher and runs
+them on a thread from `start` to `stop`, which sleeps between pairs until
+the camera's `set_frame_notify` wakes it (a camera without one is asked
+every 1 ms); a refused pair counts `failed`, any other failure is the
+sensor's, until `stop` and `start`. Its `info` is `depth_info()`, the
+camera's id, model, clock, rate and colour exposure included, so a
+`SensorArray` takes it; its `stats` add the camera's pairs, drops and
+failures to its own, and a stop lets the frames held go uncounted.
+`tools/ffs/export_onnx.py` exports FFS, research use, from a local NVlabs
+checkout: the 23-36-37 checkpoint, 8 iterations, 192 pixels of disparity,
+the four TensorRT changes, traced under AMP. `vs_target_warnings` keys its
+flags by language, so nvcc gets its own.
+
+**Why.** The owner's decisions of 2026-10-29: FFS runs on NVIDIA only and
+takes any calibrated pair, not the RealSense's alone; downstream sees
+`IRgbdSensor`, with `IStereoSensor` only under `StereoDepthSensor`; research
+use, so the best and fast model, the study's own PyTorch export (NVIDIA's
+commercial ONNX works only to ~1 Mpx and lacks the changes); the 23-36-37
+checkpoint by measurement on the D455 takes; and every per-frame step on the
+GPU, which here means no host round trip between the rectifier, the network
+and `GpuFramePrep` at all. The plan is cached because a build takes minutes
+(153 s at 960 x 544 on the 4090) and a load about a second; it is keyed by
+everything a plan is good for only. Where the code made the approved header
+(the design's rev 4 and 5) change:
+- `FfsStereo::create` takes the `StereoRectifier`, not its `StereoRig`: the
+  frame's colour camera and `depth_to_color` are the rectifier's
+  `depth_info()`, which the rig does not carry.
+- `depth` takes an optional `core::StageMetrics*`, as `rectify` does: the
+  per-step device times below come from it.
+- The network is the rig's size rounded up to 32, not equal to it: FFS needs
+  multiples of 32, and the D455's 1280 x 720 runs as 1280 x 736, as the
+  study ran it. The views' layout is read from their size, since a
+  `RectifiedPair` does not name it.
+- A view is mapped by the first matcher that reads it (CUDA takes its
+  descriptor), so one rectifier feeds one matcher.
+
+The wait is a blocking-sync event recorded after the depth kernel, not a
+stream synchronize: in the primary context `CudaContext` retains (default
+flags, which the decoders share and this leaves alone) a synchronize spins,
+a whole core for the whole network run. The event leaves the thread the
+launches' CPU alone, for half a millisecond more a frame (numbers below).
+`Rgba8`'s coverage byte marks where the rectifier saw nothing (alpha above
+0, a lens's fold, a border); the network matches that black like picture,
+so its depth is no return. `Luma8` carries no coverage: there, alpha 0, or
+`Rgba8`. A view the rectifier replaced (a pair kept past the next) is freed
+with its last pair, which the matcher cannot see, so its mapping stays until
+let go, 8 at most, its memory held by the import's reference and never read
+again; a new descriptor at a mapped address replaces that address's mapping.
+
+The depth buffers are not handed back to `VK_QUEUE_FAMILY_EXTERNAL` before
+CUDA writes them again: CUDA writes every sample, and the buffer's last
+reader finished before its frame let it go, the decoders' rule
+(`cuda_pictures.cpp`). The camera is called from one thread at a time
+(`IStereoSensor` is not thread-safe): `start` and `stop` on the caller's,
+`poll` and `stats` on the sensor's thread, joined before `stop` calls it;
+the camera's notification may run on its own thread after the camera let it
+go, so it holds the wake-up it signals. The thread's Vulkan submits and the
+caller's need nothing more: `core::Device` gives each
+submit its own pool and serialises `vkQueueSubmit` under the queue's mutex,
+and the allocator locks its own state.
+
+**Tests.** On two 593-byte models with FFS's inputs and output
+(`tests/data/ffs`, `tools/ffs/make_test_onnx.py`) whose disparity is a
+weighted difference of the views' channels (1/8, 2/8, 5/8, or half), so
+every sample's depth is known. `sensor_ffs_stereo`: every sample of three
+luma pairs within a unit of `fx * baseline / d`, its no-returns (0 and
+negative disparity, past the column, nearer than `min_depth`, farther than
+`max_depth`) exact, at 64 x 32 and at 60 x 30 on the 64 x 32 network (padded
+and cut); the unit from `max_depth`; `Rgba8` views from YUYV, each channel
+weighed, against the views read back; `Rgba8` views made by the test with
+coverage 0 on a lattice of left pixels and a band of right columns, each
+such sample no return; the frame's fields (camera, colour, pose, times, the
+pictures held); two frames kept write two buffers and one let go is reused;
+five pairs kept at once map ten new views and let the first pair's go
+(refused after), pairs kept one frame each and then reused in turn all
+right, and a new buffer at a mapped view's address replacing its mapping
+alone; the depth read through Vulkan from
+`VK_QUEUE_FAMILY_EXTERNAL`, and prepared in place by `GpuFramePrep` to
+metres, three times on reused buffers; the plan cache by what it loads (the
+half model's plan under the model's name halves the depth; a plan cut short
+is built again; another model is another plan; a cache it cannot write
+runs the plan unkept); refusals (depth range, no model, a model TensorRT
+cannot parse, no plan cache, one that cannot be made, a rig whose network is
+another size, a pair of another rig, views not exported or imported
+elsewhere). `sensor_ffs_depth_sensor`, on a test camera fed from the test:
+`info` the rectifier's depth view and the camera's identity; poll the
+newest of three, its times the pair's, two dropped; a frame kept while the
+next is made; a refused pair counted and passed over; stop (the frame held
+uncounted) and restart; drain oldest first; the camera's drops and failures
+in `stats`; a camera failure reported by poll and drain after a
+notification; the thread polling once in 100 ms idle with a notifying
+camera and every millisecond without one; the camera polled on the thread
+alone and never called from two threads at once; a `SensorArray` opening on
+it, refusing it under another exposure.
+
+**Validation.** RTX 4090, Ubuntu 26.04, Release with warnings as errors,
+Orbbec, RealSense, FFmpeg, CUDA 13.4 and FFS (TensorRT 11.4.0), under the
+validation layer with synchronization validation, with the RealSense stereo
+entry's branch merged in: 49 tests passed and the 2 JPEG tests skipped (the
+4090 has no JPEG engine), of 51. Nineteen planted bugs each failed a test: a
+disparity past its column kept, the padded network's row length read as
+the view's, a depth buffer a frame holds written again, R and B swapped in
+`Rgba8`, the plan cache never read, a refused pair ending the sensor; the
+colour exposure dropped from `info`, an empty plan cache taken, a plan
+unwritten made fatal, the camera's drops or failures left out of `stats`, a
+stop counting the frames it lets go, a mapping kept at a new buffer's
+address, no mapping ever let go, either view's coverage ignored or never
+read, the camera's notification ignored, and a camera without one waited
+on forever. The Mac builds no `sensor_ffs`.
+
+**Hand check (not a test).** The FFS study's D455 take with the projector
+off (30 frames, the camera-rectified 1280 x 720 infrared pair) as `Luma`
+host pairs through `StereoRectifier`, `FfsStereo` on this tool's export of
+23-36-37 and `GpuFramePrep`, on the lab 4090. At 1280 x 720 (a 1280 x 736
+network) against the study's PyTorch AMP output of the same checkpoint:
+disparity within 0.0078 px at the median and 0.032 px at the 90th
+percentile, 99.6% within 0.25 px, depth within 0.30 mm at the median, and
+the same fill, 94.4%. Against the D455's own depth (the study's measure:
+per-pixel medians over the take, where both return in every frame): median
+|dZ| 7.40 mm, -1.80 mm signed, 92.9% within 2% (the study: 7.40 mm, 92.5%).
+At 960 x 544 (the rig square-pixelled and cropped, as the stereo review
+entry scales a pair rectified already), against the D455 at its pixels:
+7.70 mm, -2.10 mm signed, 92.7% within 2%, and 2.5 mm (0.15%) at the
+median from PyTorch's 1280 x 720 depth. Building the plans took 153 s
+(960 x 544, 468 MB) and 161 s (1280 x 736, 815 MB); a cached plan loads in
+0.6 s and 0.8 s. Per frame, median of 90 on an idle 4090 (the box
+to itself), at 960 x 544 and 1280 x 720: the network 27.72 and 53.73 ms of
+device time; the input kernel 0.008 and 0.013 ms, the depth kernel 0.005
+and 0.006 ms; `depth` on the host 28.21 and 54.16 ms, its wait included,
+of which 3.00 and 4.99 ms the thread's CPU, the launches before the wait
+(with a stream synchronize, in the same run: 27.72 and 53.75 ms, all of
+it); the rectifier 0.094 and 0.099 ms of device time; and the handoff no
+copy: `GpuFramePrep` reads the depth where CUDA wrote it, 0.057 and 0.060
+ms of device time for its depth and grey colour passes. Rectifier, FFS and
+prep together: 29.2 and 55.0 ms a frame on the host (28.5 and 54.6 ms with
+the synchronize). The 1280 x 720 depth is the synchronize's, byte for
+byte.
