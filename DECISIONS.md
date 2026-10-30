@@ -5302,10 +5302,14 @@ the rig, beside its disparity sigma; this package states no value.
 so two in a row on a pixel with history can reset the surface on that ray
 (0.07% of the image over 11 s of the empty D455 room; nothing behind the
 surface is cleared, and it refills when the pixel returns). Depth edges are
-the spread's weak spot (AUC 0.58-0.68 there). Not measured: the network
-and depth-kernel time with the output (estimated at most 0.21 ms on an
-RTX 5090, bounded by a 14-output engine), and a moving person on real
-infrared.
+the spread's weak spot (AUC 0.58-0.68 there). The export always writes
+the output: a rig that never gates gets one more float plane (2 MB at
+960 x 544) and no network time that can be measured. On an RTX 5090 at
+960 x 544, the network's median is 12.562 ms with it and 12.587 ms without
+(two TensorRT builds; one plan in two processes differs by 0.023 ms), under
+the 0.5 ms or 5% that would have earned an export switch to leave it out;
+the depth kernel takes 0.004 ms with the gate at 0 and at 0.2 px. Not
+measured: a moving person on real infrared.
 
 **Tests.** Three more models from `tools/ffs/make_test_onnx.py`, with the
 first model's disparity and a spread of a sixteenth of the right view's
@@ -5331,5 +5335,17 @@ test's four rounds met by the depth kernel's rule run on those outputs in
 FP32 (a spread read at the view's index instead misses 343 samples of the
 60 x 30 round and none of the others); and the export's new code traced on
 a stand-in network with the copy's module names, its ONNX spread within
-4e-6 px of the studies' own definition. Not yet run: `sensor_ffs` built and
-tested on NVIDIA, and an export of FFS itself.
+4e-6 px of the studies' own definition. RTX 5090, Linux, CUDA 13.4,
+TensorRT 11.4, Release with warnings as errors and every option: the suite,
+55 tests, passes with validation and synchronization validation, and
+`sensor_ffs_stereo`'s four gate rounds give the counts worked out on the
+Mac; it fails with each of four planted bugs (the gate ignored; the spread
+read at the view's index, caught by the 60 x 30 round alone, 343 samples
+off; a gate taken on a model without the spread; the spread's shape
+unchecked). FFS itself (23-36-37, 960 x 544) exports with the spread, the
+copy's disparity 0.0 px from the checkout's forward's. Built as `FfsStereo`
+builds and run on the D455 take (projector off, 30 frames, 0.25-6.5 m):
+ungated, the returns with the output are those without it on 99.9975% of
+the samples (|dz| median 0.3 mm, p99 2.4 mm: a rebuild's noise); two
+processes on one plan give the same bits; and the gate at 0.2 px drops
+9.03% of the returns, adds none and leaves every kept one bit-identical.
