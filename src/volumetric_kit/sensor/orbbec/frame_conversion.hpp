@@ -32,10 +32,10 @@ namespace volumetric_kit::sensor::orbbec {
 /// frame-to-frame sigma of one sample face on, measured 2026-10-27 on four
 /// Femto Megas' 640 x 576 unbinned depth, prepared with nearest-pixel
 /// sampling; pooled, each camera within 0.82-1.15x of it, so no camera needs
-/// its own. The other modes (wide, binned) are not measured and state the
-/// same; every rig runs the 640 x 576 default, and a mode measured otherwise
-/// gets its own value. The driver opens any Orbbec camera, which states the
-/// Femto Mega's too.
+/// its own. TODO(sensor): the other modes (wide, binned) are not measured and
+/// state the same; every rig runs the 640 x 576 default, and a mode measured
+/// otherwise gets its own value. The driver opens any Orbbec camera, which
+/// states the Femto Mega's too.
 inline constexpr DepthNoise kFemtoMegaDepthNoise{0.0f, 0.95e-3f, 0.0f};
 
 /// A stream's camera as it captures, for the GPU pass: its intrinsics and its

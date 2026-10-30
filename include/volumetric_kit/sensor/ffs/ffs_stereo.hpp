@@ -69,7 +69,7 @@ namespace volumetric_kit::sensor {
 ///     device, allocator, camera.info(),
 ///     {{960, 544}, 0.0f, StereoRectifier::Output::Luma8}));
 /// FfsStereo::Options options{model, cache};
-/// options.disparity_sigma = 0.04f;  // this camera's, as measured
+/// options.disparity_sigma = 0.04f;  // a D455's, measured at 1280 x 720
 /// VKC_ASSIGN(auto ffs, FfsStereo::create(device, allocator, *rectifier,
 ///                                        options));
 /// VKC_ASSIGN(auto prep, GpuFramePrep::create(device, allocator));

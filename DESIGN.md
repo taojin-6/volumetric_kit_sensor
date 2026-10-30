@@ -241,8 +241,9 @@ the prepared one. The producers, each its own value:
   over a room's slants.
 - `FfsStereo` (and so `StereoDepthSensor`):
   `DepthNoise::stereo(Options::disparity_sigma, fx, B)` of the rectified rig,
-  made at `create`; `disparity_sigma` defaults to 0, unknown, since it is the
-  camera's and the model's, so whoever opens a camera states it.
+  made at `create`, which refuses a `disparity_sigma` that is not finite and
+  at least 0; it defaults to 0, unknown, since it is the camera's and the
+  model's, so whoever opens a camera states it.
 
 No per-pixel sigma, no `SensorInfo` field and no calibration-file key: no
 producer has a per-pixel confidence, recon's libraries cannot read
@@ -618,8 +619,8 @@ it, so a frame kept past the next is still itself; the whole frame is
 checked before anything is recorded or timed, a depth range from 0 and a
 plane's queue family included, and `prepare` is `prepare_batch` over a set
 of one. The driver's depth range, depth noise and times go on as stated;
-the pass judges no noise model. Both return `OutOfMemory` for a host allocation failure,
-preserving previously returned frames.
+the pass judges no noise model. Both return `OutOfMemory` for a host
+allocation failure, preserving previously returned frames.
 A frame with colour keeps only what both its cameras see by their fields of
 view (the 2026-10-29 same-view decision), from one buffer of both cameras
 and the transform between them, which both passes bind
@@ -837,9 +838,7 @@ loads libcuda at run time) are private.
   writer finished; colour (the third camera's picture, or the left one's),
   `color_encoding`, `color_to_world` and times come from the pair, the
   colour camera and `depth_to_color` from the rectifier's `depth_info()`,
-  and its depth noise is `DepthNoise::stereo(disparity_sigma, fx,
-  baseline)` of the rig, made once at `create`, which refuses a
-  `disparity_sigma` that is not finite and at least 0.
+  and its depth noise from the rig (above, "### frame").
   The depth buffers are leased as the rectifier's views are: one is written
   again only once no frame holds it, and is not handed back from the family
   that read it, since CUDA writes every sample (as the decoders' pictures).

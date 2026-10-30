@@ -54,7 +54,7 @@ namespace volumetric_kit::sensor {
 /// options.rectify = {{960, 544}, 0.0f, StereoRectifier::Output::Luma8};
 /// options.ffs.model = model;
 /// options.ffs.plan_cache = cache;
-/// options.ffs.disparity_sigma = 0.04f;  // this camera's, as measured
+/// options.ffs.disparity_sigma = 0.04f;  // a D455's, measured at 1280 x 720
 /// VKC_ASSIGN(std::unique_ptr<IRgbdSensor> sensor,
 ///            StereoDepthSensor::create(
 ///                device, allocator,

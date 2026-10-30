@@ -77,9 +77,9 @@ core::Result<StereoInfo> stereo_info(const rs2_intrinsics& left,
 // 0.13, measured 2026-10-29 on a D455 at 1280x720, its projector on and off,
 // pooled over 0.33-3 m (0.10-0.17 px a bin), on the pixels with a return in
 // every frame. So it is low where it counts most: past 3 m the bins read
-// 0.18-0.27 px, and pixels that come and go are noisier. Its other modes, and
-// the other D400s the driver opens, state the same in their pixels; not
-// measured.
+// 0.18-0.27 px, and pixels that come and go are noisier. TODO(sensor): its
+// other modes, and the other D400s the driver opens, are not measured and
+// state the same in their pixels.
 inline constexpr double kChipDisparitySigma = 0.13;
 
 // The noise of the camera's own depth, which every frame states: rectified
