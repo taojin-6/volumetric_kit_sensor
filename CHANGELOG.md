@@ -11,10 +11,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **FFS drops the pixels it has not settled.** `tools/ffs/export_onnx.py`
   writes a second output, `disparity_spread`, float `1 x 1 x H x W`: the
   range of FFS's quarter-resolution disparity over its last four refinement
-  states, times 4, resized bilinearly to the disparity's size, in pixels.
-  `FfsStereo` takes a model with or without it (one of another shape is
-  refused), and the new `FfsStereo::Options::max_disparity_spread`, above
-  0, makes every pixel whose spread is above it, or NaN, "no return" (0).
+  states, times 4, resized bilinearly to the disparity's size, in pixels
+  (so its `--iters` below 4 is refused). `FfsStereo` takes a model with or
+  without it (one of another shape is refused), and the new
+  `FfsStereo::Options::max_disparity_spread`, above 0, makes every pixel
+  whose spread is above it, or NaN, "no return" (0).
   0, the default, gates nothing, so no caller changes; a gate above 0 on a
   model without the output, or one that is not finite and at least 0, is
   refused at `create`. Nothing reaches the frame but the depth: no new

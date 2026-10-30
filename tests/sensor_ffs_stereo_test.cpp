@@ -14,7 +14,8 @@
 // model's name is the one that runs. Rgba8 coverage is checked on views made
 // here, and pairs kept past the next on the rectifier's new views. The spread
 // gate runs on a model whose disparity_spread is a sixteenth of the right
-// view, so the pixels it drops are known exactly.
+// view, so the pixels it drops are known exactly, on a rig of the network's
+// size and on a smaller one.
 //
 // Where CUDA does not reach the device's GPU, or the device exports no
 // memory, the test skips; VS_TEST_HEVC_BACKEND, which CI sets on the NVIDIA
@@ -858,22 +859,23 @@ struct Gated {
   int kept = 0;
 };
 
-// Match the spread pair on the spread model with `max_spread`, and check
-// every sample: no return where the spread is above a gate, else the
-// disparity's depth.
-int run_gated(Fixture& t, float max_spread, Gated* gated) {
-  constexpr std::uint32_t kW = 64, kH = 32;
+// Match the spread pair on a w x h rig on the spread model with
+// `max_spread`, and check every sample: no return where the spread is above
+// a gate, else the disparity's depth. On a rig smaller than the network, the
+// spread is read where the network has the view's pixel, as the disparity
+// is: anywhere else is another pixel's spread.
+int run_gated(Fixture& t, std::uint32_t w, std::uint32_t h, float max_spread,
+              Gated* gated) {
   // A rectifier of its own: the first matcher to read a view maps it.
-  auto rectifier = rectifier_for(t, pair_info(kW, kH), Output::Luma8);
+  auto rectifier = rectifier_for(t, pair_info(w, h), Output::Luma8);
   CHECK(rectifier != nullptr);
   sensor::FfsStereo::Options o =
       options_for(kSpreadModel, t.scratch / "spread");
   o.max_disparity_spread = max_spread;
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
-  const std::shared_ptr<Pictures> p = spread_pair(kW, kH);
-  auto pair =
-      rectifier->rectify(frame_of(p, sensor::YuvLayout::Luma, kW, kH, 0));
+  const std::shared_ptr<Pictures> p = spread_pair(w, h);
+  auto pair = rectifier->rectify(frame_of(p, sensor::YuvLayout::Luma, w, h, 0));
   CHECK(pair.ok());
   auto frame = ffs->depth(*pair);
   if (!frame) std::fprintf(stderr, "%s\n", frame.status().message().c_str());
@@ -881,11 +883,11 @@ int run_gated(Fixture& t, float max_spread, Gated* gated) {
   auto got = read_depth(t.gpu, *frame);
   CHECK(got.ok());
 
-  std::vector<std::optional<std::uint16_t>> want(std::size_t{kW} * kH);
+  std::vector<std::optional<std::uint16_t>> want(std::size_t{w} * h);
   for (std::size_t i = 0; i < want.size(); ++i) {
     const double d =
         static_cast<double>(p->left[i]) - static_cast<double>(p->right[i]);
-    want[i] = expected_depth(d, static_cast<std::uint32_t>(i % kW),
+    want[i] = expected_depth(d, static_cast<std::uint32_t>(i % w),
                              kFocal * kBaseline, o, 1e-4);
     const bool returns = want[i] && *want[i] != 0;
     if (max_spread > 0.0f && p->right[i] / 16.0 > max_spread) {
@@ -897,12 +899,12 @@ int run_gated(Fixture& t, float max_spread, Gated* gated) {
   }
   const Compared c = compare(*got, want);
   std::printf(
-      "    max_disparity_spread %g: %d samples, %d returns, %d off; %d "
-      "returns dropped\n",
-      static_cast<double>(max_spread), c.compared, c.returns, c.mismatches,
-      gated->dropped);
+      "    %u x %u, max_disparity_spread %g: %d samples, %d returns, %d off; "
+      "%d returns dropped\n",
+      w, h, static_cast<double>(max_spread), c.compared, c.returns,
+      c.mismatches, gated->dropped);
   CHECK(c.mismatches == 0);
-  CHECK(c.compared > static_cast<int>(kW * kH) * 9 / 10);
+  CHECK(c.compared > static_cast<int>(w * h) * 9 / 10);
   return 0;
 }
 
@@ -910,18 +912,24 @@ int spread_gate(Fixture& t) {
   std::puts("the spread gate: exactly the pixels above it, no return");
   // Off: a model with the spread matches as one without, its spread bound
   // and not read.
-  Gated off, between, above;
-  CHECK(run_gated(t, 0.0f, &off) == 0);
+  Gated off, between, above, padded;
+  CHECK(run_gated(t, 64, 32, 0.0f, &off) == 0);
   CHECK(off.dropped == 0 && off.kept > 64 * 32 / 4);
   // Between two spreads, 2.5 and 2.5625 px: those above it go, the rest
   // stay.
-  CHECK(run_gated(t, 2.53125f, &between) == 0);
+  CHECK(run_gated(t, 64, 32, 2.53125f, &between) == 0);
   CHECK(between.dropped > 200 && between.kept > 200);
   CHECK(between.dropped + between.kept == off.kept);
   // Above every spread (4.9375 px at most): none go.
-  CHECK(run_gated(t, 5.0f, &above) == 0);
+  CHECK(run_gated(t, 64, 32, 5.0f, &above) == 0);
   CHECK(above.dropped == 0 && above.kept == off.kept);
-  std::puts("  off, between two spreads and above all: each sample right");
+  // A 60 x 30 rig on the 64 x 32 network: the network's rows are wider than
+  // the view's, so a spread read at the view's index gates other pixels.
+  CHECK(run_gated(t, 60, 30, 2.53125f, &padded) == 0);
+  CHECK(padded.dropped > 200 && padded.kept > 200);
+  std::puts(
+      "  off, between two spreads and above all, and between on a padded "
+      "rig: each sample right");
 
   auto rectifier = rectifier_for(t, pair_info(64, 32), Output::Luma8);
   CHECK(rectifier != nullptr);

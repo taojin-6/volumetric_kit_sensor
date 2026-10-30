@@ -795,10 +795,11 @@ loads libcuda at run time) are private.
   `right_image`, float `1 x 3 x H x W`, ImageNet-normalised R'G'B'; output
   `disparity`, float `1 x 1 x H x W`, and, optionally, `disparity_spread`,
   float `1 x 1 x H x W`: the range of the quarter-resolution disparity over
-  the network's last four refinement states (after GRU steps 5 to 8 of 8),
-  times 4, resized bilinearly with half-pixel centres, in FP32. The export
-  traces a copy of the checkout's test-mode forward that keeps those
-  states, checked against the checkout's own forward before it exports. H
+  the network's last four refinement states (after GRU steps 5 to 8 at the
+  export's default 8 iterations; fewer than 4 are refused), times 4,
+  resized bilinearly with half-pixel centres, in FP32. The export traces a
+  copy of the checkout's test-mode forward that keeps those states, checked
+  against the checkout's own forward before it exports. H
   and W are the rig's size rounded up to multiples of 32; `create` refuses a
   model of another size, a spread of another shape and any other tensor,
   checking the parsed network before the build and the plan's own tensors

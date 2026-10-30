@@ -5237,12 +5237,13 @@ run.
 - `tools/ffs/export_onnx.py` writes a second output, `disparity_spread`,
   float `1 x 1 x H x W`: the range (largest less smallest) of FFS's
   quarter-resolution disparity over its last four refinement states (after
-  GRU steps 5 to 8 of 8), times 4 into full-resolution pixels, resized
-  bilinearly with half-pixel centres to the disparity's size, in FP32. FFS
-  keeps those states inside its forward, so the export traces a copy of the
-  checkout's test-mode forward (476f424) that keeps them, and refuses to
-  export if the copy's disparity is more than 0.01 px from the checkout's
-  own forward's on the trace's input.
+  GRU steps 5 to 8 at the export's default 8 iterations, which every
+  measurement below used; fewer than 4 are refused), times 4 into
+  full-resolution pixels, resized bilinearly with half-pixel centres to the
+  disparity's size, in FP32. FFS keeps those states inside its forward, so
+  the export traces a copy of the checkout's test-mode forward (476f424)
+  that keeps them, and refuses to export if the copy's disparity is more
+  than 0.01 px from the checkout's own forward's on the trace's input.
 - `FfsStereo` takes a model with or without it. A fourth tensor must be
   output `disparity_spread`, float, at the disparity's shape; any other is
   refused, on the parsed network before the build and on the plan's own
@@ -5289,10 +5290,10 @@ only, before fusion, and removes nothing from a map.
   person is 93% drawn in their first frame (97% ungated) and evicted when
   they leave; the price is more holes, mostly on the plain wall;
 - on the lab D455's infrared pair, projector off, at 960 x 544, it drops 9%
-  of the pixels a frame, 90% of the bad ones on a bright plain wall, and
-  0.7-7.4% of the textured walls; fused over 300 frames of the empty room,
-  the wrong surface on that wall falls from 31.6% to 16.3%, and 2.7% of the
-  image is left empty.
+  of the valid pixels a frame (those `FfsStereo` already returns), 90% of
+  the bad ones on a bright plain wall, and 0.7-7.4% of the textured walls;
+  fused over 300 frames of the empty room, the wrong surface on that wall
+  falls from 31.6% to 16.3%, and 2.7% of the image is left empty.
 
 The D455's 0.2 px is set by recon's opener in a later recon PR, measured on
 the rig, beside its disparity sigma; this package states no value.
@@ -5315,15 +5316,20 @@ are byte-identical. `sensor_ffs_stereo`: on a pair whose spread runs from 1
 to 4.9375 px in sixteenths, every sample against its expectation with the
 gate off (the spread bound, not read), between two spreads (2.53125 px:
 exactly the pixels above it no return, the rest unchanged) and above all
-(none dropped); a gate on a model without the spread refused, before the
-build (no plan written) and on that model's cached plan; the quarter spread
-and the fourth output of another name refused, with and without a gate,
-naming them; a negative, NaN or infinite gate refused.
+(none dropped), and between on a 60 x 30 rig, whose network rows are wider
+than its views' (the spread read where the disparity is); a gate on a
+model without the spread refused, before the build (no plan written) and
+on that model's cached plan; the quarter spread and the fourth output of
+another name refused, with and without a gate, naming them; a negative,
+NaN or infinite gate refused.
 
 **Validation.** Apple M5 Max, macOS 27.2, Release with warnings as errors:
 the suite, 39 tests, passes (no `sensor_ffs`: Linux, CUDA and TensorRT
 only); the three new models and the first checked in ONNX Runtime on the
-test's pair (disparity within 2.4e-6 px, spread exact); and the export's
-new code traced on a stand-in network with the copy's module names, its
-ONNX spread within 4e-6 px of the studies' own definition. Not yet run:
-`sensor_ffs` built and tested on NVIDIA, and an export of FFS itself.
+test's pair (disparity within 2.4e-6 px, spread exact), and the gate
+test's four rounds met by the depth kernel's rule run on those outputs in
+FP32 (a spread read at the view's index instead misses 343 samples of the
+60 x 30 round and none of the others); and the export's new code traced on
+a stand-in network with the copy's module names, its ONNX spread within
+4e-6 px of the studies' own definition. Not yet run: `sensor_ffs` built and
+tested on NVIDIA, and an export of FFS itself.

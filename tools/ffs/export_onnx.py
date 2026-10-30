@@ -34,12 +34,15 @@ rig's size rounded up (960 x 544 stays; 1280 x 720 is exported as
 1280 x 736).
 
 The spread is the range (largest less smallest) of the quarter-resolution
-disparity over the last four refinement states (after GRU steps 5 to 8 of
-8), times 4 into full-resolution pixels, resized bilinearly (half-pixel
-centres) to H x W, in FP32. FFS keeps those states inside its forward, so
-the graph is traced from a copy of the checkout's test-mode forward
-(core/foundation_stereo.py at 476f424) that keeps them, the copy checked
-against the checkout's own forward on the trace's input before the export.
+disparity over the last four refinement states (after GRU steps 5 to 8 at
+the default 8 iterations; --iters below 4 is refused, since the softmax's
+starting disparity would be one of them, and a gate measured at one count
+holds at that count only), times 4 into full-resolution pixels, resized
+bilinearly (half-pixel centres) to H x W, in FP32. FFS keeps those states
+inside its forward, so the graph is traced from a copy of the checkout's
+test-mode forward (core/foundation_stereo.py at 476f424) that keeps them,
+the copy checked against the checkout's own forward on the trace's input
+before the export.
 
     venv/bin/python tools/ffs/export_onnx.py --ffs ~/Fast-FoundationStereo \\
         --size 960x544 --out ffs_23-36-37_960x544.onnx
@@ -268,12 +271,16 @@ def main():
     ap.add_argument('--size', required=True,
                     help='WIDTHxHEIGHT, multiples of 32, e.g. 960x544')
     ap.add_argument('--iters', type=int, default=8,
-                    help='GRU refinement iterations')
+                    help='GRU refinement iterations, at least 4 (the '
+                         'spread is the range over the last four)')
     ap.add_argument('--max_disp', type=int, default=192,
                     help='maximum disparity, pixels at full resolution')
     ap.add_argument('--out', required=True, help='the ONNX file to write')
     a = ap.parse_args()
     width, height = parse_size(a.size)
+    if a.iters < 4:
+        raise SystemExit(f'--iters {a.iters}: the spread is the range over '
+                         'the last four refinement states, so at least 4')
     ffs = os.path.abspath(os.path.expanduser(a.ffs))
     checkpoint = a.checkpoint or os.path.join(
         ffs, 'weights', '23-36-37', 'model_best_bp2_serialize.pth')
