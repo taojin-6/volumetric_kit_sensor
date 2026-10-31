@@ -5642,7 +5642,8 @@ to 10-31, MJPEG):
 
 **Cost.** Calibration time only; nothing per frame. Seen in the test (3
 cameras at 640x480, 2 sets, 321 k samples): the solve, 4 steps in 5 passes
-over the samples, takes 8-11 ms on the M5 Max. For the rig, estimated, not
+over the samples, takes 8-11 ms on the M5 Max and 2.4 ms on an RTX 5090,
+on the host clock under the validation layer. For the rig, estimated, not
 measured: about 10 s of capture for 8 sets, a solve well under the study's
 9 s, about 40 MB of samples and 0.7 GB of copied and blurred colour for
 four 4K cameras.
@@ -5670,7 +5671,7 @@ trained on (the oracle, the system off by 100%), G2 over A's pixel alone
 F uncapped in the white count (4% of a camera off), and r_max at its
 bin's lower edge.
 
-**Validation.** Release with warnings as errors, default options, under the
-validation layer, on the M5 Max: the whole suite passes, 44 tests. On an
-RTX 5090 (Linux, `VS_WITH_ORBBEC`, CUDA and FFmpeg on) the library, its
-test and the tool build, and the test passes. No camera was opened.
+**Validation.** Release with warnings as errors, under the validation
+layer: the whole suite passes on the M5 Max (default options, 44 tests)
+and on an RTX 5090 (the CI NVIDIA leg's options, `VS_WITH_ORBBEC` and the
+tool included, sync validation too, 60 tests). No camera was opened.
