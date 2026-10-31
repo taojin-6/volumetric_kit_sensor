@@ -131,6 +131,19 @@ target_link_libraries(
 vs_target_warnings(sensor_gpu_frame_prep_test)
 add_test(NAME sensor_gpu_frame_prep COMMAND sensor_gpu_frame_prep_test)
 
+# The colour pass's words for one picture in every layout it reads, through a
+# lens, printed as MD5s: run by hand on two builds to hold a change to the pass
+# that must leave today's words alone to them byte for byte on one device. As a
+# test: a second prepare gives the same words. Skips where no device is present.
+add_executable(sensor_gpu_frame_prep_identity_test
+               sensor_gpu_frame_prep_identity_test.cpp)
+target_link_libraries(
+  sensor_gpu_frame_prep_identity_test PRIVATE volumetric_kit::sensor_prep
+                                              volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_gpu_frame_prep_identity_test)
+add_test(NAME sensor_gpu_frame_prep_identity
+         COMMAND sensor_gpu_frame_prep_identity_test)
+
 # The frame prep's depth outlier filter on synthetic scenes: bit for bit against
 # a host reference in float, through a pinhole and a lens, at a slab's median
 # count, on ties at the radius, at the largest radius, after the colour-view
