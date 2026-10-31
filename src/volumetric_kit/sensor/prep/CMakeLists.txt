@@ -17,8 +17,9 @@ add_library(volumetric_kit::sensor_prep ALIAS sensor_prep)
 
 # color_pass.cpp is the colour pass's checks and binding, which the stereo
 # rectifier (sensor_stereo) calls too: exported, behind an internal header.
-target_sources(sensor_prep PRIVATE color_pass.cpp gpu_frame_prep.cpp
-                                   picture_readback.cpp yuv_planes.cpp)
+target_sources(
+  sensor_prep PRIVATE color_pass.cpp depth_outliers.cpp gpu_frame_prep.cpp
+                      picture_readback.cpp yuv_planes.cpp)
 
 generate_export_header(
   sensor_prep
@@ -56,6 +57,7 @@ vs_embed_shaders(
   SHADERS
   "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_depth.comp"
   "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_color.comp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_color_images.comp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_color_images.comp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/remove_depth_outliers.comp")
 
 vs_target_warnings(sensor_prep)

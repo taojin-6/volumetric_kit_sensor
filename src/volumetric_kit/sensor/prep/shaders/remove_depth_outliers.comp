@@ -1,0 +1,165 @@
+#version 450
+
+// Radius outlier removal on undistorted depth, the frame prep's pass after
+// undistort_depth.comp. One thread per pixel: a return is kept where at
+// least pc.min_points returns, itself included, lie strictly within r of its
+// pinhole point, and is 0, no return, elsewhere. r is pc.radius_per_m * z,
+// k pixel footprints at the return's own depth (k z / fx, k / fx computed
+// on the host). A surface holds about pi k^2 cos(theta) returns within k
+// footprints at any depth; the curtain of flying pixels a matcher or a ToF
+// sensor leaves between a foreground and a background lies along the rays
+// and holds about 2k + 1.
+//
+// The neighbours are found in the image, not in a tree: every point within r
+// lies in the box of the ball's image around the pixel (half_width), which
+// is scanned in square rings from the centre until the answer is known --
+// pc.min_points found, or too few pixels left to find them. The input is
+// read around each pixel, so the output is another buffer.
+//
+// Points and distances are float, each product, sum and difference rounded
+// once and never fused or regrouped: operations Vulkan rounds correctly, so
+// every device, and a host reference in float, makes the same decision on
+// the same depth. The pixel's own point and r are precise. The neighbour
+// loop is not: SPIRV-Cross makes each precise operation a call Metal keeps
+// (optnone), 83% of the pass on an M5 Max, so the loop passes every value it
+// computes through opaque() before another operation takes it instead. Only
+// the window's bound divides and takes a root, and its slack absorbs their
+// error.
+
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 256) in;
+
+// Metres along the optical axis, row-major; 0 is no return.
+layout(set = 0, binding = 0, scalar) readonly buffer In { float depth_in[]; };
+layout(set = 0, binding = 1, scalar) writeonly buffer Out { float depth_out[]; };
+
+layout(push_constant, scalar) uniform Params {
+  float fx;
+  float fy;
+  float cx;
+  float cy;
+  float inv_fx;  // 1 / fx and 1 / fy, each rounded once on the host
+  float inv_fy;
+  uint width;
+  uint height;
+  float radius_per_m;  // k / fx, the radius one metre deep
+  uint min_points;     // the return itself counted
+  uint zero;           // 0, which the compiler cannot know (opaque)
+} pc;
+
+// What the half-widths are clamped to where the ball reaches the camera's
+// plane, so the window is the whole image.
+const int kWholeImage = 1 << 20;
+
+// Pixels added to the exact half-width for the rounding of the points and of
+// the bound itself, each well under 1e-3 px.
+const float kSlackPx = 1.0 / 64.0;
+
+// The pinhole point at pixel (u, v), z deep: ((u - cx) / fx z, ...) through
+// the rounded reciprocals, so a host reference sees the same point.
+vec3 point_at(int u, int v, float z) {
+  precise float x = (float(u) - pc.cx) * pc.inv_fx * z;
+  precise float y = (float(v) - pc.cy) * pc.inv_fy * z;
+  return vec3(x, y, z);
+}
+
+// Half the window along an axis of focal length f that holds the image of
+// the ball of radius r around a point z deep whose normalized coordinate
+// along the axis is t, in pixels: the planes through the camera's centre
+// tangent to the ball, f r (|t| r + sqrt(z^2 (1 + t^2) - r^2)) / (z^2 - r^2),
+// which no neighbour's pixel lies past.
+int half_width(float f, float t, float z, float r) {
+  if (!(r < z)) {
+    return kWholeImage;
+  }
+  float z2 = z * z;
+  float r2 = r * r;
+  float w = f * r * (abs(t) * r + sqrt(z2 * (1.0 + t * t) - r2)) / (z2 - r2);
+  return int(min(floor(w + kSlackPx), float(kWholeImage)));
+}
+
+// x unchanged, through an integer op the compiler cannot see through: a
+// float op fed by it can be neither fused nor regrouped with the op that
+// made x.
+float opaque(float x) { return uintBitsToFloat(floatBitsToUint(x) ^ pc.zero); }
+
+// point_at's coordinate along an axis of principal point c for pixel index
+// i, z deep, each value opaque: the index too, so the loop cannot step the
+// difference by 1 instead of taking it.
+float pinhole_coord(int i, float c, float inv_f, float z) {
+  float t = opaque(opaque(float(i)) - c);
+  return opaque(opaque(t * inv_f) * z);
+}
+
+// 1 where pixel (u, v) holds a return strictly within r of p, r2 = r * r:
+// point_at's arithmetic and the distance's, each op rounded once.
+uint near(int u, int v, vec3 p, float r2) {
+  float z = depth_in[uint(v) * pc.width + uint(u)];
+  if (!(z > 0.0)) {
+    return 0u;
+  }
+  float dx = opaque(pinhole_coord(u, pc.cx, pc.inv_fx, z) - p.x);
+  float dy = opaque(pinhole_coord(v, pc.cy, pc.inv_fy, z) - p.y);
+  float dz = opaque(z - p.z);
+  float d2 = opaque(opaque(dx * dx) + opaque(dy * dy)) + opaque(dz * dz);
+  return d2 < r2 ? 1u : 0u;
+}
+
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint w = pc.width;
+  uint h = pc.height;
+  if (gid >= w * h) {
+    return;
+  }
+  float z = depth_in[gid];
+  if (!(z > 0.0)) {
+    depth_out[gid] = 0.0;  // no return, or not a number
+    return;
+  }
+  int u = int(gid % w);
+  int v = int(gid / w);
+  precise float r = pc.radius_per_m * z;
+  precise float r2 = r * r;
+  vec3 p = point_at(u, v, z);
+  // The window, clipped to the image, and the pixels in it.
+  int hu = half_width(pc.fx, (float(u) - pc.cx) * pc.inv_fx, z, r);
+  int hv = half_width(pc.fy, (float(v) - pc.cy) * pc.inv_fy, z, r);
+  int u0 = max(u - hu, 0);
+  int u1 = min(u + hu, int(w) - 1);
+  int v0 = max(v - hv, 0);
+  int v1 = min(v + hv, int(h) - 1);
+  uint total = uint(u1 - u0 + 1) * uint(v1 - v0 + 1);
+  uint count = 1u;  // the return itself
+  uint seen = 1u;
+  // Ring k: its rows above and below, then its columns left and right
+  // between them, each clipped to the window, so every pixel of the window is
+  // visited once, nearest rings first.
+  int rings = max(max(u - u0, u1 - u), max(v - v0, v1 - v));
+  for (int k = 1; k <= rings && count < pc.min_points &&
+                  count + (total - seen) >= pc.min_points;
+       ++k) {
+    int a0 = max(u - k, u0);
+    int a1 = min(u + k, u1);
+    if (v - k >= v0) {
+      for (int x = a0; x <= a1; ++x) count += near(x, v - k, p, r2);
+      seen += uint(a1 - a0 + 1);
+    }
+    if (v + k <= v1) {
+      for (int x = a0; x <= a1; ++x) count += near(x, v + k, p, r2);
+      seen += uint(a1 - a0 + 1);
+    }
+    int b0 = max(v - k + 1, v0);
+    int b1 = min(v + k - 1, v1);
+    if (u - k >= u0) {
+      for (int y = b0; y <= b1; ++y) count += near(u - k, y, p, r2);
+      seen += uint(b1 - b0 + 1);
+    }
+    if (u + k <= u1) {
+      for (int y = b0; y <= b1; ++y) count += near(u + k, y, p, r2);
+      seen += uint(b1 - b0 + 1);
+    }
+  }
+  depth_out[gid] = count >= pc.min_points ? z : 0.0;
+}

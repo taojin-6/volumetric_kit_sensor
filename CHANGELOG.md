@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.12.0] - 2026-10-30
+## [0.14.0] - 2026-10-31
 
 ### Added
 
@@ -19,9 +19,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   0, the default, gates nothing, so no caller changes; a gate above 0 on a
   model without the output, or one that is not finite and at least 0, is
   refused at `create`. Nothing reaches the frame but the depth: no new
-  field. DECISIONS.md, the 2026-10-30 spread-gate entry.
+  field. DECISIONS.md, the 2026-10-31 spread-gate entry.
 - `tools/ffs/make_test_onnx.py` also writes three test models with a known
   spread (`spread_64x32.onnx`, and two that are refused).
+
+## [0.13.0] - 2026-10-31
+
+### Changed
+
+- **BREAKING: frame prep drops depth outliers by default.**
+  `DepthOutlierFilter::enabled` is `true` by default, so every
+  `GpuFramePrep`, and every pass of a `SensorArray`, filters depth (8 px,
+  20 points) unless its config sets it `false`; the refusals are unchanged.
+  DECISIONS.md, the 2026-10-31 default-on entry.
+
+## [0.12.0] - 2026-10-31
+
+### Added
+
+- **A depth outlier filter in frame prep.**
+  `GpuFramePrepConfig::depth_outliers` (`DepthOutlierFilter`, off by
+  default): after undistortion and the colour-view test, a return is kept
+  where at least `min_points` returns, itself included, lie strictly within
+  `radius_px` pixel footprints at its own depth (`radius_px z / fx` metres)
+  of its point, and is 0 elsewhere; 8 px and 20 by default. On, it costs
+  one more dispatch (`remove_depth_outliers.comp`) and one more depth-sized
+  buffer per pass, and `GpuFramePrep::create` refuses a `radius_px` that is
+  not finite in [1, 32] or a `min_points` below 2. A `SensorArray` applies
+  its `Options::prep` filter to every sensor. DECISIONS.md, the 2026-10-31
+  depth-outlier entry.
 
 ## [0.11.0] - 2026-10-30
 
