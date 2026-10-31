@@ -5484,7 +5484,7 @@ colour is multiplied by so a rig's cameras agree on a surface they share:
 
 **Why.** Measured by a cross-camera colour study on the 4-Femto rig
 (2026-10-26 to 10-31), on overlap samples between camera pairs, in 8-bit
-sRGB levels after a sigma-8 blur, held out on hashed world cells:
+sRGB levels after a sigma-8 blur, held out by world position:
 - With the exposure locked (167/60, AWB on), the residual between cameras
   is 13.07 levels (ΔE 3.72). On the 6500 K arm, lens falloff is 41% of its
   variance and per-unit gain and white balance 23%; brightness at r 0.7

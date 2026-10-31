@@ -3,12 +3,12 @@
 
 // A sensor array's sets prepared on the GPU in one batch: each frame comes
 // out as GpuFramePrep::prepare makes it alone, posed by the array's
-// calibration with its sensor's depth offset and colour response, and an empty
-// slot stays empty, recorded into a caller's batch the same; the prep options
-// reach every pass of an array of any size; a depth offset or a colour
-// response in the prep options, a device
-// or an allocator given without the other, an array without a device and a
-// set of another size are refused. Skips where no device is.
+// calibration with its sensor's depth offset and colour response, and a
+// missing frame stays missing, recorded into a caller's batch the same; the
+// prep options reach every pass of an array of any size; a depth offset or a
+// colour response in the prep options, a device or an allocator given without
+// the other, an array without a device and a set of another size are refused.
+// Skips where no device is.
 
 #include <algorithm>
 #include <chrono>
