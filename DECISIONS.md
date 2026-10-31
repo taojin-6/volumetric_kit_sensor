@@ -363,6 +363,15 @@ entries relevant to your task; later amendments supersede earlier rules.
   input through PortAudio, a prerequisite found through pkg-config. Audio is
   host I/O: PCM in host memory, never on the GPU or in the per-frame GPU
   path; a CPU audio codec (Opus) needs owner approval.
+- [**2026-10-31**](#2026-10-31--frame-prep-may-drop-depth-outliers-gpuframeprepconfigdepth_outliers-keeps-a-return-where-at-least-20-returns-lie-within-8-pixel-footprints-of-it-off-by-default-and-every-device-decides-alike) —
+  Frame prep may drop depth outliers: `GpuFramePrepConfig::depth_outliers`,
+  off by default and one setting for every camera of a pass or an array,
+  keeps a return where at least `min_points` (20) returns, itself included,
+  lie strictly within `radius_px` (8) pixel footprints at its depth, and
+  writes 0 elsewhere. A radius in footprints, not metres, so the rule is the
+  same at every depth; float arithmetic that no compiler may fuse or
+  regroup, `precise` for the pixel's own point and xor barriers in the
+  neighbour loop, so every device decides alike at a cost Apple can carry.
 
 ## Decision record
 
@@ -5221,3 +5230,131 @@ and the ring publishing its writes relaxed. Debug ThreadSanitizer reports
 the last only since the ring writes an entry field by field; written as one
 struct it passed 3 runs of 3. No mic was opened and `mic_check` was not
 run.
+
+### 2026-10-31 — Frame prep may drop depth outliers: `GpuFramePrepConfig::depth_outliers` keeps a return where at least 20 returns lie within 8 pixel footprints of it, off by default, and every device decides alike.
+
+**The rule.** `DepthOutlierFilter {enabled, radius_px, min_points}`
+(`prep/gpu_frame_prep.hpp`) is `GpuFramePrepConfig::depth_outliers`: off by
+default; on, after undistortion and the colour-view test, a return is kept
+where at least `min_points` returns, itself included, lie strictly within
+`r = radius_px z / fx` of its pinhole point, and is 0, no return, elsewhere.
+The defaults are 8 and 20. With it on, `create` refuses a `radius_px` that
+is not finite in [1, 32] or a `min_points` below 2. It is one setting per
+pass, and a `SensorArray`'s `Options::prep` gives every sensor the same.
+Not offered: a radius in metres, a per-sensor setting, filling the holes it
+makes.
+
+**Why.** Stereo matchers (FFS) and ToF cameras leave a curtain of flying
+pixels between a foreground and a background, which fusion turns into
+combs and flaps. The owner (2026-10-30) chose Vulkan over a CUDA prototype,
+so that one filter serves every camera and sensor, and approved this
+recommendation. It sits where every depth sensor's frames pass, after
+undistortion, which pinhole points need: a generic fix, not a driver's.
+
+**A radius in pixel footprints.** A fixed metric radius holds fewer pixels
+the farther the surface: the FFS demo's Open3D call (3 cm, 30 points)
+deletes 37% of the D455 corridor's returns at 1280x720 and 84% of its smooth
+surface beyond 5 m. A radius of k footprints holds the same pixels at every
+depth: about `pi k^2 cos(theta)` on a surface (201 cos(theta) at 8, so a
+surface stays to 84 degrees of slant), about `2k + 1` (17) on a curtain
+along the rays, and half a disc on an outline's rim.
+
+**20 points, measured** on FFS depth from the lab D455's infrared pair, k =
+8: the share removed of each band's valid pixels (mid-gap is the
+flying-pixel proxy, the returns between an edge's two sides; the corridor
+at 1280x720, the person at 960x544, the desks over a 300-frame take):
+
+| min_points | corridor: all / mid-gap / smooth <= 5 m | person: all / mid-gap / outline | desks: cubicle / right |
+|---|---|---|---|
+| 16 | 3.0 / 77.6 / 0.2% | 0.5 / 70.3 / 6.6% | 3.3 / 1.5% |
+| **20** | **3.8 / 83.2 / 0.3%** | **0.6 / 77.0 / 7.7%** | **5.4 / 2.9%** |
+| 30 | 5.7 / 91.5 / 0.8% | 1.1 / 88.8 / 11.3% | 11.3 / 8.5% |
+
+20 halves 30's loss on the desks and the outline for 8-12 points of
+mid-gap. The take's TSDF mesh keeps 98.4 and 98.1% of the two desk tops
+(93.5 and 95.7% unfiltered), and the off-surface vertices at its TV,
+doorway and cart edges fall from 3 / 26 / 18 to 0 / 0 / 1. 16 keeps
+one-pixel curtains. What goes: structure about a pixel wide (cables), and
+the corridor ceiling's wire mesh at 6-8 m. What stays: smears several
+pixels wide, 17-23% of the proxy, blobs of 20 or more wrong returns,
+disagreement between cameras, and a skin under the desk tops (twice the
+unfiltered mesh's down-facing vertices, not yet explained).
+
+**Every device decides alike.** Points and distances are float. Vulkan
+rounds each multiply, add and subtract correctly, but lets a compiler fuse
+or regroup them unless told not to. The pass's own point and r are `precise`
+(SPIR-V `NoContraction`). The neighbour loop is not: SPIRV-Cross makes each
+`precise` op an `[[clang::optnone]]` fma helper that Metal calls, about 13
+calls a neighbour and 83% of the pass on the M5 Max. The loop instead passes
+every value it computes, the pixel index's float included, through an xor of
+its bits with `OutlierParams::zero`, a push constant that is always 0 and
+that no compiler can see through, before another op takes it: about 12
+integer ops a neighbour once the fixed axis of a ring's side is hoisted, and
+no rewrite of the loop's arithmetic left open. With neither, Metal's fast
+math moves 0-12 px a frame. The test is strict `<`, as Open3D's search is,
+and r is `z * (k / fx)`, k / fx made on the host, as Vulkan's division is
+good to 2.5 ulp only. On 7 inputs (5 recorded frames, 2 of random depth, at
+30 points) the masks equal a float32 emulation of the arithmetic, 0 px, on
+the M5 Max and on the RTX 5090, in this form as with `precise` throughout,
+and lie 0-2 px a frame from float64 (cKDTree).
+
+**The window.** Every neighbour within r lies in the box of the ball's
+image, `f r (|t| r + sqrt(z^2 (1 + t^2) - r^2)) / (z^2 - r^2)` px along each
+axis, plus 1/64 px for rounding, scanned in square rings from the centre
+until the count is met or out of reach: 17x17 px for a removed return at
+the image centre at k = 8, about 65x65 at the 32 px cap.
+
+**Cost**, the pass alone (Vulkan timestamps, median of 200 after 1,000
+warm-up rounds, every case interleaved in one job a GPU; the corridor at
+1280x720 and resized to 960x544, the person at 960x544):
+
+| ms | corridor 1280x720 | corridor 960x544 | person 960x544 | random depth 1280x720 (worst) |
+|---|---|---|---|---|
+| RTX 5090, this form, 20 points | **0.159** | **0.107** | **0.073** | **0.320** |
+| RTX 5090, this form, 30 points | 0.179 | 0.120 | 0.086 | 0.319 |
+| RTX 5090, `precise` throughout, 30 points | 0.133 | 0.090 | 0.064 | 0.237 |
+| M5 Max (MoltenVK), this form, 20 points | **0.459** | **0.281** | **0.167** | **1.090** |
+| M5 Max, this form, 30 points | 0.545 | 0.334 | 0.222 | 1.090 |
+| M5 Max, `precise` throughout, 30 points | 1.952 | 1.184 | 0.762 | 4.008 |
+
+On the 5090, where `precise` is plain arithmetic, the barriers cost 34-35%,
+0.022-0.082 ms a camera; on the M5 Max they make the pass 3.4-3.7 times as
+fast as `precise`. One form serves every device, as a second shader would
+save NVIDIA under the 0.5 ms bar. Barring only the products and sums, 8
+ops a neighbour, was as exact on both GPUs and 11-14% faster, but left
+`(u - cx) / fx` open to distribution and the index to stepping. 20 points
+exit a kept return sooner than 30 and scan a removed one as far. In
+`GpuFramePrep` at the defaults the filter adds its pass's time to within
+0.002 ms, 0.158 ms at 1280x720 and 0.073 ms on the person at 960x544 on
+the 5090 (0.460 and 0.168 ms on the M5 Max), and 3.7 MB of device memory a
+camera at 1280x720: four cameras at 960x544 take 0.29-0.43 ms a frame on
+the 5090, 0.78 ms on random depth, and 0.67-1.12 ms on the M5 Max.
+
+**Off by default.** A removed return reaches fusion as no return: how that
+meets recon's change-driven reset (recon #317, #318) waits for a replay of
+a walk, and the Femto Mega's depth engine already drops mixed edge pixels,
+so its setting is unverified. Turning it on, for every sensor or per
+sensor, is a later change.
+
+**Tests.** `sensor_gpu_frame_prep_outliers`, through the public API, holds
+the output bit for bit to a host reference in float, built with contraction
+off, counted over a window of +-40 px: through a pinhole and a lens; on a
+scene whose slanted wall and box stay and whose curtain, one-pixel cable and
+isolated returns go (0/62, 0/75, 0/124 kept); on a random slab at its median
+count (478 of 7,680 returns within 2 of it); on ties, a plane facing the
+camera with fx = fy and the principal point on a pixel at the disc's 193
+returns plus one, so each return's four axis neighbours 8 px out decide
+(5,902 kept, 242 removed); at the 32 px cap on a 64x48 image, the window
+past it on every side, at the scene's median count (1,537 of 2,997 kept);
+after the colour-view test (1,861 masked first); in a three-camera
+`prepare_batch`; and in a pass whose frames shrink and grow, a held frame
+keeping its depth. It checks the defaults and the refusals. Planted bugs
+each fail it on the M5 Max: a window 3% short (the slab, 29 px), `opaque`
+returning its argument (the ties, 638 px, every other case 0) and `<=` for
+`<` (the ties, 273 px); the second fails on the 5090 too (the ties, 638 px).
+
+**Validation.** Release with warnings as errors, default options, under the
+validation layer: the whole suite passes on the Apple M5 Max (macOS 27.2,
+MoltenVK 1.4.2), 40 tests, and on the RTX 5090 (Ubuntu 26.04, driver
+615.71.10), 35 tests. recon's suite was not run: `frame` is unchanged. No
+camera was opened.

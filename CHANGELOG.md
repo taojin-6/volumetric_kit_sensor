@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-10-31
+
+### Added
+
+- **A depth outlier filter in frame prep.**
+  `GpuFramePrepConfig::depth_outliers` (`DepthOutlierFilter`, off by
+  default): after undistortion and the colour-view test, a return is kept
+  where at least `min_points` returns, itself included, lie strictly within
+  `radius_px` pixel footprints at its own depth (`radius_px z / fx` metres)
+  of its point, and is 0 elsewhere; 8 px and 20 by default. On, it costs
+  one more dispatch (`remove_depth_outliers.comp`) and one more depth-sized
+  buffer per pass, and `GpuFramePrep::create` refuses a `radius_px` that is
+  not finite in [1, 32] or a `min_points` below 2. A `SensorArray` applies
+  its `Options::prep` filter to every sensor. DECISIONS.md, the 2026-10-31
+  depth-outlier entry.
+
 ## [0.11.0] - 2026-10-30
 
 ### Added

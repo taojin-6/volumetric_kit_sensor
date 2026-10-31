@@ -16,6 +16,7 @@
 
 #include "../sharing_families.hpp"
 #include "color_pass.hpp"
+#include "depth_outliers.hpp"
 #include "undistort_color_comp.spv.hpp"
 #include "undistort_color_images_comp.spv.hpp"
 #include "undistort_depth_comp.spv.hpp"
@@ -38,8 +39,8 @@ using detail::LensParams;
 constexpr std::uint32_t kLocalSize = 256;
 
 // The most commands record_inputs and record_passes time for one frame: the
-// slot's copy and the two passes.
-constexpr std::uint32_t kSpansPerFrame = 3;
+// slot's copy, the two passes and the outlier filter.
+constexpr std::uint32_t kSpansPerFrame = 4;
 
 struct DepthParams {
   LensParams cam;
@@ -360,6 +361,24 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
     return core::Status::invalid_argument(
         "GpuFramePrep::create: depth_offset_m is not finite");
   }
+  // The filter's rule: a radius whose window stays bounded, and a count the
+  // return itself does not meet alone.
+  const DepthOutlierFilter& outliers = config.depth_outliers;
+  if (outliers.enabled &&
+      !(finite(outliers.radius_px) && outliers.radius_px >= 1.0f &&
+        outliers.radius_px <= DepthOutlierFilter::kMaxRadiusPx)) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep::create: depth_outliers.radius_px, " +
+        std::to_string(outliers.radius_px) + ", is not finite in [1, " +
+        std::to_string(static_cast<int>(DepthOutlierFilter::kMaxRadiusPx)) +
+        "] px");
+  }
+  if (outliers.enabled && outliers.min_points < 2) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep::create: depth_outliers.min_points, " +
+        std::to_string(outliers.min_points) +
+        ", is below 2, which keeps every return");
+  }
   GpuFramePrep prep;
   prep.device_ = &device;
   prep.allocator_ = &allocator;
@@ -407,8 +426,16 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
                                               VK_WHOLE_SIZE);
   prep.color_images_kernel_.set.write_storage_buffer(3, prep.overlap_.handle(),
                                                      0, VK_WHOLE_SIZE);
+  if (outliers.enabled) {
+    VKC_ASSIGN(prep.outliers_, detail::DepthOutlierPass::create(device));
+  }
   return prep;
 }
+
+// Out of line, where detail::DepthOutlierPass is complete.
+GpuFramePrep::~GpuFramePrep() = default;
+GpuFramePrep::GpuFramePrep(GpuFramePrep&&) noexcept = default;
+GpuFramePrep& GpuFramePrep::operator=(GpuFramePrep&&) noexcept = default;
 
 // A checked frame: its two halves' layouts, where its colour comes from, and
 // its bytes in the slot.
@@ -544,6 +571,13 @@ core::Status GpuFramePrep::ensure_buffers(const RgbdFrame& frame,
   VKC_TRY(ensure_output(depth_out_, layout.depth.out_bytes,
                         "sensor.depth_frame", config_.depth_queue_families,
                         config_.depth_queue_family_count));
+  // The undistorted depth the outlier filter reads: only the passes touch it,
+  // and the batch that last did has resolved.
+  if (outliers_ != nullptr) {
+    VKC_TRY(core::ensure_device_scratch(
+        *device_, *allocator_, undistorted_, layout.depth.out_bytes,
+        max_storage_buffer_range_, "sensor.undistorted_depth"));
+  }
   if (!frame.has_color()) return {};
   return ensure_output(color_out_, layout.color.out_bytes, "sensor.color_frame",
                        config_.color_queue_families,
@@ -589,16 +623,32 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
   // left it.
   const VkBuffer raw =
       depth.on_device ? frame.depth_device.buffer->handle() : input;
+  // With the outlier filter, the undistorted depth goes to the pass's own
+  // buffer, which the filter reads into the output: it reads around each
+  // pixel, so it cannot write in place.
+  const VkBuffer undistorted = outliers_ != nullptr
+                                   ? undistorted_.handle()
+                                   : depth_out_->buffer.handle();
   depth_kernel_.set.write_storage_buffer(0, raw, depth.bind_offset,
                                          depth.bind_bytes);
-  depth_kernel_.set.write_storage_buffer(1, depth_out_->buffer.handle(), 0,
-                                         depth.out_bytes);
+  depth_kernel_.set.write_storage_buffer(1, undistorted, 0, depth.out_bytes);
   const DepthParams depth_params{
       lens_params(frame.depth_camera), frame.metres_per_unit,
       frame.has_color() ? 1u : 0u, config_.depth_offset_m, depth.first};
   VKC_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
                          core::group_count(depth.pixels, kLocalSize),
                          max_workgroup_count_x_, stage));
+  if (outliers_ != nullptr) {
+    // The undistorted image's pinhole camera, the frame's depth camera less
+    // its lens.
+    const camera::CameraModel& cam = frame.depth_camera;
+    const DepthOutlierFilter& rule = config_.depth_outliers;
+    VKC_TRY(outliers_->record(
+        batch, undistorted_.handle(), depth_out_->buffer.handle(),
+        detail::outlier_params(cam.intrinsics, cam.size, rule.radius_px,
+                               rule.min_points),
+        stage));
+  }
   if (frame.has_color()) {
     // Plane images sampled where they are, in the layout they are in; host
     // words or planes where the slot holds them; planes in a buffer where the
