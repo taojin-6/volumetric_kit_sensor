@@ -2,12 +2,15 @@
 // Copyright (c) 2026 Tao Jin
 
 // GpuFramePrepConfig::color_response on one picture in every layout the colour
-// pass reads (prep_layouts.hpp), through a barrel lens:
+// pass reads (prep_layouts.hpp), through a barrel lens, beside a depth camera
+// with intrinsics of its own:
 //   - every colour layout against the host oracle within a code: the pass's
 //     R'G'B' clamped to [0, 1], decoded by color_space.hpp's curve, times
-//     gain * F(r) at the pinhole pixel's radius, held beyond r_max, encoded;
-//     the picture leaves [0, 1] at both ends and most pixels lie beyond
-//     r_max, so neither the clamp nor the hold can go unseen;
+//     gain * F(r) at the colour pinhole pixel's radius, held beyond r_max,
+//     encoded; for two responses: one held over most of the picture, so the
+//     hold cannot go unseen, and one whose F falls to 0.56 across it, so r
+//     taken anywhere but the colour pinhole pixel cannot; the picture leaves
+//     [0, 1] at both ends, so the clamp cannot go unseen;
 //   - an identity response, whatever its r_max, gives the default pass's
 //     words bit for bit;
 //   - luma alone is refused on a pass with a response, and prepared on one
@@ -52,6 +55,16 @@ camera::CameraModel lensed() {
   return c;
 }
 
+// A smaller, wider depth camera with no lens, whose view holds the colour
+// camera's, so it masks no colour pixel, and whose radius at a colour pixel
+// is not the colour camera's.
+camera::CameraModel depth_camera() {
+  camera::CameraModel c;
+  c.size = {256, 200};
+  c.intrinsics = {165.0f, 163.0f, 127.4f, 99.2f};
+  return c;
+}
+
 // Gains below and above 1, and a falloff that dims by 8% at r_max, 0.3, past
 // which most of the image lies.
 camera::ColorResponse response() {
@@ -60,6 +73,16 @@ camera::ColorResponse response() {
   r.a = -0.9;
   r.b = 0.6;
   r.r_max = 0.3;
+  return r;
+}
+
+// The same gains, and a falloff that dims by 44% at r_max, 0.6, which most of
+// the image lies within.
+camera::ColorResponse steep() {
+  camera::ColorResponse r = response();
+  r.a = -1.5;
+  r.b = 0.8;
+  r.r_max = 0.6;
   return r;
 }
 
@@ -77,10 +100,12 @@ struct Frame {
 
 Frame frame_of(const camera::CameraModel& cam) {
   Frame out;
-  out.raw.assign(std::size_t{cam.size.width} * cam.size.height, 1500);
+  out.f.depth_camera = depth_camera();
+  out.raw.assign(std::size_t{out.f.depth_camera.size.width} *
+                     out.f.depth_camera.size.height,
+                 1500);
   out.f.depth = out.raw.data();
   out.f.metres_per_unit = 0.001f;
-  out.f.depth_camera = cam;
   out.f.color_camera = cam;
   out.f.min_depth = 0.1f;
   out.f.max_depth = 10.0f;
@@ -133,15 +158,18 @@ std::uint32_t oracle(const Picture& p, const Layout& layout,
   return word;
 }
 
-int test_layouts(vkc::test::GpuContext& gpu, const Picture& p) {
+// `held`: most pixels lie beyond r_max, so the check that they do applies.
+int test_layouts(vkc::test::GpuContext& gpu, const Picture& p,
+                 const camera::ColorResponse& r, bool held) {
   const camera::CameraModel cam = lensed();
-  const camera::ColorResponse r = response();
+  std::printf(" a %g, b %g, r_max %g:\n", r.a, r.b, r.r_max);
   auto plain =
       sensor::GpuFramePrep::create(gpu.device, gpu.allocator, config_of({}));
   auto responded =
       sensor::GpuFramePrep::create(gpu.device, gpu.allocator, config_of(r));
   CHECK(plain.ok() && responded.ok());
   Frame frame = frame_of(cam);
+  const std::size_t pixel_count = std::size_t{kWidth} * kHeight;
   int layouts = 0;
   for (const Layout& layout : p.layouts) {
     if (layout.image.layout == sensor::YuvLayout::Luma &&
@@ -153,7 +181,7 @@ int test_layouts(vkc::test::GpuContext& gpu, const Picture& p) {
         words_of(gpu, responded.value(), frame.f, layout);
     const std::vector<std::uint32_t> today =
         words_of(gpu, plain.value(), frame.f, layout);
-    CHECK(got.size() == frame.raw.size() && today.size() == got.size());
+    CHECK(got.size() == pixel_count && today.size() == got.size());
     int worst = 0, off = 0, coverage_off = 0, overshoots = 0, beyond = 0,
         changed = 0;
     for (std::uint32_t v = 0; v < kHeight; ++v) {
@@ -180,13 +208,13 @@ int test_layouts(vkc::test::GpuContext& gpu, const Picture& p) {
         "beyond r_max, %d changed\n",
         layout.name.c_str(), worst, off, coverage_off, overshoots, beyond,
         changed);
-    const int pixels = static_cast<int>(frame.raw.size());
+    const int pixels = static_cast<int>(pixel_count);
     CHECK(off == 0 && worst <= 1);
     CHECK(coverage_off <= 20);  // within round-off of the picture's edge
-    // Not vacuous: the matrix overshoots (packed words cannot), most pixels
-    // hold F, and the response moves most words.
+    // Not vacuous: the matrix overshoots (packed words cannot), the response
+    // moves most words, and, held, most pixels hold F.
     CHECK(layout.packed != nullptr || overshoots > pixels / 50);
-    CHECK(beyond > pixels / 2 && changed > pixels / 2);
+    CHECK(changed > pixels / 2 && (!held || beyond > pixels / 2));
   }
   CHECK(layouts == 6);
   return 0;
@@ -265,7 +293,8 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   auto picture =
       prep_layouts::make_picture(gpu.device, gpu.allocator, kWidth, kHeight);
   CHECK(picture->layouts.size() == 7);
-  if (test_layouts(gpu, *picture) != 0) return 1;
+  if (test_layouts(gpu, *picture, response(), true) != 0) return 1;
+  if (test_layouts(gpu, *picture, steep(), false) != 0) return 1;
   if (test_identity(gpu, *picture) != 0) return 1;
   if (test_luma(gpu, *picture) != 0) return 1;
   if (test_create_refusals(gpu) != 0) return 1;

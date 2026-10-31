@@ -33,7 +33,8 @@ recon's examples assemble the rest.
   `DepthCameraParams`/`ColorCameraParams` (`frame/camera_params.hpp`), the
   depth noise each producer states (`frame/depth_noise.hpp`),
   `ColorEncoding`, `is_canonical` and the sRGB curve
-  (`frame/color_space.hpp`), and the GLSL pinhole it exports; beside them
+  (`frame/color_space.hpp`), and the GLSL pinhole and sRGB curve it
+  exports; beside them
   the package's GLM aliases and `device_requirements()`.
 - **`sensor`** — the sensor *interface*: `IRgbdSensor`, the `RgbdFrame` it
   hands out as captured (each camera's `camera::CameraModel`, the pixels it

@@ -5489,9 +5489,8 @@ sRGB levels after a sigma-8 blur, held out by world position:
   is 13.07 levels (ΔE 3.72). On the 6500 K arm, lens falloff is 41% of its
   variance and per-unit gain and white balance 23%; brightness at r 0.7
   drops 0.45 to 0.85 stop on three of the four units, 0.10 on the fourth.
-  Gains times this falloff bring it to 6.27 levels (ΔE 1.99). The
-  best-view seam a textured mesh shows moves less, 9.90 to 7.78 levels
-  (-21%).
+  Gains times this falloff bring it to 6.27 levels (ΔE 1.99). The seam
+  between two cameras' views falls less, 9.90 to 7.78 levels (-21%).
 - **Gains, not a 3x3.** 99.9% of overlap samples are carpet, about 95% at
   levels 40-160, where a 3x3 is gains; tone curve plus 3x3 transferred
   badly (28.10 against 6.65 levels). A 3x3 waits for a rig of mixed models.
@@ -5518,11 +5517,13 @@ sRGB levels after a sigma-8 blur, held out by world position:
 - **Limit.** An FFS sensor's colour is the rectified view, whose r is off
   the lens's axis by the rectifying rotation.
 
-**Cost.** Known: the 4K colour pass is 0.100-0.107 ms a camera on an RTX
-4090 and 0.94-1.17 ms on the M5 Max (the entries above). Added, estimated
-and not yet measured: at most 0.02 ms (NVIDIA) and 0.1 ms (M5 Max) a 4K
-camera with a response, none at the identity, whose branch is uniform
-across a dispatch.
+**Cost.** Frame prep's device time for a 4K colour picture through a lens
+and a 640x576 depth frame, depth outliers on, Release, validation off,
+medians of six interleaved rounds of 100 prepares: a response adds 0.012
+ms a camera on an RTX 5090 (0.202 to 0.214 ms) and 0.031-0.035 ms on the
+M5 Max (0.53 to 0.57 ms). At the identity the pass costs 0.002 ms (RTX
+5090) and 0.004-0.009 ms (M5 Max) more than 0.13.0's, 1-1.7%; whether the
+larger overlap upload or the identity's branch costs it is not isolated.
 
 **Tests.** `sensor_camera_array_calibration`: F and `validate`'s refusals
 (gains, a, b, `r_max`, F at `r_max` and at the parabola's vertex); version 4
@@ -5531,20 +5532,28 @@ read and written byte for byte; refused in a version-2 or -3 file, without
 version-3 bytes; "knows versions 2, 3 and 4". `sensor_frame_srgb_gpu`: the
 exported curve against `color_space.hpp` on all 256 codes (decode within
 2e-6 relative, encode back to the code). `sensor_gpu_frame_prep_response`:
-every colour layout through a barrel lens against a host oracle within a
-code, on a picture that leaves [0, 1] at both ends with most pixels past
-`r_max`; an identity response bit for bit the default pass; luma alone
+every colour layout through a barrel lens, beside a depth camera with
+intrinsics of its own, against a host oracle within a code, on a picture
+that leaves [0, 1] at both ends, for two responses: one held beyond
+`r_max` over most pixels, and one whose F falls to 0.56 across the
+picture; an identity response bit for bit the default pass; luma alone
 refused; `create`'s refusals. `sensor_array_process`: each sensor's
 response reaches its own pass (its frames bit for bit a lone pass's, and
 differing from an uncorrected pass's exactly where it is not the identity);
 `prep.color_response` refused. `sensor_gpu_frame_prep_identity` prints
 every layout's words as MD5s, to compare two builds. Mutants, each failing
-a test: F uncapped (the response test, worst 31 codes), the response on
-unclamped R'G'B' (the response test, worst 32), and the rig's response
-applied in the rectifier too (`sensor_stereo_rectifier`).
+the response test unless named: F uncapped (worst 31 codes), the response
+on unclamped R'G'B' (worst 32), r at the lens's source position instead of
+the pinhole pixel (worst 12), r through the depth camera's intrinsics
+(worst 9), and the rig's response applied in the rectifier too
+(`sensor_stereo_rectifier`).
 
-**Validation.** Release with warnings as errors, default options, under the
-validation layer, on the Apple M5 Max (macOS 27.2): the whole suite passes,
-43 tests. The identity's words are 0.13.0's byte for byte on the M5 Max,
-all seven layouts (`sensor_gpu_frame_prep_identity` on both builds); the
-NVIDIA comparison is not yet run. No camera was opened.
+**Validation.** Release with warnings as errors, under the validation
+layer: the whole suite passes on the Apple M5 Max (macOS 27.2, default
+options, 43 tests) and on an RTX 5090 (the CI NVIDIA leg's options, sync
+validation too, 59 tests). At the identity, 0.13.0's output and this
+version's are equal byte for byte on both machines: prep's colour words
+and depth in all seven layouts, for one lens shared by both cameras and
+for a depth camera with its own lens and offset, and the stereo
+rectifier's Rgba8 and Luma8 views, left and right, for its five input
+forms. No camera was opened.

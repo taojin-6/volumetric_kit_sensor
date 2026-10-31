@@ -212,8 +212,7 @@ inline std::unique_ptr<Picture> make_picture(vkc::Device& device,
   return p;
 }
 
-// --- the pass on the host
-// -----------------------------------------------------
+// --- the pass on the host ---------------------------------------------
 
 inline float f32(double v) { return static_cast<float>(v); }
 
