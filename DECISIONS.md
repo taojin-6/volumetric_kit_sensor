@@ -5583,8 +5583,9 @@ from posed sets of a static scene, prepared with identity responses.
   window with no hole within 3 cm of its plane); B's depth within max(2 cm,
   1% z); B's return back within 1.5 px of A's pixel; 4 px inside A's depth
   border and 32 px inside its colour border; covered in both views; no
-  channel at 250 or above, and not all below 8, in either view at sigma 0,
-  2 or 8. A sample is A's and B's colour at sigma 8, linear, blurred with
+  channel at 250 or above (at sigma 0 in any bilinear tap), and not all
+  below 8, in either view at sigma 0, 2 or 8. A sample is A's and B's
+  colour at sigma 8, linear, blurred with
   coverage weights, and each pixel's pinhole radius. Each set keeps
   `samples / sets` of its passing samples by a hash of the set, the pair and
   the pixel (counted first, in the same submit): 1 M over 8 sets.
@@ -5595,10 +5596,12 @@ from posed sets of a static scene, prepared with identity responses.
   Levenberg-Marquardt damping on the 5N - 3 parameters (three log-gains, a
   and b a camera, camera 0's log-gains pinned, no ridge). The normal
   equations, residuals and gauge moments are summed on the GPU per ordered
-  pair; the host solves the small system by Cholesky.
-- **Hold-out.** Two halves by a hash of 25 cm world cubes, so a point's two
-  directions share one; it fits half 0, reports half 1, and writes the
-  half-0 fit.
+  pair; the host solves the small system by Cholesky, and stops where a
+  step's quadratic model predicts, or a step gains, under 1e-6 of the
+  loss (the float sums' noise is about 1e-7 of it, an estimate).
+- **Hold-out.** Two halves by a hash of 25 cm world cubes
+  (`Options::hold_out_cube_m`), so a point's two directions share one; it
+  fits half 0, reports half 1, and writes the half-0 fit.
 - **Gauge G2.** Every gain divided, per channel, by the mean of gain F over
   both pixels of every kept sample, from each camera's n, sum q and sum q^2.
 - **Refusals; nothing is written.** Fewer than two sensors, a repeated id,
@@ -5607,8 +5610,10 @@ from posed sets of a static scene, prepared with identity responses.
   `Options::sets`; a calibration without `color_controls` or without a
   sensor; a camera with fewer than 5,000 kept pixels or an overlap graph
   (pairs of 1,000 samples or more) that leaves cameras apart, each named; F
-  not above 0 up to r_max; a held-out RMS not below the identity's. The tool
-  also refuses a run whose sets a camera dropped, after 4 tries a set.
+  not above 0 up to r_max; a held-out RMS not below the identity's; every
+  call after a set that failed once its sampling was recorded. The tool
+  also refuses an existing `--out` before it opens the rig, and a run whose
+  sets a camera dropped, after 4 tries a set.
 - **Report.** RMS in levels at sigma 8, for the identity (held out), the fit
   (train) and the fit held out, overall and per ordered pair; per camera,
   its samples, gains, correction at r 0 and at r_max in stops, r_max, and
@@ -5636,11 +5641,11 @@ to 10-31, MJPEG):
   about 500 k pixels a camera; 5,000 is 1% of that.
 
 **Cost.** Calibration time only; nothing per frame. Seen in the test (3
-cameras at 640x480, 2 sets, 321 k samples): the solve, 24-32 passes over
-the samples, takes 24-30 ms on the M5 Max and 5-6 ms on an RTX 5090. For the
-rig, estimated, not measured: about 10 s of capture for 8 sets, a solve
-well under the study's 9 s, about 40 MB of samples and 0.7 GB of copied
-and blurred colour for four 4K cameras.
+cameras at 640x480, 2 sets, 321 k samples): the solve, 4 steps in 5 passes
+over the samples, takes 8-11 ms on the M5 Max. For the rig, estimated, not
+measured: about 10 s of capture for 8 sets, a solve well under the study's
+9 s, about 40 MB of samples and 0.7 GB of copied and blurred colour for
+four 4K cameras.
 
 **Tests.** `sensor_color_fit`, on synthetic rigs ray-cast on the host: three
 posed cameras with a barrel lens over a textured floor and box, raw
@@ -5650,13 +5655,20 @@ to 1.44 levels; the sets prepared again with the fitted responses hold out
 1.39 levels, against a noise floor of 1.47 for the same rig planted with
 nothing, which ties the fit's r, cap and sRGB curve to the colour pass's.
 G2's mean of gain F, in double from the kept samples, is 1 within 5e-8.
-One IRLS step on 972 samples, at responses whose r_max leaves 610 beyond
-it, matches a double host oracle (F from `ColorResponse::falloff`) to 8e-7
-relative in the system and 3e-5 in the step. The refusals above, by their
-messages, but F's, the held-out one and the tool's. Mutants, each failing
-the test: q uncapped in the normal equations (G2 off by 4e-4), both halves
-trained on (the oracle, the system off by 100%), and G2 over A's pixel
-alone (G2 off by 1.2e-2).
+Each r_max sits within its 1/2048 bin above the kept samples' 99th
+percentile. The share pushed to 255 at strong responses (47-82% of a
+camera) matches a host count on the last set's words to the pixel. One
+IRLS step on 972 samples, at responses whose r_max leaves 610 beyond it,
+matches a double host oracle (F from `ColorResponse::falloff`) to 8e-7
+relative in the system and 3e-5 in the step. With the rig and scene moved
+inside one 100 m cube every kept sample is in one half, and at 25 cm cubes
+47% are held out. The refusals above, by their messages, but F's, the
+held-out one, the failed set's and the tool's. Mutants, each failing the
+test: q uncapped in the normal equations (G2 off by 4e-4), both halves
+trained on (the oracle, the system off by 100%), G2 over A's pixel alone
+(G2 off by 1.2e-2), the half hashed per pixel (52% held out in one cube),
+F uncapped in the white count (4% of a camera off), and r_max at its
+bin's lower edge.
 
 **Validation.** Release with warnings as errors, default options, under the
 validation layer, on the M5 Max: the whole suite passes, 44 tests. On an

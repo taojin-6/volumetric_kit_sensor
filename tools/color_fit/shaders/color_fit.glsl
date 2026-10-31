@@ -4,9 +4,9 @@
 // What the colour fit's kernels share: a set's cameras as color_fit.cpp packs
 // them (GpuCamera, scalar layout), a kept sample (color_fit.hpp's Sample), a
 // camera's response in the solve (ResponseParams), and the hash that keeps
-// samples and picks their hold-out half. The projection and the sRGB curve are the
-// package's exported ones, through INCLUDE_TARGETS volumetric_kit::sensor_frame
-// as a consumer's kernels reach them.
+// samples and picks their hold-out half. The projection and the sRGB curve
+// are the package's exported ones, through INCLUDE_TARGETS
+// volumetric_kit::sensor_frame as a consumer's kernels reach them.
 
 #ifndef VS_COLOR_FIT_GLSL
 #define VS_COLOR_FIT_GLSL
@@ -30,7 +30,8 @@ struct Camera {
 };
 
 // A kept sample: A's and B's colour at sigma 8 in linear light, each pixel's
-// squared pinhole radius, uncapped, and `a | b << 8 | held << 16`, held 1 for the held-out half.
+// squared pinhole radius, uncapped, and `a | b << 8 | held << 16`, held 1
+// for the held-out half.
 struct Sample {
   vec3 a;
   vec3 b;

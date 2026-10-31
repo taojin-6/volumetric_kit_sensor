@@ -88,12 +88,14 @@ void main() {
     const float qb = min(x.qb, pb.q_max);
     const float fa = vs_cf_falloff(pa, qa);
     const float fb = vs_cf_falloff(pb, qb);
-    const float u[5] = float[5](1.0, qa / fa, qa * qa / fa, qb / fb, qb * qb / fb);
+    const float u[5] =
+        float[5](1.0, qa / fa, qa * qa / fa, qb / fb, qb * qb / fb);
     const bool train = held == pc.train_held;
     float squares = 0.0;
     for (uint c = 0; c < 3u; ++c) {
       const float p = x.a[c] * (pa.gain[c] * fa) / (pb.gain[c] * fb);
-      const float r = 255.0 * (vs_linear_to_srgb(p) - vs_linear_to_srgb(x.b[c]));
+      const float r =
+          255.0 * (vs_linear_to_srgb(p) - vs_linear_to_srgb(x.b[c]));
       squares += r * r;
       if (!train) continue;
       const float slope = 255.0 * srgb_slope(p) * p;

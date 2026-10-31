@@ -56,6 +56,9 @@ struct Options {
   /// Two cameras with fewer samples between them, both ways, are not joined
   /// in the overlap graph, which must join every camera.
   std::uint64_t min_pair_samples = 1'000;
+  /// The edge of the world cubes whose hash picks a sample's hold-out half,
+  /// in metres.
+  float hold_out_cube_m = 0.25f;
 };
 
 /// @brief An ordered pair's samples and RMS residuals, in 8-bit levels.
@@ -165,7 +168,8 @@ class ColorFit {
   /// @return OK; `Status::Code::InvalidArgument` for a set of another size,
   ///         a frame without colour or depth, frames of another size than
   ///         the first set's, or a set past `Options::sets`, with nothing
-  ///         sampled; or a buffer or submit failure.
+  ///         sampled; or a buffer or submit failure, or kept samples past
+  ///         their buffer, after which the fit refuses every call.
   core::Status add(const DeviceFrameSet& set);
 
   /// @brief Fit, gauge and check the responses.
@@ -194,6 +198,12 @@ class ColorFit {
   core::Result<System> system(
       const std::vector<camera::ColorResponse>& responses);
 
+  /// @return Per camera, the share of the last set's covered pixels that no
+  ///         channel held at 255 and @p responses take to 255 (the report's
+  ///         `pushed_to_white`).
+  core::Result<std::vector<double>> pushed_to_white(
+      const std::vector<camera::ColorResponse>& responses);
+
   /// @return The kept samples, read back, in their buffer's order.
   core::Result<std::vector<Sample>> samples();
 
@@ -210,8 +220,6 @@ class ColorFit {
   core::Status ensure_set_buffers(const DeviceFrameSet& set);
   core::Status ensure_chunks();
   core::Result<Rows> evaluate(
-      const std::vector<camera::ColorResponse>& responses);
-  core::Result<std::vector<double>> pushed(
       const std::vector<camera::ColorResponse>& responses);
 
   core::Device* device_ = nullptr;
@@ -239,6 +247,9 @@ class ColorFit {
   std::uint32_t sets_ = 0;
   std::uint64_t kept_ = 0;
   std::vector<Segment> segments_;
+  // A set failed after its sampling was recorded: the counters, histogram
+  // and segments may disagree, so every later call is refused.
+  bool broken_ = false;
 
   // The solve's: the parameters, the chunks and pairs, the partial and
   // final rows, and the white counts.

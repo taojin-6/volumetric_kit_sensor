@@ -10,12 +10,15 @@
 //     same rig planted with nothing), and to the fit's own held-out figure,
 //     which ties the fit's r, cap and sRGB curve to the colour pass's.
 //   - G2: the mean of gain F over both pixels of every kept sample is 1 per
-//     channel, in double on the host.
+//     channel, in double on the host; r_max, the samples' 99th-percentile
+//     radius; the share pushed to 255, against a host count.
 //   - One IRLS step on about 1 k samples against a double host oracle, at
 //     responses whose r_max leaves most samples beyond it.
+//   - The hold-out half, a function of world position alone.
 //   - The refusals: too few sensors, a repeated id, mixed models, a sensor
-//     without colour; a set of another size, a frame without colour, a set
-//     too many; no colour controls, a sensor the calibration lacks, a camera
+//     without colour or depth, no hold-out cube; a set of another size, a
+//     frame without colour or depth, frames that change size, a set too
+//     many; no colour controls, a sensor the calibration lacks, a camera
 //     with too few samples and a split overlap graph, each named.
 // Skips where no device is present.
 
@@ -33,6 +36,7 @@
 #include "color_fit.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/sensor/camera/array_calibration.hpp"
 #include "volumetric_kit/sensor/camera/color_response.hpp"
 #include "volumetric_kit/sensor/camera/projection.hpp"
@@ -270,11 +274,13 @@ struct Rig {
 };
 
 // `seeds.size()` sets of `rig`, each camera prepared by its own pass with
-// `responses[k]` (identity when empty).
+// `responses[k]` (identity when empty), the whole rig and scene moved by
+// `offset` in the world.
 std::vector<sensor::DeviceFrameSet> prepared_sets(
     vkc::test::GpuContext& gpu, const Rig& rig,
     const std::vector<std::uint32_t>& seeds,
-    const std::vector<camera::ColorResponse>& responses = {}) {
+    const std::vector<camera::ColorResponse>& responses = {},
+    const Vec3d& offset = Vec3d(0.0)) {
   std::vector<sensor::GpuFramePrep> preps;
   for (std::size_t k = 0; k < rig.poses.size(); ++k) {
     sensor::GpuFramePrepConfig config;
@@ -295,6 +301,7 @@ std::vector<sensor::DeviceFrameSet> prepared_sets(
       raws.push_back(render(rig.poses[k], rig.planted[k], 2.0,
                             seed * 7919u + static_cast<std::uint32_t>(k)));
       frames.push_back(raws.back().frame);
+      frames.back()->color_to_world[3] += glm::dvec4(offset, 0.0);
     }
     auto prepared = sensor::GpuFramePrep::prepare_batch(preps, frames);
     if (!prepared) {
@@ -431,6 +438,55 @@ std::vector<double> oracle_step(const color_fit::System& s, double lambda) {
   return x;
 }
 
+double srgb_decode(double e) {
+  return e <= 0.04045 ? e / 12.92 : std::pow((e + 0.055) / 1.055, 2.4);
+}
+
+struct Pushed {
+  double share = -1.0;  // of the covered pixels
+  std::size_t covered = 0;
+  std::size_t near = 0;  // within 0.05 code of 254.5, either way
+};
+
+// pushed.comp's count in double, from the frame's prepared words read back:
+// the covered pixels with no channel at 255 whose linear colour times
+// gain F(r), r the pinhole pixel's radius, encodes to 254.5 or above.
+Pushed host_pushed(vkc::test::GpuContext& gpu, const sensor::DeviceFrame& f,
+                   const camera::ColorResponse& r) {
+  Pushed out;
+  const auto& cam = f.color_camera;
+  std::vector<std::uint32_t> words(std::size_t{cam.width} * cam.height);
+  vkc::CommandBatch batch(gpu.device, gpu.allocator);
+  if (!batch.readback(*f.color, 0, words.size() * 4, words.data()).ok() ||
+      !batch.submit().ok()) {
+    return out;
+  }
+  std::size_t pushed = 0;
+  for (std::uint32_t v = 0; v < cam.height; ++v) {
+    for (std::uint32_t u = 0; u < cam.width; ++u) {
+      const std::uint32_t word = words[std::size_t{v} * cam.width + u];
+      if ((word >> 24) != 0xFFu) continue;
+      ++out.covered;
+      double top = 0.0;
+      bool white = false;
+      const double x = (u - double(cam.cx)) / cam.fx;
+      const double y = (v - double(cam.cy)) / cam.fy;
+      const double f_r = r.falloff(std::sqrt(x * x + y * y));
+      for (int c = 0; c < 3; ++c) {
+        const std::uint32_t code = (word >> (8 * c)) & 0xFFu;
+        white = white || code == 255u;
+        top = std::max(top, 255.0 * srgb_encode(srgb_decode(code / 255.0) *
+                                                r.gain[std::size_t(c)] * f_r));
+      }
+      if (white) continue;
+      pushed += top >= 254.5;
+      out.near += std::fabs(top - 254.5) < 0.05;
+    }
+  }
+  out.share = out.covered > 0 ? double(pushed) / double(out.covered) : 0.0;
+  return out;
+}
+
 // --- The tests --------------------------------------------------------------
 
 // Fit, apply through GpuFramePrep, and compare with the noise floor; G2.
@@ -488,10 +544,55 @@ int test_round_trip(vkc::test::GpuContext& gpu) {
   std::printf("G2: worst channel mean of gain F off 1 by %.3g\n", worst_gauge);
   CHECK(worst_gauge < 1e-5);
 
-  // The fitted responses applied by the colour pass, against the floor.
+  // r_max, the 99th percentile of each camera's kept pixels' radii, from
+  // the samples in double: the upper edge of its 1/2048 bin.
+  std::vector<std::vector<double>> radii(3);
+  for (const color_fit::Sample& x : *samples) {
+    radii[x.cams & 0xFFu].push_back(std::sqrt(double(x.qa)));
+    radii[(x.cams >> 8) & 0xFFu].push_back(std::sqrt(double(x.qb)));
+  }
+  for (std::size_t k = 0; k < 3; ++k) {
+    std::vector<double>& v = radii[k];
+    CHECK(report->cameras[k].samples == v.size() && !v.empty());
+    std::sort(v.begin(), v.end());
+    const double p99 =
+        v[static_cast<std::size_t>(std::ceil(0.99 * double(v.size()))) - 1];
+    const double above = report->cameras[k].response.r_max - p99;
+    std::printf("r_max cam%zu: %.6f, the samples' p99 %.6f\n", k,
+                report->cameras[k].response.r_max, p99);
+    CHECK(above >= -1e-6 && above <= 1.0 / 2048.0 + 1e-6);
+  }
+
+  // The share pushed to 255: the report's at the fitted responses, and at
+  // strong ones against the host on the last set.
   std::vector<camera::ColorResponse> fitted;
   for (const color_fit::Camera& c : report->cameras)
     fitted.push_back(c.response);
+  auto white = fit->pushed_to_white(fitted);
+  CHECK(white.ok() && white->size() == 3);
+  std::vector<camera::ColorResponse> strong(3);
+  for (std::size_t k = 0; k < 3; ++k) {
+    CHECK((*white)[k] == report->cameras[k].pushed_to_white);
+    strong[k].gain = {7.0 - 0.5 * double(k), 6.0, 6.0 + 0.5 * double(k)};
+    strong[k].a = 0.5;
+    strong[k].b = -0.2;
+    strong[k].r_max = 0.5;
+  }
+  auto strong_white = fit->pushed_to_white(strong);
+  CHECK(strong_white.ok());
+  for (std::size_t k = 0; k < 3; ++k) {
+    const Pushed host = host_pushed(gpu, *sets.back().frames[k], strong[k]);
+    const double off =
+        std::fabs((*strong_white)[k] - host.share) * double(host.covered);
+    std::printf(
+        "pushed to 255 by a strong response, cam%zu: %.2f%% (host %.2f%%, "
+        "%.0f pixels apart, %zu near the line)\n",
+        k, 100.0 * (*strong_white)[k], 100.0 * host.share, off, host.near);
+    CHECK(host.share > 0.02 && host.share < 0.98);
+    CHECK(off <= double(host.near) + 2.0);
+  }
+
+  // The fitted responses applied by the colour pass, against the floor.
   const auto corrected_sets = prepared_sets(gpu, planted, seeds, fitted);
   auto corrected_fit = fit_of(gpu, corrected_sets, 3, options);
   CHECK(corrected_fit != nullptr);
@@ -579,6 +680,36 @@ int test_irls_step(vkc::test::GpuContext& gpu) {
   return 0;
 }
 
+// The hold-out half is a function of world position alone: the rig and
+// scene moved to (10, 10, 10) m, inside one 100 m cube, hold every sample in
+// one half; at 25 cm cubes both halves are filled.
+int test_hold_out_cubes(vkc::test::GpuContext& gpu) {
+  const Rig planted{ring_rig(), planted_responses()};
+  const auto sets =
+      prepared_sets(gpu, planted, {6}, {}, Vec3d(10.0, 10.0, 10.0));
+  CHECK(sets.size() == 1);
+  for (const float cube : {100.0f, 0.25f}) {
+    color_fit::Options options;
+    options.sets = 1;
+    options.samples = 4000;
+    options.hold_out_cube_m = cube;
+    auto fit = fit_of(gpu, sets, 3, options);
+    CHECK(fit != nullptr);
+    auto samples = fit->samples();
+    CHECK(samples.ok() && samples->size() > 2000);
+    std::size_t held = 0;
+    for (const color_fit::Sample& x : *samples) held += (x.cams >> 16) & 1u;
+    std::printf("hold-out at %.2f m cubes: %zu of %zu samples held out\n",
+                double(cube), held, samples->size());
+    if (cube > 1.0f) {
+      CHECK(held == 0 || held == samples->size());
+    } else {
+      CHECK(held > samples->size() / 5 && held < samples->size() * 4 / 5);
+    }
+  }
+  return 0;
+}
+
 int test_refusals(vkc::test::GpuContext& gpu) {
   const auto create = [&](std::vector<sensor::SensorInfo> s) {
     auto fit =
@@ -595,6 +726,16 @@ int test_refusals(vkc::test::GpuContext& gpu) {
   auto colourless = infos(3);
   colourless[2].color.reset();
   CHECK(says(create(colourless), "cam2 has no colour"));
+  auto depthless = infos(3);
+  depthless[1].depth.reset();
+  CHECK(says(create(depthless), "cam1 has no colour or no depth"));
+  color_fit::Options no_cube;
+  no_cube.hold_out_cube_m = 0.0f;
+  {
+    auto fit = color_fit::ColorFit::create(gpu.device, gpu.allocator, infos(3),
+                                           no_cube);
+    CHECK(says(fit.ok() ? vkc::Status{} : fit.status(), "hold-out cube"));
+  }
 
   const Rig planted{ring_rig(), planted_responses()};
   color_fit::Options options;
@@ -611,6 +752,9 @@ int test_refusals(vkc::test::GpuContext& gpu) {
     sensor::DeviceFrameSet no_color = sets[0];
     no_color.frames[1]->color.reset();
     CHECK(says((*fit)->add(no_color), "cam1's frame"));
+    sensor::DeviceFrameSet no_depth = sets[0];
+    no_depth.frames[2]->depth.reset();
+    CHECK(says((*fit)->add(no_depth), "cam2's frame"));
     CHECK(says((*fit)->solve(calibration_of(planted.poses)).status(),
                "no samples"));
     CHECK((*fit)->add(sets[0]).ok());
@@ -621,6 +765,16 @@ int test_refusals(vkc::test::GpuContext& gpu) {
     camera::ArrayCalibration missing = calibration_of(planted.poses);
     missing.sensors.pop_back();
     CHECK(says((*fit)->solve(missing).status(), "no sensor cam2"));
+  }
+  {
+    color_fit::Options two = options;
+    two.sets = 2;
+    auto fit =
+        color_fit::ColorFit::create(gpu.device, gpu.allocator, infos(3), two);
+    CHECK(fit.ok() && (*fit)->add(sets[0]).ok());
+    sensor::DeviceFrameSet resized = sets[0];
+    resized.frames[0]->color_camera.width = 320;
+    CHECK(says((*fit)->add(resized), "cam0's frames changed size"));
   }
   {
     color_fit::Options few = options;
@@ -647,6 +801,7 @@ int test_refusals(vkc::test::GpuContext& gpu) {
 int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_round_trip(gpu) != 0) return 1;
   if (test_irls_step(gpu) != 0) return 1;
+  if (test_hold_out_cubes(gpu) != 0) return 1;
   if (test_refusals(gpu) != 0) return 1;
   return 0;
 }

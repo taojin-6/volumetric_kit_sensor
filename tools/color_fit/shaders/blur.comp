@@ -5,10 +5,10 @@
 // colour, in linear light, weighted by coverage, so a pixel the pass left
 // uncovered (or one past the image) adds nothing: the horizontal pass reads
 // the words and writes `rows`; the vertical pass reads `rows` and writes the
-// blurred image at `out_at`. Each pixel holds (sum of w * colour, sum of w), the
-// weights normalised over the whole kernel, as two half pairs; a reader takes
-// colour = rgb / w and w as the fraction of the window covered. Thread per
-// pixel of `camera`'s colour.
+// blurred image at `out_at`. Each pixel holds (sum of w * colour, sum of w),
+// the weights normalised over the whole kernel, as two half pairs; a reader
+// takes colour = rgb / w and w as the fraction of the window covered. Thread
+// per pixel of `camera`'s colour.
 
 #version 460
 #extension GL_EXT_scalar_block_layout : require

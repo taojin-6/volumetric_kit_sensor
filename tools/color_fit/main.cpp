@@ -14,9 +14,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -83,8 +85,19 @@ std::optional<Args> parse(int argc, char** argv) {
 }
 
 int run(const Args& args) {
+  // Refused before the capture; the write's CreateNew is the guarantee.
+  std::error_code error;
+  if (std::filesystem::exists(args.out, error)) {
+    return fail(args.out + " exists: color_fit writes a new file only");
+  }
   auto read = camera::read_array_calibration(args.calibration);
-  if (!read) return fail(read.status());
+  if (!read) {
+    const std::string what = read.status().message();
+    if (what.find("color_response") == std::string::npos) return fail(what);
+    return fail(what +
+                "; after a relock, delete every color_response, then "
+                "fit again");
+  }
   camera::ArrayCalibration calibration = std::move(read).value();
   if (!calibration.color_controls) {
     return fail("the calibration names no color_controls to fit at");

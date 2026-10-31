@@ -12,8 +12,9 @@
 //     unprojected and projected back into A's depth, within 1.5 px of A's
 //     pixel;
 //   - A's and B's colour covered at sigma 0 (all four bilinear taps) and over
-//     99% of the window at sigma 2 and 8, with no channel at 250 or above and
-//     not every channel below 8, in either view at any sigma.
+//     99% of the window at sigma 2 and 8, with no channel at 250 or above
+//     (at sigma 0 in any tap) and not every channel below 8, in either view
+//     at any sigma.
 // keep == 0 counts the set's passing samples into counters[0]; keep == 1
 // keeps each with probability budget / counters[0] (a hash of the set, the
 // pair and the pixel), appends it at counters[1] while below `capacity`
@@ -102,9 +103,15 @@ bool linear_word(uint word, out vec3 rgb) {
   return (word >> 24) == 0xFFu;
 }
 
+// Whether any channel of a word is at 250 or above.
+bool clipped(uint word) {
+  return (word & 0xFFu) >= 250u || ((word >> 8) & 0xFFu) >= 250u ||
+         ((word >> 16) & 0xFFu) >= 250u;
+}
+
 // The colour at continuous pixel px, bilinear in linear light: at sigma 0
-// from the words, all four taps covered; otherwise from the blurred image at
-// `at`, at least 99% of the window covered.
+// from the words, all four taps covered and none clipped; otherwise from the
+// blurred image at `at`, at least 99% of the window covered.
 bool color_at(Camera c, vec2 px, uint level, uint at, out vec3 rgb) {
   const vec2 f = floor(px);
   const ivec2 p = ivec2(f);
@@ -121,8 +128,9 @@ bool color_at(Camera c, vec2 px, uint level, uint at, out vec3 rgb) {
   vec4 acc = vec4(0.0);
   for (int k = 0; k < 4; ++k) {
     if (level == 0u) {
+      const uint word = words[idx[k]];
       vec3 l;
-      if (!linear_word(words[idx[k]], l)) return false;
+      if (!linear_word(word, l) || clipped(word)) return false;
       acc += wt[k] * vec4(l, 1.0);
     } else {
       const uvec2 h = blurred[at + idx[k]];
@@ -170,8 +178,8 @@ void main() {
   }
   float za;
   if (!continuous(ca, p, za)) return;
-  const vec3 world =
-      world_of(vs_unproject_pinhole(vec2(p), za, ca.depth_k), ca.depth_to_world);
+  const vec3 world = world_of(vs_unproject_pinhole(vec2(p), za, ca.depth_k),
+                              ca.depth_to_world);
 
   // A's colour, 32 px inside its border.
   vec2 pa;
@@ -194,8 +202,8 @@ void main() {
   float zb;
   if (!continuous(cb, ivec2(nb), zb)) return;
   if (abs(zb - in_b.z) > max(0.02, 0.01 * in_b.z)) return;
-  const vec3 back_world =
-      world_of(vs_unproject_pinhole(vec2(nb), zb, cb.depth_k), cb.depth_to_world);
+  const vec3 back_world = world_of(
+      vs_unproject_pinhole(vec2(nb), zb, cb.depth_k), cb.depth_to_world);
   vec2 back;
   if (!vs_pinhole_pixel(vs_world_to_camera(ca.depth_to_world, back_world),
                         ca.depth_k, back)) {

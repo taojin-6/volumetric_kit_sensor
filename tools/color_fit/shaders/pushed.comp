@@ -29,7 +29,8 @@ void main() {
   const uint word = words[cam.color_at + i];
   if ((word >> 24) != 0xFFu) return;
   atomicAdd(counts[2u * pc.camera], 1u);
-  const uvec3 code = uvec3(word & 0xFFu, (word >> 8) & 0xFFu, (word >> 16) & 0xFFu);
+  const uvec3 code =
+      uvec3(word & 0xFFu, (word >> 8) & 0xFFu, (word >> 16) & 0xFFu);
   if (any(equal(code, uvec3(255u)))) return;
   const vec2 px = vec2(i % cam.color_width, i / cam.color_width);
   const vec2 n = (px - cam.color_k.zw) / cam.color_k.xy;

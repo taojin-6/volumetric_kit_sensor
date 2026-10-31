@@ -73,10 +73,12 @@ constexpr std::uint32_t kLocal = 256;
 // The radius histogram: bins of 1/2048 over [0, 2).
 constexpr std::uint32_t kBins = 4096;
 constexpr float kBinWidth = 2.0f / kBins;
-constexpr float kCubeM = 0.25f;  // the hold-out's world cubes
 constexpr float kHuberLevels = 3.0f;
 constexpr double kRmaxQuantile = 0.99;
 constexpr int kMaxIterations = 100;
+// The solve stops once a step gains, or its model predicts, less than this
+// share of the loss: above the float sums' noise (about 1e-7, estimated).
+constexpr double kMinGain = 1e-6;
 
 core::Status bad(const std::string& what) {
   return core::Status::invalid_argument("ColorFit: " + what);
@@ -182,6 +184,10 @@ core::Result<std::unique_ptr<ColorFit>> ColorFit::create(
   }
   if (options.sets == 0 || options.samples < options.sets) {
     return bad("options of no sets, or fewer samples than sets");
+  }
+  if (!(options.hold_out_cube_m > 0.0f) ||
+      !std::isfinite(options.hold_out_cube_m)) {
+    return bad("options of a hold-out cube not finite and above 0");
   }
   std::unique_ptr<ColorFit> fit(new ColorFit());
   fit->device_ = &device;
@@ -301,6 +307,7 @@ core::Status ColorFit::ensure_set_buffers(const DeviceFrameSet& set) {
 
 core::Status ColorFit::add(const DeviceFrameSet& set) try {
   const std::size_t n = sensors_.size();
+  if (broken_) return bad("add: an earlier set failed part-way");
   if (sets_ >= options_.sets) {
     return bad("add: a set past the " + std::to_string(options_.sets) +
                " the fit takes");
@@ -357,6 +364,7 @@ core::Status ColorFit::add(const DeviceFrameSet& set) try {
     g.color_at = color_at_[k];
   }
 
+  broken_ = true;  // until the set is in
   core::CommandBatch batch(*device_, *allocator_);
   VKC_TRY(batch.upload(cameras_, 0, cams.data(), n * sizeof(GpuCamera)));
   for (std::size_t k = 0; k < n; ++k) {
@@ -403,9 +411,17 @@ core::Status ColorFit::add(const DeviceFrameSet& set) try {
   for (const std::uint32_t keep : {0u, 1u}) {
     for (std::size_t p = 0; p < pairs.size(); ++p) {
       const auto [a, b] = pairs[p];
-      const SamplePush push{a,      b,         keep,  sets_,
-                            budget, capacity_, 0u,    color_total_,
-                            kBins,  kBinWidth, kCubeM};
+      const SamplePush push{a,
+                            b,
+                            keep,
+                            sets_,
+                            budget,
+                            capacity_,
+                            0u,
+                            color_total_,
+                            kBins,
+                            kBinWidth,
+                            options_.hold_out_cube_m};
       VKC_TRY(batch.dispatch(
           sample_, &push, sizeof(push),
           core::group_count(cams[a].depth_width * cams[a].depth_height, kLocal),
@@ -417,10 +433,7 @@ core::Status ColorFit::add(const DeviceFrameSet& set) try {
   }
   VKC_TRY(batch.readback(counters_, 8, 4, &overflow));
   VKC_TRY(batch.submit());
-  if (overflow != 0) {
-    sets_ = options_.sets;  // nothing more is added to a broken fit
-    return bad("add: the kept samples outgrew their buffer");
-  }
+  if (overflow != 0) return bad("add: the kept samples outgrew their buffer");
 
   std::uint64_t start = kept_;
   for (std::size_t p = 0; p < pairs.size(); ++p) {
@@ -433,12 +446,14 @@ core::Status ColorFit::add(const DeviceFrameSet& set) try {
   kept_ = start;
   ++sets_;
   chunks_ready_ = false;
+  broken_ = false;
   return {};
 } catch (const std::bad_alloc&) {
   return core::Status::out_of_memory("ColorFit::add: out of host memory");
 }
 
 core::Status ColorFit::ensure_chunks() {
+  if (broken_) return bad("a set failed part-way: start a new fit");
   if (chunks_ready_) return {};
   if (sets_ == 0 || kept_ == 0) return bad("no samples: add sets first");
   const std::size_t n = sensors_.size();
@@ -623,6 +638,7 @@ core::Result<System> ColorFit::system(
 }
 
 core::Result<std::vector<Sample>> ColorFit::samples() try {
+  if (broken_) return bad("a set failed part-way: start a new fit");
   std::vector<Sample> out(kept_);
   if (kept_ == 0) return out;
   core::CommandBatch batch(*device_, *allocator_);
@@ -633,9 +649,10 @@ core::Result<std::vector<Sample>> ColorFit::samples() try {
   return core::Status::out_of_memory("ColorFit: out of host memory");
 }
 
-core::Result<std::vector<double>> ColorFit::pushed(
+core::Result<std::vector<double>> ColorFit::pushed_to_white(
     const std::vector<camera::ColorResponse>& responses) try {
   const std::size_t n = sensors_.size();
+  if (responses.size() != n) return bad("one response per camera");
   VKC_TRY(ensure_chunks());
   std::vector<GpuResponse> params(n);
   for (std::size_t k = 0; k < n; ++k) params[k] = gpu_response(responses[k]);
@@ -666,6 +683,7 @@ core::Result<Report> ColorFit::solve(
     const camera::ArrayCalibration& calibration) try {
   const auto t0 = std::chrono::steady_clock::now();
   const std::size_t n = sensors_.size();
+  if (broken_) return bad("solve: a set failed part-way: start a new fit");
   if (!calibration.color_controls) {
     return bad(
         "solve: the calibration names no color_controls, so no response "
@@ -755,7 +773,9 @@ core::Result<Report> ColorFit::solve(
   const Residuals identity = residuals_of(rows.v, n);
   System sys = system_of(rows.v, n);
 
-  // Gauss-Newton IRLS with Levenberg-Marquardt damping.
+  // Gauss-Newton IRLS with Levenberg-Marquardt damping. It stops where the
+  // step's own quadratic model predicts a gain below the float sums' noise,
+  // which no trial could confirm.
   double lambda = 1e-3;
   int iterations = 0;
   for (int it = 0; it < kMaxIterations && lambda < 1e10; ++it) {
@@ -764,6 +784,15 @@ core::Result<Report> ColorFit::solve(
       lambda *= 10.0;
       continue;
     }
+    double predicted = 0.0;  // -g.d - d.h.d / 2
+    for (std::size_t i = 0; i < sys.n; ++i) {
+      double hd = 0.0;
+      for (std::size_t j = 0; j < sys.n; ++j) {
+        hd += sys.h[i * sys.n + j] * (*delta)[j];
+      }
+      predicted -= (sys.g[i] + 0.5 * hd) * (*delta)[i];
+    }
+    if (predicted < kMinGain * sys.loss) break;
     std::vector<camera::ColorResponse> next = theta;
     for (std::uint32_t k = 0; k < n; ++k) {
       for (std::uint32_t c = 0; c < 3; ++c) {
@@ -791,9 +820,7 @@ core::Result<Report> ColorFit::solve(
       sys = trial_sys;
       lambda = std::max(lambda * 0.1, 1e-12);
       ++iterations;
-      double largest = 0.0;
-      for (const double d : *delta) largest = std::max(largest, std::fabs(d));
-      if (gain < 1e-10 || largest < 1e-9) break;
+      if (gain < kMinGain) break;
     } else {
       lambda *= 10.0;
     }
@@ -842,7 +869,7 @@ core::Result<Report> ColorFit::solve(
                " levels, is not below the identity's, " +
                std::to_string(identity.held_out));
   }
-  VKC_ASSIGN(const std::vector<double> white, pushed(theta));
+  VKC_ASSIGN(const std::vector<double> white, pushed_to_white(theta));
 
   report.calibration = calibration;
   for (std::size_t k = 0; k < n; ++k) {

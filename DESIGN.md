@@ -954,10 +954,11 @@ pinned stb source, a private implementation dependency of `sensor_image_io`.
 of a static scene, prepared with identity responses (the 2026-10-31
 colour-fit decision). `sensor_color_fit` is an internal static library
 (`color_fit::ColorFit`, no export macro, not installed), built with the tests
-on every leg so `sensor_color_fit` runs there; the `color_fit` tool that opens
-the rig builds with `VS_WITH_ORBBEC`, and no test runs it. It takes any array
-of two or more sensors of one `SensorInfo::model`, each with colour and depth;
-only the tool's open is Orbbec's.
+on every leg so its test, `sensor_color_fit`, runs there. The `color_fit`
+tool opens the rig with H.265 colour, the rig's live codec; it builds with
+`VS_WITH_ORBBEC`, and no test runs it. The fit takes any array of two or
+more sensors of one `SensorInfo::model`, each with colour and depth; only
+the tool's open is Orbbec's.
 
 Every per-pixel step is a kernel (`tools/color_fit/shaders/`, over the
 exported `pinhole.glsl` and `srgb.glsl`). `add(set)`, one submit: each
@@ -969,18 +970,23 @@ pixels' radii in a per-camera histogram (`sample.comp`). `solve`: r_max is
 each camera's 99th-percentile sample radius; the Huber IRLS normal equations,
 the residuals of each hold-out half and the gauge's moments are summed per
 ordered pair (`normal_equations.comp`, chunks, then a compensated reduce per
-pair), and the host solves the 5N - 3 system by Levenberg-Marquardt; the
-share of covered pixels a response takes to 255 is counted on the last set
-(`pushed.comp`). It returns the report and the input calibration with every
-response; the tool prints the one and writes the other to a new file
-(`WriteMode::CreateNew`), with H.265 colour, the rig's live codec.
+pair), and the host solves the 5N - 3 system by Levenberg-Marquardt,
+stopping where a step's predicted gain falls below the float sums' noise;
+the share of covered pixels a response takes to 255 is counted on the last
+set (`pushed.comp`). A set that fails after its sampling is recorded leaves
+the fit refusing every later call. It returns the report and the input
+calibration with every response; the tool prints the one and writes the
+other to a new file (`WriteMode::CreateNew`), and refuses an existing
+`--out` before it opens the rig.
 
 **Runbook.** Geometry calibration first; then carry the array's
 `color_controls`, depth offsets and responses into the new file by hand.
 Run `color_fit --sync <rig_sync.json> --calibration <in.json> --out
 <new.json>` in an empty, static room under the rig's usual lights: 8 sets a
 second apart by default. Refit only after a relock or an intrinsics change:
-the response is the lens's and the unit's, not the pose's.
+the response is the lens's and the unit's, not the pose's. After a relock,
+delete every `color_response` from the file first: the reader refuses a
+response fitted at other controls, so the tool cannot read the file.
 
 ## Next work
 
