@@ -640,13 +640,12 @@ without colour keeps all its depth. `depth_offset_m`
 the mix and that test: for `z > 0`, `z = max(z - offset, 0)`, so 0 stays no
 return whatever the sign; a `SensorArray` sets it per sensor from the
 calibration. With `depth_outliers` on, the depth pass writes a buffer of the
-pass's own (`sensor.undistorted_depth`, grown as the output is), and a third
-pass (`remove_depth_outliers.comp`, the internal `detail::DepthOutlierPass`)
-filters it into the output: a thread per pixel scans the box that holds the
-image of the return's ball, in square rings from the centre, until the count
-is reached or can no longer be; every point and distance is float, each
-operation rounded once and never fused, so every device and a float host
-reference decide alike (the 2026-10-31 depth-outlier decision).
+pass's own (`sensor.undistorted_depth`, grown as larger frames ask), and a
+third pass (`remove_depth_outliers.comp`, the internal
+`detail::DepthOutlierPass`) filters it into the output: a thread per pixel
+scans the box that holds the image of the return's ball, in square rings from
+the centre, until the count is reached or can no longer be; its arithmetic is
+the 2026-10-31 depth-outlier decision's.
 **`prep/`'s `PictureReadback`** copies a set's colour pictures to the
 host, luma alone or every plane, for calib's detector: NV12 images from
 their corner, and planes in a buffer where they sit, after the batch takes

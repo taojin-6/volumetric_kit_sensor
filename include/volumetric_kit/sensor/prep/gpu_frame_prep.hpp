@@ -71,10 +71,12 @@ struct DepthOutlierFilter {
   /// Whether depth is filtered; `false`, the default, keeps every return.
   bool enabled = false;
   /// The radius, in pixel footprints at each return's own depth. Finite, in
-  /// [1, @ref kMaxRadiusPx], or @ref GpuFramePrep::create refuses it.
+  /// [1, @ref kMaxRadiusPx], or, with @ref enabled, @ref GpuFramePrep::create
+  /// refuses it.
   float radius_px = 8.0f;
   /// The fewest returns within the radius, the return itself included, for
-  /// it to be kept; at least 2, or @ref GpuFramePrep::create refuses it.
+  /// it to be kept; at least 2, or, with @ref enabled,
+  /// @ref GpuFramePrep::create refuses it.
   std::uint32_t min_points = 20;
 
   /// The largest @ref radius_px: a removed return scans a window of about
@@ -195,10 +197,6 @@ struct GpuFramePrepConfig {
 /// that a nearer surface hides from it is kept. A frame without colour keeps
 /// all its depth (every frame has depth).
 ///
-/// With @ref GpuFramePrepConfig::depth_outliers on, the undistorted depth,
-/// after the colour-view test, is then filtered by @ref DepthOutlierFilter's
-/// rule: a return with too few others near it in 3D is 0.
-///
 /// A frame's host depth and host colour are copied into the pass's persistent
 /// slot (`core::HostRing`), which its batch binds: in place where the device's
 /// mapped memory is cached (Apple, lavapipe), and through one copy of the used
@@ -241,7 +239,7 @@ class VS_PREP_API GpuFramePrep {
 
   /// @brief Record @ref prepare's work for @p frame into @p batch: its host
   ///        depth and colour copied into the pass's slot, any device depth
-  ///        and planes taken over, and both passes, with nothing submitted.
+  ///        and planes taken over, and the passes, with nothing submitted.
   ///
   /// The frame is checked before anything is recorded, so a refusal leaves
   /// @p batch and the pass as they were. The frame handed back holds its
@@ -290,7 +288,7 @@ class VS_PREP_API GpuFramePrep {
   ///                 planes must be on this pass's device, their writer
   ///                 finished.
   /// @param metrics  Optional `StageMetrics` collecting a `"frame prep"`
-  ///                 row: the copy into the slot and both passes on the host,
+  ///                 row: the copy into the slot and the passes on the host,
   ///                 and on the device the frame's copy up and the two
   ///                 dispatches (three with the outlier filter). `nullptr`
   ///                 measures nothing.
@@ -399,7 +397,7 @@ class VS_PREP_API GpuFramePrep {
   core::Status record_inputs(core::CommandBatch& batch, const RgbdFrame& frame,
                              const Layout& layout, const core::HostSlot& slot,
                              VkBuffer* input);
-  // Both passes, recorded into `batch` after the inputs; the outputs hold
+  // The passes, recorded into `batch` after the inputs; the outputs hold
   // the result once the batch has run.
   core::Status record_passes(core::CommandBatch& batch, const RgbdFrame& frame,
                              const Layout& layout, VkBuffer input,
@@ -455,9 +453,9 @@ class VS_PREP_API GpuFramePrep {
   // DeviceFrames handed out; reused only once no frame holds the lease.
   std::shared_ptr<Output> depth_out_;
   std::shared_ptr<Output> color_out_;
-  // With the outlier filter on: its pass, and the undistorted depth it reads,
-  // device-local, made at the first record and grown as a larger frame asks
-  // once the pass's last batch has resolved.
+  // With the outlier filter on: its pass, made at create, and the undistorted
+  // depth it reads, device-local, made at the first record and grown as a
+  // larger frame asks once the pass's last batch has resolved.
   std::unique_ptr<detail::DepthOutlierPass> outliers_;
   core::Buffer undistorted_;
 };

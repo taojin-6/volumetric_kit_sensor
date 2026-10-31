@@ -13,11 +13,12 @@
 //     it removes the curtain, the cable and the isolated returns and keeps
 //     the wall and the box;
 //   - on a slab of scattered returns, at the slab's median count, where a
-//     window a pixel short or a neighbour counted on the sphere flips
-//     decisions, it still matches;
+//     window a pixel short flips decisions, it still matches;
 //   - on a plane facing the camera, where every return's decision rests on
 //     neighbours at almost exactly its radius, it still matches: an operation
 //     fused or regrouped, or a <= for the <, flips decisions there;
+//   - at the largest radius, its window past the image on every side, it
+//     still matches;
 //   - it runs after the colour-view test, on the depth that test keeps;
 //   - several cameras in one batch, of different sizes, and a pass whose
 //     frames grow, each match their reference;
@@ -203,8 +204,8 @@ Rule rule_of(const camera::CameraModel& c, float radius_px) {
               f(double{radius_px} / k.fx)};
 }
 
-// The point at pixel (u, v), z deep, as the pass computes it: each
-// operation a statement of its own, so the compiler fuses none.
+// The point at pixel (u, v), z deep, as the pass computes it, each operation
+// rounded once: the test is built with contraction off.
 void point(const Rule& k, int u, int v, float z, float* p) {
   const float du = static_cast<float>(u) - k.cx;
   const float nx = du * k.inv_fx;
@@ -216,8 +217,9 @@ void point(const Rule& k, int u, int v, float z, float* p) {
 }
 
 // Every return's count of returns strictly within its radius, itself
-// included, over a window of +-kReach px, four times the pass's bound at
-// 8 px; 0 for no return.
+// included, over a window of +-kReach px, past the pass's bound: four times
+// it at 8 px, and past its at most 38 px at the largest radius on test_cap's
+// image; 0 for no return.
 constexpr int kReach = 40;
 
 std::vector<std::uint32_t> counts(const std::vector<float>& depth,
@@ -275,6 +277,11 @@ std::size_t mismatches(const std::vector<float>& filtered,
   return off;
 }
 
+std::uint32_t median_of(std::vector<std::uint32_t> n) {
+  std::nth_element(n.begin(), n.begin() + n.size() / 2, n.end());
+  return n[n.size() / 2];
+}
+
 // The scene through `cam`: the filtered depth against the reference on the
 // unfiltered depth, and, with `parts`, each part removed or kept as it should
 // be (through a pinhole, where each pixel shows its own raw pixel).
@@ -327,8 +334,8 @@ int test_scene(vkc::Device& device, vkc::Allocator& allocator) {
   return check_scene(device, allocator, lensed(131, 97), "lens", false);
 }
 
-// Scattered returns at their median count: a window short by a pixel, or a
-// neighbour on the sphere counted, would flip some.
+// Scattered returns at their median count: a window short by a pixel would
+// flip some.
 int test_slab(vkc::Device& device, vkc::Allocator& allocator) {
   const camera::CameraModel cam = pinhole(96, 80);
   const std::vector<std::uint16_t> raw = slab(cam);
@@ -337,10 +344,7 @@ int test_slab(vkc::Device& device, vkc::Allocator& allocator) {
   const std::vector<float> before = prepared(plain.value(), frame_of(raw, cam));
   CHECK(!before.empty());
   const std::vector<std::uint32_t> n = counts(before, cam, 8.0f);
-  std::vector<std::uint32_t> sorted = n;
-  std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2,
-                   sorted.end());
-  const std::uint32_t median = sorted[sorted.size() / 2];
+  const std::uint32_t median = median_of(n);
   std::size_t near = 0;
   for (const std::uint32_t c : n) {
     near += c + 2 >= median && c <= median + 2;
@@ -395,6 +399,37 @@ int test_ties(vkc::Device& device, vkc::Allocator& allocator) {
   CHECK(kept > 100 && removed > 100);
   // At the principal point the ties lie at exactly the radius, outside it.
   CHECK(n[std::size_t{48} * 128 + 64] == kInside);
+  return 0;
+}
+
+// The largest radius, on an image its window passes on every side, at the
+// scene's median count.
+int test_cap(vkc::Device& device, vkc::Allocator& allocator) {
+  const camera::CameraModel cam = pinhole(64, 48);
+  constexpr float kRadius = sensor::DepthOutlierFilter::kMaxRadiusPx;
+  const Scene s = scene(cam);
+  const sensor::RgbdFrame f = frame_of(s.raw, cam);
+  auto plain = sensor::GpuFramePrep::create(device, allocator);
+  CHECK(plain.ok());
+  const std::vector<float> before = prepared(plain.value(), f);
+  CHECK(!before.empty());
+  const std::vector<std::uint32_t> n = counts(before, cam, kRadius);
+  const std::uint32_t median = median_of(n);
+  auto filter = sensor::GpuFramePrep::create(device, allocator,
+                                             filtering(kRadius, median));
+  CHECK(filter.ok());
+  const std::vector<float> after = prepared(filter.value(), f);
+  CHECK(after.size() == before.size());
+  std::size_t kept = 0, returns = 0;
+  for (std::size_t i = 0; i < before.size(); ++i) {
+    returns += before[i] > 0.0f;
+    kept += after[i] > 0.0f;
+  }
+  const std::size_t off = mismatches(after, before, n, median);
+  std::printf("  cap: median count %u, %zu of %zu kept, %zu off\n", median,
+              kept, returns, off);
+  CHECK(off == 0);
+  CHECK(median > 100 && kept > returns / 4 && kept < returns * 3 / 4);
   return 0;
 }
 
@@ -519,6 +554,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_scene(gpu.device, gpu.allocator) != 0) return 1;
   if (test_slab(gpu.device, gpu.allocator) != 0) return 1;
   if (test_ties(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_cap(gpu.device, gpu.allocator) != 0) return 1;
   if (test_after_color(gpu.device, gpu.allocator) != 0) return 1;
   if (test_batch(gpu.device, gpu.allocator) != 0) return 1;
   if (test_config(gpu.device, gpu.allocator) != 0) return 1;

@@ -133,13 +133,17 @@ add_test(NAME sensor_gpu_frame_prep COMMAND sensor_gpu_frame_prep_test)
 
 # The frame prep's depth outlier filter on synthetic scenes: bit for bit against
 # a host reference in float, through a pinhole and a lens, at a slab's median
-# count, on ties at the radius, after the colour-view test, in a batch, and its
-# refusals. Skips where no device is present.
+# count, on ties at the radius, at the largest radius, after the colour-view
+# test, in a batch, and its refusals. Skips where no device is present. Built
+# with contraction off, so the reference rounds every operation once (GCC fuses
+# across statements by default wherever the target has FMA).
 add_executable(sensor_gpu_frame_prep_outliers_test
                sensor_gpu_frame_prep_outliers_test.cpp)
 target_link_libraries(
   sensor_gpu_frame_prep_outliers_test PRIVATE volumetric_kit::sensor_prep
                                               volumetric_kit::core_test_policy)
+target_compile_options(sensor_gpu_frame_prep_outliers_test
+                       PRIVATE -ffp-contract=off)
 vs_target_warnings(sensor_gpu_frame_prep_outliers_test)
 add_test(NAME sensor_gpu_frame_prep_outliers
          COMMAND sensor_gpu_frame_prep_outliers_test)

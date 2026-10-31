@@ -21,9 +21,9 @@
 // every device, and a host reference in float, makes the same decision on
 // the same depth. The pixel's own point and r are precise. The neighbour
 // loop is not: SPIRV-Cross makes each precise operation a call Metal keeps
-// (optnone), 83% of the pass on an M5 Max, so the loop passes every result
-// that could be fused or regrouped through opaque() instead. Only the
-// window's bound divides and takes a root, and its slack absorbs their
+// (optnone), 83% of the pass on an M5 Max, so the loop passes every value it
+// computes through opaque() before another operation takes it instead. Only
+// the window's bound divides and takes a root, and its slack absorbs their
 // error.
 
 #extension GL_EXT_scalar_block_layout : require
@@ -84,6 +84,14 @@ int half_width(float f, float t, float z, float r) {
 // made x.
 float opaque(float x) { return uintBitsToFloat(floatBitsToUint(x) ^ pc.zero); }
 
+// point_at's coordinate along an axis of principal point c for pixel index
+// i, z deep, each value opaque: the index too, so the loop cannot step the
+// difference by 1 instead of taking it.
+float pinhole_coord(int i, float c, float inv_f, float z) {
+  float t = opaque(opaque(float(i)) - c);
+  return opaque(opaque(t * inv_f) * z);
+}
+
 // 1 where pixel (u, v) holds a return strictly within r of p, r2 = r * r:
 // point_at's arithmetic and the distance's, each op rounded once.
 uint near(int u, int v, vec3 p, float r2) {
@@ -91,11 +99,9 @@ uint near(int u, int v, vec3 p, float r2) {
   if (!(z > 0.0)) {
     return 0u;
   }
-  float qx = opaque(opaque((float(u) - pc.cx) * pc.inv_fx) * z);
-  float qy = opaque(opaque((float(v) - pc.cy) * pc.inv_fy) * z);
-  float dx = qx - p.x;
-  float dy = qy - p.y;
-  float dz = z - p.z;
+  float dx = opaque(pinhole_coord(u, pc.cx, pc.inv_fx, z) - p.x);
+  float dy = opaque(pinhole_coord(v, pc.cy, pc.inv_fy, z) - p.y);
+  float dz = opaque(z - p.z);
   float d2 = opaque(opaque(dx * dx) + opaque(dy * dy)) + opaque(dz * dz);
   return d2 < r2 ? 1u : 0u;
 }
@@ -146,9 +152,6 @@ void main() {
     }
     int b0 = max(v - k + 1, v0);
     int b1 = min(v + k - 1, v1);
-    if (b0 > b1) {
-      continue;
-    }
     if (u - k >= u0) {
       for (int y = b0; y <= b1; ++y) count += near(u - k, y, p, r2);
       seen += uint(b1 - b0 + 1);
