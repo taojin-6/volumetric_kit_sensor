@@ -34,7 +34,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | Target | Headers | What | Links |
 | --- | --- | --- | --- |
 | `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file; no Vulkan | core base, GLM |
-| `sensor_frame` | `frame/` | `DeviceFrame`, the pinhole cameras, `DepthNoise`, `ColorEncoding` and the sRGB curve, `pinhole.glsl`, `device_requirements()`; header-only | core Vulkan |
+| `sensor_frame` | `frame/` | `DeviceFrame`, the pinhole cameras, `DepthNoise`, `ColorEncoding` and the sRGB curve, `pinhole.glsl`, `srgb.glsl`, `device_requirements()`; header-only | core Vulkan |
 | `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions; `IAudioSensor`, `AudioChunk` | camera, frame |
 | `sensor_prep` | `prep/` | `GpuFramePrep`, `PictureReadback` | interface |
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
@@ -100,8 +100,8 @@ target_link_libraries(my_app PRIVATE volumetric_kit::sensor_array)
 A consumer with no GPU work, such as calib's solver, sets `VS_CAMERA_ONLY`
 ON and links `volumetric_kit::sensor_camera`, with no Vulkan SDK.
 
-A consumer's kernels include the exported pinhole through the core's
-`INCLUDE_TARGETS`, as recon's do:
+A consumer's kernels include the exported GLSL (`pinhole.glsl`,
+`srgb.glsl`) through the core's `INCLUDE_TARGETS`, as recon's do:
 
 ```cmake
 vkc_compile_shaders(my_kernels INCLUDE_TARGETS volumetric_kit::sensor_frame

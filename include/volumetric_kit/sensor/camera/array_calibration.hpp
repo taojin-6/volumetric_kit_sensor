@@ -72,7 +72,7 @@
 /// @code{.json}
 ///  "color_controls": {"exposure": 167, "gain": 60},
 ///  "device_calibration": {
-///    "CL2A141000N": {"pose": {...}, "depth": {...},
+///    "A": {"pose": {...}, "depth": {...},
 ///      "color_response": {"fitted_at": {"exposure": 167, "gain": 60},
 ///                         "gain": [0.9794, 0.9705, 0.994],
 ///                         "falloff": [0.7822, 1.702], "r_max": 0.6713}}}
