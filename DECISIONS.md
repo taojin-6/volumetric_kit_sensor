@@ -5295,8 +5295,8 @@ With neither, Metal's fast math moves 0-12 px a frame. The test is strict
 `<`, as Open3D's search is, and r is `z * (k / fx)`, folded on the host, as
 Vulkan's division is good to 2.5 ulp only. On 7 inputs (5 recorded frames,
 2 of random depth, at 30 points) the masks equal a float32 emulation of the
-arithmetic, 0 px, on the M5 Max in this form and on the 5090 with `precise`
-throughout, and lie 0-2 px a frame from float64 (cKDTree).
+arithmetic, 0 px, on the M5 Max and on the RTX 5090, in this form as with
+`precise` throughout, and lie 0-2 px a frame from float64 (cKDTree).
 
 **The window.** Every neighbour within r lies in the box of the ball's
 image, `f r (|t| r + sqrt(z^2 (1 + t^2) - r^2)) / (z^2 - r^2)` px along each
@@ -5304,17 +5304,26 @@ axis, plus 1/64 px for rounding, scanned in square rings from the centre
 until the count is met or out of reach: 17x17 px for a removed return at
 the image centre at k = 8, about 65x65 at the 32 px cap.
 
-**Cost**, the pass alone (Vulkan timestamps, median of 200, at 30 points;
-960x544 is the corridor resized):
+**Cost**, the pass alone (Vulkan timestamps, median of 200 after 1,000
+warm-up rounds, every case interleaved in one job a GPU; the corridor at
+1280x720 and resized to 960x544, the person at 960x544):
 
-| ms | 1280x720 | 960x544 | random depth, 1280x720 (worst) |
-|---|---|---|---|
-| M5 Max (MoltenVK), this form | 0.489 | 0.301 | 0.979 |
-| M5 Max, `precise` throughout | 1.976 | 1.196 | 4.056 |
-| RTX 5090, `precise` throughout | 0.129 | 0.088 | 0.233 |
+| ms | corridor 1280x720 | corridor 960x544 | person 960x544 | random depth 1280x720 (worst) |
+|---|---|---|---|---|
+| RTX 5090, this form, 20 points | **0.139** | **0.094** | **0.065** | **0.281** |
+| RTX 5090, this form, 30 points | 0.158 | 0.106 | 0.076 | 0.281 |
+| RTX 5090, `precise` throughout, 30 points | 0.134 | 0.090 | 0.064 | 0.238 |
+| M5 Max (MoltenVK), this form, 30 points | 0.489 | 0.301 | 0.200 | 0.979 |
+| M5 Max, `precise` throughout, 30 points | 1.976 | 1.196 | 0.768 | 4.056 |
 
-In `GpuFramePrep` it adds the pass, about 0.003 ms for its barrier and
-buffer, and 3.7 MB of device memory a camera at 1280x720.
+On the 5090, where `precise` is plain arithmetic, the barriers cost 17-20%,
+0.012-0.043 ms a camera; one form serves every device, as a second shader
+would save NVIDIA under the 0.5 ms bar. 20 points exit a kept return
+sooner than 30 and scan a removed one as far. In `GpuFramePrep` at the
+defaults the filter adds 0.140 ms at 1280x720 and 0.065 ms on the person at
+960x544 on the 5090, its pass's time to within 0.001 ms, and 3.7 MB of
+device memory a camera at 1280x720: four cameras at 960x544 take 0.26-0.38
+ms a frame, 0.69 ms on random depth.
 
 **Off by default.** A removed return reaches fusion as no return: how that
 meets recon's change-driven reset (#317, #318) waits for a replay of a walk,
@@ -5335,8 +5344,11 @@ first); in a three-camera `prepare_batch`; and in a pass whose frames shrink
 and grow, a held frame keeping its depth. It checks the defaults and the
 refusals. Planted bugs each fail it on the M5 Max: a window 3% short (the
 slab, 29 px), `opaque` returning its argument (the ties, 638 px, every
-other case 0) and `<=` for `<` (the ties, 273 px).
+other case 0) and `<=` for `<` (the ties, 273 px); the second fails it on
+the 5090 too (the ties, 638 px).
 
-**Validation.** Apple M5 Max, macOS 27.2, MoltenVK 1.4.2, Release with
-warnings as errors, under the validation layer: the whole suite, 40 tests,
-passes.
+**Validation.** Release with warnings as errors, default options, under the
+validation layer: the whole suite passes on the Apple M5 Max (macOS 27.2,
+MoltenVK 1.4.2), 40 tests, and on the RTX 5090 (Ubuntu 26.04, driver
+615.71.10), 35 tests. recon's suite was not run: `frame` is unchanged. No
+camera was opened.
