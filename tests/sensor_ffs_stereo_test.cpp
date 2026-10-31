@@ -787,7 +787,10 @@ int into_prep(Fixture& t) {
   o.disparity_sigma = 0.1f;
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
-  auto prep = sensor::GpuFramePrep::create(t.gpu.device, t.gpu.allocator);
+  sensor::GpuFramePrepConfig unfiltered;  // every sample as FFS wrote it
+  unfiltered.depth_outliers.enabled = false;
+  auto prep =
+      sensor::GpuFramePrep::create(t.gpu.device, t.gpu.allocator, unfiltered);
   CHECK(prep.ok());
   // Three rounds: the depth buffers reused, taken over from CUDA each time.
   for (std::uint32_t round = 0; round < 3; ++round) {

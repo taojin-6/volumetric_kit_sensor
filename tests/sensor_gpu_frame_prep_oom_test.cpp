@@ -27,7 +27,10 @@ namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::sensor;
 
 int staging_failure_case(vkc::test::Gpu ctx, bool single) {
-  auto prep = sensor::GpuFramePrep::create(ctx.device, ctx.allocator);
+  sensor::GpuFramePrepConfig unfiltered;  // depth below is raw * scale
+  unfiltered.depth_outliers.enabled = false;
+  auto prep =
+      sensor::GpuFramePrep::create(ctx.device, ctx.allocator, unfiltered);
   CHECK(prep.ok());
   std::vector<sensor::GpuFramePrep> preps;
   preps.push_back(std::move(*prep));

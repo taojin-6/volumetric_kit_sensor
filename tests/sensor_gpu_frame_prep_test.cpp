@@ -92,6 +92,15 @@ constexpr float kScale = 0.001f;  // metres per unit
 vkc::Device* g_device = nullptr;
 vkc::Allocator* g_allocator = nullptr;
 
+// The config of a pass whose depth is held to the depth pass's alone: the
+// depth-outlier filter off (its test is sensor_gpu_frame_prep_outliers).
+// Passes that check no such depth keep the default, the filter on.
+sensor::GpuFramePrepConfig unfiltered() {
+  sensor::GpuFramePrepConfig config;
+  config.depth_outliers.enabled = false;
+  return config;
+}
+
 // The references below compute in float, as the passes do: each value
 // narrowed from the camera's model, as the pass narrows it. The cameras are
 // built from float literals, so the narrowing is exact.
@@ -550,7 +559,7 @@ int test_depth_offset(vkc::Device& device, vkc::Allocator& allocator) {
   // Returns at, near and below each offset, and a hole.
   for (std::uint16_t u = 0; u <= 6; ++u) raw[u] = u;
   for (const float offset : {0.00417f, -0.00096f, 4.0f * kExactScale}) {
-    sensor::GpuFramePrepConfig config;
+    sensor::GpuFramePrepConfig config = unfiltered();
     config.depth_offset_m = offset;
     auto prep = sensor::GpuFramePrep::create(device, allocator, config);
     if (!prep) std::fprintf(stderr, "%s\n", prep.status().message().c_str());
@@ -809,7 +818,7 @@ int test_depth_holes(vkc::Device& device, vkc::Allocator& allocator) {
     }
   }
   for (const float offset : {0.0f, 0.004f}) {
-    sensor::GpuFramePrepConfig config;
+    sensor::GpuFramePrepConfig config = unfiltered();
     config.depth_offset_m = offset;
     auto prep = sensor::GpuFramePrep::create(device, allocator, config);
     CHECK(prep.ok());
@@ -1762,11 +1771,11 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   constexpr std::size_t kCams = 5;
   std::vector<sensor::GpuFramePrep> preps;
   for (std::size_t c = 0; c < kCams; ++c) {
-    auto made = sensor::GpuFramePrep::create(device, allocator);
+    auto made = sensor::GpuFramePrep::create(device, allocator, unfiltered());
     CHECK(made.ok());
     preps.push_back(std::move(made).value());
   }
-  auto alone = sensor::GpuFramePrep::create(device, allocator);
+  auto alone = sensor::GpuFramePrep::create(device, allocator, unfiltered());
   CHECK(alone.ok());
   // A pincushion colour lens misses the corners, which the mask zeroes.
   camera::CameraModel pincushion = pinhole();
@@ -1939,8 +1948,9 @@ int test_depth_noise(sensor::GpuFramePrep& prep) {
 // frame; and once warm a frame allocates nothing to move bytes,
 // and a prepare is one submit.
 int test_record(vkc::Device& device, vkc::Allocator& allocator) {
-  auto reference = sensor::GpuFramePrep::create(device, allocator);
-  auto made = sensor::GpuFramePrep::create(device, allocator);
+  auto reference =
+      sensor::GpuFramePrep::create(device, allocator, unfiltered());
+  auto made = sensor::GpuFramePrep::create(device, allocator, unfiltered());
   CHECK(reference.ok() && made.ok());
   sensor::GpuFramePrep& prep = made.value();
   std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight);
@@ -1977,8 +1987,8 @@ int test_record(vkc::Device& device, vkc::Allocator& allocator) {
   std::vector<sensor::GpuFramePrep> preps;
   std::vector<sensor::GpuFramePrep> blocking;
   for (int c = 0; c < 3; ++c) {
-    auto a = sensor::GpuFramePrep::create(device, allocator);
-    auto b = sensor::GpuFramePrep::create(device, allocator);
+    auto a = sensor::GpuFramePrep::create(device, allocator, unfiltered());
+    auto b = sensor::GpuFramePrep::create(device, allocator, unfiltered());
     CHECK(a.ok() && b.ok());
     preps.push_back(std::move(a).value());
     blocking.push_back(std::move(b).value());
@@ -2048,7 +2058,7 @@ int test_record(vkc::Device& device, vkc::Allocator& allocator) {
   // holds those outputs but the batch, then a larger one refused, which would
   // grow them; the first batch still reads what prepare gives.
   {
-    auto fresh = sensor::GpuFramePrep::create(device, allocator);
+    auto fresh = sensor::GpuFramePrep::create(device, allocator, unfiltered());
     CHECK(fresh.ok());
     const sensor::RgbdFrame small_images = image_frame(16, 16);
     const sensor::RgbdFrame large_images = image_frame(kWidth, kHeight);
@@ -2092,7 +2102,8 @@ int test_record(vkc::Device& device, vkc::Allocator& allocator) {
 }
 
 // A set's timed commands share one window, grown with the array: a dozen
-// cameras, four commands each, still report the set's device time.
+// cameras at the defaults, four commands each, still report the set's device
+// time.
 int test_batch_timing(vkc::Device& device, vkc::Allocator& allocator) {
   constexpr std::size_t kCams = 12;
   std::vector<sensor::GpuFramePrep> preps;
@@ -2191,7 +2202,7 @@ std::vector<std::uint32_t> depth_words(const sensor::DeviceFrame& f) {
 // bytes; and the frames it refuses, before any work.
 int test_device_depth(vkc::Device& device, vkc::Allocator& allocator) {
   const auto invalid = vkc::Status::Code::InvalidArgument;
-  sensor::GpuFramePrepConfig config;
+  sensor::GpuFramePrepConfig config = unfiltered();
   config.depth_offset_m = 0.0123f;
   auto made = sensor::GpuFramePrep::create(device, allocator, config);
   auto made_reference = sensor::GpuFramePrep::create(device, allocator, config);
@@ -3067,7 +3078,7 @@ bool points_at(const sensor::RgbdFrame& f, std::uint32_t u, std::uint32_t v,
 //   - A frame without colour keeps every depth pixel, the same cameras'
 //     included.
 int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
-  auto masked = sensor::GpuFramePrep::create(device, allocator);
+  auto masked = sensor::GpuFramePrep::create(device, allocator, unfiltered());
   CHECK(masked.ok());
   std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1000);
   Planes planes = make_planes();
@@ -3169,7 +3180,7 @@ int test_depth_within_color(vkc::Device& device, vkc::Allocator& allocator) {
   // left in the colour camera (390 px x 0.1 m x (1 / 0.95 - 1)), so a mask
   // that tested the raw depth would get a column wrong at the side of the
   // kept region the point sets, in every row it spans.
-  sensor::GpuFramePrepConfig offset;
+  sensor::GpuFramePrepConfig offset = unfiltered();
   offset.depth_offset_m = 0.05f;
   auto offset_masked = sensor::GpuFramePrep::create(device, allocator, offset);
   CHECK(offset_masked.ok());
@@ -3581,7 +3592,8 @@ int test_color_within_depth(sensor::GpuFramePrep& prep) {
 int gpu_main(vkc::test::GpuContext& gpu) {
   g_device = &gpu.device;
   g_allocator = &gpu.allocator;
-  auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
+  auto prep =
+      sensor::GpuFramePrep::create(gpu.device, gpu.allocator, unfiltered());
   if (!prep) std::fprintf(stderr, "%s\n", prep.status().message().c_str());
   CHECK(prep.ok());
 

@@ -22,7 +22,8 @@
 //   - it runs after the colour-view test, on the depth that test keeps;
 //   - several cameras in one batch, of different sizes, and a pass whose
 //     frames grow, each match their reference;
-//   - off by default, and its refusals at create.
+//   - on by default, a warm frame allocating nothing that moves bytes, and
+//     its refusals at create.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
 #include <algorithm>
@@ -186,6 +187,13 @@ sensor::GpuFramePrepConfig filtering(float radius_px,
   return config;
 }
 
+// The reference's pass: the filter off.
+sensor::GpuFramePrepConfig unfiltered() {
+  sensor::GpuFramePrepConfig config;
+  config.depth_outliers.enabled = false;
+  return config;
+}
+
 // The pass's camera and radius in float, as it narrows them: the
 // reciprocals and radius_px / fx from the doubles.
 struct Rule {
@@ -287,7 +295,7 @@ std::uint32_t median_of(std::vector<std::uint32_t> n) {
 // be (through a pinhole, where each pixel shows its own raw pixel).
 int check_scene(vkc::Device& device, vkc::Allocator& allocator,
                 const camera::CameraModel& cam, const char* what, bool parts) {
-  auto plain = sensor::GpuFramePrep::create(device, allocator);
+  auto plain = sensor::GpuFramePrep::create(device, allocator, unfiltered());
   auto filter =
       sensor::GpuFramePrep::create(device, allocator, filtering(8.0f, 20));
   CHECK(plain.ok() && filter.ok());
@@ -339,7 +347,7 @@ int test_scene(vkc::Device& device, vkc::Allocator& allocator) {
 int test_slab(vkc::Device& device, vkc::Allocator& allocator) {
   const camera::CameraModel cam = pinhole(96, 80);
   const std::vector<std::uint16_t> raw = slab(cam);
-  auto plain = sensor::GpuFramePrep::create(device, allocator);
+  auto plain = sensor::GpuFramePrep::create(device, allocator, unfiltered());
   CHECK(plain.ok());
   const std::vector<float> before = prepared(plain.value(), frame_of(raw, cam));
   CHECK(!before.empty());
@@ -374,7 +382,7 @@ int test_ties(vkc::Device& device, vkc::Allocator& allocator) {
   cam.intrinsics = {110.0, 110.0, 64.0, 48.0};
   const std::vector<std::uint16_t> raw(std::size_t{128} * 96, 1500);
   constexpr std::uint32_t kInside = 193;
-  auto plain = sensor::GpuFramePrep::create(device, allocator);
+  auto plain = sensor::GpuFramePrep::create(device, allocator, unfiltered());
   auto filter = sensor::GpuFramePrep::create(device, allocator,
                                              filtering(8.0f, kInside + 1));
   CHECK(plain.ok() && filter.ok());
@@ -409,7 +417,7 @@ int test_cap(vkc::Device& device, vkc::Allocator& allocator) {
   constexpr float kRadius = sensor::DepthOutlierFilter::kMaxRadiusPx;
   const Scene s = scene(cam);
   const sensor::RgbdFrame f = frame_of(s.raw, cam);
-  auto plain = sensor::GpuFramePrep::create(device, allocator);
+  auto plain = sensor::GpuFramePrep::create(device, allocator, unfiltered());
   CHECK(plain.ok());
   const std::vector<float> before = prepared(plain.value(), f);
   CHECK(!before.empty());
@@ -445,7 +453,7 @@ int test_after_color(vkc::Device& device, vkc::Allocator& allocator) {
   sensor::RgbdFrame f = frame_of(s.raw, cam);
   f.color_packed = words.data();
   f.color_camera = color;
-  auto plain = sensor::GpuFramePrep::create(device, allocator);
+  auto plain = sensor::GpuFramePrep::create(device, allocator, unfiltered());
   auto filter =
       sensor::GpuFramePrep::create(device, allocator, filtering(8.0f, 20));
   CHECK(plain.ok() && filter.ok());
@@ -474,7 +482,7 @@ int test_batch(vkc::Device& device, vkc::Allocator& allocator) {
   std::vector<std::optional<sensor::RgbdFrame>> frames;
   for (const camera::CameraModel& c : cams) {
     scenes.push_back(scene(c));
-    auto p = sensor::GpuFramePrep::create(device, allocator);
+    auto p = sensor::GpuFramePrep::create(device, allocator, unfiltered());
     auto q =
         sensor::GpuFramePrep::create(device, allocator, filtering(6.0f, 20));
     CHECK(p.ok() && q.ok());
@@ -509,10 +517,10 @@ int test_batch(vkc::Device& device, vkc::Allocator& allocator) {
   return 0;
 }
 
-// Off by default; refused at create only when enabled.
+// On by default; refused at create only when enabled.
 int test_config(vkc::Device& device, vkc::Allocator& allocator) {
   const sensor::GpuFramePrepConfig defaults;
-  CHECK(!defaults.depth_outliers.enabled);
+  CHECK(defaults.depth_outliers.enabled);
   CHECK(defaults.depth_outliers.radius_px == 8.0f);
   CHECK(defaults.depth_outliers.min_points == 20u);
   const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -536,15 +544,22 @@ int test_config(vkc::Device& device, vkc::Allocator& allocator) {
             device, allocator,
             filtering(sensor::DepthOutlierFilter::kMaxRadiusPx, 4000))
             .ok());
-  // A moved pass keeps its filter.
-  auto made =
-      sensor::GpuFramePrep::create(device, allocator, filtering(8.0f, 20));
+  // A pass made with the defaults filters, and keeps its filter when moved;
+  // warm, its frames allocate nothing that moves bytes, each prepare one
+  // submit.
+  auto made = sensor::GpuFramePrep::create(device, allocator);
   CHECK(made.ok());
   sensor::GpuFramePrep moved = std::move(made).value();
   const Scene s = scene(pinhole());
-  const std::vector<float> d = prepared(moved, frame_of(s.raw, pinhole()));
+  const sensor::RgbdFrame f = frame_of(s.raw, pinhole());
+  const std::vector<float> d = prepared(moved, f);
   CHECK(!d.empty() && d[50] == 0.0f);  // pixel 50 is an isolated return
   CHECK(s.part[50] == Part::Isolated);
+  const vkc::DeviceCounters warm = device.counters();
+  for (int i = 0; i < 20; ++i) CHECK(moved.prepare(f).ok());
+  const vkc::DeviceCounters now = device.counters();
+  CHECK(now.staging_buffers == warm.staging_buffers);
+  CHECK(now.submits - warm.submits == 20);
   return 0;
 }
 

@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-10-31
+
+### Changed
+
+- **BREAKING: frame prep drops depth outliers by default.**
+  `DepthOutlierFilter::enabled` is `true` by default, so every
+  `GpuFramePrep`, and every pass of a `SensorArray`, filters depth (8 px,
+  20 points) unless its config sets it `false`; the refusals are unchanged.
+  DECISIONS.md, the 2026-10-31 default-on entry.
+
 ## [0.12.0] - 2026-10-31
 
 ### Added
