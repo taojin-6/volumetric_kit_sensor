@@ -23,32 +23,21 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.os }}
+    # The Ubuntu legs pull their image from the core's GHCR package.
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       # The Ubuntu legs run on the self-hosted GPU boxes (label `vk-linux-gpu`),
-      # each in an OS-matched container with the GPU passed through (`--gpus
-      # all`), so one host covers 24.04 / 26.04 against the real driver.
-      # macOS runs natively on a self-hosted Mac (label `mac`) — macOS can't be
-      # containerised. _build.yml keys its install steps off `runner.os`, so
-      # only the Ubuntu legs use a container; NVIDIA_DRIVER_CAPABILITIES=all
-      # makes the toolkit mount the Vulkan ICD for those (and libcuda and
-      # libnvcuvid for the decoders). See the core's tools/runners/README.md.
+      # each in a job container of the family's CI image for its release (the
+      # core's tools/ci/images) with the GPU passed through, so one host covers
+      # 24.04 / 26.04 against the real driver. macOS runs natively on a
+      # self-hosted Mac (label `mac`) — macOS can't be containerised — so its
+      # `image` is ''. See the core's tools/runners/README.md.
       #
-      # The build and test fan-out is set in the container env, too: a runner's
-      # .env reaches jobs run directly on it (the Mac) but not a job container,
-      # where ctest would otherwise run the suite one test at a time. 4 is a
-      # 24-core host over the package's 6 runners.
       # Each image is pinned by digest, the tag it was read from in a comment,
       # so a new image comes only with a commit that moves the pin.
-      # TODO: recon's, grid's and gfx's runners share each host, so 2 would
-      # match the split the core's setup-runners.sh writes for jobs on the host.
-      #
-      # So is the NVIDIA driver's shader cache. By default it lives under
-      # $HOME/.cache, which a bare image lacks, and the driver then caches
-      # nothing, so every test process compiled every pipeline cold. /__w/_tool,
-      # the runner's tool cache, outlives the job, so the cache stays warm
-      # across runs (the driver keys it by driver and GPU); _build.yml's
-      # bootstrap creates it.
       #
       # Release runs on every OS; Debug only on macOS, where it is cheap, and
       # sanitizers builds and tests Debug on Linux (clang + ASan/UBSan). Every
@@ -62,14 +51,14 @@ jobs:
       # The video decoders hand out pictures on the device only (the
       # 2026-10-06 device-only decoder decision). The Mac builds them always,
       # on VideoToolbox with no FFmpeg; `ffmpeg` builds them on 24.04 with
-      # `cuda` (VS_WITH_CUDA=ON, the toolkit installed per job: NVDEC and
-      # nvJPEG; 24.04's FFmpeg 6.1 is the floor). `hevc_backend` names the
-      # hardware each must decode on, so their tests fail rather than skip
-      # without it. 26.04 builds without them.
+      # `cuda` (VS_WITH_CUDA=ON, the image's CUDA toolkit: NVDEC and nvJPEG;
+      # 24.04's FFmpeg 6.1 is the floor). `hevc_backend` names the hardware
+      # each must decode on, so their tests fail rather than skip without it.
+      # 26.04 builds without them.
       #
-      # `ffs` builds sensor_ffs (VS_WITH_FFS, TensorRT from the CUDA
-      # repository, installed per job) on 24.04, the CUDA leg; its tests fail
-      # rather than skip there for the same promise. The Mac has no CUDA.
+      # `ffs` builds sensor_ffs (VS_WITH_FFS, on the 24.04 image's TensorRT)
+      # on 24.04, the CUDA leg; its tests fail rather than skip there for the
+      # same promise. The Mac has no CUDA.
       #
       # `portaudio` builds the microphone driver (VS_WITH_PORTAUDIO) on every
       # leg, 24.04's PortAudio 19.6 the oldest; the sanitizer job builds
@@ -82,8 +71,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             runner: vk-linux-gpu
-            # ubuntu:24.04
-            container: '{"image":"ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852","options":"--gpus all","env":{"NVIDIA_DRIVER_CAPABILITIES":"all","CMAKE_BUILD_PARALLEL_LEVEL":"4","CTEST_PARALLEL_LEVEL":"4","__GL_SHADER_DISK_CACHE_PATH":"/__w/_tool/nvidia-glcache","__GL_SHADER_DISK_CACHE_SKIP_CLEANUP":"1"}}'
+            # ghcr.io/taojin-6/volumetric_kit_ci:ubuntu-24.04
+            image: ghcr.io/taojin-6/volumetric_kit_ci@sha256:14e18e23ec99fc77cb671722ec9d0f5774e124951c047f67731740441234fd6b
             build_types: '["Release"]'
             orbbec_sdk: true
             realsense_sdk: true
@@ -95,15 +84,15 @@ jobs:
             sync_validation: true
           - os: ubuntu-26.04
             runner: vk-linux-gpu
-            # ubuntu:26.04
-            container: '{"image":"ubuntu@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c","options":"--gpus all","env":{"NVIDIA_DRIVER_CAPABILITIES":"all","CMAKE_BUILD_PARALLEL_LEVEL":"4","CTEST_PARALLEL_LEVEL":"4","__GL_SHADER_DISK_CACHE_PATH":"/__w/_tool/nvidia-glcache","__GL_SHADER_DISK_CACHE_SKIP_CLEANUP":"1"}}'
+            # ghcr.io/taojin-6/volumetric_kit_ci:ubuntu-26.04
+            image: ghcr.io/taojin-6/volumetric_kit_ci@sha256:b39be8613b4e8140a45c98cfc23bb1f40f98300d213fdab901c3108f02df626e
             build_types: '["Release"]'
             realsense_sdk: true
             portaudio: true
             sync_validation: true
           - os: macos-26
             runner: mac
-            container: ''
+            image: ''
             build_types: '["Debug","Release"]'
             orbbec_sdk: true
             realsense_sdk: true
@@ -113,7 +102,7 @@ jobs:
     with:
       os: ${{ matrix.os }}
       runner: ${{ matrix.runner }}
-      container: ${{ matrix.container }}
+      image: ${{ matrix.image }}
       build_types: ${{ matrix.build_types }}
       orbbec_sdk: ${{ matrix.orbbec_sdk || false }}
       realsense_sdk: ${{ matrix.realsense_sdk || false }}
@@ -131,6 +120,9 @@ jobs:
     uses: ./.github/workflows/lint.yml
 
   sanitizers:
+    permissions:
+      contents: read
+      packages: read
     uses: ./.github/workflows/sanitizers.yml
 
   required:
