@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-10-31
+
+### Added
+
+- **`color_fit`: each camera's colour response fitted from the rig.**
+  `tools/color_fit/`: an internal static library, `sensor_color_fit`
+  (`color_fit::ColorFit`, no public header, not installed), built with the
+  tests on every leg, and the hand-run `color_fit` tool, built with
+  `VS_WITH_ORBBEC`, which opens the rig at its calibration's colour
+  controls over H.265, takes 8 sets of an empty, static room, prints the
+  report and writes the calibration with every camera's response to a new
+  file. Every per-pixel step runs on the GPU: blurs, cross-view sampling
+  and gates, a hashed keep to 1 M samples, the radius histogram, the Huber
+  IRLS normal equations and the G2 gauge's moments; the host solves the
+  small system. It refuses an array of fewer than two sensors, repeated
+  ids or mixed models, a calibration without `color_controls`, a camera
+  with too few samples or a split overlap graph, and a fit that does not
+  beat the identity held out. DESIGN.md, "colour response fit"; DECISIONS.md,
+  the 2026-10-31 colour-fit entry.
+
 ## [0.14.0] - 2026-10-31
 
 ### Added

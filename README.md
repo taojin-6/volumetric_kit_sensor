@@ -66,7 +66,7 @@ ctest --test-dir "$sensor_root/build" --output-on-failure
 | `VS_BUILD_TESTS` | top level | the package's tests |
 | `VS_WARNINGS_AS_ERRORS` | top level | `-Werror` on first-party code |
 | `VS_CAMERA_ONLY` | OFF | `sensor_camera` alone, with no Vulkan; refuses the drivers |
-| `VS_WITH_ORBBEC` | OFF | the Orbbec driver |
+| `VS_WITH_ORBBEC` | OFF | the Orbbec driver, and `color_fit`, the rig's colour-response fit (DESIGN.md, "colour response fit") |
 | `VS_WITH_REALSENSE` | OFF | the RealSense driver |
 | `VS_WITH_FFMPEG` | OFF | the video decoders off Apple; needs `VS_WITH_CUDA`, refused on Apple |
 | `VS_WITH_CUDA` | OFF | NVIDIA's hardware for the decoders |
@@ -288,7 +288,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.14.0), carried by the umbrella as
+The version is `project()`'s (0.15.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

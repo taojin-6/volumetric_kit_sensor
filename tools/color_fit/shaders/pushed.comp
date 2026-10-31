@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Tao Jin
+
+// What a fitted response does to white, on one camera's prepared colour,
+// thread per pixel: counts[2 camera] gets each covered pixel, and
+// counts[2 camera + 1] each covered pixel with no channel at 255 that the
+// response, applied as the colour pass applies it, takes to 255 in one.
+
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "color_fit.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(scalar, binding = 0) readonly buffer Cameras { Camera cameras[]; };
+layout(scalar, binding = 1) readonly buffer Words { uint words[]; };
+layout(scalar, binding = 2) readonly buffer Params { ResponseParams params[]; };
+layout(scalar, binding = 3) buffer Counts { uint counts[]; };
+
+layout(push_constant, scalar) uniform Push { uint camera; }
+pc;
+
+void main() {
+  const Camera cam = cameras[pc.camera];
+  const uint i = gl_GlobalInvocationID.x;
+  if (i >= cam.color_width * cam.color_height) return;
+  const uint word = words[cam.color_at + i];
+  if ((word >> 24) != 0xFFu) return;
+  atomicAdd(counts[2u * pc.camera], 1u);
+  const uvec3 code =
+      uvec3(word & 0xFFu, (word >> 8) & 0xFFu, (word >> 16) & 0xFFu);
+  if (any(equal(code, uvec3(255u)))) return;
+  const vec2 px = vec2(i % cam.color_width, i / cam.color_width);
+  const vec2 n = (px - cam.color_k.zw) / cam.color_k.xy;
+  const ResponseParams p = params[pc.camera];
+  const vec3 linear = vs_srgb_to_linear(vec3(code) * (1.0 / 255.0)) * p.gain *
+                      vs_cf_falloff(p, dot(n, n));
+  if (any(greaterThanEqual(255.0 * vs_linear_to_srgb(linear), vec3(254.5)))) {
+    atomicAdd(counts[2u * pc.camera + 1u], 1u);
+  }
+}

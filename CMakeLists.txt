@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(
   volumetric_kit_sensor
-  VERSION 0.14.0
+  VERSION 0.15.0
   DESCRIPTION
     "Cameras, capture and the device-frame contract for the volumetric_kit family"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_sensor"
@@ -133,6 +133,12 @@ set(VS_CORE_MIN_VERSION 0.29.0)
 add_subdirectory(third_party)
 
 add_subdirectory(src)
+
+# The colour response fit (tools/color_fit): its library with the tests, whose
+# GPU test it has, and its tool, for the Orbbec rig, with the Orbbec driver.
+if(NOT VS_CAMERA_ONLY AND (VS_BUILD_TESTS OR VS_WITH_ORBBEC))
+  add_subdirectory(tools/color_fit)
+endif()
 
 if(VS_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
   enable_testing()
