@@ -22,7 +22,8 @@
 //   - it runs after the colour-view test, on the depth that test keeps;
 //   - several cameras in one batch, of different sizes, and a pass whose
 //     frames grow, each match their reference;
-//   - on by default, and its refusals at create.
+//   - on by default, a warm frame allocating nothing that moves bytes, and
+//     its refusals at create.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
 #include <algorithm>
@@ -543,14 +544,22 @@ int test_config(vkc::Device& device, vkc::Allocator& allocator) {
             device, allocator,
             filtering(sensor::DepthOutlierFilter::kMaxRadiusPx, 4000))
             .ok());
-  // A pass made with the defaults filters, and keeps its filter when moved.
+  // A pass made with the defaults filters, and keeps its filter when moved;
+  // warm, its frames allocate nothing that moves bytes, each prepare one
+  // submit.
   auto made = sensor::GpuFramePrep::create(device, allocator);
   CHECK(made.ok());
   sensor::GpuFramePrep moved = std::move(made).value();
   const Scene s = scene(pinhole());
-  const std::vector<float> d = prepared(moved, frame_of(s.raw, pinhole()));
+  const sensor::RgbdFrame f = frame_of(s.raw, pinhole());
+  const std::vector<float> d = prepared(moved, f);
   CHECK(!d.empty() && d[50] == 0.0f);  // pixel 50 is an isolated return
   CHECK(s.part[50] == Part::Isolated);
+  const vkc::DeviceCounters warm = device.counters();
+  for (int i = 0; i < 20; ++i) CHECK(moved.prepare(f).ok());
+  const vkc::DeviceCounters now = device.counters();
+  CHECK(now.staging_buffers == warm.staging_buffers);
+  CHECK(now.submits - warm.submits == 20);
   return 0;
 }
 

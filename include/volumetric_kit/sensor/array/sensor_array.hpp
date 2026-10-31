@@ -146,10 +146,9 @@ class VS_ARRAY_API SensorArray {
     /// and only with it. Borrowed, as @ref device is.
     core::Allocator* allocator = nullptr;
     /// Every pass's options, whatever the array's size: the queue families
-    /// sharing its colour and its depth, and the depth-outlier filter, on by
-    /// default (`GpuFramePrepConfig`). Its
-    /// `depth_offset_m` stays 0: each pass takes its sensor's from
-    /// @ref calibration, the one source of it.
+    /// sharing its colour and its depth, and the depth-outlier filter
+    /// (`GpuFramePrepConfig`). Its `depth_offset_m` stays 0: each pass takes
+    /// its sensor's from @ref calibration, the one source of it.
     GpuFramePrepConfig prep{};
   };
 

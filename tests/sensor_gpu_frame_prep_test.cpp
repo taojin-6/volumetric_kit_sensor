@@ -92,8 +92,9 @@ constexpr float kScale = 0.001f;  // metres per unit
 vkc::Device* g_device = nullptr;
 vkc::Allocator* g_allocator = nullptr;
 
-// Every pass here has the depth-outlier filter off, so its depth is the depth
-// pass's alone; the filter's test is sensor_gpu_frame_prep_outliers.
+// The config of a pass whose depth is held to the depth pass's alone: the
+// depth-outlier filter off (its test is sensor_gpu_frame_prep_outliers).
+// Passes that check no such depth keep the default, the filter on.
 sensor::GpuFramePrepConfig unfiltered() {
   sensor::GpuFramePrepConfig config;
   config.depth_outliers.enabled = false;
@@ -2101,12 +2102,13 @@ int test_record(vkc::Device& device, vkc::Allocator& allocator) {
 }
 
 // A set's timed commands share one window, grown with the array: a dozen
-// cameras, four commands each, still report the set's device time.
+// cameras at the defaults, four commands each, still report the set's device
+// time.
 int test_batch_timing(vkc::Device& device, vkc::Allocator& allocator) {
   constexpr std::size_t kCams = 12;
   std::vector<sensor::GpuFramePrep> preps;
   for (std::size_t c = 0; c < kCams; ++c) {
-    auto made = sensor::GpuFramePrep::create(device, allocator, unfiltered());
+    auto made = sensor::GpuFramePrep::create(device, allocator);
     CHECK(made.ok());
     preps.push_back(std::move(made).value());
   }
@@ -2795,7 +2797,7 @@ int test_queue_families(vkc::Device& device, vkc::Allocator& allocator) {
   const std::uint32_t own = device.queue_family();
   const auto named = [](std::initializer_list<std::uint32_t> depth,
                         std::initializer_list<std::uint32_t> color) {
-    sensor::GpuFramePrepConfig c = unfiltered();
+    sensor::GpuFramePrepConfig c;
     std::copy(depth.begin(), depth.end(), c.depth_queue_families);
     c.depth_queue_family_count = static_cast<std::uint32_t>(depth.size());
     std::copy(color.begin(), color.end(), c.color_queue_families);
@@ -2877,7 +2879,7 @@ int test_cross_family() {
                 two.shared().summary().c_str());
     return 0;
   }
-  sensor::GpuFramePrepConfig config = unfiltered();
+  sensor::GpuFramePrepConfig config;
   for (std::uint32_t i = 0; i < vkc::test::TwoFamilyDevice::kFamilyCount; ++i) {
     config.depth_queue_families[i] = two.families()[i];
     config.color_queue_families[i] = two.families()[i];
@@ -3643,8 +3645,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   other = std::move(*alias);  // self-move
   CHECK(other.valid());
   // Move-assigned over a live pass, one that has buffers and a frame out.
-  auto live =
-      sensor::GpuFramePrep::create(gpu.device, gpu.allocator, unfiltered());
+  auto live = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
   CHECK(live.ok());
   auto kept = live->prepare(frame_of(raw, pinhole()));
   CHECK(kept.ok());

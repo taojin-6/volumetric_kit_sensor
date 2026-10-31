@@ -152,8 +152,8 @@ struct GpuFramePrepConfig {
 };
 
 /// @brief Undistorts a @ref RgbdFrame's depth and colour, and converts its
-///        colour to R'G'B', in two compute passes, and optionally
-///        removes depth outliers in a third.
+///        colour to R'G'B', in two compute passes, and, unless
+///        `depth_outliers` turns it off, removes depth outliers in a third.
 ///
 /// Undistorting keeps each camera's intrinsics and drops its lens: every pixel
 /// of the pinhole image is sampled from where `camera::distort_rational` puts
@@ -295,8 +295,8 @@ class VS_PREP_API GpuFramePrep {
   ///                 finished.
   /// @param metrics  Optional `StageMetrics` collecting a `"frame prep"`
   ///                 row: the copy into the slot and the passes on the host,
-  ///                 and on the device the frame's copy up and the two
-  ///                 dispatches (three with the outlier filter). `nullptr`
+  ///                 and on the device the frame's copy up and the three
+  ///                 dispatches (two with the outlier filter off). `nullptr`
   ///                 measures nothing.
   /// @return The frame, which holds its buffers; @ref
   ///         Status::Code::InvalidArgument for a moved-from pass, a frame
