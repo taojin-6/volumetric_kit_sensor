@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <new>
@@ -55,19 +56,44 @@ static_assert(offsetof(DepthParams, depth_offset_m) == 64,
 static_assert(offsetof(DepthParams, raw_first) == 68,
               "DepthParams layout drift");
 
+// The colour camera's response as the colour passes read it
+// (GpuFramePrepConfig::color_response), narrowed to float once, and whether
+// it is the identity, when they write today's words.
+struct ResponseParams {
+  float gain[3];
+  float a;
+  float b;
+  float r_max;
+  std::uint32_t identity;
+};
+static_assert(sizeof(ResponseParams) == 28, "ResponseParams layout drift");
+
+ResponseParams response_params(const camera::ColorResponse& r) noexcept {
+  const auto f = [](double v) { return static_cast<float>(v); };
+  return ResponseParams{{f(r.gain[0]), f(r.gain[1]), f(r.gain[2])},
+                        f(r.a),
+                        f(r.b),
+                        f(r.r_max),
+                        r.is_identity() ? 1u : 0u};
+}
+
 // shaders/rgbd_overlap.glsl's RgbdOverlap, which both passes bind: the two
 // cameras, and the rigid transform from the depth camera's frame into the
-// colour camera's (column-major, as the shader's mat4).
+// colour camera's (column-major, as the shader's mat4); and the colour
+// camera's response.
 struct OverlapParams {
   LensParams color;
   Mat4f depth_to_color;
   LensParams depth;
+  ResponseParams response;
 };
-static_assert(sizeof(OverlapParams) == 56 + 64 + 56,
+static_assert(sizeof(OverlapParams) == 56 + 64 + 56 + 28,
               "OverlapParams layout drift");
 static_assert(offsetof(OverlapParams, depth_to_color) == 56,
               "OverlapParams layout drift");
 static_assert(offsetof(OverlapParams, depth) == 120,
+              "OverlapParams layout drift");
+static_assert(offsetof(OverlapParams, response) == 176,
               "OverlapParams layout drift");
 
 // rgbd_frame.hpp spells Vulkan's special queue families without Vulkan.
@@ -361,6 +387,20 @@ core::Result<GpuFramePrep> GpuFramePrep::create(
     return core::Status::invalid_argument(
         "GpuFramePrep::create: depth_offset_m is not finite");
   }
+  // The file's checks, and values that stay finite, with gains above 0, once
+  // narrowed to the float the kernels read.
+  const core::Status response = camera::validate(config.color_response);
+  if (!response.ok()) {
+    return core::Status::invalid_argument("GpuFramePrep::create: " +
+                                          response.message());
+  }
+  const ResponseParams narrowed = response_params(config.color_response);
+  if (!(finite(narrowed.a) && finite(narrowed.b) && finite(narrowed.r_max) &&
+        std::all_of(std::begin(narrowed.gain), std::end(narrowed.gain),
+                    [](float g) { return finite(g) && g > 0.0f; }))) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep::create: color_response is past float's range");
+  }
   // The filter's rule: a radius whose window stays bounded, and a count the
   // return itself does not meet alone.
   const DepthOutlierFilter& outliers = config.depth_outliers;
@@ -477,6 +517,13 @@ core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
     VKC_ASSIGN(layout.color,
                check_color(frame, max_pixels, max_storage_buffer_range_,
                            min_storage_buffer_offset_alignment_));
+    // A grey picture has no colour to correct, and RGB gains would tint it.
+    if (layout.color.planes.luma_only &&
+        !config_.color_response.is_identity()) {
+      return core::Status::invalid_argument(
+          "GpuFramePrep: the colour is luma alone, and the pass's "
+          "color_response would tint it");
+    }
   }
   layout.from_images =
       frame.color.image[0] != nullptr || frame.color.image[1] != nullptr;
@@ -602,11 +649,12 @@ core::Status GpuFramePrep::record_inputs(core::CommandBatch& batch,
   // word a frame with nothing on the host claims, so the batch holds it.
   VKC_ASSIGN(*input, batch.input(slot, 0, layout.slot_bytes));
   // The overlap both passes mask a frame with colour by, written inline: the
-  // two cameras and the transform between them.
+  // two cameras and the transform between them, and the colour's response.
   if (frame.has_color()) {
     const OverlapParams overlap{lens_params(frame.color_camera),
                                 Mat4f(frame.depth_to_color),
-                                lens_params(frame.depth_camera)};
+                                lens_params(frame.depth_camera),
+                                response_params(config_.color_response)};
     VKC_TRY(batch.upload(overlap_, 0, &overlap, sizeof(overlap)));
   }
   return {};

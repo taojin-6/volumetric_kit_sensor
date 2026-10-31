@@ -379,6 +379,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   of its returns, most on rims). A removed return still reaches fusion as
   no return, which carves a thin, passing ring into the background around a
   moving person; handing it on as unknown is the follow-up.
+- [**2026-10-31**](#2026-10-31--frame-prep-applies-each-colour-cameras-response-from-the-calibration-gains-times-a-radial-falloff-in-linear-light-a-version-4-field) —
+  Frame prep applies each colour camera's response from the calibration:
+  `camera::ColorResponse`, `gain[c] * F(r)`, `F = 1 + a q + b q^2`,
+  `q = min(r, r_max)^2`, in linear BT.709 after the canonical conversion, r
+  the pinhole pixel's radius; a version-4 field held to the file's
+  `color_controls` by its `fitted_at`, the identity never written; gauge G2
+  (the shared floor keeps its brightness).
 
 ## Decision record
 
@@ -5433,3 +5440,111 @@ suite (main `32f013e5`) on this checkout, on the M5 Max: 41 of 42 pass.
 4x4-pixel patch, 16 returns, under the 20-point floor, so the filter
 removes it. With the filter off in that test it passes, which recon's
 re-pin, the PR that picks the default up, does. No camera was opened.
+
+### 2026-10-31 — Frame prep applies each colour camera's response from the calibration: gains times a radial falloff in linear light, a version-4 field.
+
+**The rule.** `camera::ColorResponse` is what a colour camera's prepared
+colour is multiplied by so a rig's cameras agree on a surface they share:
+`out = in * gain[c] * F(r)`, `F = 1 + a q + b q^2`, `q = min(r, r_max)^2`.
+- **Where.** In linear BT.709, after the canonical conversion, so the format
+  is the same whatever a driver's encoding. `GpuFramePrep` applies it in
+  both colour entries, for every layout (I420 and NV12 buffers, NV12 plane
+  images, YUYV and Y'CbCr planes from the host, packed words): the R'G'B' the
+  matrix forms is clamped to [0, 1] (the matrix can leave it), decoded
+  through `frame/shaders/srgb.glsl`, multiplied, encoded, and coded. `r =
+  |((x - cx) / fx, (y - cy) / fy)|` at the pinhole pixel, whose intrinsics
+  are the captured camera's, so r is about the tangent of the ray's angle.
+  F is held beyond `r_max`, the fit's 99th-percentile sample radius, where
+  it has no samples.
+- **The identity** (gains 1, `a = b = 0`) is today's words: the host derives
+  a flag from the values, and the entries then call the unchanged
+  `ycbcr_word`, so it is data, not a switch. The stereo rectifier calls
+  `ycbcr_word` alone; its words are prepared again downstream, which
+  applies a response once. A luma-only picture on a pass with a response
+  is refused: RGB gains would tint grey.
+- **Parameters.** At the end of the overlap buffer both colour entries
+  already upload for each frame (+28 B: three gains, a, b, `r_max` and the
+  flag), not push constants: `ColorParams` holds 120 of the 128 B Vulkan
+  guarantees.
+- **The file.** `SensorCalibration::color_response`, a version-4 field,
+  only beside the array's `color_controls`. Its `fitted_at` repeats the
+  controls it was fitted at, and the reader refuses a file whose
+  `color_controls` differ (a hand edit after the fit); the writer fills it
+  from them, and it is not kept in memory. The identity is not written, so
+  a calibration without a response keeps its version-2 or -3 bytes. A
+  reader ignores keys it does not know, so a response in a version-3 file
+  would run uncorrected under 0.13.0; a version-4 file is refused there,
+  and a response in a version-2 or -3 file is refused here.
+- **One check.** `camera::validate`, used by the reader, the writer and
+  `GpuFramePrep::create`: the identity, or gains finite and above 0, a and b
+  finite, `r_max` finite and above 0, and F above 0 on `[0, r_max]`.
+  `create` also refuses values past float's range. `SensorArray` sets each
+  pass's response from the calibration, as it sets the depth offset, and
+  refuses one other than the identity in `Options::prep`.
+
+**Why.** Measured by a cross-camera colour study on the 4-Femto rig
+(2026-10-26 to 10-31), on overlap samples between camera pairs, in 8-bit
+sRGB levels after a sigma-8 blur, held out on hashed world cells:
+- With the exposure locked (167/60, AWB on), the residual between cameras
+  is 13.07 levels (ΔE 3.72). On the 6500 K arm, lens falloff is 41% of its
+  variance and per-unit gain and white balance 23%; brightness at r 0.7
+  drops 0.45 to 0.85 stop on three of the four units, 0.10 on the fourth.
+  Gains times this falloff bring it to 6.27 levels (ΔE 1.99). The
+  best-view seam a textured mesh shows moves less, 9.90 to 7.78 levels
+  (-21%).
+- **Gains, not a 3x3.** 99.9% of overlap samples are carpet, about 95% at
+  levels 40-160, where a 3x3 is gains; tone curve plus 3x3 transferred
+  badly (28.10 against 6.65 levels). A 3x3 waits for a rig of mixed models.
+- **sRGB-linear, not a measured tone curve.** At the fitted exposure the two
+  tie (6.18 against 6.19); the curve wins only across exposures (6.34
+  against 7.37 at another), which the lock rules out.
+- **The cap and pinhole r** cost 0.003 level against the study's model. On
+  the rig `r_max` is 0.65-0.68, and F is held over 28-32% of each image,
+  where it is x1.53-1.70.
+- **Gauge G2 (owner, 2026-10-31).** Gains and F are fixed only up to a
+  common scale; the fit (0.15.0) sets it so that, per channel, the mean of
+  `gain * F` over both pixels of every kept sample is 1. The held-out
+  residual is 6.271 under every gauge. G2 keeps the shared floor at today's
+  brightness (0.000 stop, against -0.227 for G1, which matches the
+  pre-lock auto look) and a refit moves it 0.009 stop (G1 0.10). Its cost:
+  walls 0.16 stop brighter and 20.7% of mesh wall area clipped (8.8%
+  today); a highlight shoulder is the deferred fix.
+- **Validity.** A response holds at the exposure it was fitted at, and in
+  auto white balance, the only mode `ColorControls` has: AWB to AWB 16 h
+  apart cost 0.05-0.07 levels, AWB to a preset 0.16-0.38. Hence
+  `fitted_at`, and a refit only after a relock or an intrinsics change: the
+  response is the lens's and the unit's, not the pose's. a and b are weakly
+  identified apart (one unit's b to ±0.51), so a report compares F(r).
+- **Limit.** An FFS sensor's colour is the rectified view, whose r is off
+  the lens's axis by the rectifying rotation.
+
+**Cost.** Known: the 4K colour pass is 0.100-0.107 ms a camera on an RTX
+4090 and 0.94-1.17 ms on the M5 Max (the entries above). Added, estimated
+and not yet measured: at most 0.02 ms (NVIDIA) and 0.1 ms (M5 Max) a 4K
+camera with a response, none at the identity, whose branch is uniform
+across a dispatch.
+
+**Tests.** `sensor_camera_array_calibration`: F and `validate`'s refusals
+(gains, a, b, `r_max`, F at `r_max` and at the parabola's vertex); version 4
+read and written byte for byte; refused in a version-2 or -3 file, without
+`color_controls` and when `fitted_at` differs; the identity keeps the
+version-3 bytes; "knows versions 2, 3 and 4". `sensor_frame_srgb_gpu`: the
+exported curve against `color_space.hpp` on all 256 codes (decode within
+2e-6 relative, encode back to the code). `sensor_gpu_frame_prep_response`:
+every colour layout through a barrel lens against a host oracle within a
+code, on a picture that leaves [0, 1] at both ends with most pixels past
+`r_max`; an identity response bit for bit the default pass; luma alone
+refused; `create`'s refusals. `sensor_array_process`: each sensor's
+response reaches its own pass (its frames bit for bit a lone pass's, and
+differing from an uncorrected pass's exactly where it is not the identity);
+`prep.color_response` refused. `sensor_gpu_frame_prep_identity` prints
+every layout's words as MD5s, to compare two builds. Mutants, each failing
+a test: F uncapped (the response test, worst 31 codes), the response on
+unclamped R'G'B' (the response test, worst 32), and the rig's response
+applied in the rectifier too (`sensor_stereo_rectifier`).
+
+**Validation.** Release with warnings as errors, default options, under the
+validation layer, on the Apple M5 Max (macOS 27.2): the whole suite passes,
+43 tests. The identity's words are 0.13.0's byte for byte on the M5 Max,
+all seven layouts (`sensor_gpu_frame_prep_identity` on both builds); the
+NVIDIA comparison is not yet run. No camera was opened.

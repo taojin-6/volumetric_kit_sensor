@@ -22,8 +22,9 @@ set(_vs_camera_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 add_library(sensor_camera)
 add_library(volumetric_kit::sensor_camera ALIAS sensor_camera)
 
-target_sources(sensor_camera PRIVATE array_calibration.cpp camera_model.cpp
-                                     geometry.cpp version.cpp)
+target_sources(
+  sensor_camera PRIVATE array_calibration.cpp camera_model.cpp
+                        color_response.cpp geometry.cpp version.cpp)
 
 generate_export_header(
   sensor_camera

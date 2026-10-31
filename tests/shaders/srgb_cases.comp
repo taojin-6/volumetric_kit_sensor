@@ -1,0 +1,31 @@
+#version 450
+
+// Runs frame/shaders/srgb.glsl over every 8-bit code: invocation i decodes
+// i / 255 into linear[i], and encodes the host's linear value of that code,
+// probe[i], into encoded[i]. Plain std430, as a consumer's kernel; built
+// through the include root sensor_frame exports.
+
+#extension GL_GOOGLE_include_directive : require
+
+#include "volumetric_kit/sensor/frame/shaders/srgb.glsl"
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Probe {
+  float probe[];
+};
+layout(set = 0, binding = 1, std430) writeonly buffer Linear {
+  float linear[];
+};
+layout(set = 0, binding = 2, std430) writeonly buffer Encoded {
+  float encoded[];
+};
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= uint(probe.length())) {
+    return;
+  }
+  linear[i] = vs_srgb_to_linear(float(i) / 255.0);
+  encoded[i] = vs_linear_to_srgb(probe[i]);
+}

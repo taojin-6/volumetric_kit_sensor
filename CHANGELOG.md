@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-10-31
+
+### Added
+
+- **Each colour camera's response, from the calibration, in frame prep.**
+  `camera::ColorResponse` (`camera/color_response.hpp`): per-channel gains
+  times a radial falloff, `gain[c] * F(r)`, `F = 1 + a q + b q^2`,
+  `q = min(r, r_max)^2`, in linear BT.709 at the pinhole pixel's radius, and
+  `camera::validate`. `SensorCalibration::color_response` is a version-4
+  field of the calibration file, only beside `color_controls`, which its
+  `fitted_at` must equal; the identity is not written, so a file without a
+  response keeps its version-2 or -3 bytes, and the reader knows versions 2,
+  3 and 4. `GpuFramePrepConfig::color_response` applies it in the colour
+  pass for every layout, R'G'B' clamped before the decode; the identity
+  gives the words as before, byte for byte; a luma-only picture on a pass
+  with a response is refused, and `create` refuses an invalid one.
+  `SensorArray` sets each pass's from the calibration and refuses one in
+  `Options::prep`. `sensor_frame` exports `frame/shaders/srgb.glsl`, the
+  sRGB curve beside the pinhole. DECISIONS.md, the 2026-10-31
+  colour-response entry.
+
 ## [0.13.0] - 2026-10-31
 
 ### Changed

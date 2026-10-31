@@ -3,9 +3,10 @@
 
 // A sensor array's sets prepared on the GPU in one batch: each frame comes
 // out as GpuFramePrep::prepare makes it alone, posed by the array's
-// calibration with its sensor's depth offset, and an empty slot stays empty,
-// recorded into a caller's batch the same; the prep options reach every
-// pass of an array of any size; a depth offset in the prep options, a device
+// calibration with its sensor's depth offset and colour response, and an empty
+// slot stays empty, recorded into a caller's batch the same; the prep options
+// reach every pass of an array of any size; a depth offset or a colour
+// response in the prep options, a device
 // or an allocator given without the other, an array without a device and a
 // set of another size are refused. Skips where no device is.
 
@@ -46,6 +47,7 @@ class Recording final : public sensor::IRgbdSensor {
     info_.id = std::move(id);
     info_.role = role;
     info_.clock = sensor::ClockDomain::Host;
+    info_.color_controls = camera::ColorControls{167, 60};
   }
   vkc::Status push(std::uint64_t sequence, const vkc::Device& device,
                    vkc::Allocator& allocator) {
@@ -148,8 +150,19 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   o.calibration = posed(ids);
   // Each sensor's own depth offset: none, reads 4 mm too far, 2 mm too near.
   const double offsets[] = {0.0, 0.004, -0.002};
+  // And its own colour response: none, gains alone, gains and a falloff;
+  // which hold at the array's controls, the sensors' own.
+  std::vector<camera::ColorResponse> responses(ids.size());
+  responses[1].gain = {0.9, 1.1, 1.0};
+  responses[1].r_max = 0.5;
+  responses[2].gain = {1.05, 0.95, 0.85};
+  responses[2].a = -0.6;
+  responses[2].b = 0.2;
+  responses[2].r_max = 0.6;
+  o.calibration.color_controls = camera::ColorControls{167, 60};
   for (std::size_t i = 0; i < ids.size(); ++i) {
     o.calibration.sensors[i].depth_offset_m = offsets[i];
+    o.calibration.sensors[i].color_response = responses[i];
   }
   o.device = &device;
   o.allocator = &allocator;
@@ -158,11 +171,13 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
   sensor::SensorArray array = std::move(opened).value();
   CHECK(array.start().ok());
 
-  // A pass alone per sensor, with that sensor's offset, and one with none.
+  // A pass alone per sensor, with that sensor's offset and response, and one
+  // with neither.
   std::vector<sensor::GpuFramePrep> alone;
-  for (const double offset : offsets) {
+  for (std::size_t i = 0; i < ids.size(); ++i) {
     sensor::GpuFramePrepConfig config;
-    config.depth_offset_m = static_cast<float>(offset);
+    config.depth_offset_m = static_cast<float>(offsets[i]);
+    config.color_response = responses[i];
     auto made = sensor::GpuFramePrep::create(device, allocator, config);
     CHECK(made.ok());
     alone.push_back(std::move(made).value());
@@ -215,7 +230,8 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
             sensor::Mat4f(color_to_world));
       CHECK(device_frame->depth_camera.cam_to_world ==
             sensor::Mat4f(color_to_world * frame->depth_to_color));
-      // As GpuFramePrep makes it alone, with the sensor's own offset.
+      // As GpuFramePrep makes it alone, with the sensor's own offset and
+      // response.
       auto one = alone[c].prepare(*frame);
       CHECK(one.ok());
       const auto depth =
@@ -233,6 +249,10 @@ int run(vkc::Device& device, vkc::Allocator& allocator) {
       CHECK(raw.ok());
       CHECK((depth == read<float>(device, allocator, *raw.value().depth, n)) ==
             (offsets[c] == 0.0));
+      // Nor is a response: the colour differs exactly where it is not the
+      // identity, so each sensor's reached its own pass.
+      CHECK((color == read<std::uint32_t>(device, allocator, *raw.value().color,
+                                          n)) == responses[c].is_identity());
     }
   }
   for (Recording* r : recordings) r->done = true;
@@ -367,6 +387,36 @@ int test_prep_options(vkc::Device& device, vkc::Allocator& allocator) {
           sensor::SensorArray::open(std::move(one), set).status();
       CHECK(refused.domain() == vkc::Status::Code::InvalidArgument);
       CHECK(refused.message().find("prep.depth_offset_m is set") !=
+            std::string::npos);
+    }
+  }
+  // So is a colour response other than the identity, valid or not; the
+  // identity, whatever its r_max, is the default.
+  camera::ColorResponse gains;
+  gains.gain = {0.9, 1.0, 1.0};
+  gains.r_max = 0.5;
+  camera::ColorResponse invalid;
+  invalid.gain = {0.0, 1.0, 1.0};
+  camera::ColorResponse identity;
+  identity.r_max = 0.3;
+  for (const camera::ColorResponse& response : {gains, invalid, identity}) {
+    for (const bool with_device : {true, false}) {
+      std::vector<std::unique_ptr<sensor::IRgbdSensor>> one;
+      one.push_back(
+          std::make_unique<Recording>("A", 0, sensor::SyncRole::Primary));
+      sensor::SensorArray::Options set;
+      set.calibration = posed({"A"});
+      set.device = with_device ? &device : nullptr;
+      set.allocator = with_device ? &allocator : nullptr;
+      set.prep.color_response = response;
+      const vkc::Status status =
+          sensor::SensorArray::open(std::move(one), set).status();
+      if (response.is_identity()) {
+        CHECK(status.ok());
+        continue;
+      }
+      CHECK(status.domain() == vkc::Status::Code::InvalidArgument);
+      CHECK(status.message().find("prep.color_response is set") !=
             std::string::npos);
     }
   }

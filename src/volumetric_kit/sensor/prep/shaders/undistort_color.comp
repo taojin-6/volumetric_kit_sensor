@@ -6,7 +6,9 @@
 // dataset decoded on the host. For packed words, R, G and B are sampled
 // bilinearly where the lens puts the pixel, through the same coverage test,
 // and kept as they are. A pixel whose ray lies outside the frame's depth
-// camera's field of view (rgbd_overlap.glsl's depth_sees) is 0 too.
+// camera's field of view (rgbd_overlap.glsl's depth_sees) is 0 too. Either
+// R'G'B' is multiplied by the camera's colour response unless it is the
+// identity.
 
 #extension GL_GOOGLE_include_directive : require
 #include "undistort_color.glsl"
@@ -28,13 +30,16 @@ void main() {
     return;
   }
   vec2 s;
-  if (!source_of(gid, s) ||
-      !depth_sees(overlap, vec2(float(gid % w), float(gid / w)))) {
+  vec2 pixel = vec2(float(gid % w), float(gid / w));
+  if (!source_of(gid, s) || !depth_sees(overlap, pixel)) {
     color[gid] = 0u;
     return;
   }
   if (pc.packed_rgb == 0u) {
-    color[gid] = ycbcr_word(s);
+    color[gid] = overlap.identity != 0u
+                     ? ycbcr_word(s)
+                     : responded_word(ycbcr_rgb(s), pixel, overlap.gain,
+                                      overlap.a, overlap.b, overlap.r_max);
     return;
   }
   uvec2 lo, hi;
@@ -43,6 +48,8 @@ void main() {
   vec3 rgb = bilinear(rgb_at(lo.x, lo.y), rgb_at(hi.x, lo.y),
                       rgb_at(lo.x, hi.y), rgb_at(hi.x, hi.y), f) /
              255.0;
-  color[gid] = code(rgb.r) | (code(rgb.g) << 8) | (code(rgb.b) << 16) |
-               0xFF000000u;
+  color[gid] = overlap.identity != 0u
+                   ? word(rgb)
+                   : responded_word(rgb, pixel, overlap.gain, overlap.a,
+                                    overlap.b, overlap.r_max);
 }

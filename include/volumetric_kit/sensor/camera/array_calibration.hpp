@@ -65,6 +65,27 @@
 /// rather than run it uncorrected. Both are read; a correction in a file that
 /// says version 2 is refused, since such a reader would ignore it.
 ///
+/// Version 4 is version 3 with a sensor's colour response
+/// (@ref SensorCalibration::color_response), beside its other fields, and
+/// only in a file with `color_controls`, the exposure it holds at:
+///
+/// @code{.json}
+///  "color_controls": {"exposure": 167, "gain": 60},
+///  "device_calibration": {
+///    "CL2A141000N": {"pose": {...}, "depth": {...},
+///      "color_response": {"fitted_at": {"exposure": 167, "gain": 60},
+///                         "gain": [0.9794, 0.9705, 0.994],
+///                         "falloff": [0.7822, 1.702], "r_max": 0.6713}}}
+/// @endcode
+///
+/// `falloff` is [a, b]. `fitted_at` repeats the controls the response was
+/// fitted at, which the writer fills from `color_controls`: a file whose
+/// `color_controls` were edited after the fit is refused rather than run
+/// with a response that no longer holds. The identity response is not
+/// written, so a calibration without a response is written as version 3 or
+/// 2, byte for byte as before, and a reader of versions 2 and 3 refuses a
+/// file with one. A response in a version-2 or -3 file is refused.
+///
 /// Version 1, the family's earlier layout, has no `format` or `version`: a
 /// `device_calibration` object of sensors by serial, each with a `pose`. It
 /// is read for the poses alone, every other key ignored, and never written.
@@ -79,6 +100,7 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/camera/color_controls.hpp"
+#include "volumetric_kit/sensor/camera/color_response.hpp"
 #include "volumetric_kit/sensor/camera/export.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
 
@@ -122,6 +144,13 @@ struct SensorCalibration {
   /// the file has none. Finite, and at most 0.05 m either way. Written as
   /// `"depth_offset_m"`, a version-3 field, only when it is not 0.
   double depth_offset_m = 0.0;
+  /// What the colour camera's prepared colour is multiplied by
+  /// (`sensor::GpuFramePrepConfig::color_response`); the identity, the
+  /// default, where the file has none. Valid (@ref validate), and only beside
+  /// the array's @ref ArrayCalibration::color_controls, at which it holds.
+  /// Written as `"color_response"`, a version-4 field, only when it is not
+  /// the identity.
+  ColorResponse color_response;
 };
 
 /// @brief A printed AprilTag whose frame is the world.
@@ -175,7 +204,9 @@ VS_CAMERA_API const SensorCalibration* find_sensor(
 /// At least one sensor; each id non-empty, UTF-8 and unique; each pose and
 /// `depth_to_color` rigid (@ref check_rigid), and `depth_to_color` only
 /// beside a depth camera; each camera model valid (@ref check_camera_model);
-/// each `depth_offset_m` finite and at most 0.05 m either way;
+/// each `depth_offset_m` finite and at most 0.05 m either way; each
+/// `color_response` valid (@ref validate), and one other than the identity
+/// only with `color_controls`;
 /// `color_controls`, where present, with an exposure and a gain above 0;
 /// and at most one world: a sensor that is in the array and posed at the
 /// origin, or a tag with a non-empty UTF-8 family, an id of 0 or more and a
@@ -186,12 +217,14 @@ VS_CAMERA_API const SensorCalibration* find_sensor(
 VS_CAMERA_API core::Status validate_array_calibration(
     const ArrayCalibration& array);
 
-/// @brief Parse a calibration document, version 3, 2 or 1.
+/// @brief Parse a calibration document, version 4, 3, 2 or 1.
 /// @param json  The document's text.
 /// @return The calibration, its sensors in id order;
 ///         `Status::Code::InvalidArgument` naming what is wrong (not JSON,
 ///         another format, a field of the wrong type, a `version` without a
-///         `format`, a correction in a version-2 document, a version-1
+///         `format`, a correction in a version-2 document, a colour
+///         response in a version-2 or -3 one or whose `fitted_at` is not the
+///         document's `color_controls`, a version-1
 ///         sensor without a pose, or a calibration
 ///         @ref validate_array_calibration refuses);
 ///         `Status::Code::Unsupported` for a later version, a distortion
@@ -208,9 +241,10 @@ VS_CAMERA_API core::Result<ArrayCalibration> parse_array_calibration(
 VS_CAMERA_API core::Result<ArrayCalibration> read_array_calibration(
     const std::string& path);
 
-/// @brief Format @p array as a version-3 document if it carries a correction
-///        (a sensor's `depth_offset_m` other than 0, or `color_controls`),
-///        and as a version-2 one if not.
+/// @brief Format @p array as a version-4 document if a sensor has a colour
+///        response other than the identity, else as a version-3 one if it
+///        carries a correction (a sensor's `depth_offset_m` other than 0, or
+///        `color_controls`), and as a version-2 one if not.
 ///
 /// Sensors in id order, every number in a form that reads back to the same
 /// double (at most 17 significant digits), so @ref parse_array_calibration

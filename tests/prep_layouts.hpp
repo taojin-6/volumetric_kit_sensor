@@ -48,9 +48,9 @@ struct Layout {
 // The picture, its host bytes, and its layouts, which point into them.
 struct Picture {
   std::uint32_t w = 0, h = 0;
-  std::uint32_t cw = 0, ch = 0;              // 4:2:0 chroma
-  std::vector<std::uint8_t> y, cb, cr;       // 4:2:0 planes
-  std::vector<std::uint8_t> cb422, cr422;    // YUYV's chroma, cw x h
+  std::uint32_t cw = 0, ch = 0;                // 4:2:0 chroma
+  std::vector<std::uint8_t> y, cb, cr;         // 4:2:0 planes
+  std::vector<std::uint8_t> cb422, cr422;      // YUYV's chroma, cw x h
   std::vector<std::uint8_t> i420, yuyv, mono;  // host bytes
   std::vector<std::uint32_t> packed;           // R'G'B' words, junk high byte
   std::vector<Layout> layouts;
@@ -78,8 +78,7 @@ inline std::uint8_t byte(double v) {
 // or image cannot be made is left out, which a caller's count shows.
 inline std::unique_ptr<Picture> make_picture(vkc::Device& device,
                                              vkc::Allocator& allocator,
-                                             std::uint32_t w,
-                                             std::uint32_t h) {
+                                             std::uint32_t w, std::uint32_t h) {
   auto p = std::make_unique<Picture>();
   p->w = w;
   p->h = h;
@@ -156,9 +155,9 @@ inline std::unique_ptr<Picture> make_picture(vkc::Device& device,
   images.device = nullptr;
   images.offset[1] = 0;
   images.stride[0] = images.stride[1] = 0;
-  images.image[0] = test_image::with_corner(
-      device, allocator, VK_FORMAT_R8_UNORM, 1, w, h, p->y.data(), w, h,
-      VK_IMAGE_USAGE_SAMPLED_BIT);
+  images.image[0] =
+      test_image::with_corner(device, allocator, VK_FORMAT_R8_UNORM, 1, w, h,
+                              p->y.data(), w, h, VK_IMAGE_USAGE_SAMPLED_BIT);
   images.image[1] = test_image::with_corner(
       device, allocator, VK_FORMAT_R8G8_UNORM, 2, p->cw, p->ch, cbcr.data(),
       2 * p->cw, p->ch, VK_IMAGE_USAGE_SAMPLED_BIT);
@@ -213,7 +212,8 @@ inline std::unique_ptr<Picture> make_picture(vkc::Device& device,
   return p;
 }
 
-// --- the pass on the host -----------------------------------------------------
+// --- the pass on the host
+// -----------------------------------------------------
 
 inline float f32(double v) { return static_cast<float>(v); }
 
