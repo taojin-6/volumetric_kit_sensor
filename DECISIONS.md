@@ -372,6 +372,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   same at every depth; float arithmetic that no compiler may fuse or
   regroup, `precise` for the pixel's own point and xor barriers in the
   neighbour loop, so every device decides alike at a cost Apple can carry.
+  *Amended the same day (the default-on entry):* on by default.
+- [**2026-10-31**](#2026-10-31--frame-prep-drops-depth-outliers-by-default-one-setting-for-every-sensor-amends-the-depth-outlier-entry-above) —
+  Frame prep drops depth outliers by default: `DepthOutlierFilter::enabled`
+  is `true`, one setting for every sensor, the Femto Mega's included (0.35%
+  of its returns, most on rims). A removed return still reaches fusion as
+  no return, which carves a thin, passing ring into the background around a
+  moving person; handing it on as unknown is the follow-up.
 
 ## Decision record
 
@@ -5233,6 +5240,9 @@ run.
 
 ### 2026-10-31 — Frame prep may drop depth outliers: `GpuFramePrepConfig::depth_outliers` keeps a return where at least 20 returns lie within 8 pixel footprints of it, off by default, and every device decides alike.
 
+*Amended the same day (the default-on entry, below):* on by default, for
+every sensor; "Off by default" below is why it was off until then.
+
 **The rule.** `DepthOutlierFilter {enabled, radius_px, min_points}`
 (`prep/gpu_frame_prep.hpp`) is `GpuFramePrepConfig::depth_outliers`: off by
 default; on, after undistortion and the colour-view test, a return is kept
@@ -5358,3 +5368,61 @@ validation layer: the whole suite passes on the Apple M5 Max (macOS 27.2,
 MoltenVK 1.4.2), 40 tests, and on the RTX 5090 (Ubuntu 26.04, driver
 615.71.10), 35 tests. recon's suite was not run: `frame` is unchanged. No
 camera was opened.
+
+### 2026-10-31 — Frame prep drops depth outliers by default, one setting for every sensor (amends the depth-outlier entry above).
+
+**The rule.** `DepthOutlierFilter::enabled` is `true` by default, so every
+`GpuFramePrep`, and every pass of a `SensorArray`, filters depth at 8 px and
+20 points unless its config sets it `false`: one setting for every sensor,
+whatever made its depth. The refusals are as they were.
+
+**Why.** The owner (2026-10-31) turned it on for every sensor after the two
+checks the entry above waited for.
+- **The Femto Mega's ToF depth** (the 4-camera rig's 2026-10-30 take, 12
+  camera frames as `GpuFramePrep` hands them out): it removes 0.35% of
+  returns, 84% of them on object rims; 0.01% of smooth surface, 0.08% of
+  grazing floor at 3-5 m and 1.0% of a person's outline (7.7% on FFS). The
+  firmware already blanks most mixed pixels, leaving about 30 times fewer
+  flying pixels than FFS by the study's proxy, and the filter takes 83% of
+  those. 30 points would remove 2.5 times as much. So the Femto needs no
+  setting of its own.
+- **FFS** (the entry above): 77-83% of the flying-pixel proxy removed and
+  under 1% of smooth surface nearer than 5 m; desks at about 84 degrees of
+  slant kept.
+- **Two walk takes through recon's Dynamic fusion** (FFS depth, one camera,
+  removed returns as no return): the curtain falls 11%, the ghost 6%, and
+  old surface kept over a wall the camera sees again 16%, its lasting part
+  20%; eviction is unchanged (99.91% to 99.81% in the same frame, the
+  worst still 2 frames).
+
+**The price: a thin ring.** Around a moving person the removed returns,
+fusion's "no return", carve a crack into the background behind them: 52%
+more holes within 40 px of the person (2,086 to 3,170 px a frame), about a
+quarter of what the disparity-spread gate (#14) added, and gone once the
+person moves on (holes farther out: a median 366 px a frame fewer). The
+likely cause, inferred and not decomposed, is recon #318's reset of a
+voxel whose ray returns nothing beside a departure. The owner accepted it.
+
+**Follow-up.** Removed returns go on as unknown rather than no return, a
+change to the sensor contract and to recon. With this filter only 2.3% of
+eviction events have their first wall sample removed (64% with the spread
+gate), so the cost to eviction should be small; not yet run.
+
+**Cost**, the entry above's: one more dispatch per pass, 0.159 / 0.107 ms a
+camera at 1280x720 / 960x544 on the RTX 5090 and 0.459 / 0.281 ms on the M5
+Max, and one more depth-sized buffer (3.7 MB at 1280x720).
+
+**Tests.** `sensor_gpu_frame_prep_outliers` checks the default is on and
+that a pass made with the defaults filters; its references are passes with
+the filter off. The tests that hold depth to the unfiltered depth
+(`sensor_gpu_frame_prep`, `sensor_gpu_frame_prep_oom`, `sensor_ffs_stereo`'s
+`into_prep`) turn it off; the rest keep the default, `sensor_array_process`
+among them, which compares an array's frames with lone passes' of the same
+options. With the default back at `false` the outlier test fails; with the
+filter left on, `sensor_gpu_frame_prep` does.
+
+**Validation.** Release with warnings as errors, default options, under the
+validation layer: the whole suite passes on the Apple M5 Max (macOS 27.2,
+MoltenVK 1.4.2), 40 tests. No NVIDIA machine was run by hand: no per-frame
+code changed, and CI's CUDA leg builds and runs `sensor_ffs_stereo`. recon
+picks the default up when it re-pins sensor. No camera was opened.

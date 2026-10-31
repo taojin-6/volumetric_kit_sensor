@@ -65,11 +65,15 @@ class DepthOutlierPass;
 ///
 /// The defaults are the FFS study's (2026-10-30, D455 stereo at 1280x720 and
 /// 960x544): 77-83% of the flying-pixel proxy removed, 0.3% of smooth
-/// surface nearer than 5 m lost. It adds holes, never fills them, and sees
-/// one camera alone.
+/// surface nearer than 5 m lost. On the Femto Mega's ToF depth, whose
+/// firmware drops most mixed pixels itself, they remove 0.35% of returns,
+/// most on rims. It adds holes, never fills them, and sees one camera alone.
+/// A removed return reaches fusion as no return, which carves a thin ring
+/// into the background around a moving person, gone once they move on.
 struct DepthOutlierFilter {
-  /// Whether depth is filtered; `false`, the default, keeps every return.
-  bool enabled = false;
+  /// Whether depth is filtered: `true`, the default, or `false`, which keeps
+  /// every return.
+  bool enabled = true;
   /// The radius, in pixel footprints at each return's own depth. Finite, in
   /// [1, @ref kMaxRadiusPx], or, with @ref enabled, @ref GpuFramePrep::create
   /// refuses it.
@@ -139,9 +143,11 @@ struct GpuFramePrepConfig {
   /// @brief Returns removed where too few others lie near them in 3D, after
   ///        undistortion and the colour-view test (@ref DepthOutlierFilter).
   ///
-  /// Off by default. On, the depth pass writes into a buffer of the pass's
-  /// own, which the filter reads into @ref DeviceFrame::depth: one more
-  /// dispatch and one more depth-sized buffer per pass.
+  /// On by default, for every sensor; `depth_outliers.enabled = false` turns
+  /// it off. On, the depth pass writes into a buffer of the pass's own, which
+  /// the filter reads into @ref DeviceFrame::depth: one more depth-sized
+  /// buffer and one more dispatch per pass, about 0.16 / 0.11 ms a camera at
+  /// 1280x720 / 960x544 on an RTX 5090 and 0.46 / 0.28 ms on an M5 Max.
   DepthOutlierFilter depth_outliers;
 };
 
