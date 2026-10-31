@@ -16,11 +16,18 @@
 #include "volumetric_kit/sensor/frame/shaders/pinhole.glsl"
 
 // OverlapParams under scalar layout: the two cameras, and the rigid transform
-// from the depth camera's frame into the colour camera's.
+// from the depth camera's frame into the colour camera's; and the colour
+// camera's response, which the colour passes apply (undistort_color.glsl's
+// responded_word) unless `identity`, the host's reading of it.
 struct RgbdOverlap {
   LensCamera color;
   mat4 depth_to_color;
   LensCamera depth;
+  vec3 gain;
+  float a;
+  float b;
+  float r_max;
+  uint identity;
 };
 
 // Whether coordinate `p` rounds, half up, to a pixel of a w x h image; a NaN

@@ -34,6 +34,7 @@
 #include "volumetric_kit/core/vulkan/host_ring.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
+#include "volumetric_kit/sensor/camera/color_response.hpp"
 #include "volumetric_kit/sensor/frame/camera_params.hpp"
 #include "volumetric_kit/sensor/frame/color_space.hpp"
 #include "volumetric_kit/sensor/frame/device_frame.hpp"
@@ -149,6 +150,20 @@ struct GpuFramePrepConfig {
   /// buffer and one more dispatch per pass, about 0.16 / 0.11 ms a camera at
   /// 1280x720 / 960x544 on an RTX 5090 and 0.46 / 0.28 ms on an M5 Max.
   DepthOutlierFilter depth_outliers;
+
+  /// @brief What the colour is multiplied by in linear light, so the rig's
+  ///        cameras agree (`camera::ColorResponse`).
+  ///
+  /// The sensor's own, from its calibration
+  /// (`camera::SensorCalibration::color_response`): `SensorArray` sets it per
+  /// sensor, and refuses one in `SensorArray::Options::prep`. Applied in the
+  /// colour pass to every layout, after the picture's R'G'B' is formed and
+  /// clamped to [0, 1] and before it is coded, at each pinhole pixel's radius.
+  /// The identity, the default, leaves the words as they were. A luma-only
+  /// picture with a response other than the identity is refused: gains would
+  /// tint grey. Valid (`camera::validate`) and within float's range, or
+  /// @ref GpuFramePrep::create refuses it.
+  camera::ColorResponse color_response;
 };
 
 /// @brief Undistorts a @ref RgbdFrame's depth and colour, and converts its
@@ -158,10 +173,11 @@ struct GpuFramePrepConfig {
 /// Undistorting keeps each camera's intrinsics and drops its lens: every pixel
 /// of the pinhole image is sampled from where `camera::distort_rational` puts
 /// it in the captured one. Colour is sampled bilinearly, luma and chroma each
-/// at its own siting (@ref YuvImage::chroma_location), and converted by the
-/// picture's matrix and range. Depth is the bilinear mix of the four raw
-/// pixels around that position where all four hold a return within 4 cm of
-/// each other, so a slope comes out smooth rather than in half-pixel
+/// at its own siting (@ref YuvImage::chroma_location), converted by the
+/// picture's matrix and range, and multiplied by the camera's colour response
+/// (@ref GpuFramePrepConfig::color_response). Depth is the bilinear mix of the
+/// four raw pixels around that position where all four hold a return within 4
+/// cm of each other, so a slope comes out smooth rather than in half-pixel
 /// terraces, and the nearest raw pixel elsewhere, so an edge never blends a
 /// foreground and a background depth into a point between them, nor a hole
 /// into a return.
@@ -229,9 +245,11 @@ class VS_PREP_API GpuFramePrep {
   ///         `color_queue_family_count` or a `depth_queue_family_count` past
   ///         `BufferDesc::kMaxQueueFamilies`, a colour or depth queue
   ///         family @p device does not have, a `depth_offset_m` that is
-  ///         not finite, or `depth_outliers` enabled with a `radius_px` that
-  ///         is not finite or lies outside [1, `kMaxRadiusPx`], or a
-  ///         `min_points` below 2; or a non-OK `Status` if a
+  ///         not finite, `depth_outliers` enabled with a `radius_px` that
+  ///         is not finite or lies outside [1, `kMaxRadiusPx`] or a
+  ///         `min_points` below 2, or a `color_response` that
+  ///         `camera::validate` refuses or that leaves float's range; or a
+  ///         non-OK `Status` if a
   ///         pipeline, descriptor object or buffer fails to build.
   static core::Result<GpuFramePrep> create(
       core::Device& device, core::Allocator& allocator,
@@ -320,8 +338,9 @@ class VS_PREP_API GpuFramePrep {
   ///         and a view, in `GENERAL` or `SHADER_READ_ONLY_OPTIMAL`, a
   ///         `queue_family` the device lacks, depth and planes in one buffer
   ///         that name different writers' families, `EXCLUSIVE` images from
-  ///         another of its families, or an image past a single
-  ///         dispatch (16.7 M pixels);
+  ///         another of its families, an image past a single
+  ///         dispatch (16.7 M pixels), or luma-only colour on a pass whose
+  ///         `color_response` is not the identity;
   ///         `Status::Code::Unsupported` for a colour encoding
   ///         @ref is_canonical refuses; `Status::Code::OutOfMemory` for a
   ///         host allocation failure, with previously returned frames intact;

@@ -4,7 +4,8 @@
 // over NV12's two plane images, read where they are: an Apple picture's
 // IOSurface planes, imported through VK_EXT_metal_objects, or the images
 // NVDEC's pictures are copied into. The same samples as the buffer entry
-// reads, through the same depth-view test, so the same words.
+// reads, through the same depth-view test and colour response, so the same
+// words.
 
 #extension GL_GOOGLE_include_directive : require
 #include "undistort_color.glsl"
@@ -38,7 +39,13 @@ void main() {
     return;
   }
   vec2 s;
-  bool kept = source_of(gid, s) &&
-              depth_sees(overlap, vec2(float(gid % w), float(gid / w)));
-  color[gid] = kept ? ycbcr_word(s) : 0u;
+  vec2 pixel = vec2(float(gid % w), float(gid / w));
+  if (!source_of(gid, s) || !depth_sees(overlap, pixel)) {
+    color[gid] = 0u;
+    return;
+  }
+  color[gid] = overlap.identity != 0u
+                   ? ycbcr_word(s)
+                   : responded_word(ycbcr_rgb(s), pixel, overlap.gain,
+                                    overlap.a, overlap.b, overlap.r_max);
 }

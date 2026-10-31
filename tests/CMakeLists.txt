@@ -131,6 +131,32 @@ target_link_libraries(
 vs_target_warnings(sensor_gpu_frame_prep_test)
 add_test(NAME sensor_gpu_frame_prep COMMAND sensor_gpu_frame_prep_test)
 
+# The colour pass's words for one picture in every layout it reads, through a
+# lens, printed as MD5s: run by hand on two builds to hold a change to the pass
+# that must leave today's words alone to them byte for byte on one device. As a
+# test: a second prepare gives the same words. Skips where no device is present.
+add_executable(sensor_gpu_frame_prep_identity_test
+               sensor_gpu_frame_prep_identity_test.cpp)
+target_link_libraries(
+  sensor_gpu_frame_prep_identity_test PRIVATE volumetric_kit::sensor_prep
+                                              volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_gpu_frame_prep_identity_test)
+add_test(NAME sensor_gpu_frame_prep_identity
+         COMMAND sensor_gpu_frame_prep_identity_test)
+
+# The colour pass's colour response (GpuFramePrepConfig::color_response): every
+# colour layout against a host oracle within a code, the identity bit for bit
+# the default pass, luma alone refused, and create's refusals. Skips where no
+# device is present.
+add_executable(sensor_gpu_frame_prep_response_test
+               sensor_gpu_frame_prep_response_test.cpp)
+target_link_libraries(
+  sensor_gpu_frame_prep_response_test PRIVATE volumetric_kit::sensor_prep
+                                              volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_gpu_frame_prep_response_test)
+add_test(NAME sensor_gpu_frame_prep_response
+         COMMAND sensor_gpu_frame_prep_response_test)
+
 # The frame prep's depth outlier filter on synthetic scenes: bit for bit against
 # a host reference in float, through a pinhole and a lens, at a slab's median
 # count, on ties at the radius, at the largest radius, after the colour-view
@@ -231,6 +257,19 @@ target_link_libraries(
           volumetric_kit::core_test_policy)
 vs_target_warnings(sensor_frame_pinhole_gpu_test)
 add_test(NAME sensor_frame_pinhole_gpu COMMAND sensor_frame_pinhole_gpu_test)
+
+# frame/shaders/srgb.glsl, the sRGB curve the package exports, built as a
+# consumer's kernels are, against color_space.hpp's on all 256 codes
+# (shaders/srgb_cases.comp). Skips where no device is present.
+add_executable(sensor_frame_srgb_gpu_test frame_srgb_gpu_test.cpp)
+vs_embed_shaders(
+  sensor_frame_srgb_gpu_test INCLUDE_TARGETS volumetric_kit::sensor_frame
+  SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/srgb_cases.comp")
+target_link_libraries(
+  sensor_frame_srgb_gpu_test PRIVATE volumetric_kit::sensor_frame
+                                     volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_frame_srgb_gpu_test)
+add_test(NAME sensor_frame_srgb_gpu COMMAND sensor_frame_srgb_gpu_test)
 
 # The sensor interface: the camera-convention conversions -- the OpenGL/ARKit ->
 # CV pose change of basis and the registered-depth intrinsics rescale. These are

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,11 +24,12 @@ namespace {
 using nlohmann::json;
 
 constexpr std::string_view kFormat = "volumetric_kit.array_calibration";
-// The version a calibration without a correction is written as, and the one a
-// calibration with one is: a reader of version 2 alone refuses it rather than
-// run it uncorrected.
+// The version a calibration without a correction is written as, the one a
+// calibration with one is, and the one a calibration with a colour response
+// is: an older reader refuses each rather than run it uncorrected.
 constexpr std::uint64_t kVersion = 2;
 constexpr std::uint64_t kCorrectedVersion = 3;
+constexpr std::uint64_t kResponseVersion = 4;
 constexpr std::string_view kRational = "rational";
 // The largest depth offset either way, in metres: a sensor's depth error is
 // millimetres, so more is a unit or sign mistake.
@@ -121,6 +123,68 @@ core::Result<Vec3d> vector3(const json& object, const char* key,
   return v;
 }
 
+// `n` finite numbers at `key` into `out`.
+core::Status numbers(const json& object, const char* key, std::size_t n,
+                     double* out, const std::string& where) {
+  const auto it = object.find(key);
+  if (it == object.end() || !it->is_array() || it->size() != n) {
+    return bad(where + "\"" + key + "\" is not " + std::to_string(n) +
+               " numbers");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    const json& e = (*it)[i];
+    if (!e.is_number() || !std::isfinite(e.get<double>())) {
+      return bad(where + "\"" + key + "\" is not " + std::to_string(n) +
+                 " finite numbers");
+    }
+    out[i] = e.get<double>();
+  }
+  return {};
+}
+
+core::Result<ColorControls> color_controls(const json& block,
+                                           const std::string& where) {
+  ColorControls c;
+  VKC_ASSIGN(c.exposure, whole_number(block, "exposure", where));
+  VKC_ASSIGN(c.gain, whole_number(block, "gain", where));
+  return c;
+}
+
+std::string controls_text(const ColorControls& c) {
+  return "exposure " + std::to_string(c.exposure) + ", gain " +
+         std::to_string(c.gain);
+}
+
+// A sensor's colour response, held to the file's controls by its fitted_at;
+// validate judges its values.
+core::Result<ColorResponse> color_response(
+    const json& block, const std::optional<ColorControls>& controls,
+    const std::string& where) {
+  if (!block.is_object()) return bad(where + "not an object");
+  VKC_ASSIGN(const json* fitted, object_at(block, "fitted_at", where));
+  if (fitted == nullptr) return bad(where + "no \"fitted_at\" object");
+  VKC_ASSIGN(const ColorControls at,
+             color_controls(*fitted, where + "fitted_at: "));
+  // A response holds at the exposure it was fitted at; controls edited since
+  // would run it where it does not.
+  if (!controls) {
+    return bad(where + "the file has no \"color_controls\" it holds at");
+  }
+  if (at != *controls) {
+    return bad(where + "fitted at " + controls_text(at) +
+               ", not the file's color_controls (" + controls_text(*controls) +
+               ")");
+  }
+  ColorResponse r;
+  VKC_TRY(numbers(block, "gain", 3, r.gain.data(), where));
+  double falloff[2] = {};
+  VKC_TRY(numbers(block, "falloff", 2, falloff, where));
+  r.a = falloff[0];
+  r.b = falloff[1];
+  VKC_ASSIGN(r.r_max, number(block, "r_max", where));
+  return r;
+}
+
 core::Result<Mat4d> transform(const json& block, const std::string& where) {
   RodriguesTransform t;
   VKC_ASSIGN(t.rvec, vector3(block, "rvec", where));
@@ -189,9 +253,9 @@ core::Result<CameraCalibration> camera_v2(const json& block,
   return camera;
 }
 
-core::Result<SensorCalibration> sensor_v2(const std::string& id,
-                                          const json& block,
-                                          std::uint64_t version) {
+core::Result<SensorCalibration> sensor_v2(
+    const std::string& id, const json& block, std::uint64_t version,
+    const std::optional<ColorControls>& controls) {
   SensorCalibration sensor;
   sensor.id = id;
   const std::string where = "sensor " + id + ": ";
@@ -223,6 +287,18 @@ core::Result<SensorCalibration> sensor_v2(const std::string& id,
                  "file");
     }
     VKC_ASSIGN(sensor.depth_offset_m, number(block, "depth_offset_m", where));
+  }
+  if (const auto response = block.find("color_response");
+      response != block.end()) {
+    // A version-3 reader ignores the key too.
+    if (version < kResponseVersion) {
+      return bad(where +
+                 "\"color_response\" is a version-4 field, in a "
+                 "version-" +
+                 std::to_string(version) + " file");
+    }
+    VKC_ASSIGN(sensor.color_response,
+               color_response(*response, controls, where + "color_response "));
   }
   return sensor;
 }
@@ -263,9 +339,9 @@ core::Result<ArrayCalibration> parse_v2(const json& doc) {
     return bad("missing whole number \"version\"");
   }
   const std::uint64_t v = version->get<std::uint64_t>();
-  if (v > kCorrectedVersion) {
+  if (v > kResponseVersion) {
     return unsupported("version " + std::to_string(v) +
-                       "; this reader knows versions 2 and 3");
+                       "; this reader knows versions 2, 3 and 4");
   }
   if (v < kVersion) {
     return bad("version " + std::to_string(v) +
@@ -285,14 +361,12 @@ core::Result<ArrayCalibration> parse_v2(const json& doc) {
       return bad(
           "\"color_controls\" is a version-3 field, in a version-2 file");
     }
-    const std::string where = "color_controls: ";
-    ColorControls c;
-    VKC_ASSIGN(c.exposure, whole_number(*controls, "exposure", where));
-    VKC_ASSIGN(c.gain, whole_number(*controls, "gain", where));
-    array.color_controls = c;
+    VKC_ASSIGN(array.color_controls,
+               color_controls(*controls, "color_controls: "));
   }
   for (auto it = sensors->begin(); it != sensors->end(); ++it) {
-    VKC_ASSIGN(SensorCalibration sensor, sensor_v2(it.key(), *it, v));
+    VKC_ASSIGN(SensorCalibration sensor,
+               sensor_v2(it.key(), *it, v, array.color_controls));
     array.sensors.push_back(std::move(sensor));
   }
   return array;
@@ -375,7 +449,17 @@ core::Status check_sensor(const SensorCalibration& sensor) {
       std::fabs(sensor.depth_offset_m) > kMaxDepthOffset) {
     return bad(who + "\"depth_offset_m\" is not a finite offset within 0.05 m");
   }
+  const core::Status response = validate(sensor.color_response);
+  if (!response.ok()) return bad(who + response.message());
   return {};
+}
+
+// Whether a sensor has a colour response, which makes the file version 4.
+bool responded(const ArrayCalibration& array) {
+  return std::any_of(array.sensors.begin(), array.sensors.end(),
+                     [](const SensorCalibration& s) {
+                       return !s.color_response.is_identity();
+                     });
 }
 
 // Whether the array carries a correction, which makes the file version 3: the
@@ -467,6 +551,11 @@ core::Status validate_array_calibration(const ArrayCalibration& array) try {
   }
   if (array.color_controls) {
     VKC_TRY(check_color_controls(*array.color_controls));
+  } else if (responded(array)) {
+    // A response holds at one exposure, which the file must name.
+    return bad(
+        "a sensor has a color_response, and the array no color_controls "
+        "it holds at");
   }
   return check_world(array);
 } catch (...) {
@@ -523,9 +612,11 @@ core::Result<std::string> format_array_calibration(
   }
   std::sort(sorted.begin(), sorted.end(),
             [](const auto* a, const auto* b) { return a->id < b->id; });
-  std::string out =
-      "{\n  \"format\": " + text(std::string(kFormat)) + ",\n  \"version\": " +
-      text(corrected(array) ? kCorrectedVersion : kVersion) + ",\n";
+  const std::uint64_t version = responded(array)   ? kResponseVersion
+                                : corrected(array) ? kCorrectedVersion
+                                                   : kVersion;
+  std::string out = "{\n  \"format\": " + text(std::string(kFormat)) +
+                    ",\n  \"version\": " + text(version) + ",\n";
   if (!array.world.sensor.empty()) {
     out += "  \"world\": {\"sensor\": " + text(array.world.sensor) + "},\n";
   }
@@ -560,6 +651,17 @@ core::Result<std::string> format_array_calibration(
     }
     if (s.depth_offset_m != 0.0) {
       fields.push_back("\"depth_offset_m\": " + text(s.depth_offset_m));
+    }
+    if (const ColorResponse& r = s.color_response; !r.is_identity()) {
+      // Validated: a response is written only beside the controls.
+      const ColorControls& at = *array.color_controls;
+      fields.push_back(
+          "\"color_response\": {\"fitted_at\": {\"exposure\": " +
+          text(std::uint64_t{at.exposure}) +
+          ", \"gain\": " + text(std::uint64_t{at.gain}) + "},\n" + indent +
+          "  \"gain\": " + vector_text(Vec3d(r.gain[0], r.gain[1], r.gain[2])) +
+          ", \"falloff\": [" + text(r.a) + ", " + text(r.b) +
+          "], \"r_max\": " + text(r.r_max) + "}");
     }
     out += (i == 0 ? "\n    " : ",\n    ") + text(s.id) + ": {";
     for (std::size_t f = 0; f < fields.size(); ++f) {

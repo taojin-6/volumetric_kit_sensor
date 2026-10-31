@@ -227,10 +227,10 @@ int test_refusals() {
   // A later version is refused as unsupported, an earlier one as not this
   // format: a file with no "format" is version 1.
   CHECK(refused(R"({"format": "volumetric_kit.array_calibration",
-                    "version": 4, "device_calibration": {"A": {}}})",
-                Code::Unsupported, "knows versions 2 and 3"));
+                    "version": 5, "device_calibration": {"A": {}}})",
+                Code::Unsupported, "knows versions 2, 3 and 4"));
   CHECK(refused(R"({"format": "volumetric_kit.array_calibration",
-                    "version": 4, "sensors": {"A": {}}})",
+                    "version": 5, "sensors": {"A": {}}})",
                 Code::Unsupported));
   CHECK(refused(R"({"format": "volumetric_kit.array_calibration",
                     "version": 1, "device_calibration": {"A": {}}})"));
@@ -520,6 +520,10 @@ int check_same(const camera::ArrayCalibration& written,
       CHECK(near(*r.depth_to_color, *w.depth_to_color, 1e-15));
     }
     CHECK(r.depth_offset_m == w.depth_offset_m);  // exact
+    const camera::ColorResponse& wr = w.color_response;
+    const camera::ColorResponse& rr = r.color_response;
+    CHECK(rr.gain == wr.gain && rr.a == wr.a && rr.b == wr.b &&
+          (wr.is_identity() || rr.r_max == wr.r_max));  // exact
   }
   return 0;
 }
@@ -859,6 +863,223 @@ int test_color_controls() {
   return 0;
 }
 
+// A colour camera's response, the version-4 field: F, validate's refusals;
+// read from a version-4 file beside the controls it was fitted at, refused in
+// a version-2 or -3 file, without controls and when fitted_at is not them;
+// written only when it is not the identity, and only then as version 4, so a
+// calibration without one keeps its version-2 or -3 bytes.
+int test_color_response() {
+  // F, held beyond r_max; the identity is F = 1 at any radius.
+  camera::ColorResponse r;
+  CHECK(r.is_identity() && r.falloff(0.0) == 1.0 && r.falloff(5.0) == 1.0);
+  CHECK(camera::validate(r).ok());
+  r.gain = {0.9794, 0.9705, 0.994};
+  r.a = 0.7822;
+  r.b = 1.702;
+  r.r_max = 0.6713;
+  CHECK(!r.is_identity() && camera::validate(r).ok());
+  const double q = 0.6713 * 0.6713;
+  CHECK(r.falloff(0.0) == 1.0);
+  CHECK(std::fabs(r.falloff(0.3) - (1.0 + 0.7822 * 0.09 + 1.702 * 0.0081)) <
+        1e-15);
+  CHECK(r.falloff(0.6713) == 1.0 + 0.7822 * q + 1.702 * q * q);
+  CHECK(r.falloff(0.9) == r.falloff(0.6713));
+  // Gains alone, F = 1, and a falloff that dips but stays above 0.
+  camera::ColorResponse gains;
+  gains.gain = {1.1, 1.0, 0.9};
+  gains.r_max = 0.5;
+  CHECK(camera::validate(gains).ok());
+  camera::ColorResponse dip = gains;
+  dip.a = -4.0;
+  dip.b = 4.5;  // F(q) = 1 - 4 q + 4.5 q^2, least 1/9 at q = 4/9
+  dip.r_max = 0.9;
+  CHECK(camera::validate(dip).ok());
+  const auto refuses = [](const camera::ColorResponse& bad,
+                          const char* reason) {
+    const vkc::Status s = camera::validate(bad);
+    std::printf("  refused as expected: %s\n", s.message().c_str());
+    return s.domain() == Code::InvalidArgument &&
+           s.message().find(reason) != std::string::npos;
+  };
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const double g : {0.0, -0.5, nan, inf}) {
+    camera::ColorResponse bad = r;
+    bad.gain[1] = g;
+    CHECK(refuses(bad, "a gain is not finite above 0"));
+  }
+  for (const double v : {nan, inf}) {
+    camera::ColorResponse bad = r;
+    bad.a = v;
+    CHECK(refuses(bad, "the falloff is not finite"));
+    bad = r;
+    bad.b = v;
+    CHECK(refuses(bad, "the falloff is not finite"));
+  }
+  for (const double v : {0.0, -0.1, nan, inf}) {
+    camera::ColorResponse bad = r;
+    bad.r_max = v;
+    CHECK(refuses(bad, "r_max is not finite above 0"));
+  }
+  camera::ColorResponse end = gains;  // F(r_max) = 1 - 4 * 0.25 = 0
+  end.a = -4.0;
+  CHECK(refuses(end, "F is not above 0 up to r_max"));
+  camera::ColorResponse vertex = dip;
+  vertex.b = 3.5;  // F(q) = 1 - 4 q + 3.5 q^2, least -1/7 at q = 4/7
+  CHECK(refuses(vertex, "F is not above 0 up to r_max"));
+  vertex.r_max = 0.5;  // the vertex past r_max: least F(0.25) = 0.21875
+  CHECK(camera::validate(vertex).ok());
+
+  // A version-4 document with sensor A posed at the origin, the controls
+  // and A's `response`.
+  const std::string pose = R"("pose": {"rvec": [0, 0, 0], "tvec": [0, 0, 0]})";
+  const std::string fitted =
+      R"({"fitted_at": {"exposure": 167, "gain": 60},
+          "gain": [0.9794, 0.9705, 0.994], "falloff": [0.7822, 1.702],
+          "r_max": 0.6713})";
+  const auto with = [&](const std::string& response, int version = 4,
+                        const std::string& controls =
+                            R"({"exposure": 167, "gain": 60})") {
+    return R"({"format": "volumetric_kit.array_calibration", "version": )" +
+           std::to_string(version) +
+           (controls.empty() ? std::string()
+                             : R"(, "color_controls": )" + controls) +
+           R"(, "device_calibration": {"A": {)" + pose +
+           R"(, "color_response": )" + response + "}}}";
+  };
+  const auto read = camera::parse_array_calibration(with(fitted));
+  if (!read) std::fprintf(stderr, "%s\n", read.status().message().c_str());
+  CHECK(read.ok());
+  const camera::ColorResponse& got = read.value().sensors[0].color_response;
+  CHECK(got.gain == r.gain && got.a == r.a && got.b == r.b &&
+        got.r_max == r.r_max);
+  // Without one: the identity, in every version.
+  CHECK(camera::parse_array_calibration(kVersion3)
+            .value()
+            .sensors[0]
+            .color_response.is_identity());
+  CHECK(camera::parse_array_calibration(kVersion2)
+            .value()
+            .sensors[0]
+            .color_response.is_identity());
+  // In a file that says version 2 or 3, whose readers would run without it.
+  CHECK(refused(with(fitted, 3), Code::InvalidArgument,
+                "\"color_response\" is a version-4 field, in a version-3 "
+                "file"));
+  CHECK(refused(with(fitted, 2, ""), Code::InvalidArgument,
+                "\"color_response\" is a version-4 field, in a version-2 "
+                "file"));
+  // Without the controls it holds at, or fitted at others.
+  CHECK(refused(with(fitted, 4, ""), Code::InvalidArgument,
+                "has no \"color_controls\" it holds at"));
+  CHECK(refused(with(fitted, 4, R"({"exposure": 333, "gain": 60})"),
+                Code::InvalidArgument,
+                "fitted at exposure 167, gain 60, not the file's "
+                "color_controls (exposure 333, gain 60)"));
+  CHECK(refused(with(fitted, 4, R"({"exposure": 167, "gain": 61})"),
+                Code::InvalidArgument, "fitted at exposure 167, gain 60"));
+  // Malformed, and values validate refuses.
+  for (const char* wrong :
+       {R"({"gain": [1, 1, 1], "falloff": [0, 0], "r_max": 1})",
+        R"({"fitted_at": {"exposure": 167}, "gain": [1, 1, 1],
+            "falloff": [0, 0], "r_max": 1})",
+        R"({"fitted_at": {"exposure": 167, "gain": 60}, "gain": [1, 1],
+            "falloff": [0, 0], "r_max": 1})",
+        R"({"fitted_at": {"exposure": 167, "gain": 60}, "gain": [1, 1, "1"],
+            "falloff": [0, 0], "r_max": 1})",
+        R"({"fitted_at": {"exposure": 167, "gain": 60}, "gain": [1, 1, 1],
+            "falloff": [0], "r_max": 1})",
+        R"({"fitted_at": {"exposure": 167, "gain": 60}, "gain": [1, 1, 1],
+            "falloff": [0, 0]})",
+        "[1]"}) {
+    CHECK(refused(with(wrong), Code::InvalidArgument, "color_response "));
+  }
+  CHECK(refused(with(R"({"fitted_at": {"exposure": 167, "gain": 60},
+                         "gain": [1, 0, 1], "falloff": [0, 0], "r_max": 1})"),
+                Code::InvalidArgument,
+                "sensor A: color response: a gain is not finite above 0"));
+  CHECK(refused(with(R"({"fitted_at": {"exposure": 167, "gain": 60},
+                         "gain": [1, 1, 1], "falloff": [-4, 0],
+                         "r_max": 0.5})"),
+                Code::InvalidArgument, "F is not above 0 up to r_max"));
+  // An identity response in a version-4 file is read as none.
+  const auto identity = camera::parse_array_calibration(
+      with(R"({"fitted_at": {"exposure": 167, "gain": 60},
+               "gain": [1, 1, 1], "falloff": [0, 0], "r_max": 0})"));
+  CHECK(identity.ok() &&
+        identity.value().sensors[0].color_response.is_identity());
+  // Version 1 is read for its poses alone.
+  const auto v1 =
+      camera::parse_array_calibration(R"({"device_calibration": {"A": {)" +
+                                      pose + R"(, "color_response": [1]}}})");
+  CHECK(v1.ok() && v1.value().sensors[0].color_response.is_identity());
+
+  // Validate, and so format, refuses a response without controls or an
+  // invalid one, naming the sensor.
+  camera::ArrayCalibration one;
+  one.sensors.resize(1);
+  one.sensors[0].id = "A";
+  one.sensors[0].color_response = r;
+  vkc::Status s = camera::validate_array_calibration(one);
+  CHECK(s.domain() == Code::InvalidArgument &&
+        s.message().find("no color_controls it holds at") != std::string::npos);
+  CHECK(camera::format_array_calibration(one).status().domain() ==
+        Code::InvalidArgument);
+  one.color_controls = camera::ColorControls{167, 60};
+  one.sensors[0].color_response.r_max = 0.0;
+  s = camera::validate_array_calibration(one);
+  CHECK(s.domain() == Code::InvalidArgument &&
+        s.message().find("sensor A: color response: r_max") !=
+            std::string::npos);
+
+  // Written byte for byte: fitted_at from the controls, version 4 only with
+  // a response, and none written for the identity.
+  one.sensors[0].color_response = r;
+  const auto text = camera::format_array_calibration(one);
+  CHECK(text.ok());
+  CHECK(text.value() ==
+        "{\n  \"format\": \"volumetric_kit.array_calibration\",\n"
+        "  \"version\": 4,\n"
+        "  \"color_controls\": {\"exposure\": 167, \"gain\": 60},\n"
+        "  \"device_calibration\": {\n    \"A\": {\n"
+        "      \"color_response\": {\"fitted_at\": {\"exposure\": 167, "
+        "\"gain\": 60},\n"
+        "        \"gain\": [0.9794, 0.9705, 0.994], \"falloff\": [0.7822, "
+        "1.702], \"r_max\": 0.6713}\n    }\n  }\n}\n");
+  // Every field and every sensor, with every correction: the responses come
+  // back exactly, and without them the text is the version-3 file's.
+  camera::ArrayCalibration all = edge_cases();
+  all.sensors[2].depth_offset_m = 0.00417;
+  all.color_controls = camera::ColorControls{2000, 240};
+  const auto v3_text = camera::format_array_calibration(all);
+  CHECK(v3_text.ok() &&
+        nlohmann::json::parse(v3_text.value()).at("version") == 3);
+  all.sensors[0].color_response = r;
+  all.sensors[1].color_response = dip;
+  const auto v4_text = camera::format_array_calibration(all);
+  CHECK(v4_text.ok());
+  const auto back = camera::parse_array_calibration(v4_text.value());
+  if (!back) std::fprintf(stderr, "%s\n", back.status().message().c_str());
+  CHECK(back.ok());
+  if (check_same(all, back.value()) != 0) return 1;
+  const nlohmann::json doc = nlohmann::json::parse(v4_text.value());
+  CHECK(doc.at("version") == 4);
+  int responses = 0;
+  for (const auto& [id, sensor] : doc.at("device_calibration").items()) {
+    if (!sensor.contains("color_response")) continue;
+    ++responses;
+    CHECK(sensor.at("color_response").at("fitted_at") ==
+          nlohmann::json({{"exposure", 2000}, {"gain", 240}}));
+  }
+  CHECK(responses == 2);
+  // Back to the identity: the version-3 bytes again.
+  all.sensors[0].color_response = {};
+  all.sensors[1].color_response = {};
+  const auto again = camera::format_array_calibration(all);
+  CHECK(again.ok() && again.value() == v3_text.value());
+  return 0;
+}
+
 int test_files() {
   const vkc::test::Scratch scratch("sensor_array_calibration_");
   const std::string path = (scratch.path / "array_calibration.json").string();
@@ -914,7 +1135,7 @@ int test_files() {
   const std::string later = (scratch.path / "later.json").string();
   CHECK(vkc::write_file(later,
                         R"({"format": "volumetric_kit.array_calibration",
-                            "version": 4, "device_calibration": {}})",
+                            "version": 5, "device_calibration": {}})",
                         vkc::WriteMode::CreateNew));
   const auto later_file = camera::read_array_calibration(later);
   CHECK(!later_file.ok() && later_file.status().domain() == Code::Unsupported &&
@@ -932,6 +1153,7 @@ int main() {
   if (test_round_trip() != 0) return 1;
   if (test_depth_offset() != 0) return 1;
   if (test_color_controls() != 0) return 1;
+  if (test_color_response() != 0) return 1;
   if (test_files() != 0) return 1;
   std::printf("array calibration tests passed\n");
   return 0;

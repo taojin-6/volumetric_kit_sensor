@@ -34,7 +34,8 @@ target_include_directories(
 
 # The GLSL the package exports, for a consumer's kernels to #include as the
 # sensor's own do ("volumetric_kit/sensor/frame/shaders/pinhole.glsl"), through
-# the core's INCLUDE_TARGETS volumetric_kit::sensor_frame. The other tiers'
-# shaders read the package's src/ (vs_embed_shaders) and stay private.
+# the core's INCLUDE_TARGETS volumetric_kit::sensor_frame: the pinhole camera
+# and the sRGB curve (color_space.hpp's). The other tiers' shaders read the
+# package's src/ (vs_embed_shaders) and stay private.
 vkc_export_glsl(sensor_frame PREFIX volumetric_kit/sensor/frame/shaders FILES
-                shaders/pinhole.glsl)
+                shaders/pinhole.glsl shaders/srgb.glsl)

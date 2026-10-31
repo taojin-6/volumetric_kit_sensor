@@ -33,7 +33,8 @@ recon's examples assemble the rest.
   `DepthCameraParams`/`ColorCameraParams` (`frame/camera_params.hpp`), the
   depth noise each producer states (`frame/depth_noise.hpp`),
   `ColorEncoding`, `is_canonical` and the sRGB curve
-  (`frame/color_space.hpp`), and the GLSL pinhole it exports; beside them
+  (`frame/color_space.hpp`), and the GLSL pinhole and sRGB curve it
+  exports; beside them
   the package's GLM aliases and `device_requirements()`.
 - **`sensor`** — the sensor *interface*: `IRgbdSensor`, the `RgbdFrame` it
   hands out as captured (each camera's `camera::CameraModel`, the pixels it
@@ -196,6 +197,11 @@ decision): unprojection and rescaling come with their first caller.
   manual exposure (an exposure time and a gain in the camera's units, above
   0; auto exposure off, auto white balance on), which a rig's calibration
   records and a driver writes and reads back.
+- **`camera/color_response.hpp`** — `ColorResponse`, what a colour camera's
+  prepared colour is multiplied by in linear light so a rig's cameras agree:
+  `gain[c] * F(r)`, `F = 1 + a q + b q^2`, `q = min(r, r_max)^2`, r the
+  pinhole pixel's normalised radius (the 2026-10-31 colour-response
+  decision); `validate` is the one check the file and `GpuFramePrep` share.
 - **`camera/array_calibration.hpp`** — the sensor array's calibration file,
   version 2 under version 1's `device_calibration` key: per sensor by serial,
   an optional colour-camera pose, colour and depth `CameraCalibration`s
@@ -208,7 +214,11 @@ decision): unprojection and rescaling come with their first caller.
   written only when present; the file is version 3 only then, so an
   uncorrected calibration is written as version 2, byte for byte, and an
   older reader refuses a corrected one; a correction in a file that says
-  version 2 is refused.
+  version 2 is refused. Version 4 adds a sensor's `color_response`, beside
+  the `color_controls` it holds at and only with them (its `fitted_at` must
+  equal them), written only when it is not the identity, so a calibration
+  without one keeps its version-2 or -3 bytes; a response in an older
+  version is refused.
   `format_` / `write_array_calibration` write it
   through the core's `write_file`; version 1 is read for its poses.
 
@@ -269,6 +279,10 @@ the colour test bounds the rounded pixel. grid's depth allocation
 unprojects through its own copy of the one line it needs
 (`volume/shaders/depth_pinhole.glsl`), which recon's
 `recon_volume_depth_unproject` holds to this one bit for bit.
+`frame/shaders/srgb.glsl` is `color_space.hpp`'s curve on the device
+(`vs_srgb_to_linear`, `vs_linear_to_srgb`), exported beside it and held to
+the host's on all 256 codes (`sensor_frame_srgb_gpu`); the colour pass's
+response decodes and encodes through it.
 
 ### sensor
 
@@ -530,8 +544,9 @@ trigger stops waiting for a late sensor; it never sleeps a fixed time. A
 set's `arrival_ns` is its latest frame's (`RgbdFrame::arrival_ns`, the
 system clock at the driver's frame callback). Opened with a
 device, it makes a pass per sensor from `Options::prep`, each with its
-sensor's `depth_offset_m` from the calibration, the offset's one source (an
-offset in `Options::prep` is refused); its `record_process(batch, set)`
+sensor's `depth_offset_m` and `color_response` from the calibration, their
+one source (an offset, or a response other than the identity, in
+`Options::prep` is refused); its `record_process(batch, set)`
 records a set's preparation into a
 caller's batch through `GpuFramePrep::record_set`: every frame checked, then
 every pass's copies and every pass's kernels; `process(set)` is that, one
@@ -646,6 +661,18 @@ third pass (`remove_depth_outliers.comp`, the internal
 scans the box that holds the image of the return's ball, in square rings from
 the centre, until the count is reached or can no longer be; its arithmetic is
 the 2026-10-31 depth-outlier decision's.
+`color_response` (`camera::ColorResponse`, the identity by default; the
+2026-10-31 colour-response decision) is applied in both colour entries for
+every layout, between the R'G'B' the matrix forms (`ycbcr_rgb`, or packed
+words' samples) and the 8-bit code: clamped to [0, 1], decoded through
+`srgb.glsl`, times `gain * F(r)` at the pinhole pixel, encoded and coded
+(`responded_word`). Its parameters ride at the end of the overlap buffer
+(+28 B, not push constants: `ColorParams` is 120 of Vulkan's minimum 128),
+with an identity flag the host derives from them, at which the entries
+write `ycbcr_word`'s words, today's, byte for byte. The stereo rectifier
+calls `ycbcr_word` alone, so a correction is applied once, downstream. A
+luma-only picture on a pass with a response is refused: gains would tint
+grey.
 **`prep/`'s `PictureReadback`** copies a set's colour pictures to the
 host, luma alone or every plane, for calib's detector: NV12 images from
 their corner, and planes in a buffer where they sit, after the batch takes
