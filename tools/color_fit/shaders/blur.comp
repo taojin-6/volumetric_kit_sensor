@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Tao Jin
+
+// One pass of the colour fit's separable Gaussian over a camera's prepared
+// colour, in linear light, weighted by coverage, so a pixel the pass left
+// uncovered (or one past the image) adds nothing: the horizontal pass reads
+// the words and writes `rows`; the vertical pass reads `rows` and writes the
+// blurred image at `out_at`. Each pixel holds (sum of w * colour, sum of w), the
+// weights normalised over the whole kernel, as two half pairs; a reader takes
+// colour = rgb / w and w as the fraction of the window covered. Thread per
+// pixel of `camera`'s colour.
+
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "color_fit.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(scalar, binding = 0) readonly buffer Cameras { Camera cameras[]; };
+layout(scalar, binding = 1) readonly buffer Words { uint words[]; };
+layout(scalar, binding = 2) buffer Rows { uvec2 rows[]; };
+layout(scalar, binding = 3) writeonly buffer Blurred { uvec2 blurred[]; };
+
+layout(push_constant, scalar) uniform Push {
+  uint camera;
+  uint vertical;  // 0: words to rows; 1: rows to blurred
+  float sigma;    // pixels
+  uint out_at;    // the vertical pass's first pixel in blurred
+}
+pc;
+
+vec4 unpack_half4(uvec2 t) {
+  return vec4(unpackHalf2x16(t.x), unpackHalf2x16(t.y));
+}
+
+uvec2 pack_half4(vec4 v) {
+  return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+}
+
+// A prepared word as (linear colour, 1) where covered, else 0.
+vec4 covered_linear(uint word) {
+  if ((word >> 24) != 0xFFu) return vec4(0.0);
+  const vec3 e = vec3(word & 0xFFu, (word >> 8) & 0xFFu, (word >> 16) & 0xFFu);
+  return vec4(vs_srgb_to_linear(e * (1.0 / 255.0)), 1.0);
+}
+
+void main() {
+  const Camera cam = cameras[pc.camera];
+  const uint w = cam.color_width;
+  const uint h = cam.color_height;
+  const uint i = gl_GlobalInvocationID.x;
+  if (i >= w * h) return;
+  const int x = int(i % w);
+  const int y = int(i / w);
+  const int radius = int(ceil(3.0 * pc.sigma));
+  const float k = -0.5 / (pc.sigma * pc.sigma);
+
+  vec4 sum = vec4(0.0);
+  float norm = 0.0;
+  for (int d = -radius; d <= radius; ++d) {
+    const float g = exp(k * float(d * d));
+    norm += g;
+    if (pc.vertical == 0u) {
+      const int xi = x + d;
+      if (xi < 0 || xi >= int(w)) continue;
+      sum += g * covered_linear(words[cam.color_at + uint(y) * w + uint(xi)]);
+    } else {
+      const int yi = y + d;
+      if (yi < 0 || yi >= int(h)) continue;
+      sum += g * unpack_half4(rows[uint(yi) * w + uint(x)]);
+    }
+  }
+  sum /= norm;
+  if (pc.vertical == 0u) {
+    rows[i] = pack_half4(sum);
+  } else {
+    blurred[pc.out_at + cam.color_at + i] = pack_half4(sum);
+  }
+}

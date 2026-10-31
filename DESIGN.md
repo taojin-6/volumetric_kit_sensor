@@ -947,6 +947,40 @@ and translate backend exceptions that reach them into `Status`/`Result`;
 private third-party types never appear in public headers. The backend is the
 pinned stb source, a private implementation dependency of `sensor_image_io`.
 
+### colour response fit (tools/color_fit)
+
+`tools/color_fit/` fits each camera's `camera::ColorResponse` from posed sets
+of a static scene, prepared with identity responses (the 2026-10-31
+colour-fit decision). `sensor_color_fit` is an internal static library
+(`color_fit::ColorFit`, no export macro, not installed), built with the tests
+on every leg so `sensor_color_fit` runs there; the `color_fit` tool that opens
+the rig builds with `VS_WITH_ORBBEC`, and no test runs it. It takes any array
+of two or more sensors of one `SensorInfo::model`, each with colour and depth;
+only the tool's open is Orbbec's.
+
+Every per-pixel step is a kernel (`tools/color_fit/shaders/`, over the
+exported `pinhole.glsl` and `srgb.glsl`). `add(set)`, one submit: each
+camera's words decoded to linear light and blurred at sigma 2 and 8, weighted
+by coverage (`blur.comp`); each ordered pair sampled from A's depth pixels and
+gated, counted, then kept by a hashed ratio to `Options::samples` (1 M) over
+`Options::sets` sets, each pair's samples a run of their own, with both
+pixels' radii in a per-camera histogram (`sample.comp`). `solve`: r_max is
+each camera's 99th-percentile sample radius; the Huber IRLS normal equations,
+the residuals of each hold-out half and the gauge's moments are summed per
+ordered pair (`normal_equations.comp`, chunks, then a compensated reduce per
+pair), and the host solves the 5N - 3 system by Levenberg-Marquardt; the
+share of covered pixels a response takes to 255 is counted on the last set
+(`pushed.comp`). It returns the report and the input calibration with every
+response; the tool prints the one and writes the other to a new file
+(`WriteMode::CreateNew`), with H.265 colour, the rig's live codec.
+
+**Runbook.** Geometry calibration first; then carry the array's
+`color_controls`, depth offsets and responses into the new file by hand.
+Run `color_fit --sync <rig_sync.json> --calibration <in.json> --out
+<new.json>` in an empty, static room under the rig's usual lights: 8 sets a
+second apart by default. Refit only after a relock or an intrinsics change:
+the response is the lens's and the unit's, not the pose's.
+
 ## Next work
 
 **Cameras and sensors for the family (the 2026-10-06 plan).** This package is

@@ -157,6 +157,17 @@ vs_target_warnings(sensor_gpu_frame_prep_response_test)
 add_test(NAME sensor_gpu_frame_prep_response
          COMMAND sensor_gpu_frame_prep_response_test)
 
+# tools/color_fit's fit on synthetic posed rigs with a lens: planted gains and
+# vignetting fitted and then applied by GpuFramePrep down to the noise floor,
+# the G2 gauge, one IRLS step against a double host oracle, and the refusals.
+# Skips where no device is present.
+add_executable(sensor_color_fit_test color_fit_test.cpp)
+target_link_libraries(
+  sensor_color_fit_test PRIVATE sensor_color_fit volumetric_kit::sensor_prep
+                                volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_color_fit_test)
+add_test(NAME sensor_color_fit COMMAND sensor_color_fit_test)
+
 # The frame prep's depth outlier filter on synthetic scenes: bit for bit against
 # a host reference in float, through a pinhole and a lens, at a slab's median
 # count, on ties at the radius, at the largest radius, after the colour-view

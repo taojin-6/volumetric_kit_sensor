@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Tao Jin
+
+// The colour fit's Huber IRLS normal equations and residual sums at the
+// cameras' current responses, per ordered pair, in two passes:
+//   - reduce == 0: workgroup per chunk (a run of one pair's samples), each
+//     thread summing its strided samples into a row of kRow floats in
+//     `partials`;
+//   - reduce == 1: workgroup per pair, thread per value, a compensated sum of
+//     the pair's chunks' rows into `rows`.
+// A sample's residual, per channel, is how well A predicts B in 8-bit levels:
+// r = 255 (enc(a gain_A F_A / (gain_B F_B)) - enc(b)), q capped at each
+// camera's q_max. Its derivative in d = log(gain_A / gain_B) + log F_A -
+// log F_B is s = 255 enc'(p) p, and d's in the parameters is u =
+// (1, qa / F_A, qa^2 / F_A, qb / F_B, qb^2 / F_B) up to sign, so a row holds,
+// per channel, the 15 moments of w s^2 u u^T and the 5 of w s r u (Huber
+// weight w), over the training half only; then the Huber loss (training
+// half), r^2 and the sample count per half, and the gauge moments (n is the
+// two halves' counts) sum qa, qa^2, qb, qb^2 over every sample.
+
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "color_fit.glsl"
+
+layout(local_size_x = 128) in;
+
+// color_fit.cpp's kRow and where its sums are.
+const uint kRow = 72;
+const uint kLoss = 60;
+const uint kSquares = 61;  // + held
+const uint kCount = 63;    // + held
+const uint kGauge = 65;    // sum qa, qa^2, qb, qb^2
+
+layout(scalar, binding = 0) readonly buffer Samples { Sample samples[]; };
+layout(scalar, binding = 1) readonly buffer Params { ResponseParams params[]; };
+// Per chunk: its first sample, its count, its pair's index, unused.
+layout(scalar, binding = 2) readonly buffer Chunks { uvec4 chunks[]; };
+layout(scalar, binding = 3) buffer Partials { float partials[]; };
+// Per pair: its first chunk and its chunk count.
+layout(scalar, binding = 4) readonly buffer Pairs { uvec2 pairs[]; };
+layout(scalar, binding = 5) writeonly buffer Rows { float rows[]; };
+
+layout(push_constant, scalar) uniform Push {
+  uint reduce;
+  uint train_held;  // the half trained on
+  float huber;      // levels
+}
+pc;
+
+// d enc / d linear, on the curve's branches.
+float srgb_slope(float l) {
+  return l <= 0.0031308 ? 12.92 : (1.055 / 2.4) * pow(l, 1.0 / 2.4 - 1.0);
+}
+
+float huber_loss(float r) {
+  const float m = abs(r);
+  return m <= pc.huber ? 0.5 * r * r : pc.huber * (m - 0.5 * pc.huber);
+}
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  if (pc.reduce == 1u) {
+    if (tid >= kRow) return;
+    const uvec2 pair = pairs[gl_WorkGroupID.x];
+    float sum = 0.0, carry = 0.0;
+    const uint end = (pair.x + pair.y) * 128u;
+    for (uint row = pair.x * 128u; row < end; ++row) {
+      const float y = partials[row * kRow + tid] - carry;
+      const float t = sum + y;
+      carry = (t - sum) - y;
+      sum = t;
+    }
+    rows[gl_WorkGroupID.x * kRow + tid] = sum;
+    return;
+  }
+
+  float acc[kRow];
+  for (uint k = 0; k < kRow; ++k) acc[k] = 0.0;
+  const uvec4 chunk = chunks[gl_WorkGroupID.x];
+  for (uint s = chunk.x + tid; s < chunk.x + chunk.y; s += 128u) {
+    const Sample x = samples[s];
+    const uint held = (x.cams >> 16) & 1u;
+    const ResponseParams pa = params[x.cams & 0xFFu];
+    const ResponseParams pb = params[(x.cams >> 8) & 0xFFu];
+    const float qa = min(x.qa, pa.q_max);
+    const float qb = min(x.qb, pb.q_max);
+    const float fa = vs_cf_falloff(pa, qa);
+    const float fb = vs_cf_falloff(pb, qb);
+    const float u[5] = float[5](1.0, qa / fa, qa * qa / fa, qb / fb, qb * qb / fb);
+    const bool train = held == pc.train_held;
+    float squares = 0.0;
+    for (uint c = 0; c < 3u; ++c) {
+      const float p = x.a[c] * (pa.gain[c] * fa) / (pb.gain[c] * fb);
+      const float r = 255.0 * (vs_linear_to_srgb(p) - vs_linear_to_srgb(x.b[c]));
+      squares += r * r;
+      if (!train) continue;
+      const float slope = 255.0 * srgb_slope(p) * p;
+      const float w = abs(r) <= pc.huber ? 1.0 : pc.huber / abs(r);
+      const float ws2 = w * slope * slope;
+      const float wsr = w * slope * r;
+      uint m = c * 20u;
+      for (uint j = 0; j < 5u; ++j) {
+        for (uint k = j; k < 5u; ++k) acc[m++] += ws2 * u[j] * u[k];
+      }
+      for (uint j = 0; j < 5u; ++j) acc[c * 20u + 15u + j] += wsr * u[j];
+      acc[kLoss] += huber_loss(r);
+    }
+    acc[kSquares + held] += squares;
+    acc[kCount + held] += 1.0;
+    acc[kGauge + 0u] += qa;
+    acc[kGauge + 1u] += qa * qa;
+    acc[kGauge + 2u] += qb;
+    acc[kGauge + 3u] += qb * qb;
+  }
+  const uint row = gl_WorkGroupID.x * 128u + tid;
+  for (uint k = 0; k < kRow; ++k) partials[row * kRow + k] = acc[k];
+}

@@ -386,6 +386,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   the pinhole pixel's radius; a version-4 field held to the file's
   `color_controls` by its `fitted_at`, the identity never written; gauge G2
   (the shared floor keeps its brightness).
+- [**2026-10-31**](#2026-10-31--the-colour-responses-are-fitted-on-the-gpu-by-an-internal-tool-huber-irls-on-cross-view-samples-held-out-by-world-cubes-gauge-g2) —
+  The colour responses are fitted on the GPU by an internal tool
+  (`tools/color_fit`): cross-view samples at sigma 8 under the harness's
+  gates, kept by a hashed ratio to 1 M, Huber (3 levels) Gauss-Newton IRLS
+  with Levenberg-Marquardt, camera 0's log-gains pinned, gauge G2, half
+  of hashed 25 cm world cubes held out; one model per array; nothing is
+  written on a refusal, and the tool never replaces a file.
 
 ## Decision record
 
@@ -5548,3 +5555,101 @@ validation layer, on the Apple M5 Max (macOS 27.2): the whole suite passes,
 43 tests. The identity's words are 0.13.0's byte for byte on the M5 Max,
 all seven layouts (`sensor_gpu_frame_prep_identity` on both builds); the
 NVIDIA comparison is not yet run. No camera was opened.
+
+### 2026-10-31 — The colour responses are fitted on the GPU by an internal tool: Huber IRLS on cross-view samples, held out by world cubes, gauge G2.
+
+**The rule.** `tools/color_fit` fits every camera's `camera::ColorResponse`
+from posed sets of a static scene, prepared with identity responses.
+- **Where.** In this package: the fit needs only the contract (posed
+  `DeviceFrameSet`s, the calibration file, `pinhole.glsl`, `srgb.glsl`), no
+  OpenCV, board or window. An internal static library with one user, the
+  tool, so no public header; the library and its test build with the tests
+  on every leg, the tool with `VS_WITH_ORBBEC`, since it opens the rig
+  through `open_orbbec_sensors`. Promoted to a tier with a second user.
+- **Input.** The rig's live codec, H.265, at the calibration's
+  `color_controls`: the fit calibrates the colour fusion sees. The tool
+  clears any responses before it opens the array.
+- **Samples.** For each ordered pair (A, B), from A's depth pixels, gated as
+  the study's harness gated them: both returns valid and continuous (a 5x5
+  window with no hole within 3 cm of its plane); B's depth within max(2 cm,
+  1% z); B's return back within 1.5 px of A's pixel; 4 px inside A's depth
+  border and 32 px inside its colour border; covered in both views; no
+  channel at 250 or above, and not all below 8, in either view at sigma 0,
+  2 or 8. A sample is A's and B's colour at sigma 8, linear, blurred with
+  coverage weights, and each pixel's pinhole radius. Each set keeps
+  `samples / sets` of its passing samples by a hash of the set, the pair and
+  the pixel (counted first, in the same submit): 1 M over 8 sets.
+- **Model and solve.** The response family of the colour-response entry,
+  q capped at each camera's r_max, the 99th percentile of its kept pixels'
+  radii. The residual is how well A predicts B in 8-bit levels, enc(a gain_A
+  F_A / (gain_B F_B)) - enc(b); Huber at 3 levels; Gauss-Newton IRLS with
+  Levenberg-Marquardt damping on the 5N - 3 parameters (three log-gains, a
+  and b a camera, camera 0's log-gains pinned, no ridge). The normal
+  equations, residuals and gauge moments are summed on the GPU per ordered
+  pair; the host solves the small system by Cholesky.
+- **Hold-out.** Two halves by a hash of 25 cm world cubes, so a point's two
+  directions share one; it fits half 0, reports half 1, and writes the
+  half-0 fit.
+- **Gauge G2.** Every gain divided, per channel, by the mean of gain F over
+  both pixels of every kept sample, from each camera's n, sum q and sum q^2.
+- **Refusals; nothing is written.** Fewer than two sensors, a repeated id,
+  sensors of different `SensorInfo::model`s, one without colour or depth; a
+  set of another size, a frame without colour or depth, a set past
+  `Options::sets`; a calibration without `color_controls` or without a
+  sensor; a camera with fewer than 5,000 kept pixels or an overlap graph
+  (pairs of 1,000 samples or more) that leaves cameras apart, each named; F
+  not above 0 up to r_max; a held-out RMS not below the identity's. The tool
+  also refuses a run whose sets a camera dropped, after 4 tries a set.
+- **Report.** RMS in levels at sigma 8, for the identity (held out), the fit
+  (train) and the fit held out, overall and per ordered pair; per camera,
+  its samples, gains, correction at r 0 and at r_max in stops, r_max, and
+  the share of covered pixels the response takes to 255.
+
+**Why.** From the cross-camera colour study on the 4-Femto rig (2026-10-26
+to 10-31, MJPEG):
+- The estimator is the study's: on the locked arm it took the held-out
+  residual from 13.07 to 6.271 levels, fitting a 1 M subsample of 8.56 M
+  samples from 8 sets in 9 s on an RTX 4090; a 20 k-a-set budget gave the
+  same fit to 0.01 level. Hashed 25 cm cubes held out 6.27-6.30, as
+  alternate 0.5 m squares of the floor did, with no floor plane to find.
+- Pinning camera 0's log-gains without a ridge leaves the result free of
+  the pinned camera, which G2 then fixes; the held-out residual is the
+  same under every gauge. a and b are weakly identified apart, so the
+  report gives F(r), not the coefficients.
+- Mixed models are refused: a D455 takes a Femto's 167/60, so such an array
+  passes the lock check, but gains alone cannot match two models' colour;
+  a 3x3 waits for that rig.
+- The study fitted MJPEG; H.265 decodes to the MJPEG colour within gains
+  0.996-0.999 on a still view and 0.974-1.000 across rig tests (recon's
+  H.265 colour measurements). The rig run checks the H.265 fit.
+- The thresholds are set here, not measured: the study kept 63-109 k
+  samples per ordered pair per set, so 1 M over 8 sets of a 4-camera rig is
+  about 500 k pixels a camera; 5,000 is 1% of that.
+
+**Cost.** Calibration time only; nothing per frame. Seen in the test (3
+cameras at 640x480, 2 sets, 321 k samples): the solve, 24-32 passes over
+the samples, takes 24-30 ms on the M5 Max and 5-6 ms on an RTX 5090. For the
+rig, estimated, not measured: about 10 s of capture for 8 sets, a solve
+well under the study's 9 s, about 40 MB of samples and 0.7 GB of copied
+and blurred colour for four 4K cameras.
+
+**Tests.** `sensor_color_fit`, on synthetic rigs ray-cast on the host: three
+posed cameras with a barrel lens over a textured floor and box, raw
+pictures with planted per-camera gains, vignetting and 2-level noise,
+prepared by `GpuFramePrep`. The fit takes the held-out residual from 7.87
+to 1.44 levels; the sets prepared again with the fitted responses hold out
+1.39 levels, against a noise floor of 1.47 for the same rig planted with
+nothing, which ties the fit's r, cap and sRGB curve to the colour pass's.
+G2's mean of gain F, in double from the kept samples, is 1 within 5e-8.
+One IRLS step on 972 samples, at responses whose r_max leaves 610 beyond
+it, matches a double host oracle (F from `ColorResponse::falloff`) to 8e-7
+relative in the system and 3e-5 in the step. The refusals above, by their
+messages, but F's, the held-out one and the tool's. Mutants, each failing
+the test: q uncapped in the normal equations (G2 off by 4e-4), both halves
+trained on (the oracle, the system off by 100%), and G2 over A's pixel
+alone (G2 off by 1.2e-2).
+
+**Validation.** Release with warnings as errors, default options, under the
+validation layer, on the M5 Max: the whole suite passes, 44 tests. On an
+RTX 5090 (Linux, `VS_WITH_ORBBEC`, CUDA and FFmpeg on) the library, its
+test and the tool build, and the test passes. No camera was opened.

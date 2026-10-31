@@ -1,0 +1,239 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Tao Jin
+
+// The colour fit's cross-view samples for one ordered pair (A, B), thread per
+// A depth pixel: its point unprojected to the world and projected into A's
+// colour, B's depth and B's colour, then gated as the 2026-10 study's harness
+// gated it:
+//   - A's return and B's nearest one valid and continuous: a 5x5 window with
+//     no hole whose depth lies within 3 cm of its least-squares plane;
+//   - at least 4 px from A's depth border and 32 px from its colour border;
+//   - B's depth within max(2 cm, 1% z) of the point's, and B's return,
+//     unprojected and projected back into A's depth, within 1.5 px of A's
+//     pixel;
+//   - A's and B's colour covered at sigma 0 (all four bilinear taps) and over
+//     99% of the window at sigma 2 and 8, with no channel at 250 or above and
+//     not every channel below 8, in either view at any sigma.
+// keep == 0 counts the set's passing samples into counters[0]; keep == 1
+// keeps each with probability budget / counters[0] (a hash of the set, the
+// pair and the pixel), appends it at counters[1] while below `capacity`
+// (counting the rest in counters[2]), and adds both pixels' radii to their
+// cameras' histograms. A sample's hold-out half is a hash of the 25 cm world
+// cube its point is in, so a surface point's two directions share one.
+
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "color_fit.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(scalar, binding = 0) readonly buffer Cameras { Camera cameras[]; };
+layout(scalar, binding = 1) readonly buffer Depths { float depths[]; };
+layout(scalar, binding = 2) readonly buffer Words { uint words[]; };
+layout(scalar, binding = 3) readonly buffer Blurred { uvec2 blurred[]; };
+layout(scalar, binding = 4) buffer Counters { uint counters[]; };
+layout(scalar, binding = 5) writeonly buffer Samples { Sample samples[]; };
+layout(scalar, binding = 6) buffer Histogram { uint histogram[]; };
+
+layout(push_constant, scalar) uniform Push {
+  uint a;
+  uint b;
+  uint keep;
+  uint set;
+  uint budget;    // samples to keep of this set
+  uint capacity;  // samples the buffer holds
+  uint sigma2_at;  // the sigma-2 image's first pixel in blurred
+  uint sigma8_at;  // the sigma-8 image's
+  uint bins;       // histogram bins per camera
+  float bin_width;  // in radius
+  float cube_m;     // the hold-out's cube edge
+}
+pc;
+
+// The camera's depth at pixel p, 0 outside it.
+float depth_at(Camera c, ivec2 p) {
+  if (p.x < 0 || p.y < 0 || p.x >= int(c.depth_width) ||
+      p.y >= int(c.depth_height)) {
+    return 0.0;
+  }
+  return depths[c.depth_at + uint(p.y) * c.depth_width + uint(p.x)];
+}
+
+// Whether the return at p is valid and continuous: its 5x5 window holds no
+// hole, and every depth lies within 3 cm of the window's least-squares plane
+// in pixel coordinates (the window's moments are symmetric, so the plane is
+// the mean plus the two slopes alone). Sets z to the return.
+bool continuous(Camera c, ivec2 p, out float z) {
+  float window[25];
+  float mean = 0.0, su = 0.0, sv = 0.0;
+  for (int dv = -2; dv <= 2; ++dv) {
+    for (int du = -2; du <= 2; ++du) {
+      const float d = depth_at(c, p + ivec2(du, dv));
+      if (!(d > 0.0)) return false;
+      window[(dv + 2) * 5 + du + 2] = d;
+      mean += d;
+      su += float(du) * d;
+      sv += float(dv) * d;
+    }
+  }
+  mean *= 1.0 / 25.0;
+  su *= 1.0 / 50.0;  // sum du^2 over the window
+  sv *= 1.0 / 50.0;
+  for (int dv = -2; dv <= 2; ++dv) {
+    for (int du = -2; du <= 2; ++du) {
+      const float fit = mean + su * float(du) + sv * float(dv);
+      if (abs(window[(dv + 2) * 5 + du + 2] - fit) > 0.03) return false;
+    }
+  }
+  z = window[12];
+  return true;
+}
+
+vec3 world_of(vec3 p_cam, mat4 to_world) {
+  return (to_world * vec4(p_cam, 1.0)).xyz;
+}
+
+// A prepared word as linear colour, and whether it is covered.
+bool linear_word(uint word, out vec3 rgb) {
+  const vec3 e = vec3(word & 0xFFu, (word >> 8) & 0xFFu, (word >> 16) & 0xFFu);
+  rgb = vs_srgb_to_linear(e * (1.0 / 255.0));
+  return (word >> 24) == 0xFFu;
+}
+
+// The colour at continuous pixel px, bilinear in linear light: at sigma 0
+// from the words, all four taps covered; otherwise from the blurred image at
+// `at`, at least 99% of the window covered.
+bool color_at(Camera c, vec2 px, uint level, uint at, out vec3 rgb) {
+  const vec2 f = floor(px);
+  const ivec2 p = ivec2(f);
+  const vec2 t = px - f;
+  if (p.x < 0 || p.y < 0 || p.x + 1 >= int(c.color_width) ||
+      p.y + 1 >= int(c.color_height)) {
+    return false;
+  }
+  const uint w = c.color_width;
+  const uint i00 = c.color_at + uint(p.y) * w + uint(p.x);
+  const uint idx[4] = uint[4](i00, i00 + 1u, i00 + w, i00 + w + 1u);
+  const float wt[4] = float[4]((1.0 - t.x) * (1.0 - t.y), t.x * (1.0 - t.y),
+                               (1.0 - t.x) * t.y, t.x * t.y);
+  vec4 acc = vec4(0.0);
+  for (int k = 0; k < 4; ++k) {
+    if (level == 0u) {
+      vec3 l;
+      if (!linear_word(words[idx[k]], l)) return false;
+      acc += wt[k] * vec4(l, 1.0);
+    } else {
+      const uvec2 h = blurred[at + idx[k]];
+      acc += wt[k] * vec4(unpackHalf2x16(h.x), unpackHalf2x16(h.y));
+    }
+  }
+  if (!(acc.w >= 0.99)) return false;
+  rgb = acc.rgb / acc.w;
+  return true;
+}
+
+// Whether a colour passes the level gate: no channel at 250 or above, and
+// not every channel below 8.
+bool in_range(vec3 linear) {
+  const vec3 code = 255.0 * vs_linear_to_srgb(clamp(linear, 0.0, 1.0));
+  return all(lessThan(code, vec3(250.0))) &&
+         any(greaterThanEqual(code, vec3(8.0)));
+}
+
+// The colour at px at sigma 0, 2 and 8, every one in range; sets the
+// sigma-8 colour.
+bool colors(Camera c, vec2 px, out vec3 sigma8) {
+  vec3 s0, s2;
+  if (!color_at(c, px, 0u, 0u, s0) || !in_range(s0)) return false;
+  if (!color_at(c, px, 2u, pc.sigma2_at, s2) || !in_range(s2)) return false;
+  if (!color_at(c, px, 8u, pc.sigma8_at, sigma8) || !in_range(sigma8)) {
+    return false;
+  }
+  return true;
+}
+
+uint bin_of(float r) {
+  return min(uint(r / pc.bin_width), pc.bins - 1u);
+}
+
+void main() {
+  const Camera ca = cameras[pc.a];
+  const Camera cb = cameras[pc.b];
+  const uint i = gl_GlobalInvocationID.x;
+  if (i >= ca.depth_width * ca.depth_height) return;
+  const ivec2 p = ivec2(i % ca.depth_width, i / ca.depth_width);
+  if (p.x < 4 || p.y < 4 || p.x >= int(ca.depth_width) - 4 ||
+      p.y >= int(ca.depth_height) - 4) {
+    return;
+  }
+  float za;
+  if (!continuous(ca, p, za)) return;
+  const vec3 world =
+      world_of(vs_unproject_pinhole(vec2(p), za, ca.depth_k), ca.depth_to_world);
+
+  // A's colour, 32 px inside its border.
+  vec2 pa;
+  if (!vs_project_pinhole(vs_world_to_camera(ca.color_to_world, world),
+                          ca.color_k, uvec2(ca.color_width, ca.color_height),
+                          pa)) {
+    return;
+  }
+  if (pa.x < 32.0 || pa.y < 32.0 || pa.x > float(ca.color_width) - 33.0 ||
+      pa.y > float(ca.color_height) - 33.0) {
+    return;
+  }
+
+  // B's depth agrees, and B's return lands back on A's pixel.
+  const uvec2 b_size = uvec2(cb.depth_width, cb.depth_height);
+  const vec3 in_b = vs_world_to_camera(cb.depth_to_world, world);
+  vec2 db;
+  if (!vs_project_pinhole(in_b, cb.depth_k, b_size, db)) return;
+  const uvec2 nb = vs_nearest_pixel(db, b_size);
+  float zb;
+  if (!continuous(cb, ivec2(nb), zb)) return;
+  if (abs(zb - in_b.z) > max(0.02, 0.01 * in_b.z)) return;
+  const vec3 back_world =
+      world_of(vs_unproject_pinhole(vec2(nb), zb, cb.depth_k), cb.depth_to_world);
+  vec2 back;
+  if (!vs_pinhole_pixel(vs_world_to_camera(ca.depth_to_world, back_world),
+                        ca.depth_k, back)) {
+    return;
+  }
+  if (!(distance(back, vec2(p)) <= 1.5)) return;
+
+  // B's colour.
+  vec2 pb;
+  if (!vs_project_pinhole(vs_world_to_camera(cb.color_to_world, world),
+                          cb.color_k, uvec2(cb.color_width, cb.color_height),
+                          pb)) {
+    return;
+  }
+  vec3 a8, b8;
+  if (!colors(ca, pa, a8) || !colors(cb, pb, b8)) return;
+
+  if (pc.keep == 0u) {
+    atomicAdd(counters[0], 1u);
+    return;
+  }
+  const float ratio =
+      min(1.0, float(pc.budget) / float(max(counters[0], 1u)));
+  const uint h =
+      vs_cf_hash(vs_cf_hash(vs_cf_hash(pc.set) ^ (pc.a | pc.b << 8)) ^ i);
+  if (!(float(h >> 8) * (1.0 / 16777216.0) < ratio)) return;
+  const uint at = atomicAdd(counters[1], 1u);
+  if (at >= pc.capacity) {
+    atomicAdd(counters[2], 1u);
+    return;
+  }
+  const float ra = length((pa - ca.color_k.zw) / ca.color_k.xy);
+  const float rb = length((pb - cb.color_k.zw) / cb.color_k.xy);
+  const ivec3 cube = ivec3(floor(world / pc.cube_m));
+  const uint held =
+      vs_cf_hash(vs_cf_hash(vs_cf_hash(uint(cube.x)) ^ uint(cube.y)) ^
+                 uint(cube.z)) & 1u;
+  samples[at] = Sample(a8, b8, ra * ra, rb * rb, pc.a | pc.b << 8 | held << 16);
+  atomicAdd(histogram[pc.a * pc.bins + bin_of(ra)], 1u);
+  atomicAdd(histogram[pc.b * pc.bins + bin_of(rb)], 1u);
+}
