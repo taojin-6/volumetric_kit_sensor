@@ -4,8 +4,8 @@
 // undistort_depth.comp. One thread per pixel: a return is kept where at
 // least pc.min_points returns, itself included, lie strictly within r of its
 // pinhole point, and is 0, no return, elsewhere. r is pc.radius_per_m * z,
-// k pixel footprints at the return's own depth (k z / fx, k / fx folded on
-// the host). A surface holds about pi k^2 cos(theta) returns within k
+// k pixel footprints at the return's own depth (k z / fx, k / fx computed
+// on the host). A surface holds about pi k^2 cos(theta) returns within k
 // footprints at any depth; the curtain of flying pixels a matcher or a ToF
 // sensor leaves between a foreground and a background lies along the rays
 // and holds about 2k + 1.

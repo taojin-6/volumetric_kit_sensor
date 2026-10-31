@@ -5292,11 +5292,12 @@ loop instead passes each result that could be fused or regrouped through
 an xor of its bits with `OutlierParams::zero`, a push constant that is
 always 0 and that no compiler can see through: 8 integer ops a neighbour.
 With neither, Metal's fast math moves 0-12 px a frame. The test is strict
-`<`, as Open3D's search is, and r is `z * (k / fx)`, folded on the host, as
-Vulkan's division is good to 2.5 ulp only. On 7 inputs (5 recorded frames,
-2 of random depth, at 30 points) the masks equal a float32 emulation of the
-arithmetic, 0 px, on the M5 Max and on the RTX 5090, in this form as with
-`precise` throughout, and lie 0-2 px a frame from float64 (cKDTree).
+`<`, as Open3D's search is, and r is `z * (k / fx)`, k / fx made on the
+host, as Vulkan's division is good to 2.5 ulp only. On 7 inputs (5
+recorded frames, 2 of random depth, at 30 points) the masks equal a
+float32 emulation of the arithmetic, 0 px, on the M5 Max and on the RTX
+5090, in this form as with `precise` throughout, and lie 0-2 px a frame
+from float64 (cKDTree).
 
 **The window.** Every neighbour within r lies in the box of the ball's
 image, `f r (|t| r + sqrt(z^2 (1 + t^2) - r^2)) / (z^2 - r^2)` px along each
