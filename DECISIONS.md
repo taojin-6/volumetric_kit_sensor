@@ -5254,9 +5254,9 @@ where every depth sensor's frames pass, after undistortion, which pinhole
 points need: a generic fix, not a driver's.
 
 **A radius in pixel footprints.** A fixed metric radius holds fewer pixels
-the farther the surface: Open3D's demo setting (3 cm, 30 points) deletes
-37% of the D455 corridor's returns at 1280x720 and 84% of its smooth
-surface beyond 5 m. A radius of k footprints holds the same pixels at every
+the farther the surface: the FFS demo's Open3D call (3 cm, 30 points)
+deletes 37% of the D455 corridor's returns at 1280x720 and 84% of its
+smooth surface beyond 5 m. A radius of k footprints holds the same pixels at every
 depth: about `pi k^2 cos(theta)` on a surface (201 cos(theta) at 8, so a
 surface stays to 84 degrees of slant), about `2k + 1` (17) on a curtain
 along the rays, and half a disc on an outline's rim.
@@ -5326,10 +5326,10 @@ device memory a camera at 1280x720: four cameras at 960x544 take 0.26-0.38
 ms a frame, 0.69 ms on random depth.
 
 **Off by default.** A removed return reaches fusion as no return: how that
-meets recon's change-driven reset (#317, #318) waits for a replay of a walk,
-and the Femto Mega's depth engine already drops mixed edge pixels, so its
-setting is unverified. Turning it on, for every sensor or per sensor, is a
-later change.
+meets recon's change-driven reset (recon #317, #318) waits for a replay of
+a walk, and the Femto Mega's depth engine already drops mixed edge pixels,
+so its setting is unverified. Turning it on, for every sensor or per
+sensor, is a later change.
 
 **Tests.** `sensor_gpu_frame_prep_outliers`, through the public API, holds
 the output bit for bit to a host reference in float, each operation its own
