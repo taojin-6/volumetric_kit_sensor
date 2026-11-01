@@ -90,11 +90,13 @@ struct RectifiedPair {
   /// @ref kQueueFamilyIgnored.
   std::uint32_t queue_family = kQueueFamilyIgnored;
   StereoRig rig;  ///< The views' camera and baseline.
-  /// The frame they came from: colour and times pass through, and its
-  /// pictures stay held. A picture in a buffer the pass took over -- the left
-  /// and right ones, and a colour picture in one of their buffers -- reads
-  /// @ref kQueueFamilyIgnored here, so a later stage reads this frame, not
-  /// the one passed to @ref StereoRectifier::rectify.
+  /// The frame they came from: colour and times pass through, and its left
+  /// and colour pictures stay held. The right picture, read, is let go: it has
+  /// no planes here, and `right_pixels` is null. A picture in a buffer the
+  /// pass took over -- the left one, and a colour picture in the left or
+  /// right one's buffer -- reads @ref kQueueFamilyIgnored here, so a later
+  /// stage reads this frame, not the one passed to
+  /// @ref StereoRectifier::rectify.
   StereoFrame source;
 };
 

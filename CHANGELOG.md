@@ -4,6 +4,42 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-11-01
+
+### Added
+
+- **A stereo frame's skew and its source's bound.** `StereoFrame::skew_ns`,
+  the right picture's capture time less the left's (`timestamp_ns`), and
+  `StereoInfo::max_skew_ns`, the most any two pictures of a frame lie apart:
+  frames past it are counted failed, never handed out. `RealSenseStereo`
+  states its two infrared stamps' difference, 0 on a D455 (one exposure),
+  and half a frame, the bound its framesets keep.
+- **The right picture's own owner.** `StereoFrame::right_pixels`, for a
+  source whose right picture is apart from `pixels`.
+- **`stereo_calibration(file, left_id, right_id)`**
+  (`stereo/stereo_calibration.hpp`): the `StereoCalibration` two entries of
+  a calibration file make, each camera posed with a colour model,
+  `left_to_right = inverse(right.color_to_world) * left.color_to_world`;
+  `InvalidArgument` for a file the validator refuses, one id twice, an id
+  missing, unposed or without colour, cameras at one place, or lenses of
+  different sizes.
+- `tests/stereo_contract.hpp`: the sync contract every stereo source's
+  frames keep, one check for a test camera and each driver's unit.
+
+### Changed
+
+- **BREAKING: `StereoRectifier::rectify` lets the right picture go** once
+  its pass has read it: `RectifiedPair::source` has no right planes and no
+  `right_pixels`. `StereoDepthSensor` lets the camera's frame go once
+  rectified, so the right picture is free before FFS runs and a depth frame
+  holds the left picture alone. DECISIONS.md, the 2026-11-01 stereo-sync
+  entry.
+- A RealSense frameset is one moment when every two of its pictures lie
+  within half a frame, in the whole-nanosecond stamps its frames carry (each
+  was held to the first, in milliseconds), so `RealSenseStereo`'s frames
+  keep their bound exactly. Both drivers share the rule; a D455's framesets
+  pass as before.
+
 ## [0.16.0] - 2026-11-01
 
 ### Added

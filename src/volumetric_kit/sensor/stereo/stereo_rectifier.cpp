@@ -790,10 +790,13 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
   pair.queue_family = exported ? kQueueFamilyExternal : kQueueFamilyIgnored;
   pair.rig = rectification.rig;
   pair.source = frame;
-  // Taken over by the pass's family: the left and right pictures, and a
-  // colour picture in one of their buffers.
-  for (YuvImage* image :
-       {&pair.source.left, &pair.source.right, &pair.source.color}) {
+  // The right picture is read: it goes, its own owner with it, so its buffer
+  // may return to the source while a matcher runs.
+  pair.source.right = {};
+  pair.source.right_pixels = nullptr;
+  // Taken over by the pass's family: the left picture, and a colour picture
+  // in its buffer or the right one's.
+  for (YuvImage* image : {&pair.source.left, &pair.source.color}) {
     if (image->device != nullptr && taken.find(*image->device) >= 0) {
       image->queue_family = kQueueFamilyIgnored;
     }

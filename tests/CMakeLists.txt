@@ -297,6 +297,17 @@ target_link_libraries(
 vs_target_warnings(sensor_stereo_rectifier_test)
 add_test(NAME sensor_stereo_rectifier COMMAND sensor_stereo_rectifier_test)
 
+# The stereo tier's own pieces: a pair from two calibration entries, which the
+# rectifier takes, and the sync contract every stereo source keeps
+# (stereo_contract.hpp). Host checks first; the rectifier's skips without a
+# device.
+add_executable(sensor_stereo_sensor_test sensor_stereo_sensor_test.cpp)
+target_link_libraries(
+  sensor_stereo_sensor_test PRIVATE volumetric_kit::sensor_stereo
+                                    volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_stereo_sensor_test)
+add_test(NAME sensor_stereo_sensor COMMAND sensor_stereo_sensor_test)
+
 # RGB-D sensor defaults, frame-return helpers, copied-frame ownership and stable
 # enum names. Host-only.
 add_executable(sensor_rgbd_sensor_test sensor_rgbd_sensor_test.cpp)

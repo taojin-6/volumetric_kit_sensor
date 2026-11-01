@@ -38,7 +38,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions; `IAudioSensor`, `AudioChunk` | camera, frame |
 | `sensor_prep` | `prep/` | `GpuFramePrep`, `PictureReadback` | interface |
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
-| `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
+| `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `stereo_calibration` (a pair from two calibration entries), `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
 | `sensor_video_syntax` | `video/` | H.265 syntax read on the host, every build | core base |
 | `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, CUDA interop | frame |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, every Apple build | frame |
@@ -201,7 +201,9 @@ no option and no SDK. A stereo camera's driver implements `IStereoSensor`
 (`stereo/stereo_sensor.hpp`); `StereoRectifier`
 (`stereo/stereo_rectifier.hpp`) undistorts and rectifies its pairs on the
 GPU into a row-aligned pinhole pair, `Luma8` or `Rgba8`, at the size a
-matcher takes:
+matcher takes. Two cameras with an entry each in a calibration file make
+a pair through `stereo_calibration(file, left_id, right_id)`
+(`stereo/stereo_calibration.hpp`), a driver's `StereoInfo::calibration`.
 
 ```cpp
 VKC_ASSIGN(auto rectifier,
@@ -288,7 +290,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.16.0), carried by the umbrella as
+The version is `project()`'s (0.17.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per
