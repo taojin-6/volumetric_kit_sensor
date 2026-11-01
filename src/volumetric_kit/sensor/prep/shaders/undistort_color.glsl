@@ -13,7 +13,8 @@
 // black and which fusion then skips (ColorFrame::coverage_in_alpha) rather
 // than fusing as colour. The stereo rectifier's kernel
 // (stereo/shaders/rectify.comp) samples and converts through the same
-// functions, from a buffer, where its own rays put each pixel.
+// functions, from a buffer, where its own rays put each pixel, and averages
+// the samples before converting where its view shrinks the picture.
 
 #ifndef VS_PREP_UNDISTORT_COLOR_GLSL
 #define VS_PREP_UNDISTORT_COLOR_GLSL
@@ -98,14 +99,12 @@ float luma_level(float y) {
   return pc.full_range != 0u ? y / 255.0 : (y - 16.0) / 219.0;
 }
 
-// The picture's Y'CbCr at `s`, converted, as an R'G'B' word with full
-// coverage; luma alone is grey.
-uint ycbcr_word(vec2 s) {
+// The picture's Y', Cb and Cr codes at `s`, each sampled bilinearly at its
+// own siting; luma alone reads no chroma, and its Cb and Cr are 0.
+vec3 ycbcr_sample(vec2 s) {
   float y = luma_sample(s);
-  float luma = luma_level(y);
   if (pc.luma_only != 0u) {
-    uint grey = code(luma);
-    return grey | (grey << 8) | (grey << 16) | 0xFF000000u;
+    return vec3(y, 0.0, 0.0);
   }
   uint w = pc.cam.width;
   uint h = pc.cam.height;
@@ -124,7 +123,19 @@ uint ycbcr_word(vec2 s) {
   bilinear_taps(cw, ch, c, lo, hi, f);
   vec2 cbcr = bilinear(chroma_at(lo.x, lo.y), chroma_at(hi.x, lo.y),
                        chroma_at(lo.x, hi.y), chroma_at(hi.x, hi.y), f);
+  return vec3(y, cbcr);
+}
 
+// Y', Cb and Cr codes (ycbcr_sample's, or an average of them) converted by
+// the picture's matrix and range, as an R'G'B' word with full coverage; luma
+// alone is grey.
+uint ycbcr_to_word(vec3 ycc) {
+  float luma = luma_level(ycc.x);
+  if (pc.luma_only != 0u) {
+    uint grey = code(luma);
+    return grey | (grey << 8) | (grey << 16) | 0xFF000000u;
+  }
+  vec2 cbcr = ycc.yz;
   float pb;
   float pr;
   if (pc.full_range != 0u) {
@@ -140,5 +151,9 @@ uint ycbcr_word(vec2 s) {
   float g = (luma - pc.kr * r - pc.kb * b) / kg;
   return code(r) | (code(g) << 8) | (code(b) << 16) | 0xFF000000u;
 }
+
+// The picture's Y'CbCr at `s`, converted, as an R'G'B' word with full
+// coverage; luma alone is grey.
+uint ycbcr_word(vec2 s) { return ycbcr_to_word(ycbcr_sample(s)); }
 
 #endif  // VS_PREP_UNDISTORT_COLOR_GLSL

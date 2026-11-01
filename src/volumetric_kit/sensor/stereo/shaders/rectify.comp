@@ -5,7 +5,10 @@
 // camera (the rectifying rotation undone), through its lens (lens.glsl), and
 // the source picture is sampled there bilinearly and converted as the colour
 // pass converts (undistort_color.glsl), from planes in a buffer
-// (color_planes.glsl). pc.cam is the source camera. A ray behind the source
+// (color_planes.glsl). Where the view shrinks the picture -- the pixel's
+// footprint in it longer than 1.5 source pixels on a side -- the pixel is
+// the average of kTaps x kTaps bilinear samples spread over that footprint,
+// converted once. pc.cam is the source camera. A ray behind the source
 // camera, past its lens's fold, or one its lens puts outside the picture,
 // writes 0.
 
@@ -36,11 +39,18 @@ layout(set = 0, binding = 2, scalar) readonly buffer Rectification {
   float fold_r2;
 } rect;
 
-// Where pixel `p` of the rectified view shows in the source picture, `s`;
-// false where its ray is behind the source camera, past its lens's fold, or
-// lands outside the picture.
-bool rectified_source(uint p, out vec2 s) {
-  vec2 px = vec2(float(p % rect.width), float(p / rect.width));
+// Taps a side where a pixel's footprint is averaged: one at least every
+// source pixel across a footprint of up to 5, so a 4K picture shrunk 4.5:1
+// to 960 x 544 is sampled densely enough not to alias.
+const int kTaps = 5;
+// The longer footprint side, squared, past which a pixel is averaged: a
+// D455's 1.33:1 shrink stays one tap.
+const float kAreaFrom2 = 1.5 * 1.5;
+
+// Where the source lens puts point `px` of the rectified view, in source
+// pixels, `s`; false where its ray is behind the source camera or past its
+// lens's fold.
+bool lens_source(vec2 px, out vec2 s) {
   vec2 n = vec2((px.x - rect.cx) / rect.fx, (px.y - rect.cy) / rect.fy);
   vec3 ray = vec3(rect.rect_to_source[0], rect.rect_to_source[1],
                   rect.rect_to_source[2]) * n.x +
@@ -58,14 +68,76 @@ bool rectified_source(uint p, out vec2 s) {
   }
   vec2 d = distort_normalized(pc.cam, q);
   s = vec2(d.x * pc.cam.fx + pc.cam.cx, d.y * pc.cam.fy + pc.cam.cy);
-  return s.x >= -0.5 && s.y >= -0.5 && s.x <= float(pc.cam.width) - 0.5 &&
-         s.y <= float(pc.cam.height) - 0.5;
+  return true;
+}
+
+// Where pixel `px` of the rectified view shows in the source picture, `s`;
+// false where its ray is behind the source camera, past its lens's fold, or
+// lands outside the picture.
+bool rectified_source(vec2 px, out vec2 s) {
+  return lens_source(px, s) && s.x >= -0.5 && s.y >= -0.5 &&
+         s.x <= float(pc.cam.width) - 0.5 && s.y <= float(pc.cam.height) - 0.5;
+}
+
+// Pixel `px`'s footprint in the source picture, the map's Jacobian there:
+// from where the points half a pixel either side of it land, across (`du`)
+// and down (`dv`). True where its longer side is over 1.5 source pixels, so
+// the pixel is averaged over it; false for a smaller one, or where a
+// neighbour's ray has no place in the picture (behind the camera, past the
+// fold), and the pixel takes one tap.
+bool footprint(vec2 px, out vec2 du, out vec2 dv) {
+  vec2 l, r, u, d;
+  du = vec2(0.0);
+  dv = vec2(0.0);
+  if (!lens_source(px - vec2(0.5, 0.0), l) ||
+      !lens_source(px + vec2(0.5, 0.0), r) ||
+      !lens_source(px - vec2(0.0, 0.5), u) ||
+      !lens_source(px + vec2(0.0, 0.5), d)) {
+    return false;
+  }
+  du = r - l;
+  dv = d - u;
+  return max(dot(du, du), dot(dv, dv)) > kAreaFrom2;
+}
+
+// Tap (i, j)'s place in the footprint: the centre of one of kTaps x kTaps
+// equal cells, as fractions of du and dv from the pixel's centre.
+vec2 tap(int i, int j) {
+  return (vec2(float(i), float(j)) + 0.5) / float(kTaps) - 0.5;
+}
+
+// The mean luma code over the footprint about `s`, every tap weighted alike.
+float luma_area(vec2 s, vec2 du, vec2 dv) {
+  float sum = 0.0;
+  for (int j = 0; j < kTaps; ++j) {
+    for (int i = 0; i < kTaps; ++i) {
+      vec2 t = tap(i, j);
+      sum += luma_sample(s + du * t.x + dv * t.y);
+    }
+  }
+  return sum / float(kTaps * kTaps);
+}
+
+// The mean Y', Cb and Cr codes over the footprint about `s`.
+vec3 ycbcr_area(vec2 s, vec2 du, vec2 dv) {
+  vec3 sum = vec3(0.0);
+  for (int j = 0; j < kTaps; ++j) {
+    for (int i = 0; i < kTaps; ++i) {
+      vec2 t = tap(i, j);
+      sum += ycbcr_sample(s + du * t.x + dv * t.y);
+    }
+  }
+  return sum / float(kTaps * kTaps);
+}
+
+vec2 view_pixel(uint p) {
+  return vec2(float(p % rect.width), float(p / rect.width));
 }
 
 void main() {
   uint gid = gl_GlobalInvocationID.x;
   uint pixels = rect.width * rect.height;
-  vec2 s;
+  vec2 s, du, dv;
   if (rect.luma_out != 0u) {
     uint first = gid * 4u;
     if (first >= pixels) {
@@ -73,8 +145,10 @@ void main() {
     }
     uint word = 0u;
     for (uint k = 0u; k < 4u && first + k < pixels; ++k) {
-      if (rectified_source(first + k, s)) {
-        word |= code(luma_level(luma_sample(s))) << (8u * k);
+      vec2 px = view_pixel(first + k);
+      if (rectified_source(px, s)) {
+        float y = footprint(px, du, dv) ? luma_area(s, du, dv) : luma_sample(s);
+        word |= code(luma_level(y)) << (8u * k);
       }
     }
     words[gid] = word;
@@ -83,5 +157,11 @@ void main() {
   if (gid >= pixels) {
     return;
   }
-  words[gid] = rectified_source(gid, s) ? ycbcr_word(s) : 0u;
+  vec2 px = view_pixel(gid);
+  if (!rectified_source(px, s)) {
+    words[gid] = 0u;
+    return;
+  }
+  words[gid] = footprint(px, du, dv) ? ycbcr_to_word(ycbcr_area(s, du, dv))
+                                     : ycbcr_word(s);
 }

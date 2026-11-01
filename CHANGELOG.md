@@ -34,6 +34,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`VS_WITH_DECKLINK`, or the tests); elsewhere the floor stays 0.29.0, so
   a decoder-only consumer at an older core still builds.
 
+## [0.18.0] - 2026-11-01
+
+### Added
+
+- **FFS's near gate.** `FfsStereo::Options::max_disparity`, the network's
+  disparity search range at the rig's size (192 for the exported
+  23-36-37 checkpoint): depth below `1.05 * fx * baseline / max_disparity`
+  is no return, as nearer surfaces come back saturated at about that
+  depth, and the frame's `min_depth` is the bound kept. 0, the default, is
+  no gate; a gate not below `max_depth` is refused.
+
+### Changed
+
+- **The stereo rectifier prefilters where it shrinks a picture.** A view
+  pixel whose footprint in the source (from where the points half a pixel
+  either side of it land) is longer than 1.5 source pixels on a side is
+  the mean of 5 x 5 bilinear samples spread over that footprint, Y'CbCr
+  averaged and converted once, so a 4K picture shrunk 4.5:1 to 960 x 544
+  does not alias, and a fisheye's edge, shrunk less than its centre, is
+  averaged over less. Smaller footprints, a D455's 1.33:1 among them, take
+  one sample as before. DECISIONS.md, the 2026-11-01 prefilter entry.
+
 ## [0.17.0] - 2026-11-01
 
 ### Added
