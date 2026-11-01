@@ -72,7 +72,7 @@ struct StereoInfo {
 /// own buffers on the device), so a consumer may keep several.
 struct StereoFrame {
   /// The left camera's picture: any layout the GPU reads (`YuvLayout::Luma`
-  /// for a mono pair, YUYV, NV12, I420), its planes on the host or in a
+  /// for a mono pair, YUYV, V210, NV12, I420), its planes on the host or in a
   /// buffer on the device, at `StereoCalibration::left`'s size. Pictures
   /// that share a buffer (a side-by-side frame) name one `queue_family`, the
   /// one that wrote it.

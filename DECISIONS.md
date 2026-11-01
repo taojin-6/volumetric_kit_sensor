@@ -284,7 +284,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   colour as its SDK hands it over, staged beside the depth as packed words
   are and converted on the device. `PictureReadback` refuses YUYV.
   *Amended the same day (the stereo entry):* luma alone (`YuvLayout::Luma`)
-  joins the layouts; `ColorParams` is 120 bytes.
+  joins the layouts; `ColorParams` is 120 bytes. *Amended 2026-11-01 (the
+  V210 entry):* V210 joins them; `ColorParams` is 124 bytes.
 - [**2026-10-29**](#2026-10-29--gpuframeprep-reads-depth-on-the-device-in-place-a-gpu-stages-depth-rgbdframedepth_device-taken-over-from-its-writers-queue-family-and-bound-where-it-is-amends-the-2026-10-06-sensor-frame-and-device-only-gpuframeprep-entries) —
   `GpuFramePrep` reads depth on the device in place:
   `RgbdFrame::depth_device` (a `DeviceDepth`), the 16-bit samples a GPU
@@ -379,6 +380,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   of its returns, most on rims). A removed return still reaches fusion as
   no return, which carves a thin, passing ring into the background around a
   moving person; handing it on as unknown is the follow-up.
+- [**2026-11-01**](#2026-11-01--v210-pictures-sdis-10-bit-422-frame-prep-and-the-stereo-rectifier-read-them-at-10-bits-through-the-one-unpack-they-share-as-code--4-and-round-to-8-bits-once-picturereadback-refuses-them-for-now-amends-the-2026-10-29-host-planes-entry) —
+  V210 pictures (`YuvLayout::V210`, SDI's 10-bit 4:2:2, a DeckLink card's
+  capture): `GpuFramePrep` and `StereoRectifier` read them from the host or
+  a buffer through the one unpack they share (`color_planes.glsl`), each
+  sample as code / 4 on the 8-bit layouts' scale, and round to 8 bits once,
+  in their outputs. Limited range only; `PictureReadback` refuses them
+  (`Unsupported`) until it reads them.
 
 ## Decision record
 
@@ -4167,6 +4175,8 @@ this package, fused 100 live frames of the rig's 4 Femtos (25 sets) at
 *Amended the same day (the stereo entry, below):* luma alone
 (`YuvLayout::Luma`) joins the layouts, grey through `GpuFramePrep` and
 read by `PictureReadback`; `ColorParams` gains `luma_only`, 120 bytes.
+*Amended 2026-11-01 (the V210 entry):* `YuvLayout::V210` joins them, read
+through the same buffer entry; `ColorParams` gains `v210`, 124 bytes.
 
 **The rule.** `YuvImage` gains `host`, its planes on the host at `offset` and
 `stride` from that pointer, one of `device`, `host` and `image`; and
@@ -5433,3 +5443,74 @@ suite (main `32f013e5`) on this checkout, on the M5 Max: 41 of 42 pass.
 4x4-pixel patch, 16 returns, under the 20-point floor, so the filter
 removes it. With the filter off in that test it passes, which recon's
 re-pin, the PR that picks the default up, does. No camera was opened.
+
+### 2026-11-01 — V210 pictures, SDI's 10-bit 4:2:2: frame prep and the stereo rectifier read them at 10 bits through the one unpack they share, as code / 4, and round to 8 bits once; `PictureReadback` refuses them for now (amends the 2026-10-29 host-planes entry).
+
+**The rule.** `YuvLayout::V210` is 10-bit 4:2:2 in one plane, as SDI
+carries it (DeckLink's `bmdFormat10BitYUV`): each six pixels four
+little-endian words of three 10-bit samples from the low bits,
+Cb0 Y0 Cr0 | Y1 Cb2 Y2 | Cr2 Y3 Cb4 | Y4 Cr4 Y5, chroma on every row and
+sited by `chroma_location` across. `check_yuv_planes` takes it of even
+width, rows of at least `ceil(width / 6) * 16` bytes (a partial group's
+words whole), its offset and stride multiples of 4; `bind_planes` refuses
+it in full range. It comes from the host or a buffer; as images it is
+refused, as YUYV is. `color_planes.glsl`'s `v210_at` is the one unpack.
+Each sample comes back as code / 4, so `luma_level`, the matrix and
+the rectifier's outputs are the 8-bit layouts' code, unchanged.
+`ColorParams` gains one word, `v210`: 124 bytes of the 128 Vulkan
+guarantees. `PictureReadback` refuses V210 with `Unsupported`:
+`TODO(sensor)`, its luma unpacked on the GPU, for calib's DeckLink pairs.
+
+**Why.** The owner's DeckLink design (2026-11-01): the card captures v210,
+the path measured with no lost frame, and nothing rounds 10 bits to 8
+before the one rounding prep and the rectifier make; the colour response's
+falloff gain, once it applies here, stretches codes and needs them most. A
+picture is 22,118,400 bytes at 2160p, a third more than 8-bit UYVY.
+- **code / 4.** Limited range's 10-bit levels are its 8-bit ones times 4
+  (64..940 is 16..235, chroma's 512 is 128), so `(y - 16) / 219` of
+  code / 4 is `(Y - 64) / 876` exactly, and one conversion serves both.
+  Scaling by a power of two is exact in float, so 8-bit codes times 4
+  convert bit for bit as the 8-bit picture does, which the tests hold.
+- **Limited range only.** Full-range 10-bit levels are code / 1023, which
+  code / 4 on the 255 scale misses by up to 0.75 of a code (luma at 1023);
+  SDI is limited range, so V210 in full range is refused rather than read
+  slightly wrong.
+- **A flag, not a layout code.** The push constants carry one word a
+  behaviour the kernel switches on (`luma_only`, `chroma_full_rows`); a
+  layout code would repeat them.
+
+**Tests.**
+- `sensor_gpu_frame_prep`: V210 packed from an 8-bit picture's codes times
+  4 (`tests/v210.hpp`, written word by word from the table above, apart from
+  the shader's indexing) gives the YUYV picture's words bit for bit:
+  through the barrel lens at 320x240, chroma sited left and centred, and
+  through a mild pincushion lens that samples the last columns (to x
+  3839.4, 3841.5 and 4095.5) at 3840x16, 3842x16 and 4096x16, whose last
+  groups hold two and four pixels (4096 is DCI 4K's width);
+  from the host, rows padded and from byte 20, and from a device buffer.
+  Codes off the 8-bit grid (none a multiple of 4) through a pinhole that
+  leaves each pixel where it is, 3842x8, come out within 0.5 of a code of
+  BT.709's limited-range conversion of the 10-bit samples in double (worst
+  0.5000); the same codes cut to 8 bits miss it by 2.96, so the two low bits
+  are read. Refused: odd width, a short stride, an offset or stride off a
+  word, full range, planes as images.
+- `sensor_stereo_rectifier`: a lensed 1280x720 pair as V210 of its YUYV
+  codes times 4, limited range, gives YUYV's views bit for bit, as R'G'B'
+  words and as luma bytes, from the host and from device buffers.
+- `sensor_picture_readback`: a V210 picture is `Unsupported`, alone and in
+  a set.
+Three planted bugs in `v210_at` and `chroma_at` each failed
+`sensor_gpu_frame_prep` and `sensor_stereo_rectifier`: Cb and Cr swapped
+inside a group, word 2's samples read in reverse order, and the samples
+read without the / 4; so did chroma bound from the binding's first byte
+rather than the plane's (the device pictures), and chroma halved down as
+4:2:0's is. Samples read without their two low bits failed the 10-bit
+check alone, as the 8-bit-times-4 pictures have none.
+
+**Validation.** Apple M5 Max, macOS 27.2, MoltenVK 1.4.2, Release with
+warnings as errors, under the validation layer: the whole suite passes, 40
+tests. No NVIDIA machine was run by hand: the code is portable Vulkan, and
+CI's NVIDIA legs and lavapipe sanitizer job run the same tests. recon's
+suite was not run: the change
+is to `sensor_interface` and `sensor_prep`, not `frame`, and recon's code
+names no `YuvImage`. No camera was opened.

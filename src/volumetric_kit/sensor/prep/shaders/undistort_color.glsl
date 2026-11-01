@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Tao Jin
 
 // The colour pass's body, which its two entries share: undistort_color.comp
-// reads the picture from a buffer (4:2:0, YUYV's 4:2:2 or luma alone,
-// color_planes.glsl), undistort_color_images.comp from NV12's two plane
+// reads the picture from a buffer (4:2:0, YUYV's or V210's 4:2:2 or luma
+// alone, color_planes.glsl), undistort_color_images.comp from NV12's two plane
 // images where they are. One thread per pixel of the pinhole image: find
 // where the lens puts it in the captured picture, sample luma and chroma
 // there bilinearly, each at its own siting, and convert by the picture's
@@ -43,10 +43,12 @@ layout(push_constant, scalar) uniform Params {
   uint y_step;            // bytes between luma samples
   uint chroma_full_rows;  // 4:2:2: chroma on every row, halved across only
   uint luma_only;         // luma alone: no chroma is read, and it is grey
+  uint v210;              // V210: 10-bit samples, three a word
 } pc;
 
 // Each entry's: the codes, 0 to 255, of the picture's luma and of its chroma
-// (Cb, Cr) at sample (x, y), counted from the picture's corner.
+// (Cb, Cr) at sample (x, y), counted from the picture's corner; a 10-bit
+// code is read as code / 4, on the same scale.
 float luma_at(uint x, uint y);
 vec2 chroma_at(uint x, uint y);
 

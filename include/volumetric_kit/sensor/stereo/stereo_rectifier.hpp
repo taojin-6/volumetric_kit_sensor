@@ -119,11 +119,11 @@ struct RectifiedPair {
 /// into the source camera, through its lens, and the source picture sampled
 /// there bilinearly and converted as `GpuFramePrep` converts colour (the
 /// same shader code). The pictures come in any layout the package reads --
-/// luma alone, YUYV, NV12, I420 -- on the host, copied into one persistent
-/// slot (`core::HostRing`) as `GpuFramePrep` stages host planes, or in a
-/// buffer on the device, taken over from `YuvImage::queue_family`, once a
-/// buffer. Nothing is allocated a frame while each pair is dropped before the
-/// next is rectified (@ref RectifiedPair).
+/// luma alone, YUYV, V210, NV12, I420 -- on the host, copied into one
+/// persistent slot (`core::HostRing`) as `GpuFramePrep` stages host planes,
+/// or in a buffer on the device, taken over from `YuvImage::queue_family`,
+/// once a buffer. Nothing is allocated a frame while each pair is dropped
+/// before the next is rectified (@ref RectifiedPair).
 ///
 /// @code
 /// VKC_ASSIGN(auto rectifier,
@@ -212,7 +212,8 @@ class VS_STEREO_API StereoRectifier final {
   ///         planes, planes as images (a buffer or the host only), a picture
   ///         that `GpuFramePrep` would refuse as a frame's colour (its size
   ///         not its camera's, an unknown layout or chroma location, a bad
-  ///         matrix, YUYV of odd width, strides, offsets, overlap or a buffer
+  ///         matrix, YUYV or V210 of odd width, V210 in full range,
+  ///         strides, offsets, overlap or a buffer
   ///         it cannot bind), a `queue_family` the device lacks, or pictures
   ///         in one buffer that name different writers' queue families;
   ///         `Status::Code::OutOfMemory` for a host allocation failure; or a

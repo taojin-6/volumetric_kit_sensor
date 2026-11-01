@@ -72,6 +72,12 @@ core::Result<PlaneBinding> bind_planes(const YuvImage& image,
     return core::Status::invalid_argument(
         the + " matrix's kr and kb must be positive and sum below 1");
   }
+  // Its 10-bit codes are read as code / 4 on the 8-bit scale, which only
+  // limited range's levels (64 = 16 x 4) keep exact.
+  if (image.layout == YuvLayout::V210 && image.full_range) {
+    return core::Status::invalid_argument(
+        the + " picture is V210, which is limited range (SDI's)");
+  }
   const bool on_device = image.device != nullptr;
   const bool on_host = image.host != nullptr;
   const bool as_images = image.image[0] != nullptr || image.image[1] != nullptr;
@@ -124,6 +130,14 @@ core::Result<PlaneBinding> bind_planes(const YuvImage& image,
       out.y_step = 2;
       out.c_step = 4;
       out.chroma_full_rows = true;
+      break;
+    case YuvLayout::V210:
+      // One plane of words: the shader finds each sample's word and bits
+      // (color_planes.glsl), so the steps go unused.
+      out.cb_offset = out.cr_offset = out.y_offset;
+      out.cb_stride = out.cr_stride = image.stride[0];
+      out.chroma_full_rows = true;
+      out.v210 = true;
       break;
     case YuvLayout::Nv12:
       out.cb_offset = image.offset[1] - out.bind_offset;
