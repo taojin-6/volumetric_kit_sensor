@@ -5569,3 +5569,8 @@ ungated, the returns with the output are those without it on 99.9975% of
 the samples (|dz| median 0.3 mm, p99 2.4 mm: a rebuild's noise); two
 processes on one plan give the same bits; and the gate at 0.2 px drops
 9.03% of the returns, adds none and leaves every kept one bit-identical.
+Merged with 0.13.0 (the outlier filter on by default), Release with
+warnings as errors under the validation layer: the M5 Max suite, 40 tests,
+passes with default options, and the RTX 5090's, 56 tests, with every
+option and synchronization validation; the gate rounds still drop 0, 545
+and 0 returns at 64 x 32 and 456 at 60 x 30.
