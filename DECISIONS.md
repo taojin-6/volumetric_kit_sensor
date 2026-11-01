@@ -5737,6 +5737,9 @@ SDK user. How each part works is DESIGN.md's (`decklink`).
 - **No CI leg builds the SDK's part** (the SDK headers in the CI image
   await the owner's licence call), so everything but the SDK's calls sits
   in units a test drives with a capture that writes pages as the card does.
+  *Amended the same day:* the owner judged the licence fine; the 24.04 leg
+  builds the SDK's part against the headers the core keeps, checked out at
+  the core pin, and runs its smoke test.
 
 **Tests.** `sensor_decklink_pairing` (host, every leg): the connectors,
 modes, rows and the mode fix; each option refused, named, lenses only when

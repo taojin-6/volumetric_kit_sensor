@@ -310,7 +310,9 @@ the card clock, and the pairs' skew, right less left, with its drift.
 ```
 
 The driver's SDK-free parts (pairing, clock map, upload, skew numbers) are
-built and tested on every leg; no CI leg builds the SDK's part yet.
+built and tested on every leg, and its SDK part on the 24.04 leg, against
+the SDK's headers the core keeps
+(`tools/ci/images/ubuntu-24.04/decklink-sdk-16.0`, at the core pin).
 
 ## Video decoders
 

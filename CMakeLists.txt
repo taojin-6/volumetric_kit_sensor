@@ -71,8 +71,7 @@ option(VS_WITH_PORTAUDIO
        "Build the microphone driver (requires an installed PortAudio)" OFF)
 # OFF by default too: the DeckLink SDK's headers are a prerequisite you unpack
 # (cmake/vs_decklink.cmake), Linux x86-64 only. The driver's SDK-free parts
-# build and are tested without it. TODO(sensor): a CI leg with the SDK's
-# headers, once the owner decides on their licence.
+# build and are tested without it.
 option(
   VS_WITH_DECKLINK
   "Build the DeckLink stereo driver (requires the DeckLink SDK; DeckLinkSDK_ROOT)"
