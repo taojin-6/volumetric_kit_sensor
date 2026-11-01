@@ -178,6 +178,7 @@ core::Result<StereoInfo> stereo_info(const rs2_intrinsics& left,
                                      const rs2_extrinsics& left_to_right,
                                      const rs2_intrinsics& color,
                                      const rs2_extrinsics& left_to_color,
+                                     std::uint32_t fps,
                                      const std::string& who) {
   StereoInfo info;
   StereoCalibration& cameras = info.calibration;
@@ -190,6 +191,8 @@ core::Result<StereoInfo> stereo_info(const rs2_intrinsics& left,
   VKC_ASSIGN(info.color, camera_model_from(color, "colour", true, who));
   VKC_ASSIGN(info.left_to_color,
              transform_from(left_to_color, "infrared-to-colour", who));
+  info.fps = fps;
+  info.max_skew_ns = half_frame_ns(fps);
   return info;
 }
 
@@ -204,6 +207,10 @@ DepthNoise chip_depth_noise(const camera::CameraModel& depth_camera,
 
 bool same_moment(double a_ms, double b_ms, std::uint32_t fps) noexcept {
   return fps > 0 && std::fabs(a_ms - b_ms) <= 500.0 / fps;
+}
+
+std::uint64_t half_frame_ns(std::uint32_t fps) noexcept {
+  return fps > 0 ? (std::uint64_t{500'000'000} + fps - 1) / fps : 0;
 }
 
 bool together(const double* stamps_ms, std::size_t count, std::size_t opened,
@@ -265,6 +272,9 @@ core::Result<StereoFrame> stereo_frame(const StereoView& view,
   frame.color = yuyv_on_host(view.color);
   frame.color_to_world = color_to_world;
   frame.timestamp_ns = nanoseconds(view.timestamp_ms);
+  frame.skew_ns =
+      static_cast<std::int64_t>(nanoseconds(view.right_timestamp_ms)) -
+      static_cast<std::int64_t>(frame.timestamp_ns);
   frame.sequence = view.sequence;
   frame.arrival_ns = view.arrival_ns;
   frame.pixels = std::move(pixels);

@@ -36,6 +36,8 @@
 //     them or not; a pair kept past the next keeps its views, and a view no
 //     pair holds is written again; where the device exports memory the
 //     views are exported buffers handed out from VK_QUEUE_FAMILY_EXTERNAL;
+//   - a pair holds its frame's left picture but lets the right one go, its
+//     own owner (StereoFrame::right_pixels) or its device buffer;
 //   - what it refuses, at create and per frame;
 //   - the pass's time at 1280x720 to 960x544, both views, printed.
 // Runs on the real driver; exits 0 (skip) where no device is present.
@@ -1324,6 +1326,81 @@ int test_pairs_hold_views() {
   return 0;
 }
 
+// The right picture is let go once read: a pair holds its frame's left
+// picture and `pixels`, but not the right picture's own owner
+// (StereoFrame::right_pixels) or its device buffer, which go with the frame
+// passed in; the views are as ever.
+int test_right_let_go() {
+  const sensor::StereoInfo info = mild_pair();
+  const auto rectifier =
+      make(info, {{480, 272}, 0.0f, Rectifier::Output::Luma8});
+  CHECK(rectifier != nullptr);
+  const Scene scene;
+  const Picture left = luma_picture(scene, info.calibration.left, Mat4d(1.0));
+  const Picture right =
+      luma_picture(scene, info.calibration.right,
+                   camera::rigid_inverse(info.calibration.left_to_right));
+  const std::size_t bytes =
+      view_bytes(rectifier->rig(), Rectifier::Output::Luma8);
+  std::vector<std::uint8_t> want[2];
+  {
+    auto pair = rectifier->rectify(frame_of(left, right));
+    CHECK(pair.ok());
+    want[0] = read_view(*pair, *pair->left, bytes);
+    want[1] = read_view(*pair, *pair->right, bytes);
+  }
+
+  // Host pictures, each with an owner of its own.
+  std::weak_ptr<const void> left_owner, right_owner;
+  {
+    auto pair = [&] {
+      sensor::StereoFrame f = frame_of(left, right);
+      const auto l =
+          std::make_shared<const std::vector<std::uint8_t>>(left.bytes);
+      const auto r =
+          std::make_shared<const std::vector<std::uint8_t>>(right.bytes);
+      f.left.host = l->data();
+      f.right.host = r->data();
+      f.pixels = l;
+      f.right_pixels = r;
+      left_owner = f.pixels;
+      right_owner = f.right_pixels;
+      return rectifier->rectify(f);
+    }();
+    CHECK(pair.ok());
+    CHECK(right_owner.expired() && !left_owner.expired());
+    CHECK(pair->source.pixels == left_owner.lock());
+    CHECK(pair->source.right_pixels == nullptr);
+    CHECK(pair->source.right.host == nullptr &&
+          pair->source.right.device == nullptr);
+    CHECK(pair->source.left.host != nullptr);
+    CHECK(read_view(*pair, *pair->left, bytes) == want[0] &&
+          read_view(*pair, *pair->right, bytes) == want[1]);
+  }
+  CHECK(left_owner.expired());
+
+  // Device pictures: the right buffer goes with the frame, the left stays.
+  std::weak_ptr<const vkc::Buffer> left_buffer, right_buffer;
+  {
+    auto pair = [&] {
+      sensor::StereoFrame f = frame_of(left, right);
+      f.left = on_device(left, 0);
+      f.right = on_device(right, 4);
+      left_buffer = f.left.device;
+      right_buffer = f.right.device;
+      return rectifier->rectify(f);
+    }();
+    CHECK(pair.ok());
+    CHECK(!left_buffer.expired() && right_buffer.expired());
+    CHECK(pair->source.left.device == left_buffer.lock());
+    CHECK(pair->source.right.device == nullptr);
+    CHECK(read_view(*pair, *pair->left, bytes) == want[0] &&
+          read_view(*pair, *pair->right, bytes) == want[1]);
+  }
+  std::puts("  the right picture let go once read, host and device");
+  return 0;
+}
+
 // A smooth luma picture of `c`'s size that never reads code 0, so a covered
 // luma pixel is never 0.
 Picture smooth_picture(const CameraModel& c, double phase) {
@@ -1505,7 +1582,7 @@ int test_taken_over() {
   CHECK(same(apart));
   CHECK(barriers == apart_own + 2);
   CHECK(source.left.queue_family == sensor::kQueueFamilyIgnored &&
-        source.right.queue_family == sensor::kQueueFamilyIgnored);
+        source.right.device == nullptr);
 
   std::size_t stride = 0;
   const std::vector<std::uint8_t> rows =
@@ -1521,7 +1598,7 @@ int test_taken_over() {
   CHECK(same(together));
   CHECK(barriers == together_own + 1);
   CHECK(source.left.queue_family == sensor::kQueueFamilyIgnored &&
-        source.right.queue_family == sensor::kQueueFamilyIgnored &&
+        source.right.device == nullptr &&
         source.color.queue_family == sensor::kQueueFamilyIgnored);
   CHECK(together.left.queue_family == sensor::kQueueFamilyExternal);
   sensor::StereoFrame own_color = side_by_side(sensor::kQueueFamilyExternal);
@@ -1762,6 +1839,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_already_rectified() != 0) return 1;
   if (test_depth_info() != 0) return 1;
   if (test_pairs_hold_views() != 0) return 1;
+  if (test_right_let_go() != 0) return 1;
   if (test_fold() != 0) return 1;
   if (test_taken_over() != 0) return 1;
   if (test_refusals() != 0) return 1;

@@ -46,7 +46,10 @@ namespace volumetric_kit::sensor {
 /// them), the left one's point in the right camera (the baseline, about
 /// 95 mm on the D455, along +x) and in the colour camera, and the colour
 /// camera with its lens. The timestamps are librealsense's global time, on
-/// the host's `std::chrono::system_clock`, the left infrared picture's.
+/// the host's `std::chrono::system_clock`, the left infrared picture's; the
+/// pair is one exposure, so @ref StereoFrame::skew_ns, the right picture's
+/// stamp less the left's, is 0, and @ref StereoInfo::max_skew_ns is half a
+/// frame, the most a frameset's colour picture may lie from it.
 ///
 /// The projector is off by default: a stereo matcher sees the scene's own
 /// texture, which the projector's dots would cover. The camera's own depth is

@@ -24,12 +24,15 @@
 //     a view that contradicts its streams is refused;
 //   - a stereo frame points into the view: each infrared picture luma on the
 //     host, full range, its rows as the camera's; the colour as the frame's;
-//     a view that contradicts its streams is refused;
+//     the right picture's stamp less the left's as its skew, 0 for one
+//     exposure, and the bound half a frame; a view that contradicts its
+//     streams is refused;
 //   - the options each driver's open refuses before it looks for a camera.
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <string>
@@ -251,7 +254,7 @@ int test_stereo_info() {
   const rs2_intrinsics color = d455_color();
   const rs2_extrinsics l2r = d455_left_to_right();
   const rs2_extrinsics l2c = d455_left_to_color();
-  auto made = realsense::stereo_info(ir, ir, l2r, color, l2c, kWho);
+  auto made = realsense::stereo_info(ir, ir, l2r, color, l2c, 30, kWho);
   CHECK(made.ok());
   const sensor::StereoInfo& info = made.value();
   const sensor::StereoCalibration& cal = info.calibration;
@@ -266,6 +269,8 @@ int test_stereo_info() {
   CHECK(info.color->distortion.k1 == double{color.coeffs[0]});
   const double baseline = -cal.left_to_right[3][0];
   CHECK(std::fabs(baseline - 0.0950313) < 1e-7);
+  // The rate, and the bound `together` keeps a frameset's pictures to.
+  CHECK(info.fps == 30 && info.max_skew_ns == 16'666'667);
 
   double worst_right = 0.0, worst_row = 0.0, worst_disparity = 0.0,
          worst_color = 0.0;
@@ -318,25 +323,25 @@ int test_stereo_info() {
   rs2_intrinsics lensed = ir;
   lensed.coeffs[0] = 0.01f;
   CHECK(unsupported(
-      realsense::stereo_info(lensed, ir, l2r, color, l2c, kWho).status(),
+      realsense::stereo_info(lensed, ir, l2r, color, l2c, 30, kWho).status(),
       "the left infrared stream reports a lens"));
   CHECK(unsupported(
-      realsense::stereo_info(ir, lensed, l2r, color, l2c, kWho).status(),
+      realsense::stereo_info(ir, lensed, l2r, color, l2c, 30, kWho).status(),
       "the right infrared stream reports a lens"));
   rs2_extrinsics scaled = l2r;
   scaled.rotation[0] = 1.5f;
   CHECK(unsupported(
-      realsense::stereo_info(ir, ir, scaled, color, l2c, kWho).status(),
+      realsense::stereo_info(ir, ir, scaled, color, l2c, 30, kWho).status(),
       "left-to-right infrared extrinsic is not rigid"));
   scaled = l2c;
   scaled.rotation[4] = 0.5f;
   CHECK(unsupported(
-      realsense::stereo_info(ir, ir, l2r, color, scaled, kWho).status(),
+      realsense::stereo_info(ir, ir, l2r, color, scaled, 30, kWho).status(),
       "infrared-to-colour extrinsic is not rigid"));
   rs2_intrinsics fisheye = color;
   fisheye.model = RS2_DISTORTION_FTHETA;
   CHECK(unsupported(
-      realsense::stereo_info(ir, ir, l2r, fisheye, l2c, kWho).status(),
+      realsense::stereo_info(ir, ir, l2r, fisheye, l2c, 30, kWho).status(),
       rs2_distortion_to_string(RS2_DISTORTION_FTHETA)));
   return 0;
 }
@@ -384,6 +389,11 @@ int test_moment() {
   CHECK(realsense::same_moment(1000.0, 1008.0, 60));
   CHECK(!realsense::same_moment(1000.0, 1009.0, 60));
   CHECK(!realsense::same_moment(1000.0, 1000.0, 0));
+  // Half a frame in whole nanoseconds, rounded up: what same_moment allows.
+  CHECK(realsense::half_frame_ns(30) == 16'666'667);
+  CHECK(realsense::half_frame_ns(25) == 20'000'000);
+  CHECK(realsense::half_frame_ns(60) == 8'333'334);
+  CHECK(realsense::half_frame_ns(0) == 0);
 
   // A frameset: a frame of each mode opened, each within half a frame of
   // the first.
@@ -492,6 +502,7 @@ int test_stereo_frame() {
   view.right = {right.data(), 4, 2, 4};
   view.color = {color.data(), 6, 2, 16};
   view.timestamp_ms = 1793308892747.3442;
+  view.right_timestamp_ms = view.timestamp_ms;  // one exposure
   view.sequence = 42;
   view.arrival_ns = 1793308892762000000ull;
   camera::Mat4d to_world(1.0);
@@ -522,7 +533,18 @@ int test_stereo_frame() {
   CHECK(f.timestamp_ns > 1793308892747343200ull &&
         f.timestamp_ns < 1793308892747345200ull);
   CHECK(f.sequence == 42 && f.arrival_ns == view.arrival_ns);
-  CHECK(f.pixels.get() == held.get());
+  CHECK(f.pixels.get() == held.get() && f.right_pixels == nullptr);
+  CHECK(f.skew_ns == 0);
+  // Stamped apart, the right picture's time less the left's: 0.5 ms after
+  // it, to the stamps' 244 ns in double.
+  realsense::StereoView later = view;
+  later.right_timestamp_ms = view.timestamp_ms + 0.5;
+  auto apart = realsense::stereo_frame(later, info, to_world, held, kWho);
+  CHECK(apart.ok());
+  std::printf("  right stamped 0.5 ms after: skew %lld ns\n",
+              static_cast<long long>(apart->skew_ns));
+  CHECK(apart->timestamp_ns == f.timestamp_ns);
+  CHECK(std::llabs(apart->skew_ns - 500'000) <= 512);
 
   const auto contradicts = [&](realsense::StereoView v,
                                const sensor::StereoInfo& i) {

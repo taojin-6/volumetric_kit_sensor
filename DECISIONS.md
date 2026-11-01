@@ -388,6 +388,15 @@ entries relevant to your task; later amendments supersede earlier rules.
   in their outputs. Limited range only; `PictureReadback` refuses them
   (`Unsupported`) until it reads them.
 
+- [**2026-11-01**](#2026-11-01--a-stereo-frame-states-its-skew-and-its-sources-bound-the-right-picture-is-let-go-once-rectified-and-a-pair-comes-from-two-calibration-entries) —
+  A stereo frame states its skew, the right picture's time less the left's
+  (`StereoFrame::skew_ns`), and its source its bound
+  (`StereoInfo::max_skew_ns`), past which a frame is counted failed and
+  never handed out: one number for free-running and synced pairs alike. The
+  right picture may have its own owner (`right_pixels`), which the rectifier
+  lets go once read. `stereo_calibration` makes a pair from two entries of
+  a calibration file, keyed by camera name.
+
 ## Decision record
 
 ### 2026-08-02 — The `sensor` tier is a *contract*, not a driver collection: a capture driver lives here only if this repo can build
@@ -5514,3 +5523,58 @@ CI's NVIDIA legs and lavapipe sanitizer job run the same tests. recon's
 suite was not run: the change
 is to `sensor_interface` and `sensor_prep`, not `frame`, and recon's code
 names no `YuvImage`. No camera was opened.
+
+### 2026-11-01 — A stereo frame states its skew and its source's bound, the right picture is let go once rectified, and a pair comes from two calibration entries.
+
+**The rule.**
+- `StereoFrame::skew_ns` is the right picture's capture time less the
+  left's (`timestamp_ns`), on the source's clock, 0 for one exposure.
+  `StereoInfo::max_skew_ns` is the source's sync guarantee: the most any two
+  pictures of a frame, a third colour camera's included, lie apart. A frame
+  past it is counted `failed` and never handed out.
+- `StereoFrame::right_pixels` is the right picture's own owner, where
+  `pixels` does not own it. `StereoRectifier::rectify` lets the right
+  picture go once its pass has read it, so `RectifiedPair::source` holds
+  the left and colour pictures only; `StereoDepthSensor` lets the camera's
+  frame go once rectified. A depth frame holds the left picture alone.
+- `stereo_calibration(file, left_id, right_id)` makes a pair from two
+  entries of a calibration file, each camera a sensor of its own, posed,
+  with a colour model: `left_to_right = inverse(right.color_to_world) *
+  left.color_to_world`.
+- `RealSenseStereo` states its right infrared stamp less its left one, 0 on
+  a D455, and half a frame, rounded up to the nanosecond, as its bound: what
+  `together` keeps a frameset's colour to.
+- One test helper checks the contract on what any source hands out
+  (`tests/stereo_contract.hpp`): skew within the bound, sequences and times
+  increasing, the counters' rule.
+
+**Why.** A pair of free-running cine cameras on two capture inputs (the
+Blackmagic pair on the lab's DeckLink, owner 2026-11-01: no genlock in v1)
+is matched by its frame times, within half a frame; measured 8.2 ms apart,
+drifting 0.037 ms a minute. The skew is what tells a consumer how far apart
+a pair is, and the bound is a number, not a code path: genlocked pairs set
+it lower. Such a driver hands out each picture in a device buffer of its
+own; letting the right one go after the rectifier's pass returns it while
+FFS runs on the pair (12.5 ms on a 5090), and the queued depth frames hold
+one buffer each. Two entries keyed by camera name, not one pair entry,
+keep the calibration file's format, and recabling edits the capture's
+config, not the file. RealSense computes its skew from its stamps rather
+than writing 0, the rule every source follows; its pair is one exposure.
+
+**Tests.** `sensor_stereo_sensor` (new): the pair from a synthetic file
+matches its `left_to_right` to 1e-12, named either way round, and
+`StereoRectifier::create` takes it, the baseline the cameras' distance;
+each refusal; and the contract helper passes good frames and names each
+rule broken. `sensor_stereo_rectifier`: a pair lets its right picture's
+owner and device buffer go and keeps the left. `sensor_realsense_conversion`:
+skew 0 from one stamp, +0.5 ms from stamps 0.5 ms apart, the bound half a
+frame. `sensor_ffs_depth_sensor`: the right owner goes before its depth
+frame is published, the frame holds the left owner, and the test camera's
+pairs keep the contract. Each of these fails with its rule undone: the
+pair's `left_to_right` inverted, the skew's sign flipped, the rectifier
+keeping the right picture, the depth thread keeping the camera's frame.
+
+**Validation.** Release with warnings as errors, RealSense, FFmpeg, CUDA and
+FFS on, under the validation layer: the whole suite passes on the lab's RTX
+5090 (Ubuntu 26.04, driver 615.71.10, TensorRT 11.4), 48 tests. No camera
+was opened.

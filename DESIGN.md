@@ -490,8 +490,10 @@ extrinsic from the left infrared camera to the right one (on the lab D455
 no rotation and 95.03 mm along x, so the rectifier only resamples), and
 the colour camera with its lens and `left_to_color`; and what the camera is,
 as `RealSenseSensor`'s `SensorInfo` has it (serial, name, the host's clock,
-rate, the colour exposure read back). Its time is the left infrared frame's
-global time. It holds the newest stereo frame (`IStereoSensor` has no queue
+rate, the colour exposure read back), and the bound `together` keeps a
+frameset to, half a frame (`realsense::half_frame_ns`). Its time is the left
+infrared frame's global time, and its skew the right one's less it, 0 on a
+D455, whose pair is one exposure. It holds the newest stereo frame (`IStereoSensor` has no queue
 depth) and wakes a consumer through `set_frame_notify`. Both drivers run on
 one internal camera (`realsense/camera.hpp`): finding the camera, the modes,
 the projector, the colour exposure, the pipeline with global time on, the
@@ -702,16 +704,31 @@ consumer of depth never sees it: a depth source built on a stereo camera
 
 - **`stereo/stereo_sensor.hpp`** — `StereoCalibration` (the two cameras,
   lenses included, and `left_to_right`, OpenCV's `R`, `T`), `StereoInfo`
-  (the pair and any third, colour camera with `left_to_color`, and what the
-  source is as `SensorInfo` has it: id, model, clock, rate, colour exposure),
-  `StereoFrame` (one picture from each camera as the source delivered it, in
-  any layout the GPU reads, on the host or in a device buffer; the colour to
-  fuse, a third camera's or none when the left is the colour; times as
-  `RgbdFrame`'s; `pixels` holding host planes), and `IStereoSensor`, polled
+  (the pair and any third, colour camera with `left_to_color`, what the
+  source is as `SensorInfo` has it: id, model, clock, rate, colour exposure,
+  and `max_skew_ns`, its sync guarantee: the most a frame's pictures lie
+  apart, frames past it counted failed and never handed out), `StereoFrame`
+  (one picture from each camera as the source delivered it, in any layout
+  the GPU reads, on the host or in a device buffer; the colour to fuse, a
+  third camera's or none when the left is the colour; times as `RgbdFrame`'s,
+  the left picture's, and `skew_ns`, the right one's less it; `pixels`
+  holding host planes, and `right_pixels` the right picture's own owner
+  where it has one), and `IStereoSensor`, polled
   for the newest pair as `IRgbdSensor` is, waking a consumer through
   `set_frame_notify` where it can (`Unsupported`, the default, where it
   cannot), which a RealSense's infrared pair (`RealSenseStereo`), a
   Blackmagic pair or a ZED implements.
+- **`stereo/stereo_calibration.hpp`** — `stereo_calibration(file, left,
+  right)`: the pair two entries of a calibration file make, each camera a
+  sensor of its own keyed by its name, posed and with a colour model (a pair
+  of cine cameras), `left_to_right = inverse(right.color_to_world) *
+  left.color_to_world`; refused for a file the validator refuses, one id
+  twice, an id missing, unposed or without colour, cameras at one place, or
+  lenses of different sizes.
+- **The sync contract** every stereo source keeps is checked by one test
+  helper (`tests/stereo_contract.hpp`): skew within the bound, sequences and
+  times increasing, and the counters' rule, on a test camera's pairs and on
+  each driver's own unit, not by a check of each driver's own.
 - **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` computes
   the rectification once, on the host, as OpenCV's `stereoRectify` does with
   `CALIB_ZERO_DISPARITY` (Bouguet's method), step for step in double: the
@@ -766,7 +783,10 @@ consumer of depth never sees it: a depth source built on a stereo camera
   side-by-side frame's two pictures in one buffer, a colour picture beside
   them, must name the family that wrote it, as `GpuFramePrep`'s inputs must
   (`transfer_family`, `sharing_families.hpp`, which both call), and
-  `RectifiedPair::source` names the pass's family for each of them. Host planes are copied into one persistent
+  `RectifiedPair::source` names the pass's family for each of them. Once
+  read, the right picture is let go: `RectifiedPair::source` keeps no right
+  planes and no `right_pixels`, so a source's right buffer is free while a
+  matcher runs and a depth frame holds the left picture alone. Host planes are copied into one persistent
   `HostRing` slot, left then right, as `GpuFramePrep` stages them; NV12
   plane images are refused (`TODO(sensor)`, when a stereo source decodes on
   the GPU).
@@ -868,7 +888,8 @@ loads libcuda at run time) are private.
   and runs a thread from `start` to `stop`: it polls the camera and, when
   nothing is new, sleeps until the camera's `set_frame_notify` (set at
   `create`) wakes it, or 1 ms for a camera that notifies nothing; then
-  rectifies, runs FFS, and holds the frame (`set_queue_depth`, oldest let
+  rectifies, letting the camera's frame go once rectified, runs FFS, and
+  holds the frame (`set_queue_depth`, oldest let
   go), then calls the frame notification. The camera's notification may
   run on its own thread after the camera let it go, so it owns what it
   touches (a shared wake-up). The camera is called from one thread at a

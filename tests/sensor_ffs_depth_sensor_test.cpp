@@ -12,7 +12,9 @@
 // between a notifying camera's pairs, and asking a camera that does not
 // notify every millisecond; the camera polled on the thread alone and never
 // called from two at once; stop and a restart; a frame kept while the next
-// is made.
+// is made; the right picture's own owner let go before the depth frame is
+// out, which holds the left one's alone; the camera's pairs keep the stereo
+// sync contract (stereo_contract.hpp).
 //
 // It skips where CUDA does not reach the GPU, as sensor_ffs_stereo does.
 
@@ -34,6 +36,7 @@
 #include <vector>
 
 #include "decoder_test.hpp"
+#include "stereo_contract.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/scratch_dir.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
@@ -56,20 +59,28 @@ constexpr std::uint32_t kW = 64, kH = 32;
 constexpr double kFocal = 40.0, kBaseline = 0.1;
 // The test camera's colour exposure, as opened.
 constexpr camera::ColorControls kControls{167, 60};
+// The test camera's sync bound: two free-running cameras' half a frame.
+constexpr std::uint64_t kMaxSkew = 16'666'000;
 
-// A pair whose left luma is `disparity` above the right one everywhere.
-struct Pictures {
-  std::vector<std::uint8_t> left, right;
-};
-
+// A pair whose left luma is `disparity` above the right one everywhere, each
+// picture with an owner of its own (StereoFrame::right_pixels), the right one
+// taken 8.2 ms after the left or before it, by turns. `right_gone` runs when
+// the right one's owner goes.
 sensor::StereoFrame pair_frame(std::uint8_t disparity, std::uint64_t sequence,
-                               std::uint32_t width = kW) {
-  auto p = std::make_shared<Pictures>();
-  p->right.assign(std::size_t{width} * kH, 50);
-  p->left.assign(p->right.size(), static_cast<std::uint8_t>(50 + disparity));
+                               std::uint32_t width = kW,
+                               std::function<void()> right_gone = {}) {
+  using Bytes = std::vector<std::uint8_t>;
+  const std::size_t size = std::size_t{width} * kH;
+  auto left = std::make_shared<const Bytes>(
+      size, static_cast<std::uint8_t>(50 + disparity));
+  std::shared_ptr<const Bytes> right(
+      new Bytes(size, 50), [gone = std::move(right_gone)](const Bytes* b) {
+        delete b;
+        if (gone) gone();
+      });
   sensor::StereoFrame f;
   for (auto [image, bytes] :
-       {std::pair{&f.left, &p->left}, std::pair{&f.right, &p->right}}) {
+       {std::pair{&f.left, left.get()}, std::pair{&f.right, right.get()}}) {
     image->layout = sensor::YuvLayout::Luma;
     image->host = bytes->data();
     image->stride[0] = width;
@@ -77,9 +88,11 @@ sensor::StereoFrame pair_frame(std::uint8_t disparity, std::uint64_t sequence,
     image->height = kH;
   }
   f.timestamp_ns = 1'000'000 * sequence;
+  f.skew_ns = (sequence % 2 == 0 ? 1 : -1) * std::int64_t{8'200'000};
   f.sequence = sequence;
   f.arrival_ns = 7 + sequence;
-  f.pixels = p;
+  f.pixels = std::move(left);
+  f.right_pixels = std::move(right);
   return f;
 }
 
@@ -94,7 +107,10 @@ class TestCamera final : public sensor::IStereoSensor {
     std::deque<sensor::StereoFrame> pending;  // guarded by mutex
     std::optional<vkc::Status> fault;         // guarded by mutex
     // Its counters since its start; the test adds drops and failures.
-    sensor::SensorStats counts;    // guarded by mutex
+    sensor::SensorStats counts;  // guarded by mutex
+    // The times of the pairs taken since its start, no pictures held.
+    std::vector<sensor::StereoFrame> taken;  // guarded by mutex
+    sensor::StereoInfo info;       // the camera's, from its construction
     std::function<void()> notify;  // guarded by mutex
     std::atomic<int> in_call{0};
     std::atomic<int> overlaps{0};
@@ -114,6 +130,8 @@ class TestCamera final : public sensor::IStereoSensor {
     info_.clock = sensor::ClockDomain::Host;
     info_.fps = 30;
     info_.color_controls = kControls;
+    info_.max_skew_ns = kMaxSkew;
+    log_->info = info_;
   }
 
   const sensor::StereoInfo& info() const noexcept override { return info_; }
@@ -124,6 +142,7 @@ class TestCamera final : public sensor::IStereoSensor {
     if (std::this_thread::get_id() != log_->main) log_->started_on_main = false;
     const std::lock_guard<std::mutex> lock(log_->mutex);
     log_->counts = {};
+    log_->taken.clear();
     return {};
   }
 
@@ -143,6 +162,11 @@ class TestCamera final : public sensor::IStereoSensor {
     sensor::StereoFrame f = std::move(log_->pending.front());
     log_->pending.pop_front();
     ++log_->counts.delivered;
+    sensor::StereoFrame times;
+    times.timestamp_ns = f.timestamp_ns;
+    times.skew_ns = f.skew_ns;
+    times.sequence = f.sequence;
+    log_->taken.push_back(times);
     return std::optional<sensor::StereoFrame>{std::move(f)};
   }
 
@@ -325,11 +349,26 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
         st.failed == 0);
   std::puts("poll: the newest of three, its times the pair's; two dropped");
 
-  // A frame kept while the next is made: both stand.
-  push(*log, pair_frame(20, 4));
+  // A frame kept while the next is made: both stand. The pair's right
+  // picture goes before its depth frame is out (the fourth notification),
+  // and the frame holds only the left one's owner.
+  int right_gone_at = -1;  // the notifications before it went
+  sensor::StereoFrame fourth = pair_frame(20, 4, kW, [&] {
+    const std::lock_guard<std::mutex> lock(notes.mutex);
+    right_gone_at = notes.count;
+  });
+  const std::weak_ptr<const void> fourth_left = fourth.pixels;
+  push(*log, std::move(fourth));
   CHECK(notes.wait_for(4));
   auto next = s.poll();
   CHECK(next.ok() && next->has_value());
+  {
+    const std::lock_guard<std::mutex> lock(notes.mutex);
+    std::printf("  the right picture went after %d notifications\n",
+                right_gone_at);
+    CHECK(right_gone_at == 3);
+  }
+  CHECK((*next)->pixels != nullptr && (*next)->pixels == fourth_left.lock());
   CHECK((*next)->depth_device.buffer != frame.depth_device.buffer);
   auto kept_centre = centre_depth(gpu, frame);
   auto next_centre = centre_depth(gpu, **next);
@@ -363,6 +402,16 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
     CHECK(none.ok() && !none->has_value());
   }
   std::puts("stop: the frame held let go, uncounted");
+  // What the camera handed out keeps the stereo sync contract.
+  {
+    const std::lock_guard<std::mutex> lock(log->mutex);
+    CHECK(log->taken.size() == 7);
+    const std::string breach =
+        stereo_contract::breach(log->info, log->taken, log->counts);
+    if (!breach.empty()) std::fprintf(stderr, "%s\n", breach.c_str());
+    CHECK(breach.empty());
+  }
+  std::puts("the camera's pairs keep the stereo sync contract");
 
   // A restart with a deeper queue: drain hands every frame, oldest first;
   // the counters start again.

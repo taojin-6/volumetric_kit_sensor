@@ -63,13 +63,19 @@ struct StereoInfo {
   /// The colour camera's manual exposure as read back at open, as
   /// `SensorInfo::color_controls`; empty under auto exposure.
   std::optional<camera::ColorControls> color_controls;
+  /// The most any two pictures of one frame -- left, right and a third
+  /// colour camera's -- lie apart, nanoseconds: the source's sync guarantee.
+  /// Every @ref StereoFrame it hands out keeps it; a frame that would not is
+  /// counted `SensorStats::failed`, never handed out. 0: one instant.
+  std::uint64_t max_skew_ns = 0;
 };
 
 /// @brief One picture from each camera, taken together, as the source
 ///        delivered them, and the colour to fuse.
 ///
-/// It holds what it points to (@ref pixels for host planes, the pictures'
-/// own buffers on the device), so a consumer may keep several.
+/// It holds what it points to (@ref pixels and @ref right_pixels for host
+/// planes, the pictures' own buffers on the device), so a consumer may keep
+/// several.
 struct StereoFrame {
   /// The left camera's picture: any layout the GPU reads (`YuvLayout::Luma`
   /// for a mono pair, YUYV, V210, NV12, I420), its planes on the host or in a
@@ -86,12 +92,23 @@ struct StereoFrame {
   /// The colour camera's frame to the world's, as
   /// `RgbdFrame::color_to_world`.
   camera::Mat4d color_to_world = camera::Mat4d(1.0);
-  std::uint64_t timestamp_ns = 0;  ///< As `RgbdFrame::timestamp_ns`.
-  std::uint64_t sequence = 0;      ///< As `RgbdFrame::sequence`.
-  std::uint64_t arrival_ns = 0;    ///< As `RgbdFrame::arrival_ns`.
+  /// The left picture's capture time, as `RgbdFrame::timestamp_ns`.
+  std::uint64_t timestamp_ns = 0;
+  /// The right picture's capture time less the left's, nanoseconds, on the
+  /// same clock; within `StereoInfo::max_skew_ns` either way. 0 for one
+  /// exposure.
+  std::int64_t skew_ns = 0;
+  std::uint64_t sequence = 0;    ///< As `RgbdFrame::sequence`.
+  std::uint64_t arrival_ns = 0;  ///< As `RgbdFrame::arrival_ns`.
   /// What the pictures' host planes point into, held for as long as the frame
   /// is; null when they need no owner.
   std::shared_ptr<const void> pixels;
+  /// The right picture's own owner, where @ref pixels does not own it: its
+  /// host bytes, or what returns its device buffer to the source. Null when
+  /// @ref pixels owns it too. `StereoRectifier::rectify` lets the right
+  /// picture go once its pass has read it, so a depth frame made from the
+  /// pair holds only @ref pixels.
+  std::shared_ptr<const void> right_pixels;
 };
 
 /// @brief A source of calibrated stereo pairs, polled as an `IRgbdSensor` is.
