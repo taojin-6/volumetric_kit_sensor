@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- CI: the 24.04 leg builds the DeckLink driver's SDK part
+  (`VS_WITH_DECKLINK`) against the SDK's headers the core keeps, checked out
+  at the core pin and held to their SHA256s, and runs its SDK smoke test.
+- The core pin moves to core main at #81's merge (`93e3e7a`, 0.39.0), which
+  holds those headers; the floors are unchanged, so nothing changes for a
+  consumer.
+
 ## [0.19.0] - 2026-11-01
 
 ### Added

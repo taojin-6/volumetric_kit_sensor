@@ -65,6 +65,15 @@ on:
         required: false
         type: boolean
         default: false
+      decklink:
+        description: >-
+          Build with VS_WITH_DECKLINK=ON, on the DeckLink SDK headers the core
+          keeps (checked out below), so this leg builds sensor_decklink and
+          decklink_skew_report and runs the SDK smoke test, which checks the
+          refusal where Desktop Video is missing, as on every runner.
+        required: false
+        type: boolean
+        default: false
       hevc_backend:
         description: >-
           The hardware this leg promises the decoders run on (cuda,
@@ -166,6 +175,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # The DeckLink SDK's headers, for VS_WITH_DECKLINK: no job can download
+      # the SDK, so the core keeps a copy (its
+      # tools/ci/images/ubuntu-24.04/decklink-sdk-16.0). Checked out at the
+      # core pin in third_party/CMakeLists.txt and held to its SHA256SUMS.
+      - name: DeckLink SDK headers
+        if: inputs.decklink
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: taojin-6/volumetric_kit_core
+          ref: 93e3e7afa64991aaeabe910f52b68efb7e85be24
+          path: _decklink_sdk
+          persist-credentials: false
+          sparse-checkout: tools/ci/images/ubuntu-24.04/decklink-sdk-16.0
+
+      - name: DeckLink SDK root
+        if: inputs.decklink
+        run: |
+          sdk="${GITHUB_WORKSPACE}/_decklink_sdk/tools/ci/images/ubuntu-24.04/decklink-sdk-16.0"
+          (cd "${sdk}" && sha256sum --quiet --strict -c SHA256SUMS)
+          echo "DeckLinkSDK_ROOT=${sdk}" >> "${GITHUB_ENV}"
 
       # The leg's Homebrew formulae, named once for the key below: glm
       # supplies the GLM math headers the package's vector types alias;
@@ -321,6 +351,7 @@ jobs:
                 -DVS_WITH_FFMPEG=${{ inputs.ffmpeg && 'ON' || 'OFF' }} \
                 -DVS_WITH_CUDA=${{ inputs.cuda && 'ON' || 'OFF' }} \
                 -DVS_WITH_FFS=${{ inputs.ffs && 'ON' || 'OFF' }} \
+                -DVS_WITH_DECKLINK=${{ inputs.decklink && 'ON' || 'OFF' }} \
                 -DVS_WITH_PORTAUDIO=${{ inputs.portaudio && 'ON' || 'OFF' }}; then
               ok=1
               break

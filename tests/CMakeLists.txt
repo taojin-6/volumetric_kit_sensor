@@ -866,7 +866,8 @@ if(APPLE)
 endif()
 
 # VS_WITH_DECKLINK refused with the fix: on Linux x86-64 without the SDK
-# (cmake/vs_decklink.cmake), and anywhere else. CI never has the SDK.
+# (cmake/vs_decklink.cmake), and anywhere else. Where the driver builds (the
+# 24.04 leg), the build has the SDK, so the test is not added.
 if(NOT VS_WITH_DECKLINK)
   _vs_add_subproject_test(sensor_subproject_decklink_no_sdk decklink_no_sdk
                           -DVS_WITH_DECKLINK=ON -DDeckLinkSDK_ROOT=)

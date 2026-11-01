@@ -23,14 +23,16 @@ include(FetchContent)
 # needs the base tier alone; it leaves VKC_WITH_VULKAN unset rather than OFF, so
 # an application that turns the tier on keeps it.
 #
-# The pin is core 0.38.0 (00398f7, core #82's head: create_imported_host_buffer,
-# which the DeckLink driver's pages are). The tests are main()s of their own on
-# the core's test support, whose Vulkan-free part a camera-only build's tests
-# use too.
+# The pin is core 0.39.0 (93e3e7a, core main at #81's merge): 0.38.0's
+# create_imported_host_buffer, which the DeckLink driver's pages are, and the
+# DeckLink SDK's headers the 24.04 leg builds against, checked out at this pin
+# (.github/workflows/_build.yml). The tests are main()s of their own on the
+# core's test support, whose Vulkan-free part a camera-only build's tests use
+# too.
 FetchContent_Declare(
   volumetric_kit_core
   GIT_REPOSITORY https://github.com/taojin-6/volumetric_kit_core.git
-  GIT_TAG 00398f791a1b62b8b9eb38f3c76b6c9da0a911b3)
+  GIT_TAG 93e3e7afa64991aaeabe910f52b68efb7e85be24)
 if(NOT VS_CAMERA_ONLY)
   set(VKC_WITH_VULKAN ON)
 endif()
