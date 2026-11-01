@@ -5513,15 +5513,20 @@ the rig, beside its disparity sigma; this package states no value.
 **Known effects.** A gated pixel is a dropout to recon's change detector,
 so two in a row on a pixel with history can reset the surface on that ray
 (0.07% of the image over 11 s of the empty D455 room; nothing behind the
-surface is cleared, and it refills when the pixel returns). Depth edges are
-the spread's weak spot (AUC 0.58-0.68 there). The export always writes
-the output: a rig that never gates gets one more float plane (2 MB at
-960 x 544) and no network time that can be measured. On an RTX 5090 at
-960 x 544, the network's median is 12.562 ms with it and 12.587 ms without
-(two TensorRT builds; one plan in two processes differs by 0.023 ms), under
-the 0.5 ms or 5% that would have earned an export switch to leave it out;
-the depth kernel takes 0.004 ms with the gate at 0 and at 0.2 px. Not
-measured: a moving person on real infrared.
+surface is cleared, and it refills when the pixel returns). Frame prep's
+depth-outlier filter (the two entries above, on by default) runs after the
+gate and counts a gated pixel as no return, so a kept return the gate
+leaves with fewer than `min_points` returns within its radius goes too:
+prep's holes are the gate's, grown at their rims. This entry's numbers are
+without the filter. Depth edges are the spread's weak spot (AUC 0.58-0.68
+there). The export always writes the output: a rig that never gates gets
+one more float plane (2 MB at 960 x 544) and no network time that can be
+measured. On an RTX 5090 at 960 x 544, the network's median is 12.562 ms
+with it and 12.587 ms without (two TensorRT builds; one plan in two
+processes differs by 0.023 ms), under the 0.5 ms or 5% that would have
+earned an export switch to leave it out; the depth kernel takes 0.004 ms
+with the gate at 0 and at 0.2 px. Not measured: a moving person on real
+infrared.
 
 **Tests.** Three more models from `tools/ffs/make_test_onnx.py`, with the
 first model's disparity and a spread of a sixteenth of the right view's
@@ -5537,7 +5542,10 @@ than its views' (the spread read where the disparity is); a gate on a
 model without the spread refused, before the build (no plan written) and
 on that model's cached plan; the quarter spread and the fourth output of
 another name refused, with and without a gate, naming them; a negative,
-NaN or infinite gate refused.
+NaN or infinite gate refused. No test runs the gate and the outlier filter
+together: the gate rounds read `FfsStereo`'s own depth, `into_prep` turns
+the filter off, and the filter's own test already holds it to zeros an
+earlier stage wrote (after the colour-view test).
 
 **Validation.** Apple M5 Max, macOS 27.2, Release with warnings as errors:
 the suite, 39 tests, passes (no `sensor_ffs`: Linux, CUDA and TensorRT

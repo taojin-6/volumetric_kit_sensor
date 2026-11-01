@@ -113,7 +113,9 @@ class VS_FFS_API FfsStereo final {
     /// that is not a number. 0, the default, keeps them all; above 0 needs a
     /// model with the `disparity_spread` output. It is the camera's and the
     /// model's, measured on the camera, like @ref disparity_sigma. Finite and
-    /// at least 0.
+    /// at least 0. `GpuFramePrep`'s depth-outlier filter, on by default, runs
+    /// after the gate and counts a gated pixel as no return, so a kept return
+    /// the gate leaves with too few returns near it goes too.
     float max_disparity_spread = 0.0f;
   };
 
