@@ -151,10 +151,10 @@ class VS_FFS_API FfsStereo final {
   ///
   /// The frame's depth is `RgbdFrame::depth_device`, in the rectified left
   /// camera (`depth_camera`, the rig's), its writer finished and its queue
-  /// family @ref kQueueFamilyExternal; its `min_depth` the nearer bound
-  /// kept (@ref Options::min_depth, or the near gate where farther). Its
-  /// colour is the pair's third camera's picture, or else the left one's,
-  /// and its colour camera and
+  /// family @ref kQueueFamilyExternal; its `min_depth` the larger of
+  /// @ref Options::min_depth and the near gate (@ref Options::max_disparity).
+  /// Its colour is the pair's third camera's picture, or else the left
+  /// one's, and its colour camera and
   /// `depth_to_color` the rectifier's `depth_info()`'s; its depth noise
   /// @ref DepthNoise::stereo of @ref Options::disparity_sigma and the rig's
   /// fx and baseline; its colour encoding, pose and times are the pair's; it

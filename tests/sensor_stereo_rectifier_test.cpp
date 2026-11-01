@@ -1653,7 +1653,9 @@ std::uint64_t fnv1a(const std::vector<std::uint8_t>& bytes) {
 // infrared pair, 1280x800, to FFS's 960x544, 1.33:1 -- random luma comes
 // back as the one-tap reference has it, byte for byte but at ties, half way
 // between two codes, which float rounds either way; its hash, printed,
-// compares builds by hand.
+// compares builds by hand. The luma spans 32 codes: averaged, it would move
+// pixels by several codes, and float's error in where a sample lands moves
+// it by under 0.02 of a code.
 int prefilter_one_tap() {
   const sensor::StereoInfo info = pinhole_pair(1280, 800, 640.0);
   const auto rectifier =
@@ -1666,7 +1668,7 @@ int prefilter_one_tap() {
         state ^= state << 13;
         state ^= state >> 17;
         state ^= state << 5;
-        return static_cast<double>(state >> 24);
+        return 112.0 + static_cast<double>(state >> 27);
       });
   auto pair = rectifier->rectify(frame_of(pic, pic));
   CHECK(pair.ok());
@@ -1675,9 +1677,10 @@ int prefilter_one_tap() {
   CHECK(view.size() >= 960u * 544u);
   const Remap remap(rig, info.calibration, 0);
   // Ties: a sample within 0.02 of half way between two codes, which float
-  // may round either way: the device and the host place a sample 2e-5 px
-  // apart at x 1000, which steep random luma (up to 255 codes a pixel) turns
-  // into 0.01 of a code.
+  // may round either way. Vulkan lets a shader's division be 2.5 ulps off,
+  // so the device and the host may place a sample a few float steps apart
+  // (6e-4 px is five at x 1280); neighbours at most 31 codes apart turn that
+  // into under 0.02 of a code.
   std::size_t off = 0, ties = 0, total = 0;
   int worst = 0;
   double longest = 0;

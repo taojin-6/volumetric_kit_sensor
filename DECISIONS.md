@@ -5645,8 +5645,9 @@ reads as disparity. An area mean over each pixel's footprint (OpenCV's
   spec says, and every existing view check holds to it within a code: the
   layout and V210 tests' 2:1 shrink is averaged, the 1.33:1 ones are not;
 - a D455's 1280x800 to 960x544: footprint 1.333, one sample; random luma
-  matches the one-tap reference in all 522,240 pixels away from ties
-  (within 0.02 of a half code);
+  over 32 codes matches the one-tap reference in all 522,240 pixels away
+  from ties (within 0.02 of a half code), where averaging moves 362,475 of
+  them, by up to 8 codes;
 - 4320x2448 to 960x544 (4.5:1): a checker grating of period 5 source
   pixels, +-64 levels, reads within 1 level of its mean (one sample a
   pixel: 44);
@@ -5672,8 +5673,8 @@ gate at 1.0x (`sensor_ffs_stereo`).
 TensorRT 11.4), Release with warnings as errors, RealSense, FFmpeg, CUDA
 and FFS on, under the validation layer: the whole suite passes, 48
 tests. The D455 view's FNV-1a hash is the same built on this branch and on
-0.17.0 (`0268e7d115d26352`). A 3840x2160 V210 pair in device buffers,
+0.17.0 (`95cdad83d4b9af47`). A 3840x2160 V210 pair in device buffers,
 rectified to 960x544 `Rgba8`, every pixel averaged, takes 0.77-0.78 ms of
 device time for both views, with other jobs on the GPU; the 1.33:1 cases
-take 0.007 ms more than on 0.17.0 (0.023 ms against 0.015 ms, luma in
+take 0.008 ms more than on 0.17.0 (0.023 ms against 0.015 ms, luma in
 device buffers), the four neighbours' lens. No camera was opened.

@@ -868,11 +868,8 @@ loads libcuda at run time) are private.
      `(x, y)` of the network's disparity; 0 where `d` is not above 0 (NaN
      included), `d > x` (the match is off the right view), or `z` is outside
      `[min_depth, max_depth]`, `min_depth` raised to the near gate
-     `1.05 * fx * baseline / max_disparity` where that is farther (a surface
-     nearer than the network's reach comes back saturated, at or a little
-     past `fx * baseline / max_disparity`; `max_disparity` 0 is no gate, and
-     `create` refuses a gate not below `max_depth`; the frame's `min_depth`
-     is the bound kept), and, for `Rgba8` views, where the left view's
+     `1.05 * fx * baseline / max_disparity` where that is farther
+     (`Options::max_disparity`), and, for `Rgba8` views, where the left view's
      coverage byte at `(x, y)` or the right view's at `(rint(x - d), y)` is
      0 (the rectifier saw nothing there, and the network matched black);
      else `rint(z / metres_per_unit)`, clamped to 1..65535, with
