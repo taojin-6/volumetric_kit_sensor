@@ -395,7 +395,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   never handed out: one number for free-running and synced pairs alike. The
   right picture may have its own owner (`right_pixels`), which the rectifier
   lets go once read. `stereo_calibration` makes a pair from two entries of
-  a calibration file, keyed by camera name.
+  a calibration file, keyed by camera name. A RealSense frameset is one
+  moment when every two of its pictures lie within half a frame, to the
+  nanosecond (amends the 2026-10-29 RealSense stereo entry).
 
 ## Decision record
 
@@ -5542,8 +5544,13 @@ names no `YuvImage`. No camera was opened.
   with a colour model: `left_to_right = inverse(right.color_to_world) *
   left.color_to_world`.
 - `RealSenseStereo` states its right infrared stamp less its left one, 0 on
-  a D455, and half a frame, rounded up to the nanosecond, as its bound: what
-  `together` keeps a frameset's colour to.
+  a D455, and half a frame, rounded up to the nanosecond, as its bound.
+  `together` keeps it exactly, for both RealSense drivers: a frameset is
+  one moment when every two of its pictures lie within that bound in the
+  whole-nanosecond stamps the frames carry. This amends the 2026-10-29
+  RealSense stereo entry's rule, each picture within half a frame of the
+  first in milliseconds, which let two pictures lie a frame apart and the
+  nanosecond stamps pass the bound by the doubles' 244 ns.
 - One test helper checks the contract on what any source hands out
   (`tests/stereo_contract.hpp`): skew within the bound, sequences and times
   increasing, the counters' rule.
@@ -5568,11 +5575,15 @@ each refusal; and the contract helper passes good frames and names each
 rule broken. `sensor_stereo_rectifier`: a pair lets its right picture's
 owner and device buffer go and keeps the left. `sensor_realsense_conversion`:
 skew 0 from one stamp, +0.5 ms from stamps 0.5 ms apart, the bound half a
-frame. `sensor_ffs_depth_sensor`: the right owner goes before its depth
-frame is published, the frame holds the left owner, and the test camera's
-pairs keep the contract. Each of these fails with its rule undone: the
-pair's `left_to_right` inverted, the skew's sign flipped, the rectifier
-keeping the right picture, the depth thread keeping the camera's frame.
+frame; a frameset whose pictures each lie within half a frame of the first
+but 32 ms apart is refused, and stamps 16,666,667 ns apart at 30 fps are
+one moment, 16,666,668 ns not. `sensor_ffs_depth_sensor`: the right owner
+goes before its depth frame is published, the frame holds the left owner,
+and the test camera's pairs keep the contract. Each of these fails with
+its rule undone: the pair's `left_to_right` inverted, the skew's sign
+flipped, the rectifier keeping the right picture, the depth thread keeping
+the camera's frame, `together` holding each picture to the first, and
+`same_moment` comparing milliseconds.
 
 **Validation.** Release with warnings as errors, RealSense, FFmpeg, CUDA and
 FFS on, under the validation layer: the whole suite passes on the lab's RTX

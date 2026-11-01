@@ -34,6 +34,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rectified, so the right picture is free before FFS runs and a depth frame
   holds the left picture alone. DECISIONS.md, the 2026-11-01 stereo-sync
   entry.
+- A RealSense frameset is one moment when every two of its pictures lie
+  within half a frame, in the whole-nanosecond stamps its frames carry (each
+  was held to the first, in milliseconds), so `RealSenseStereo`'s frames
+  keep their bound exactly. Both drivers share the rule; a D455's framesets
+  pass as before.
 
 ## [0.16.0] - 2026-11-01
 

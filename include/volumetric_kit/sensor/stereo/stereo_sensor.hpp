@@ -73,9 +73,8 @@ struct StereoInfo {
 /// @brief One picture from each camera, taken together, as the source
 ///        delivered them, and the colour to fuse.
 ///
-/// It holds what it points to (@ref pixels and @ref right_pixels for host
-/// planes, the pictures' own buffers on the device), so a consumer may keep
-/// several.
+/// It holds what it points to (@ref pixels and @ref right_pixels, and the
+/// pictures' own buffers on the device), so a consumer may keep several.
 struct StereoFrame {
   /// The left camera's picture: any layout the GPU reads (`YuvLayout::Luma`
   /// for a mono pair, YUYV, V210, NV12, I420), its planes on the host or in a
@@ -104,10 +103,11 @@ struct StereoFrame {
   /// is; null when they need no owner.
   std::shared_ptr<const void> pixels;
   /// The right picture's own owner, where @ref pixels does not own it: its
-  /// host bytes, or what returns its device buffer to the source. Null when
-  /// @ref pixels owns it too. `StereoRectifier::rectify` lets the right
-  /// picture go once its pass has read it, so a depth frame made from the
-  /// pair holds only @ref pixels.
+  /// host bytes, or what returns its device buffer to the source. It owns
+  /// the right picture alone, never the colour one's host planes: those are
+  /// @ref pixels'. Null when @ref pixels owns it too.
+  /// `StereoRectifier::rectify` lets the right picture go once its pass has
+  /// read it, so a depth frame made from the pair holds only @ref pixels.
   std::shared_ptr<const void> right_pixels;
 };
 

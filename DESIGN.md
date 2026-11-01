@@ -490,16 +490,17 @@ extrinsic from the left infrared camera to the right one (on the lab D455
 no rotation and 95.03 mm along x, so the rectifier only resamples), and
 the colour camera with its lens and `left_to_color`; and what the camera is,
 as `RealSenseSensor`'s `SensorInfo` has it (serial, name, the host's clock,
-rate, the colour exposure read back), and the bound `together` keeps a
-frameset to, half a frame (`realsense::half_frame_ns`). Its time is the left
-infrared frame's global time, and its skew the right one's less it, 0 on a
-D455, whose pair is one exposure. It holds the newest stereo frame (`IStereoSensor` has no queue
+rate, the colour exposure read back), and its bound, half a frame
+(`realsense::half_frame_ns`). Its time is the left infrared frame's global
+time, and its skew the right one's less it, 0 on a D455, whose pair is one
+exposure. It holds the newest stereo frame (`IStereoSensor` has no queue
 depth) and wakes a consumer through `set_frame_notify`. Both drivers run on
 one internal camera (`realsense/camera.hpp`): finding the camera, the modes,
 the projector, the colour exposure, the pipeline with global time on, the
 disconnect watch, the frame queue and the counters. A frameset is one moment
-(`realsense::together`) when it holds a frame of every mode opened, each
-within half a frame of the first; any other is counted failed.
+(`realsense::together`) when it holds a frame of every mode opened, every
+two within half a frame in the whole-nanosecond stamps the frames carry, so
+the stereo frames keep their bound exactly; any other is counted failed.
 **`IRgbdSensor`** (`rgbd_sensor.hpp`) is one sensor: its
 `SensorInfo` from when it opens (id, the cameras' factory models at the
 opened modes, `depth_to_color`, rig role, clock, pose source, rate, the
@@ -720,11 +721,8 @@ consumer of depth never sees it: a depth source built on a stereo camera
   Blackmagic pair or a ZED implements.
 - **`stereo/stereo_calibration.hpp`** — `stereo_calibration(file, left,
   right)`: the pair two entries of a calibration file make, each camera a
-  sensor of its own keyed by its name, posed and with a colour model (a pair
-  of cine cameras), `left_to_right = inverse(right.color_to_world) *
-  left.color_to_world`; refused for a file the validator refuses, one id
-  twice, an id missing, unposed or without colour, cameras at one place, or
-  lenses of different sizes.
+  sensor of its own keyed by its id, posed and with a colour model (a pair
+  of cine cameras); its refusals are the header's.
 - **The sync contract** every stereo source keeps is checked by one test
   helper (`tests/stereo_contract.hpp`): skew within the bound, sequences and
   times increasing, and the counters' rule, on a test camera's pairs and on
@@ -786,7 +784,8 @@ consumer of depth never sees it: a depth source built on a stereo camera
   `RectifiedPair::source` names the pass's family for each of them. Once
   read, the right picture is let go: `RectifiedPair::source` keeps no right
   planes and no `right_pixels`, so a source's right buffer is free while a
-  matcher runs and a depth frame holds the left picture alone. Host planes are copied into one persistent
+  matcher runs and a depth frame holds the left picture alone. Host planes
+  are copied into one persistent
   `HostRing` slot, left then right, as `GpuFramePrep` stages them; NV12
   plane images are refused (`TODO(sensor)`, when a stereo source decodes on
   the GPU).
@@ -889,8 +888,8 @@ loads libcuda at run time) are private.
   nothing is new, sleeps until the camera's `set_frame_notify` (set at
   `create`) wakes it, or 1 ms for a camera that notifies nothing; then
   rectifies, letting the camera's frame go once rectified, runs FFS, and
-  holds the frame (`set_queue_depth`, oldest let
-  go), then calls the frame notification. The camera's notification may
+  holds the frame (`set_queue_depth`, oldest let go), then calls the frame
+  notification. The camera's notification may
   run on its own thread after the camera let it go, so it owns what it
   touches (a shared wake-up). The camera is called from one thread at a
   time: `start` and `stop` on the caller's, `poll` and `stats` on the

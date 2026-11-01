@@ -91,20 +91,19 @@ inline constexpr double kChipDisparitySigma = 0.13;
 DepthNoise chip_depth_noise(const camera::CameraModel& depth_camera,
                             const rs2_extrinsics& depth_to_right) noexcept;
 
-// Whether two frames stamped `a_ms` and `b_ms` are of one moment: no more
-// than half a frame apart at `fps`. As it starts, the D455 restarts its
-// depth for about 1.2 s, and librealsense's pipeline matches its last depth
-// frame with newer colour meanwhile.
-bool same_moment(double a_ms, double b_ms, std::uint32_t fps) noexcept;
-
-// The most two frames of one moment (same_moment) lie apart once stamped in
-// whole nanoseconds: half a frame at `fps`, rounded up; 0 for no rate.
+// Half a frame at `fps` in whole nanoseconds, rounded up; 0 for no rate.
 std::uint64_t half_frame_ns(std::uint32_t fps) noexcept;
 
+// Whether two frames stamped `a_ms` and `b_ms` are of one moment: their
+// stamps in whole nanoseconds, as the frames carry them, no more than
+// half_frame_ns(fps) apart. As it starts, the D455 restarts its depth for
+// about 1.2 s, and librealsense's pipeline matches its last depth frame with
+// newer colour meanwhile.
+bool same_moment(double a_ms, double b_ms, std::uint32_t fps) noexcept;
+
 // Whether a frameset of `count` frames stamped `stamps_ms` is one usable
-// moment of a camera opened at `opened` modes: a frame of each, and each
-// within half a frame of the first. A frameset that is not is counted
-// failed.
+// moment of a camera opened at `opened` modes: a frame of each, and every
+// two of one moment. A frameset that is not is counted failed.
 bool together(const double* stamps_ms, std::size_t count, std::size_t opened,
               std::uint32_t fps) noexcept;
 

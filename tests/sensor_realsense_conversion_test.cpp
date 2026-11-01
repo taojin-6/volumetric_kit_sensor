@@ -18,7 +18,8 @@
 //     the depth camera's fx and the baseline, the length of the extrinsic to
 //     the right infrared camera, in any direction; unknown for no baseline;
 //   - a frameset is one moment when it holds a frame of each mode opened,
-//     each within half a frame of the first;
+//     every two within half a frame, to the nanosecond in the stamps the
+//     frames carry;
 //   - a frame points into the view, YUYV on the host coded as librealsense
 //     converts it, stamped in nanoseconds, with the setup's range and noise;
 //     a view that contradicts its streams is refused;
@@ -389,14 +390,18 @@ int test_moment() {
   CHECK(realsense::same_moment(1000.0, 1008.0, 60));
   CHECK(!realsense::same_moment(1000.0, 1009.0, 60));
   CHECK(!realsense::same_moment(1000.0, 1000.0, 0));
-  // Half a frame in whole nanoseconds, rounded up: what same_moment allows.
+  // Half a frame in whole nanoseconds, rounded up: what same_moment allows,
+  // to the nanosecond, in the stamps the frames carry (half of 33.3 ms in
+  // milliseconds would refuse the first).
   CHECK(realsense::half_frame_ns(30) == 16'666'667);
   CHECK(realsense::half_frame_ns(25) == 20'000'000);
   CHECK(realsense::half_frame_ns(60) == 8'333'334);
   CHECK(realsense::half_frame_ns(0) == 0);
+  CHECK(realsense::same_moment(1000.0, 1016.666667, 30));
+  CHECK(!realsense::same_moment(1000.0, 1016.666668, 30));
+  CHECK(realsense::same_moment(1016.666667, 1000.0, 30));
 
-  // A frameset: a frame of each mode opened, each within half a frame of
-  // the first.
+  // A frameset: a frame of each mode opened, every two within half a frame.
   const double stamps[] = {2287.7, 2287.7, 2290.1};
   CHECK(realsense::together(stamps, 3, 3, 30));
   CHECK(realsense::together(stamps, 2, 2, 30));
@@ -405,9 +410,14 @@ int test_moment() {
   CHECK(!realsense::together(stamps, 0, 0, 30));
   const double stale[] = {2287.7, 2287.7, 1000.0};  // stale colour
   CHECK(!realsense::together(stale, 3, 3, 30));
-  // Each against the first, not the one before: 16 ms steps add up.
+  // Every two, not each against the one before: 16 ms steps add up.
   const double drifting[] = {1000.0, 1016.0, 1032.0};
   CHECK(!realsense::together(drifting, 3, 3, 30));
+  // Nor each against the first: one each side of it, 32 ms apart.
+  const double straddling[] = {1000.0, 984.0, 1016.0};
+  CHECK(!realsense::together(straddling, 3, 3, 30));
+  const double inside[] = {1000.0, 992.0, 1008.0};
+  CHECK(realsense::together(inside, 3, 3, 30));
   CHECK(!realsense::together(stamps, 3, 3, 0));
   return 0;
 }

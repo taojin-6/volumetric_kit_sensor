@@ -205,19 +205,23 @@ DepthNoise chip_depth_noise(const camera::CameraModel& depth_camera,
                             baseline);
 }
 
-bool same_moment(double a_ms, double b_ms, std::uint32_t fps) noexcept {
-  return fps > 0 && std::fabs(a_ms - b_ms) <= 500.0 / fps;
-}
-
 std::uint64_t half_frame_ns(std::uint32_t fps) noexcept {
   return fps > 0 ? (std::uint64_t{500'000'000} + fps - 1) / fps : 0;
+}
+
+bool same_moment(double a_ms, double b_ms, std::uint32_t fps) noexcept {
+  const std::uint64_t a = nanoseconds(a_ms);
+  const std::uint64_t b = nanoseconds(b_ms);
+  return fps > 0 && (a > b ? a - b : b - a) <= half_frame_ns(fps);
 }
 
 bool together(const double* stamps_ms, std::size_t count, std::size_t opened,
               std::uint32_t fps) noexcept {
   if (count != opened || count == 0) return false;
-  for (std::size_t i = 1; i < count; ++i) {
-    if (!same_moment(stamps_ms[0], stamps_ms[i], fps)) return false;
+  for (std::size_t i = 0; i < count; ++i) {
+    for (std::size_t j = i + 1; j < count; ++j) {
+      if (!same_moment(stamps_ms[i], stamps_ms[j], fps)) return false;
+    }
   }
   return true;
 }

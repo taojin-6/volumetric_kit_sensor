@@ -49,7 +49,8 @@ namespace volumetric_kit::sensor {
 /// the host's `std::chrono::system_clock`, the left infrared picture's; the
 /// pair is one exposure, so @ref StereoFrame::skew_ns, the right picture's
 /// stamp less the left's, is 0, and @ref StereoInfo::max_skew_ns is half a
-/// frame, the most a frameset's colour picture may lie from it.
+/// frame, the most any two pictures of a frameset lie apart: one further is
+/// counted failed.
 ///
 /// The projector is off by default: a stereo matcher sees the scene's own
 /// texture, which the projector's dots would cover. The camera's own depth is
