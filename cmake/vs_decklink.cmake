@@ -13,8 +13,8 @@
 # is needed only to capture: the dispatch file loads the library at run time, so
 # nothing links it.
 #
-# TODO(sensor): the SDK headers in the CI image, once the owner decides on
-# their licence; until then no CI leg builds VS_WITH_DECKLINK.
+# TODO(sensor): the SDK headers in the CI image, once the owner decides on their
+# licence; until then no CI leg builds VS_WITH_DECKLINK.
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES
                                              "^(x86_64|AMD64)$")
