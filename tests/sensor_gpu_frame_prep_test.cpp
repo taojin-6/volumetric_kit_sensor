@@ -1446,6 +1446,30 @@ std::uint32_t librealsense_rgb(int y, int u, int v) {
          (clamp((298 * c + 516 * d + 128) >> 8) << 16) | 0xFF000000u;
 }
 
+// A `w` x `h` picture's 8-bit luma `y` (`w` a row) and chroma `cb`, `cr`
+// (`w / 2` a row, every row) as YUYV, Y0 Cb Y1 Cr, from byte `lead`, rows
+// `stride` apart, ending at the last row's last pixel; bytes outside the
+// rows 0xCD. `w` is even.
+std::vector<std::uint8_t> yuyv_bytes(const std::vector<std::uint8_t>& y,
+                                     const std::vector<std::uint8_t>& cb,
+                                     const std::vector<std::uint8_t>& cr,
+                                     std::uint32_t w, std::uint32_t h,
+                                     std::size_t lead, std::size_t stride) {
+  const std::size_t cw = w / 2;
+  std::vector<std::uint8_t> bytes(lead + stride * (h - 1) + 2 * std::size_t{w},
+                                  0xCD);
+  for (std::uint32_t r = 0; r < h; ++r) {
+    for (std::size_t i = 0; i < cw; ++i) {
+      std::uint8_t* at = &bytes[lead + r * stride + 4 * i];
+      at[0] = y[std::size_t{r} * w + 2 * i];
+      at[1] = cb[r * cw + i];
+      at[2] = y[std::size_t{r} * w + 2 * i + 1];
+      at[3] = cr[r * cw + i];
+    }
+  }
+  return bytes;
+}
+
 // A camera's YUYV on the host, as librealsense hands a D400's colour over:
 //   - through a lens, luma at every pixel and the 4:2:2 chroma, on every row
 //     and sited left or centred across, match the host reference of that
@@ -1477,21 +1501,12 @@ int test_yuyv(sensor::GpuFramePrep& prep) {
           static_cast<std::uint8_t>(128 + 60 * std::sin(0.09 * r + 0.01 * x));
     }
   }
-  // Y0 Cb Y1 Cr, rows 6 bytes longer than the picture's, junk between them,
-  // from byte 3 to the last row's last pixel, an odd count of bytes.
+  // Rows 6 bytes longer than the picture's, junk between them, from byte 3
+  // to the last row's last pixel, an odd count of bytes.
   const std::size_t lead = 3, stride = 2 * std::size_t{w} + 6;
-  std::vector<std::uint8_t> bytes(lead + stride * (h - 1) + 2 * std::size_t{w},
-                                  0xCD);
+  const std::vector<std::uint8_t> bytes =
+      yuyv_bytes(y, cb, cr, w, h, lead, stride);
   CHECK(bytes.size() % 4 != 0);
-  for (std::uint32_t r = 0; r < h; ++r) {
-    for (std::uint32_t i = 0; i < cw; ++i) {
-      std::uint8_t* at = &bytes[lead + r * stride + 4 * std::size_t{i}];
-      at[0] = y[std::size_t{r} * w + 2 * i];
-      at[1] = cb[std::size_t{r} * cw + i];
-      at[2] = y[std::size_t{r} * w + 2 * i + 1];
-      at[3] = cr[std::size_t{r} * cw + i];
-    }
-  }
   sensor::YuvImage yuyv;
   yuyv.layout = sensor::YuvLayout::Yuyv;
   yuyv.host = bytes.data();
@@ -1818,9 +1833,9 @@ sensor::YuvImage v210_image(const std::vector<std::uint8_t>& bytes,
 //   - built from an 8-bit picture's codes times 4, it gives the YUYV
 //     picture's words bit for bit: through the barrel lens at 320 wide,
 //     chroma sited left and centred, and through a mild pincushion lens,
-//     which samples the last columns, at 3840 and 3842 wide (a capture's
-//     width, and one whose last group holds two pixels); from the host, rows
-//     padded and from byte 20, and from a device buffer;
+//     which samples the last columns, at 3840, 3842 and 4096 wide (a
+//     capture's width, then last groups of two and of four pixels, DCI 4K's);
+//     from the host, rows padded and from byte 20, and from a device buffer;
 //   - its two low bits are read: codes off the 8-bit grid (no multiple of
 //     4), through a pinhole that samples each pixel where it is, come out
 //     within half a code of BT.709's limited-range conversion of the 10-bit
@@ -1859,7 +1874,8 @@ int test_v210(sensor::GpuFramePrep& prep) {
   for (const Case k : {Case{kWidth, kHeight, sensor::ChromaLocation::Left},
                        Case{kWidth, kHeight, sensor::ChromaLocation::Center},
                        Case{3840, 16, sensor::ChromaLocation::Left},
-                       Case{3842, 16, sensor::ChromaLocation::Left}}) {
+                       Case{3842, 16, sensor::ChromaLocation::Left},
+                       Case{4096, 16, sensor::ChromaLocation::Left}}) {
     camera::CameraModel cam = lensed();
     if (k.w != kWidth) {
       cam = wide;
@@ -1867,14 +1883,8 @@ int test_v210(sensor::GpuFramePrep& prep) {
       cam.intrinsics.cx = 0.5 * k.w - 0.3;
     }
     const Planes422 p = wavy_422(k.w, k.h);
-    std::vector<std::uint8_t> yuyv_bytes(4 * std::size_t{p.cw} * k.h);
-    for (std::size_t i = 0; i < std::size_t{p.cw} * k.h; ++i) {
-      const std::size_t r = i / p.cw, c = i % p.cw;
-      yuyv_bytes[4 * i] = p.y[r * k.w + 2 * c];
-      yuyv_bytes[4 * i + 1] = p.cb[i];
-      yuyv_bytes[4 * i + 2] = p.y[r * k.w + 2 * c + 1];
-      yuyv_bytes[4 * i + 3] = p.cr[i];
-    }
+    const std::vector<std::uint8_t> packed =
+        yuyv_bytes(p.y, p.cb, p.cr, k.w, k.h, 0, 2 * std::size_t{k.w});
     const std::size_t stride = v210::row_bytes(k.w) + 32;
     const std::vector<std::uint8_t> bytes =
         v210::pack(v210::widen(p.y), v210::widen(p.cb), v210::widen(p.cr), k.w,
@@ -1884,7 +1894,7 @@ int test_v210(sensor::GpuFramePrep& prep) {
     v.chroma_location = k.location;
     sensor::YuvImage yuyv = v;
     yuyv.layout = sensor::YuvLayout::Yuyv;
-    yuyv.host = yuyv_bytes.data();
+    yuyv.host = packed.data();
     yuyv.offset[0] = 0;
     yuyv.stride[0] = 2 * std::size_t{k.w};
     sensor::YuvImage dev = v;

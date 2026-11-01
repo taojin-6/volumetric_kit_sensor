@@ -15,11 +15,9 @@
 // cb_stride and cr_stride bytes apart from cb_offset and cr_offset, samples
 // c_step bytes apart: 1 in I420's planes of their own, 2 in NV12's
 // interleaved one, where Cr sits a byte after Cb, 4 in YUYV's Y0 Cb Y1 Cr;
-// luma alone has none. V210's one plane is words, rows starting on one:
-// each six pixels four words, 12 samples, Cb0 Y0 Cr0 | Y1 Cb2 Y2 |
-// Cr2 Y3 Cb4 | Y4 Cr4 Y5, three 10-bit ones a word from its low bits. With
-// packed_rgb, the picture's own words instead, R | G << 8 | B << 16, from
-// byte 0.
+// luma alone has none. V210's one plane is words, rows starting on one, in
+// YuvLayout::V210's order (yuv_image.hpp). With packed_rgb, the picture's
+// own words instead, R | G << 8 | B << 16, from byte 0.
 layout(set = 0, binding = 0, scalar) readonly buffer Planes { uint planes[]; };
 
 float byte_at(uint base, uint row_bytes, uint step, uint x, uint y) {

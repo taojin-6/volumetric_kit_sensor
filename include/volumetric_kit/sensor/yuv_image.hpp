@@ -148,7 +148,7 @@ struct YuvImage {
   std::shared_ptr<const core::Image> image[2];
   /// Or the planes on the host, plane `p` at @ref host `+` @ref offset `[p]`,
   /// @ref stride `[p]` bytes a row: a camera's YUYV, or a mono camera's
-  /// luma, as its SDK hands it over, or a capture card's V210.
+  /// luma, as its SDK hands it over.
   /// `GpuFramePrep` copies them into its staging buffer as it records the
   /// frame and converts them on the device like @ref device's planes, so they
   /// need to last only until it returns; a frame holds them through

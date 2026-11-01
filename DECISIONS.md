@@ -5454,11 +5454,8 @@ sited by `chroma_location` across. `check_yuv_planes` takes it of even
 width, rows of at least `ceil(width / 6) * 16` bytes (a partial group's
 words whole), its offset and stride multiples of 4; `bind_planes` refuses
 it in full range. It comes from the host or a buffer; as images it is
-refused, as YUYV is. `color_planes.glsl`'s `v210_at` is the one unpack:
-sample `k` of group `g` is in word `4 g + k / 3` of its row, at bit
-`10 (k % 3)`; luma `x` is sample `2 (x % 6) + 1` of group `x / 6`, and
-chroma sample `x` (pixel `2x`'s) is Cb at `4 (x % 3)` of group `x / 3`, Cr
-two on. Each sample comes back as code / 4, so `luma_level`, the matrix and
+refused, as YUYV is. `color_planes.glsl`'s `v210_at` is the one unpack.
+Each sample comes back as code / 4, so `luma_level`, the matrix and
 the rectifier's outputs are the 8-bit layouts' code, unchanged.
 `ColorParams` gains one word, `v210`: 124 bytes of the 128 Vulkan
 guarantees. `PictureReadback` refuses V210 with `Unsupported`:
@@ -5475,8 +5472,9 @@ picture is 22,118,400 bytes at 2160p, a third more than 8-bit UYVY.
   Scaling by a power of two is exact in float, so 8-bit codes times 4
   convert bit for bit as the 8-bit picture does, which the tests hold.
 - **Limited range only.** Full-range 10-bit levels are code / 1023, which
-  code / 4 on the 255 scale misses by up to 0.4 of a code; SDI is limited
-  range, so V210 in full range is refused rather than read slightly wrong.
+  code / 4 on the 255 scale misses by up to 0.75 of a code (luma at 1023);
+  SDI is limited range, so V210 in full range is refused rather than read
+  slightly wrong.
 - **A flag, not a layout code.** The push constants carry one word a
   behaviour the kernel switches on (`luma_only`, `chroma_full_rows`); a
   layout code would repeat them.
@@ -5486,8 +5484,9 @@ picture is 22,118,400 bytes at 2160p, a third more than 8-bit UYVY.
   4 (`tests/v210.hpp`, written word by word from the table above, apart from
   the shader's indexing) gives the YUYV picture's words bit for bit:
   through the barrel lens at 320x240, chroma sited left and centred, and
-  through a mild pincushion lens that samples the last columns (to x 3839.4
-  and 3841.5) at 3840x16 and 3842x16, whose last group holds two pixels;
+  through a mild pincushion lens that samples the last columns (to x
+  3839.4, 3841.5 and 4095.5) at 3840x16, 3842x16 and 4096x16, whose last
+  groups hold two and four pixels (4096 is DCI 4K's width);
   from the host, rows padded and from byte 20, and from a device buffer.
   Codes off the 8-bit grid (none a multiple of 4) through a pinhole that
   leaves each pixel where it is, 3842x8, come out within 0.5 of a code of
@@ -5503,7 +5502,10 @@ picture is 22,118,400 bytes at 2160p, a third more than 8-bit UYVY.
 Three planted bugs in `v210_at` and `chroma_at` each failed
 `sensor_gpu_frame_prep` and `sensor_stereo_rectifier`: Cb and Cr swapped
 inside a group, word 2's samples read in reverse order, and the samples
-read without the / 4.
+read without the / 4; so did chroma bound from the binding's first byte
+rather than the plane's (the device pictures), and chroma halved down as
+4:2:0's is. Samples read without their two low bits failed the 10-bit
+check alone, as the 8-bit-times-4 pictures have none.
 
 **Validation.** Apple M5 Max, macOS 27.2, MoltenVK 1.4.2, Release with
 warnings as errors, under the validation layer: the whole suite passes, 40
