@@ -28,8 +28,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- `StereoRectifier::rectify` lets the right picture go once its pass has
-  read it: `RectifiedPair::source` has no right planes and no
+- **BREAKING: `StereoRectifier::rectify` lets the right picture go** once
+  its pass has read it: `RectifiedPair::source` has no right planes and no
   `right_pixels`. `StereoDepthSensor` lets the camera's frame go once
   rectified, so the right picture is free before FFS runs and a depth frame
   holds the left picture alone. DECISIONS.md, the 2026-11-01 stereo-sync
