@@ -51,7 +51,11 @@ struct StereoCalibration {
 /// source built on it reports these as its own (`StereoRectifier::depth_info`
 /// copies them), so a sensor array can name, check and group it.
 struct StereoInfo {
-  StereoCalibration calibration;  ///< The pair.
+  /// The pair; none -- both cameras 0 x 0, as a default
+  /// @ref StereoCalibration -- from a source opened before its cameras are
+  /// calibrated, whose pictures a calibration is made from.
+  /// `StereoRectifier` refuses such a source.
+  StereoCalibration calibration;
   /// A third, colour camera (a RealSense's); empty when `left` is the colour.
   std::optional<camera::CameraModel> color;
   /// A left-camera point in the colour camera; identity when there is none.

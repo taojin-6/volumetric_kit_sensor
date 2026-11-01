@@ -45,6 +45,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video |
 | `sensor_realsense` | `realsense/` | `RealSenseSensor`, `RealSenseStereo` | interface, stereo |
 | `sensor_ffs` | `ffs/` | `FfsStereo` (Fast-FoundationStereo on TensorRT), `StereoDepthSensor` (any stereo camera as an `IRgbdSensor`); NVIDIA only | stereo; video, privately |
+| `sensor_decklink` | `decklink/` | `DecklinkStereo` (two SDI inputs of a DeckLink card as one stereo camera); Linux x86-64 | stereo |
 | `sensor_microphone` | `audio/` | `Microphone` (an OS audio input through PortAudio) | interface |
 | `sensor_image_io` | `io/` | image files | core base |
 
@@ -52,7 +53,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 
 Requires CMake ≥ 3.21, a C++17 compiler and the Vulkan toolchain (MoltenVK
 on Apple). The package fetches the core pinned by commit and checks it is
-0.29.0 or newer.
+0.38.0 or newer.
 
 ```sh
 sensor_root="$(git rev-parse --show-toplevel)"
@@ -72,6 +73,7 @@ ctest --test-dir "$sensor_root/build" --output-on-failure
 | `VS_WITH_CUDA` | OFF | NVIDIA's hardware for the decoders |
 | `VS_WITH_FFS` | OFF | `sensor_ffs`: stereo depth by FFS; needs `VS_WITH_CUDA` and TensorRT ≥ 11 |
 | `VS_WITH_PORTAUDIO` | OFF | `sensor_microphone` and `mic_check`; needs PortAudio |
+| `VS_WITH_DECKLINK` | OFF | `sensor_decklink` and `decklink_skew_report`; needs the DeckLink SDK's headers (`DeckLinkSDK_ROOT`), Linux x86-64 |
 | `VS_SANITIZE` | empty | sanitizers, e.g. `address;undefined` |
 
 The GPU tests follow the core's test policy (its README, "Build and test"):
@@ -266,6 +268,49 @@ The tests run TensorRT and the kernels on two 593-byte models with FFS's
 inputs and output (`tests/data/ffs`, made by `tools/ffs/make_test_onnx.py`),
 and skip where CUDA does not reach the GPU unless `VS_TEST_HEVC_BACKEND`
 is set.
+
+## DeckLink stereo driver
+
+`DecklinkStereo` (`decklink/decklink_stereo.hpp`,
+`volumetric_kit::sensor_decklink`) is two SDI inputs of a DeckLink 8K Pro
+as one `IStereoSensor`: each camera's 10-bit V210 picture, which the card
+writes into host pages the GPU imports and one GPU copy moves into a device
+buffer, paired with the other camera's by the card's frame times and
+carrying the measured skew. It needs the DeckLink SDK's headers, unpacked
+once and never fetched (`cmake/vs_decklink.cmake`), and Desktop Video to
+capture, which it loads at run time; the device must enable
+`VK_EXT_external_memory_host` (`device_requirements()` asks for it). The
+card's profile is "four sub-devices half-duplex", one input a connector.
+
+```sh
+cmake -S "$sensor_root" -B "$sensor_root/build" -DCMAKE_BUILD_TYPE=Release \
+    -DVS_WITH_DECKLINK=ON -DDeckLinkSDK_ROOT=<the SDK's Linux directory>
+```
+
+```cpp
+sensor::DecklinkStereo::Options options;
+options.left = {"bm-1", "SDI 2"};   // the camera's name, its connector
+options.right = {"bm-2", "SDI 1"};
+VKC_ASSIGN(options.calibration, sensor::stereo_calibration(file, "bm-1", "bm-2"));
+VKC_ASSIGN(sensor::DecklinkStereo camera,
+           sensor::DecklinkStereo::open(options, device, allocator));
+VKC_TRY(camera.start());  // then as any IStereoSensor, StereoDepthSensor's too
+```
+
+Without a calibration it still captures the raw pairs a calibration is
+made from; `StereoRectifier` refuses it then. The cameras' settings (30 fps,
+shutter, white balance, auto exposure off) are the camera's own, over its
+USB PTP or its menu. `decklink_skew_report` times the two inputs by hand,
+through the driver's capture: each input's frames, losses and rate against
+the card clock, and the pairs' skew, right less left, with its drift.
+
+```sh
+"$sensor_root/build/tools/decklink_skew_report/decklink_skew_report" \
+    --left "SDI 2" --right "SDI 1" --seconds 60
+```
+
+The driver's SDK-free parts (pairing, clock map, upload, skew numbers) are
+built and tested on every leg; no CI leg builds the SDK's part yet.
 
 ## Video decoders
 

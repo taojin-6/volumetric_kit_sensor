@@ -165,7 +165,8 @@ class VS_STEREO_API StereoRectifier final {
   ///                   object and its pairs).
   /// @param info       The pair's calibration, and any colour camera.
   /// @param options    The rectified size, alpha and output.
-  /// @return The rectifier; `Status::Code::InvalidArgument` for a camera
+  /// @return The rectifier; `Status::Code::InvalidArgument` for a source
+  ///         with no calibration (@ref StereoInfo::calibration), a camera
   ///         that `camera::check_camera_model` refuses or that is past
   ///         float's range, cameras of different sizes, a `left_to_right` or
   ///         `left_to_color` that is not rigid, cameras at one place, a pair

@@ -399,6 +399,14 @@ entries relevant to your task; later amendments supersede earlier rules.
   moment when every two of its pictures lie within half a frame, to the
   nanosecond (amends the 2026-10-29 RealSense stereo entry).
 
+- [**2026-11-01**](#2026-11-01--a-decklink-stereo-camera-two-sdi-inputs-as-one-istereosensor-their-10-bit-pictures-written-by-the-card-into-pages-the-gpu-imports-and-copied-once-on-the-device-free-running-cameras-paired-by-the-cards-frame-times-each-pairs-skew-stated-the-calibration-optional) —
+  A DeckLink stereo camera (`DecklinkStereo`): two SDI inputs as one
+  `IStereoSensor`, their 10-bit V210 pictures written by the card into host
+  pages the GPU imports and copied once into device buffers; free-running
+  cameras paired by the card's frame times within half a frame, each pair's
+  skew stated; the cameras' settings their own. Without a calibration it
+  hands out raw pairs, and the rectifier refuses it.
+
 ## Decision record
 
 ### 2026-08-02 — The `sensor` tier is a *contract*, not a driver collection: a capture driver lives here only if this repo can build
@@ -5589,3 +5597,92 @@ the camera's frame, `together` holding each picture to the first, and
 FFS on, under the validation layer: the whole suite passes on the lab's RTX
 5090 (Ubuntu 26.04, driver 615.71.10, TensorRT 11.4), 48 tests. No camera
 was opened.
+
+### 2026-11-01 — A DeckLink stereo camera: two SDI inputs as one `IStereoSensor`, their 10-bit pictures written by the card into pages the GPU imports and copied once on the device; free-running cameras paired by the card's frame times, each pair's skew stated; the calibration optional.
+
+**The rule.** `DecklinkStereo` (`sensor_decklink`, `VS_WITH_DECKLINK`)
+captures two connectors of a DeckLink 8K Pro under the profile "four
+sub-devices half-duplex" at 2160p 24, 25 or 30, as v210 only. The card's
+DMA writes each picture into host pages the device imports
+(`core::create_imported_host_buffer`), through the SDK's capture allocator;
+one GPU copy a picture moves it into a device buffer, which the rectifier
+and prep read in place, and the SDK's frames go back once the copy's fence
+has signalled. The cameras free-run: a frame pairs with the other input's
+newest unpaired frame within `max_skew_ns` (default just under half a
+frame), on the card's frame times, and carries the skew. A mode other than
+the one opened is refused with the camera's own fix, never followed.
+`Options::calibration` is optional; without it the driver hands out raw
+pairs and reports no calibration (a default `StereoCalibration`), which
+`StereoRectifier::create` refuses, naming it. The SDK-free parts are a
+target of their own, built and tested on every leg; `capture.cpp` is the one
+SDK user. How each part works is DESIGN.md's (`decklink`).
+
+**Why** (the owner's choices, 2026-11-01):
+- **V210, 10-bit.** The path measured with no lost frame (5991 a camera),
+  no rounding to 8 bits on the card, and the colour response's falloff gain
+  stretches codes, so it needs them. A third more bytes than 8-bit UYVY.
+- **Zero-copy on any GPU.** The CPU copies nothing; the 1.33 GB/s a pair is
+  2% of the 5090's link. A copy rather than kernels reading the pages: the
+  core keeps kernels off host memory, and the rectifier and prep both read
+  the left picture, which would cross PCIe twice. GPUDirect for Video does
+  not start on the GeForce 5090 (`dvpInitCUDAContext` fails), so it is not
+  used.
+- **No genlock in v1** (the owner's choice: SDI 3 and 4 stay inputs for a
+  second pair). The pair is matched in software and states its skew: 8.2 ms
+  today, drifting 0.037 ms a minute. A genlocked rig lowers the bound; it
+  is a number, not a second code path.
+- **Time and sequence.** The card's clock is the host's raw clock, 18.8 ppm
+  off the disciplined one, so a frame's host time takes the two clocks'
+  offset sampled in its own callback; one offset fixed at start would be
+  68 ms off after an hour. The sequence adds whole periods between left
+  frames: the cameras run 27 ppm slow, and rounding the time since the
+  first would slip half a frame in about 10 minutes.
+- **Camera settings are the camera's own** (its menu, or USB PTP): the
+  only control path without a cable into its SDI
+  IN. A firmware update resets these cameras to 24p, so `start` and `poll`
+  name the mode and the fix.
+- **The calibration optional** (calib's lens mode, 2026-11-01): pictures
+  are captured before any lens exists. A source with none states it the
+  one way every source can, with no new field.
+- **`start` failing for no pair is `IoError`**, as RealSense's camera that
+  delivers nothing is: the core has no "unavailable" code.
+- **No CI leg builds the SDK's part** (the SDK headers in the CI image
+  await the owner's licence call), so everything but the SDK's calls sits
+  in units a test drives with a capture that writes pages as the card does.
+
+**Tests.** `sensor_decklink_pairing` (host, every leg): the connectors,
+modes, rows and the mode fix; each option refused, named, lenses only when
+given; free-running cameras 8.2 ms apart pair in either arrival order; a
+lost left frame is a sequence gap, a lost right frame, no signal and a
+partner past the bound fail that left frame; the newest unpaired frame
+wins; restart and stop; the counts and the sync contract
+(`tests/stereo_contract.hpp`) on what it paired; a card clock 18.78 ppm
+off the host's mapped within 10 us over an hour (1.0 us worst), and a
+camera 27 ppm off nominal with no false gap in 108,000 frames; the skew
+report on a synthetic copy of the free run, -8.20 ms right less left at
+the start and +0.0367 ms a minute (SDI 2 lagging SDI 1 by 8.20 ms, falling
+0.0367 ms a minute), losses and refusals. `sensor_decklink_upload` (the
+device; it skips, naming the extension, where the device lacks
+`VK_EXT_external_memory_host`): pages found by address, made on demand,
+none past 8, reused; device pictures reused and capped; the driver over a
+test capture: device bytes equal the pages at 96x16 and 2160p, both SDK
+frames back before the frame is published and after the copy (the pages
+are overwritten as they go back), the newest pair wins under a slow poller
+(3 dropped), 4 device buffers and no more after warm-up, the rectifier
+lets the right picture go and the left stays, the contract, a mode change
+failing `poll`, `start` failing after `lock_timeout` naming the silent input
+or the cameras' -8.20 ms, and a camera at another mode. `sensor_decklink_sdk_smoke`
+(`VS_WITH_DECKLINK`): the codes are the SDK's, Desktop Video's API is 16 or
+newer (or `open` is `NotFound` naming the install), and `open` refuses bad
+options before any card. `sensor_subproject_decklink_no_sdk`: the option
+refused with the fix where the SDK is missing. `sensor_stereo_sensor`: the
+rectifier refuses a source with no calibration. Three planted bugs each
+failed their test: the oldest unpaired frame kept as the partner, the
+clocks' offset sampled once, and the SDK's frames handed back before the
+copy's fence.
+
+**Validation.** Release with warnings as errors, DeckLink (SDK 16.0,
+Desktop Video 16.5), RealSense, FFmpeg, CUDA and FFS on, under the
+validation layer: the whole suite passes on the lab's RTX 5090, 51 tests,
+and the upload test on lavapipe too. No camera was opened: the cameras are
+checked by hand.

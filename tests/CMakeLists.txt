@@ -100,8 +100,8 @@ if(VS_CAMERA_ONLY)
 endif()
 
 # The package's own pieces: the version CMake wires through, the GLM aliases,
-# and what it asks of a device -- scalar block layout, and the decoders'
-# extensions as optional, which recon's list leaves to this one.
+# and what it asks of a device -- scalar block layout, and the decoders' and the
+# capture card's extensions as optional, which recon's list leaves to this one.
 add_executable(sensor_smoke_test smoke_test.cpp)
 target_link_libraries(sensor_smoke_test PRIVATE volumetric_kit::sensor_camera
                                                 volumetric_kit::sensor_frame)
@@ -532,6 +532,40 @@ if(APPLE OR VS_WITH_FFMPEG)
   endif()
 endif()
 
+# The DeckLink driver's SDK-free units (sensor_decklink_units), with no card, on
+# every leg: the connectors and modes, the option refusals, the pairing and its
+# clock map, the counts and the sync contract (stereo_contract.hpp), and the
+# skew report's numbers, on the host; then the page pool, the device pictures
+# and the driver over a capture that writes pages as the card would, on the
+# device, which skips where the device lacks VK_EXT_external_memory_host.
+foreach(_vs_decklink_test pairing upload)
+  add_executable(sensor_decklink_${_vs_decklink_test}_test
+                 sensor_decklink_${_vs_decklink_test}_test.cpp)
+  target_link_libraries(
+    sensor_decklink_${_vs_decklink_test}_test
+    PRIVATE volumetric_kit::sensor_decklink_units
+            volumetric_kit::core_test_policy)
+  vs_target_warnings(sensor_decklink_${_vs_decklink_test}_test)
+  add_test(NAME sensor_decklink_${_vs_decklink_test}
+           COMMAND sensor_decklink_${_vs_decklink_test}_test)
+endforeach()
+
+# The DeckLink SDK prerequisite (VS_WITH_DECKLINK only), with no card opened:
+# the driver's codes are the SDK's, Desktop Video's library loads (or open is
+# NotFound naming it), and DecklinkStereo::open's refusals before any card.
+if(VS_WITH_DECKLINK)
+  add_executable(sensor_decklink_sdk_smoke_test decklink_sdk_smoke_test.cpp)
+  target_link_libraries(
+    sensor_decklink_sdk_smoke_test
+    PRIVATE volumetric_kit::sensor_decklink sensor_decklink_capture
+            volumetric_kit::core_test_policy)
+  target_include_directories(sensor_decklink_sdk_smoke_test SYSTEM
+                             PRIVATE "${VS_DECKLINK_INCLUDE_DIR}")
+  vs_target_warnings(sensor_decklink_sdk_smoke_test)
+  add_test(NAME sensor_decklink_sdk_smoke
+           COMMAND sensor_decklink_sdk_smoke_test)
+endif()
+
 # The worker each Orbbec colour decoder decodes on (decode_worker.hpp), driven
 # by a fake decode. It names no SDK type, so it is tested without the driver
 # too, on every leg, the sanitizers' included; with exceptions, as the driver is
@@ -737,12 +771,13 @@ target_link_libraries(
 vs_target_warnings(sensor_io_image_test)
 add_test(NAME sensor_io_image COMMAND sensor_io_image_test)
 
-# The tests whose code runs threads -- the Orbbec decode workers and the audio
-# capture's queue -- which CI builds and runs again under ThreadSanitizer
-# (.github/workflows/_build.yml): one target to build them.
+# The tests whose code runs threads -- the Orbbec decode workers, the audio
+# capture's queue and the DeckLink driver's upload -- which CI builds and runs
+# again under ThreadSanitizer (.github/workflows/_build.yml): one target to
+# build them.
 add_custom_target(sensor_tsan_tests)
 add_dependencies(sensor_tsan_tests sensor_orbbec_decode_worker_test
-                 sensor_audio_capture_test)
+                 sensor_audio_capture_test sensor_decklink_upload_test)
 if(VS_WITH_ORBBEC)
   add_dependencies(sensor_tsan_tests sensor_orbbec_jpeg_test
                    sensor_orbbec_hevc_test sensor_orbbec_open_sensors_test)
@@ -825,6 +860,25 @@ if(APPLE)
     sensor_subproject_apple_ffmpeg
     "on Apple the video decoders use VideoToolbox directly and need no FFmpeg. Configure this build with -DVS_WITH_FFMPEG=OFF."
   )
+endif()
+
+# VS_WITH_DECKLINK refused with the fix: on Linux x86-64 without the SDK
+# (cmake/vs_decklink.cmake), and anywhere else. CI never has the SDK.
+if(NOT VS_WITH_DECKLINK)
+  _vs_add_subproject_test(sensor_subproject_decklink_no_sdk decklink_no_sdk
+                          -DVS_WITH_DECKLINK=ON -DDeckLinkSDK_ROOT=)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES
+                                            "^(x86_64|AMD64)$")
+    _vs_expect_message(
+      sensor_subproject_decklink_no_sdk
+      "VS_WITH_DECKLINK is ON but no DeckLink SDK was found at DeckLinkSDK_ROOT=\"\": download the Desktop Video SDK"
+    )
+  else()
+    _vs_expect_message(
+      sensor_subproject_decklink_no_sdk
+      "VS_WITH_DECKLINK is ON, but the DeckLink driver builds on Linux x86-64 only."
+    )
+  endif()
 endif()
 
 # Start the slowest test first under `ctest --parallel`: without a COST, CTest
