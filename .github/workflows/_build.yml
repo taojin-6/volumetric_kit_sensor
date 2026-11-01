@@ -116,7 +116,7 @@ jobs:
   build:
     runs-on: [self-hosted, '${{ inputs.runner }}']
     # The image holds everything the Linux legs build and test with but the
-    # two SDKs below (the core's tools/ci/images). Its only Vulkan driver is
+    # SDKs below (the core's tools/ci/images). Its only Vulkan driver is
     # the NVIDIA ICD the container toolkit mounts (NVIDIA_DRIVER_CAPABILITIES=
     # all, with libcuda and libnvcuvid for the decoders), so the tests run on
     # the real GPU, and the GPU diagnostic below fails the leg without it. An
@@ -194,6 +194,11 @@ jobs:
         if: inputs.decklink
         run: |
           sdk="${GITHUB_WORKSPACE}/_decklink_sdk/tools/ci/images/ubuntu-24.04/decklink-sdk-16.0"
+          pin=$(git -C _decklink_sdk rev-parse HEAD)
+          grep -q "GIT_TAG ${pin})" third_party/CMakeLists.txt || {
+            echo "::error::the DeckLink SDK checkout (${pin}) is not at the core pin in third_party/CMakeLists.txt"
+            exit 1
+          }
           (cd "${sdk}" && sha256sum --quiet --strict -c SHA256SUMS)
           echo "DeckLinkSDK_ROOT=${sdk}" >> "${GITHUB_ENV}"
 

@@ -61,9 +61,7 @@ jobs:
       # same promise. The Mac has no CUDA.
       #
       # `decklink` builds the DeckLink driver's SDK part (VS_WITH_DECKLINK) on
-      # 24.04, against the SDK's headers the core keeps (_build.yml); no
-      # runner has Desktop Video, so its SDK smoke test checks that refusal.
-      # The driver's SDK-free parts are built and tested on every leg.
+      # 24.04 (_build.yml).
       #
       # `portaudio` builds the microphone driver (VS_WITH_PORTAUDIO) on every
       # leg, 24.04's PortAudio 19.6 the oldest; the sanitizer job builds
