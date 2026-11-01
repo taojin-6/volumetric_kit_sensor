@@ -15,6 +15,8 @@
 //     luma, YUYV, NV12 and I420, as luma bytes and as R'G'B' words, the
 //     coverage byte exact, and limited-range luma;
 //   - the same pictures in device buffers give the same views, bit for bit;
+//   - V210 of a YUYV pair's codes times 4 gives YUYV's views bit for bit,
+//     both outputs, from the host and from device buffers;
 //   - past a lens's fold the pass writes 0: on the strong barrel pair at
 //     alpha 1, 5-10% of each view's rays are past it, where the lens model
 //     would put them back inside the picture, mirrored, and every one is 0,
@@ -51,6 +53,7 @@
 #include <utility>
 #include <vector>
 
+#include "v210.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/buffer_readback.hpp"
@@ -533,6 +536,7 @@ Picture color_picture(const Scene& scene, const CameraModel& c,
       break;
     }
     case sensor::YuvLayout::Luma:
+    case sensor::YuvLayout::V210:  // as_v210's, from YUYV's
       break;
   }
   im.host = p.bytes.data();
@@ -1013,6 +1017,87 @@ int test_layouts() {
     CHECK(from_device->source.left.queue_family == sensor::kQueueFamilyIgnored);
     CHECK(read_view(*from_device, *from_device->left, bytes) == host_views[0]);
     CHECK(read_view(*from_device, *from_device->right, bytes) == host_views[1]);
+  }
+  return 0;
+}
+
+// `p`, a YUYV picture, as V210 of its codes times 4: the same samples, rows
+// padded, from byte 4.
+Picture as_v210(const Picture& p) {
+  const std::uint32_t cw = (p.w + 1) / 2;
+  std::vector<std::uint8_t> cb(std::size_t{cw} * p.h), cr(cb.size());
+  for (std::uint32_t r = 0; r < p.h; ++r) {
+    for (std::uint32_t i = 0; i < cw; ++i) {
+      const std::size_t from =
+          std::size_t{r} * p.w + std::min(2 * i, p.w - 1);  // its site
+      cb[std::size_t{r} * cw + i] = p.cb[from];
+      cr[std::size_t{r} * cw + i] = p.cr[from];
+    }
+  }
+  Picture out = p;
+  const std::size_t lead = 4, stride = v210::row_bytes(p.w) + 64;
+  out.bytes = v210::pack(v210::widen(p.y), v210::widen(cb), v210::widen(cr),
+                         p.w, p.h, lead, stride);
+  out.image.layout = sensor::YuvLayout::V210;
+  out.image.host = out.bytes.data();
+  out.image.offset[0] = lead;
+  out.image.stride[0] = stride;
+  return out;
+}
+
+// V210 of a YUYV pair's codes times 4, both limited range as SDI's is, gives
+// YUYV's views bit for bit, as R'G'B' words and as luma bytes, from the host
+// and from device buffers: the pass reads V210 through the colour pass's
+// sampler, at 1280 wide (213 groups and two pixels of another).
+int test_v210() {
+  const sensor::StereoInfo info = mild_pair();
+  const Scene scene;
+  const Mat4d right_to_left =
+      camera::rigid_inverse(info.calibration.left_to_right);
+  Picture yuyv[2] = {color_picture(scene, info.calibration.left, Mat4d(1.0),
+                                   sensor::YuvLayout::Yuyv),
+                     color_picture(scene, info.calibration.right, right_to_left,
+                                   sensor::YuvLayout::Yuyv)};
+  for (Picture& p : yuyv) {
+    p.image.kr = 0.2126f;
+    p.image.kb = 0.0722f;
+    p.image.full_range = false;
+  }
+  const Picture v210[2] = {as_v210(yuyv[0]), as_v210(yuyv[1])};
+  CHECK(info.calibration.left.size.width % 6 != 0);
+  for (const Rectifier::Output output :
+       {Rectifier::Output::Rgba8, Rectifier::Output::Luma8}) {
+    const auto rectifier = make(info, {{640, 360}, 0.25f, output});
+    CHECK(rectifier != nullptr);
+    const std::size_t bytes = view_bytes(rectifier->rig(), output);
+    const auto views = [&](const sensor::StereoFrame& f) {
+      std::array<std::vector<std::uint8_t>, 2> out;
+      auto pair = rectifier->rectify(f);
+      if (!pair) {
+        std::fprintf(stderr, "%s\n", pair.status().message().c_str());
+        return out;
+      }
+      out[0] = read_view(*pair, *pair->left, bytes);
+      out[1] = read_view(*pair, *pair->right, bytes);
+      return out;
+    };
+    const auto want = views(frame_of(yuyv[0], yuyv[1]));
+    CHECK(want[0].size() == bytes && want[1].size() == bytes);
+    sensor::StereoFrame dev = frame_of(v210[0], v210[1]);
+    dev.left = on_device(v210[0], 300);
+    dev.right = on_device(v210[1], 8);
+    CHECK(dev.left.device != nullptr && dev.right.device != nullptr);
+    const bool host_same = views(frame_of(v210[0], v210[1])) == want;
+    const bool device_same = views(dev) == want;
+    const auto lit = std::count_if(want[0].begin(), want[0].end(),
+                                   [](std::uint8_t b) { return b != 0; });
+    std::printf(
+        "  v210 against YUYV, as %s: %td of %zu left bytes lit; host %s, "
+        "device %s\n",
+        output == Rectifier::Output::Luma8 ? "luma" : "R'G'B'", lit, bytes,
+        host_same ? "same" : "DIFFERENT", device_same ? "same" : "DIFFERENT");
+    CHECK(lit > static_cast<std::ptrdiff_t>(bytes / 2));
+    CHECK(host_same && device_same);
   }
   return 0;
 }
@@ -1568,7 +1653,9 @@ int test_refusals() {
   f.left.width = 640;
   CHECK(frame_refused(f, "the left picture is 640x720"));
   f = frame_of(left, right);
-  f.left.layout = static_cast<sensor::YuvLayout>(4);
+  // One past the last.
+  f.left.layout = static_cast<sensor::YuvLayout>(
+      static_cast<int>(sensor::YuvLayout::V210) + 1);
   CHECK(frame_refused(f, "unknown colour layout"));
   f = frame_of(left, right);
   f.left.stride[0] = 100;
@@ -1671,6 +1758,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_opencv() != 0) return 1;
   if (test_rows_align() != 0) return 1;
   if (test_layouts() != 0) return 1;
+  if (test_v210() != 0) return 1;
   if (test_already_rectified() != 0) return 1;
   if (test_depth_info() != 0) return 1;
   if (test_pairs_hold_views() != 0) return 1;

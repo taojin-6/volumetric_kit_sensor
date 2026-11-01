@@ -24,6 +24,9 @@
 //   - a camera's YUYV on the host matches the host reference of its 4:2:2
 //     sampling through a lens, its words in a buffer give the same, and flat
 //     colours come out as librealsense's own YUY2 conversion makes them;
+//   - V210 of 8-bit codes times 4 gives YUYV's words bit for bit, partial
+//     groups included, from the host and a buffer, and its 10-bit codes come
+//     out within half a code of BT.709 in double;
 //   - the frames it refuses, before any work;
 //   - a frame kept past the next one keeps its buffers' contents;
 //   - the driver's depth noise is handed on unchanged, alone and in a set,
@@ -61,6 +64,7 @@
 #include <vector>
 
 #include "test_image.hpp"
+#include "v210.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/buffer_readback.hpp"
@@ -1396,7 +1400,9 @@ int test_layouts(sensor::GpuFramePrep& prep, sensor::ChromaLocation location) {
   bad.stride[0] = w - 1;
   CHECK(refused(bad, "stride is shorter"));
   bad = dev;
-  bad.layout = static_cast<sensor::YuvLayout>(4);
+  // One past the last.
+  bad.layout = static_cast<sensor::YuvLayout>(
+      static_cast<int>(sensor::YuvLayout::V210) + 1);
   CHECK(refused(bad, "unknown colour layout"));
   bad = dev;
   bad.device = std::make_shared<const vkc::Buffer>();
@@ -1757,6 +1763,279 @@ int test_luma(sensor::GpuFramePrep& prep) {
   const vkc::Status status = prep.prepare(f).status();
   CHECK(status.domain() == vkc::Status::Code::InvalidArgument &&
         status.message().find("NV12's two") != std::string::npos);
+  return 0;
+}
+
+// A 4:2:2 picture's 8-bit planes, chroma on every row: wavy, every code
+// apart from its neighbours.
+struct Planes422 {
+  std::vector<std::uint8_t> y, cb, cr;
+  std::uint32_t w = 0, h = 0, cw = 0;
+};
+Planes422 wavy_422(std::uint32_t w, std::uint32_t h) {
+  Planes422 p;
+  p.w = w;
+  p.h = h;
+  p.cw = (w + 1) / 2;
+  p.y.resize(std::size_t{w} * h);
+  p.cb.resize(std::size_t{p.cw} * h);
+  p.cr.resize(p.cb.size());
+  for (std::uint32_t r = 0; r < h; ++r) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      p.y[std::size_t{r} * w + x] =
+          static_cast<std::uint8_t>(128 + 100 * std::sin(0.05 * x + 0.3 * r));
+    }
+    for (std::uint32_t x = 0; x < p.cw; ++x) {
+      p.cb[std::size_t{r} * p.cw + x] =
+          static_cast<std::uint8_t>(128 + 60 * std::cos(0.07 * x + 0.2 * r));
+      p.cr[std::size_t{r} * p.cw + x] =
+          static_cast<std::uint8_t>(128 + 60 * std::sin(0.09 * r + 0.01 * x));
+    }
+  }
+  return p;
+}
+
+// V210's picture fields as a DeckLink capture states them: BT.709, limited
+// range, chroma sited left; `bytes` from `lead`, rows `stride` apart.
+sensor::YuvImage v210_image(const std::vector<std::uint8_t>& bytes,
+                            std::uint32_t w, std::uint32_t h, std::size_t lead,
+                            std::size_t stride) {
+  sensor::YuvImage im;
+  im.layout = sensor::YuvLayout::V210;
+  im.host = bytes.data();
+  im.offset[0] = lead;
+  im.stride[0] = stride;
+  im.width = w;
+  im.height = h;
+  im.kr = 0.2126f;
+  im.kb = 0.0722f;
+  im.full_range = false;
+  im.chroma_location = sensor::ChromaLocation::Left;
+  return im;
+}
+
+// V210, SDI's 10-bit 4:2:2, as a DeckLink card captures it:
+//   - built from an 8-bit picture's codes times 4, it gives the YUYV
+//     picture's words bit for bit: through the barrel lens at 320 wide,
+//     chroma sited left and centred, and through a mild pincushion lens,
+//     which samples the last columns, at 3840 and 3842 wide (a capture's
+//     width, and one whose last group holds two pixels); from the host, rows
+//     padded and from byte 20, and from a device buffer;
+//   - its two low bits are read: codes off the 8-bit grid (no multiple of
+//     4), through a pinhole that samples each pixel where it is, come out
+//     within half a code of BT.709's limited-range conversion of the 10-bit
+//     samples in double, which the same codes cut to 8 bits miss by more;
+//   - refused: odd width, a stride shorter than its rows, an offset or a
+//     stride off a word, full range, and planes as images.
+int test_v210(sensor::GpuFramePrep& prep) {
+  const auto invalid = vkc::Status::Code::InvalidArgument;
+  constexpr std::size_t kLead = 20;  // a word, not a binding's alignment
+  // `cam`'s frame of picture `color`, depth flat; `raw` must outlive it.
+  const auto frame = [](const std::vector<std::uint16_t>& raw,
+                        const camera::CameraModel& cam,
+                        const sensor::YuvImage& color) {
+    sensor::RgbdFrame f = frame_of(raw, cam);
+    f.color_camera = cam;
+    f.color = color;
+    return f;
+  };
+  const auto words = [&](const sensor::RgbdFrame& f) {
+    auto out = prep.prepare(f);
+    if (!out) {
+      std::fprintf(stderr, "%s\n", out.status().message().c_str());
+      return std::vector<std::uint32_t>{};
+    }
+    return color_of(out.value());
+  };
+
+  // The same picture as YUYV and as V210, through each lens.
+  camera::CameraModel wide;
+  wide.intrinsics = {1700.0f, 1700.0f, 0.0f, 7.75f};
+  wide.distortion = {0.02f, 0.0f, 0.0003f, -0.0002f, 0.0f, 0.0f, 0.0f, 0.0f};
+  struct Case {
+    std::uint32_t w, h;
+    sensor::ChromaLocation location;
+  };
+  for (const Case k : {Case{kWidth, kHeight, sensor::ChromaLocation::Left},
+                       Case{kWidth, kHeight, sensor::ChromaLocation::Center},
+                       Case{3840, 16, sensor::ChromaLocation::Left},
+                       Case{3842, 16, sensor::ChromaLocation::Left}}) {
+    camera::CameraModel cam = lensed();
+    if (k.w != kWidth) {
+      cam = wide;
+      cam.size = {k.w, k.h};
+      cam.intrinsics.cx = 0.5 * k.w - 0.3;
+    }
+    const Planes422 p = wavy_422(k.w, k.h);
+    std::vector<std::uint8_t> yuyv_bytes(4 * std::size_t{p.cw} * k.h);
+    for (std::size_t i = 0; i < std::size_t{p.cw} * k.h; ++i) {
+      const std::size_t r = i / p.cw, c = i % p.cw;
+      yuyv_bytes[4 * i] = p.y[r * k.w + 2 * c];
+      yuyv_bytes[4 * i + 1] = p.cb[i];
+      yuyv_bytes[4 * i + 2] = p.y[r * k.w + 2 * c + 1];
+      yuyv_bytes[4 * i + 3] = p.cr[i];
+    }
+    const std::size_t stride = v210::row_bytes(k.w) + 32;
+    const std::vector<std::uint8_t> bytes =
+        v210::pack(v210::widen(p.y), v210::widen(p.cb), v210::widen(p.cr), k.w,
+                   k.h, kLead, stride);
+    CHECK(bytes.size() % 4 == 0);
+    sensor::YuvImage v = v210_image(bytes, k.w, k.h, kLead, stride);
+    v.chroma_location = k.location;
+    sensor::YuvImage yuyv = v;
+    yuyv.layout = sensor::YuvLayout::Yuyv;
+    yuyv.host = yuyv_bytes.data();
+    yuyv.offset[0] = 0;
+    yuyv.stride[0] = 2 * std::size_t{k.w};
+    sensor::YuvImage dev = v;
+    dev.host = nullptr;
+    dev.device = on_device(bytes);
+    CHECK(dev.device != nullptr);
+
+    const std::vector<std::uint16_t> raw(std::size_t{k.w} * k.h, 1500);
+    const std::vector<std::uint32_t> want = words(frame(raw, cam, yuyv));
+    CHECK(want.size() == raw.size());
+    // The pincushion lens reaches the last columns: some kept pixel samples
+    // past the last pixel pair's first.
+    int kept = 0;
+    float reach = 0.0f;
+    for (std::uint32_t r = 0; r < k.h; ++r) {
+      for (std::uint32_t u = 0; u < k.w; ++u) {
+        if ((want[std::size_t{r} * k.w + u] >> 24) == 0) continue;
+        ++kept;
+        reach = std::max(
+            reach,
+            source_pixel(cam, static_cast<float>(u), static_cast<float>(r)).x);
+      }
+    }
+    const bool host_same = words(frame(raw, cam, v)) == want;
+    const bool device_same = words(frame(raw, cam, dev)) == want;
+    std::printf(
+        "  v210 %ux%u, chroma %s, against YUYV: %d pixels kept, sampled to "
+        "x %.2f; host %s, device %s\n",
+        k.w, k.h,
+        k.location == sensor::ChromaLocation::Left ? "left" : "centred", kept,
+        reach, host_same ? "same" : "DIFFERENT",
+        device_same ? "same" : "DIFFERENT");
+    CHECK(kept > static_cast<int>(k.w * k.h / 2));
+    CHECK(k.w == kWidth || reach > k.w - 1.5f);
+    CHECK(host_same && device_same);
+  }
+
+  // Codes off the 8-bit grid through a pinhole that leaves each pixel where
+  // it is: a power-of-two focal length and a centre on a half pixel, so the
+  // lens's arithmetic is exact.
+  const std::uint32_t w = 3842, h = 8, cw = w / 2;
+  camera::CameraModel pin;
+  pin.size = {w, h};
+  pin.intrinsics = {512.0f, 512.0f, 1920.5f, 3.5f};
+  std::vector<std::uint16_t> y(std::size_t{w} * h), cb(std::size_t{cw} * h),
+      cr(cb.size());
+  std::uint32_t seed = 0x9E3779B9u;
+  const auto off_grid = [&](std::uint16_t lo, std::uint16_t hi) {
+    seed ^= seed << 13;
+    seed ^= seed >> 17;
+    seed ^= seed << 5;
+    auto c = static_cast<std::uint16_t>(lo + seed % (hi - lo + 1u));
+    if (c % 4 == 0) c = static_cast<std::uint16_t>(c == hi ? c - 1 : c + 1);
+    return c;
+  };
+  for (std::uint16_t& c : y) c = off_grid(64, 940);
+  for (std::size_t i = 0; i < cb.size(); ++i) {
+    cb[i] = off_grid(64, 960);
+    cr[i] = off_grid(64, 960);
+  }
+  const std::size_t stride = v210::row_bytes(w);
+  const std::vector<std::uint8_t> bytes =
+      v210::pack(y, cb, cr, w, h, 0, stride);
+  const sensor::YuvImage fine = v210_image(bytes, w, h, 0, stride);
+  const std::vector<std::uint16_t> raw(std::size_t{w} * h, 1500);
+  sensor::RgbdFrame f = frame(raw, pin, fine);
+  const std::vector<std::uint32_t> got = words(f);
+  CHECK(got.size() == raw.size());
+  // BT.709 limited range from the 10-bit samples, in double: Y' = (Y - 64) /
+  // 876, Pb and Pr = (C - 512) / 896; unrounded codes. `drop` cuts each
+  // sample to 8 bits first.
+  const double kr = fine.kr, kb = fine.kb, kg = 1.0 - kr - kb;
+  const auto worst_against = [&](bool drop) {
+    const auto s = [drop](std::uint16_t c) {
+      return static_cast<double>(drop ? c & ~3u : c);
+    };
+    double worst = 0.0;
+    for (std::uint32_t r = 0; r < h; ++r) {
+      for (std::uint32_t u = 0; u < w; ++u) {
+        // Chroma sited left: pixel u's is sample u / 2, or the mean of the
+        // two either side, clamped at the edge.
+        const std::size_t i0 = std::size_t{r} * cw + u / 2;
+        const std::size_t i1 =
+            std::size_t{r} * cw + std::min<std::size_t>(u / 2 + 1, cw - 1);
+        const double cbv = u % 2 == 0 ? s(cb[i0]) : (s(cb[i0]) + s(cb[i1])) / 2;
+        const double crv = u % 2 == 0 ? s(cr[i0]) : (s(cr[i0]) + s(cr[i1])) / 2;
+        const double luma = (s(y[std::size_t{r} * w + u]) - 64.0) / 876.0;
+        const double pb = (cbv - 512.0) / 896.0, pr = (crv - 512.0) / 896.0;
+        const double red = luma + 2.0 * (1.0 - kr) * pr;
+        const double blue = luma + 2.0 * (1.0 - kb) * pb;
+        const double rgb[3] = {red, (luma - kr * red - kb * blue) / kg, blue};
+        const std::uint32_t word = got[std::size_t{r} * w + u];
+        for (int c = 0; c < 3; ++c) {
+          const double want = std::clamp(rgb[c], 0.0, 1.0) * 255.0;
+          const double code = static_cast<double>((word >> (8 * c)) & 0xFF);
+          worst = std::max(worst, std::fabs(code - want));
+        }
+      }
+    }
+    return worst;
+  };
+  const double worst = worst_against(false), worst_cut = worst_against(true);
+  std::printf(
+      "  v210 10-bit codes %ux%u through a pinhole: worst %.4f codes from "
+      "BT.709 in double, %.4f from the same codes cut to 8 bits\n",
+      w, h, worst, worst_cut);
+  CHECK(worst <= 0.5 + 1e-3);
+  CHECK(worst_cut > 0.5 + 1e-3);
+  {
+    sensor::YuvImage dev = fine;
+    dev.host = nullptr;
+    dev.device = on_device(bytes);
+    CHECK(dev.device != nullptr);
+    CHECK(words(frame(raw, pin, dev)) == got);
+  }
+
+  const auto refused = [&](const sensor::YuvImage& image, const char* why) {
+    f.color = image;
+    f.color_camera.size = {image.width, image.height};
+    const vkc::Status status = prep.prepare(f).status();
+    f.color_camera = pin;
+    if (status.domain() != invalid ||
+        status.message().find(why) == std::string::npos) {
+      std::fprintf(stderr, "%s\n", status.message().c_str());
+      return false;
+    }
+    return true;
+  };
+  sensor::YuvImage bad = fine;
+  bad.width = w - 1;
+  CHECK(refused(bad, "width must be even"));
+  bad = fine;
+  bad.stride[0] = stride - 4;
+  CHECK(refused(bad, "stride is shorter"));
+  bad = fine;
+  bad.offset[0] = 2;
+  CHECK(refused(bad, "multiples of 4"));
+  bad = fine;
+  bad.stride[0] = stride + 2;
+  CHECK(refused(bad, "multiples of 4"));
+  bad = fine;
+  bad.full_range = true;
+  CHECK(refused(bad, "limited range"));
+  bad = fine;
+  bad.host = nullptr;
+  const std::vector<std::uint8_t> luma(std::size_t{w} * h, 128);
+  const auto plane =
+      image_of(VK_FORMAT_R8_UNORM, 1, w, h, luma.data(), w, h, kSampled);
+  CHECK(plane != nullptr);
+  bad.image[0] = bad.image[1] = plane;
+  CHECK(refused(bad, "NV12's two"));
   return 0;
 }
 
@@ -3619,6 +3898,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   }
   if (test_yuyv(prep.value()) != 0) return 1;
   if (test_luma(prep.value()) != 0) return 1;
+  if (test_v210(prep.value()) != 0) return 1;
   if (test_coverage(prep.value()) != 0) return 1;
   if (test_poses(prep.value()) != 0) return 1;
   if (test_refusals(prep.value()) != 0) return 1;

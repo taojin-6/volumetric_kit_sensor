@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-11-01
+
+### Added
+
+- **V210 pictures (SDI's 10-bit 4:2:2).** `YuvLayout::V210`, one plane of
+  words, six pixels in four, as a DeckLink card captures it: `GpuFramePrep`
+  and `StereoRectifier` read it from the host or a buffer at 10 bits and
+  round to their 8-bit outputs once. Limited range only, of even width,
+  rows `ceil(width / 6) * 16` bytes or more, offset and stride whole words;
+  `PictureReadback` refuses it (`Unsupported`) until it reads it.
+  DECISIONS.md, the 2026-11-01 V210 entry.
+
 ## [0.13.0] - 2026-10-31
 
 ### Changed

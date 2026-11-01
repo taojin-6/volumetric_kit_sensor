@@ -33,6 +33,15 @@ enum class YuvLayout : std::uint8_t {
   /// infrared stereo pair's, say. Grey: no chroma, so the matrix and the
   /// chroma siting do not apply; the range does.
   Luma,
+  /// 10-bit 4:2:2 in one plane, as SDI carries it (DeckLink's
+  /// `bmdFormat10BitYUV`): six pixels in four little-endian 32-bit words,
+  /// three 10-bit samples a word from the low bits
+  /// (Cb0 Y0 Cr0 | Y1 Cb2 Y2 | Cr2 Y3 Cb4 | Y4 Cr4 Y5). The width is even, a
+  /// row at least `ceil(width / 6) * 16` bytes (3840: 10,240), and the offset
+  /// and stride whole words. Limited range only (luma 64..940, chroma
+  /// 64..960); its samples are read at 10 bits and rounded to the 8-bit
+  /// outputs once.
+  V210,
 };
 
 /// @brief @ref YuvImage::queue_family for device planes that need no
@@ -78,18 +87,18 @@ constexpr YcbcrWeights ycbcr_weights(VideoColorMatrix matrix) noexcept {
   return {0.2126f, 0.0722f};
 }
 
-/// @brief An 8-bit Y'CbCr picture, 4:2:0 or 4:2:2, or its luma alone, on the
-///        device, as a hardware decoder or a platform's capture left it, or on
-///        the host, as a camera's SDK hands it over, and the matrix and range
-///        it was coded with.
+/// @brief An 8-bit Y'CbCr picture, 4:2:0 or 4:2:2, or its luma alone, or
+///        V210's 10-bit 4:2:2, on the device, as a hardware decoder or a
+///        platform's capture left it, or on the host, as a camera's SDK hands
+///        it over, and the matrix and range it was coded with.
 ///
 /// Chroma's position is given by @ref YuvImage::chroma_location, defaulting to
-/// H.265's left alignment. JPEG uses centred chroma; YUYV's 4:2:2 chroma has
-/// every row, so only its horizontal siting counts. The planes are Y, then Cb
-/// and Cr at half size (rounded up) for I420, or Y then CbCr for NV12, whose
-/// chroma rows hold both samples of each pair, or YUYV's one plane, or
-/// Luma's. They are ranges of @ref device or of @ref host that do not
-/// overlap, or the @ref image planes; one of the three.
+/// H.265's left alignment. JPEG uses centred chroma; 4:2:2 chroma (YUYV's,
+/// V210's) has every row, so only its horizontal siting counts. The planes
+/// are Y, then Cb and Cr at half size (rounded up) for I420, or Y then CbCr
+/// for NV12, whose chroma rows hold both samples of each pair, or YUYV's,
+/// V210's or Luma's one plane. They are ranges of @ref device or of
+/// @ref host that do not overlap, or the @ref image planes; one of the three.
 ///
 /// @code
 /// YuvImage image;  // a decoder's NV12 picture, left on the device
@@ -139,7 +148,7 @@ struct YuvImage {
   std::shared_ptr<const core::Image> image[2];
   /// Or the planes on the host, plane `p` at @ref host `+` @ref offset `[p]`,
   /// @ref stride `[p]` bytes a row: a camera's YUYV, or a mono camera's
-  /// luma, as its SDK hands it over.
+  /// luma, as its SDK hands it over, or a capture card's V210.
   /// `GpuFramePrep` copies them into its staging buffer as it records the
   /// frame and converts them on the device like @ref device's planes, so they
   /// need to last only until it returns; a frame holds them through

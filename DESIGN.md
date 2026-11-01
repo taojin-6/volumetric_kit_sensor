@@ -572,7 +572,8 @@ recon's `integrate` (and
 pixel the lens maps outside the picture, or outside the depth camera's
 view, is a 0 word), so nothing is
 uploaded and nothing registered. Y'CbCr colour comes as I420, NV12, YUYV
-(4:2:2, one plane) or luma alone (`YuvLayout::Luma`, a mono camera's,
+(4:2:2, one plane), V210 (SDI's 10-bit 4:2:2, one plane of words) or luma
+alone (`YuvLayout::Luma`, a mono camera's,
 which comes out grey: R, G and B the luma's code by its range, no chroma
 read): on the device (the 2026-10-06 device-only `GpuFramePrep`
 decision), planes in a buffer (`YuvImage::device`, with per-plane offsets
@@ -591,6 +592,12 @@ camera's SDK hands its planes over (`YuvImage::host`: a UVC camera's YUYV;
 the 2026-10-29 host-planes decision), copied into the pass's slot after the
 depth from the first plane's first byte and read there by the buffer entry;
 YUYV's luma is every second byte and its chroma every fourth, on every row.
+V210's six pixels are four words of three 10-bit samples, chroma on every
+row; `color_planes.glsl`'s `v210_at`, the one unpack prep and the rectifier
+share, finds each sample's word and bits and returns it as code / 4, on the
+8-bit layouts' scale, so their levels and conversion apply unchanged and the
+10 bits are rounded once, to the output's 8 (the 2026-11-01 V210 decision).
+V210 is limited range only, its offset and stride whole words.
 A dataset decoded on the host hands its colour over as packed R'G'B' words
 instead (`RgbdFrame::color_packed`, `io::load_color_packed`'s layout; the
 2026-10-07 packed-colour decision), copied the same way; the colour pass
@@ -664,8 +671,8 @@ checked by the rules `GpuFramePrep` applies to one (`yuv_planes.hpp`), with
 `TRANSFER_SRC` where the pass needs a buffer's storage usage, or images'
 `SAMPLED` usage and views. It reads 4:2:0 and luma alone (its view has no
 chroma, whichever planes are asked): a YUYV picture, whose luma is no plane
-of its own, is refused, and a frame whose picture is on the host has no
-view.
+of its own, is refused, a V210 one is `Unsupported` (not read yet), and a
+frame whose picture is on the host has no view.
 An Orbbec frame holds its SDK pair and the SDK
 context, with the models and the depth-to-colour extrinsic from the factory
 calibration (the extrinsic's rotation made one: the Femto Mega's is not, the
