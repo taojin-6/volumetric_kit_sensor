@@ -53,7 +53,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 
 Requires CMake ≥ 3.21, a C++17 compiler and the Vulkan toolchain (MoltenVK
 on Apple). The package fetches the core pinned by commit and checks it is
-0.38.0 or newer.
+0.29.0 or newer, or 0.38.0 where the DeckLink driver or the tests build.
 
 ```sh
 sensor_root="$(git rev-parse --show-toplevel)"

@@ -29,8 +29,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `StereoRectifier::create`, and so `StereoDepthSensor::create`, refuses a
   source with no calibration (`StereoInfo::calibration` both cameras
   0 x 0) with `InvalidArgument`, naming it.
-- The core is pinned at 0.38.0 (core #82, `create_imported_host_buffer`),
-  and 0.38.0 is the floor.
+- The core is pinned at 0.38.0 (core #82, `create_imported_host_buffer`).
+  0.38.0 is the floor where the DeckLink driver's units build
+  (`VS_WITH_DECKLINK`, or the tests); elsewhere the floor stays 0.29.0, so
+  a decoder-only consumer at an older core still builds.
 
 ## [0.17.0] - 2026-11-01
 

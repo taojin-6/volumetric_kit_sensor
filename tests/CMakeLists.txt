@@ -839,11 +839,13 @@ add_test(NAME sensor_subproject_glsl
                  --target vs_glsl_consumer)
 set_tests_properties(sensor_subproject_glsl PROPERTIES FIXTURES_REQUIRED
                                                        vs_subproject_defaults)
+# A subproject builds neither the tests nor the DeckLink driver, so its floor is
+# the base one, not the 0.38.0 the driver's units need.
 _vs_add_subproject_test(sensor_subproject_old_core old_core -DVS_CORE_FIRST=ON
                         -DVKC_WITH_VULKAN=ON -DVS_CONSUMER_CORE_VERSION=0.0.1)
 _vs_expect_message(
   sensor_subproject_old_core
-  "volumetric_kit_sensor needs volumetric_kit_core ${VS_CORE_MIN_VERSION} or newer, but the core at .+ is 0.0.1: pin v${VS_CORE_MIN_VERSION} or newer"
+  "volumetric_kit_sensor needs volumetric_kit_core ${VS_CORE_BASE_MIN_VERSION} or newer, but the core at .+ is 0.0.1: pin v${VS_CORE_BASE_MIN_VERSION} or newer"
 )
 _vs_add_subproject_test(sensor_subproject_core_without_vulkan no_vulkan
                         -DVS_CORE_FIRST=ON -DVKC_WITH_VULKAN=OFF)
