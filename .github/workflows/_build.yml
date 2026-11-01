@@ -164,7 +164,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: taojin-6/volumetric_kit_core
-          ref: b2083677ae4dd23afd6d5c0bd7e7db4d6cd3a695
+          ref: 19720798ef25d76c6fa570052a0cc6a32883e3c5
           path: _decklink_sdk
           persist-credentials: false
           sparse-checkout: tools/ci/decklink-sdk-16.0

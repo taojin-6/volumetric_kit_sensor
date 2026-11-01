@@ -11,7 +11,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CI: the 24.04 leg builds the DeckLink driver's SDK part
   (`VS_WITH_DECKLINK`) against the SDK's headers the core keeps, checked out
   at the core pin and held to their SHA256s, and runs its SDK smoke test.
-- The core pin moves to core #85 (`b208367`, 0.39.0), whose
+- The core pin moves to core #85's merge (`1972079`, 0.39.0), whose
   `tools/ci/decklink-sdk-16.0` holds those headers; the floors are
   unchanged, so nothing changes for a consumer.
 
