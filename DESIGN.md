@@ -766,7 +766,16 @@ consumer of depth never sees it: a depth source built on a stereo camera
   source camera as its `cam`, and checks and binds the planes through the
   same function (`prep/color_pass.hpp`, internal; exported for
   `sensor_stereo`), so the two passes read pictures alike, one home for the
-  lens and the sampling. `Luma8` writes Y' by the picture's range, full
+  lens and the sampling. Where the view shrinks the picture, a pixel is
+  prefiltered over its own footprint: the map's Jacobian there, from where
+  the points half a pixel either side of it land across and down; where
+  its longer side is over 1.5 source pixels, the pixel is the mean of 5 x 5
+  bilinear samples, each at the centre of one of 25 equal cells of that
+  parallelogram, Y'CbCr averaged and converted once
+  (`undistort_color.glsl`'s `ycbcr_sample` and `ycbcr_to_word`, which
+  `ycbcr_word` is). Else, and where a neighbour's ray is behind the camera
+  or past the fold, one sample, as before: a D455's 1.33:1 is unchanged.
+  `Luma8` writes Y' by the picture's range, full
   range, four pixels a word; `Rgba8` R'G'B' and the coverage byte, as
   `GpuFramePrep`'s colour. A ray behind the camera, past the source lens's
   fold or out of the picture is 0. The fold is where the radial model stops
@@ -858,7 +867,12 @@ loads libcuda at run time) are private.
   4. the depth kernel: a thread a rig pixel, `z = fx * baseline / d` at
      `(x, y)` of the network's disparity; 0 where `d` is not above 0 (NaN
      included), `d > x` (the match is off the right view), or `z` is outside
-     `[min_depth, max_depth]`, and, for `Rgba8` views, where the left view's
+     `[min_depth, max_depth]`, `min_depth` raised to the near gate
+     `1.05 * fx * baseline / max_disparity` where that is farther (a surface
+     nearer than the network's reach comes back saturated, at or a little
+     past `fx * baseline / max_disparity`; `max_disparity` 0 is no gate, and
+     `create` refuses a gate not below `max_depth`; the frame's `min_depth`
+     is the bound kept), and, for `Rgba8` views, where the left view's
      coverage byte at `(x, y)` or the right view's at `(rint(x - d), y)` is
      0 (the rectifier saw nothing there, and the network matched black);
      else `rint(z / metres_per_unit)`, clamped to 1..65535, with

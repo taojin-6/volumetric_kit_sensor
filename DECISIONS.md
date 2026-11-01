@@ -399,6 +399,14 @@ entries relevant to your task; later amendments supersede earlier rules.
   moment when every two of its pictures lie within half a frame, to the
   nanosecond (amends the 2026-10-29 RealSense stereo entry).
 
+- [**2026-11-01**](#2026-11-01--the-stereo-rectifier-averages-each-pixel-over-its-own-footprint-where-it-shrinks-a-picture-and-ffs-drops-depth-inside-the-networks-reach-amends-the-2026-10-29-stereo-and-ffs-entries) —
+  Where the rectifier shrinks a picture, a view pixel whose footprint in it
+  is longer than 1.5 source pixels is the mean of 5 x 5 bilinear samples
+  over that footprint, found per pixel from where its neighbours land;
+  smaller footprints, a D455's included, keep one sample. FFS takes the
+  network's disparity range (`max_disparity`) and drops depth below 1.05
+  times `fx * baseline / max_disparity`, where saturated matches land.
+
 ## Decision record
 
 ### 2026-08-02 — The `sensor` tier is a *contract*, not a driver collection: a capture driver lives here only if this repo can build
@@ -5589,3 +5597,83 @@ the camera's frame, `together` holding each picture to the first, and
 FFS on, under the validation layer: the whole suite passes on the lab's RTX
 5090 (Ubuntu 26.04, driver 615.71.10, TensorRT 11.4), 48 tests. No camera
 was opened.
+
+### 2026-11-01 — The stereo rectifier averages each pixel over its own footprint where it shrinks a picture, and FFS drops depth inside the network's reach (amends the 2026-10-29 stereo and FFS entries).
+
+**The rule.**
+- `rectify.comp` finds each view pixel's footprint in the source picture,
+  the map's Jacobian there: where the points half a pixel either side of
+  it land, across and down. Where its longer side is over 1.5 source
+  pixels, the pixel is the mean of 5 x 5 bilinear samples, one at the
+  centre of each of 25 equal cells of that parallelogram, Y'CbCr averaged
+  and converted once. Else, and where a neighbour's ray is behind the
+  camera or past the fold, it takes one sample, as before. There is no
+  option: the footprint decides. `undistort_color.glsl`'s `ycbcr_word` is
+  split into `ycbcr_sample` and `ycbcr_to_word`, so the average is
+  converted by the one conversion; prep calls `ycbcr_word` as before.
+- `FfsStereo::Options::max_disparity` is the network's disparity search
+  range at the rig's size. Depth below `1.05 * fx * baseline /
+  max_disparity` is no return, and the frame's `min_depth` is the larger of
+  that and `Options::min_depth`. 0, the default, is no gate; `create`
+  refuses a value not finite and at least 0, and a gate not below
+  `max_depth`.
+
+**Why.** A 4K stereo pair matched at FFS's 960 x 544 (the DeckLink pair,
+owner 2026-11-01) is a 4.5:1 shrink. One bilinear sample a pixel aliases
+fine texture and moves an edge with its sub-pixel phase, which a matcher
+reads as disparity. An area mean over each pixel's footprint (OpenCV's
+`INTER_AREA`, but per pixel through the lens) does neither.
+- **Per pixel.** A near-equidistant lens shrinks its picture 4.8:1 at the
+  centre and about 1.5 across by 3 down at its side edge. A box of the
+  centre's size would blur that edge three times too much radially.
+- **5 x 5, from 1.5.** Five samples a side put one at least every source
+  pixel up to 5:1. Below 1.5 one sample is kept: a D455's 1.33:1 views are
+  unchanged, byte for byte.
+- **Its limit.** A box one view pixel wide still passes part of a 1-D
+  grating just past the view's Nyquist (its response there). A wider
+  kernel would blur what FFS matches; not taken without a measured need.
+- **The near gate.** A surface nearer than `fx * baseline /
+  max_disparity` has a disparity past the network's range, so it comes
+  back saturated, at or a little past that depth: wrong depth that looks
+  valid. Dropping depth within 5% past it removes those, and true
+  surfaces there with them. The gate is FFS's because only `FfsStereo`
+  knows the rectified fx and baseline when it is made; an opener would
+  have to copy the rectification.
+
+**Tests.** `sensor_stereo_rectifier`:
+- the host reference (`Remap::footprint`, `area_mean`) prefilters as the
+  spec says, and every existing view check holds to it within a code: the
+  layout and V210 tests' 2:1 shrink is averaged, the 1.33:1 ones are not;
+- a D455's 1280x800 to 960x544: footprint 1.333, one sample; random luma
+  matches the one-tap reference in all 522,240 pixels away from ties
+  (within 0.02 of a half code);
+- 4320x2448 to 960x544 (4.5:1): a checker grating of period 5 source
+  pixels, +-64 levels, reads within 1 level of its mean (one sample a
+  pixel: 44);
+- step edges at six sub-pixel phases, across and down, stay within 0.0087
+  view pixels of where the rig puts them (one sample a pixel: 0.333);
+- the near-equidistant lens, 3840x2160 to 960x544 (fx 310.4): footprint
+  4.83 x 4.83 at the centre and 1.50 x 3.13 at the side edge; rings of the
+  centre's period keep +-47.5 of +-64 at the side edge (a centre-sized box:
+  +-1.0) and average out to +-1.5 near the centre.
+
+`sensor_ffs_stereo`: at `fx * baseline` 4 and `max_disparity` 30 the gate
+is 0.14 m, so disparity 29 (0.138 m) has no return where `min_depth` alone
+keeps it, and the frame's `min_depth` is 0.14; a gate nearer than
+`min_depth` leaves it, and 0 is none; -1, NaN, infinity and a gate past
+`max_depth` are refused.
+
+Four planted bugs each failed: the taps shifted half a tap (the steps,
+0.108 view px), the footprint taken at the view's centre (the side edge's
+rings, +-1.0), weights summing to 25/24 (the grating, 6 levels), and the
+gate at 1.0x (`sensor_ffs_stereo`).
+
+**Validation.** The lab's RTX 5090 (Ubuntu 26.04, driver 615.71.10,
+TensorRT 11.4), Release with warnings as errors, RealSense, FFmpeg, CUDA
+and FFS on, under the validation layer: the whole suite passes, 48
+tests. The D455 view's FNV-1a hash is the same built on this branch and on
+0.17.0 (`0268e7d115d26352`). A 3840x2160 V210 pair in device buffers,
+rectified to 960x544 `Rgba8`, every pixel averaged, takes 0.77-0.78 ms of
+device time for both views, with other jobs on the GPU; the 1.33:1 cases
+take 0.007 ms more than on 0.17.0 (0.023 ms against 0.015 ms, luma in
+device buffers), the four neighbours' lens. No camera was opened.

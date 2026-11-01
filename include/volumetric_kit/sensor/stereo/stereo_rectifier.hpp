@@ -120,7 +120,14 @@ struct RectifiedPair {
 /// Each frame is one compute pass a view: each rectified pixel's ray turned
 /// into the source camera, through its lens, and the source picture sampled
 /// there bilinearly and converted as `GpuFramePrep` converts colour (the
-/// same shader code). The pictures come in any layout the package reads --
+/// same shader code). Where the view shrinks the picture -- the pixel's
+/// footprint in it, from where the points half a pixel either side of it
+/// land, longer than 1.5 source pixels on a side -- the pixel is the mean of
+/// 5 x 5 bilinear samples spread over that footprint, converted once: a 4K
+/// picture shrunk 4.5:1 does not alias, and a lens that shrinks less at its
+/// edge than at its centre is averaged over less there. A smaller shrink,
+/// such as a D455's 1.33:1, takes one sample. The pictures come in any
+/// layout the package reads --
 /// luma alone, YUYV, V210, NV12, I420 -- on the host, copied into one
 /// persistent slot (`core::HostRing`) as `GpuFramePrep` stages host planes,
 /// or in a buffer on the device, taken over from `YuvImage::queue_family`,

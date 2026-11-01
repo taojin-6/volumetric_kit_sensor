@@ -11,9 +11,18 @@
 //     by inverting the lens iteratively, where the pass runs it forward),
 //     come out on one row in both views, within 0.05 px, where the rig
 //     projects them;
-//   - each view matches a host reference of the pass's remap within a code:
-//     luma, YUYV, NV12 and I420, as luma bytes and as R'G'B' words, the
-//     coverage byte exact, and limited-range luma;
+//   - each view matches a host reference of the pass's remap within a code,
+//     its area prefilter included (each pixel's footprint from where the
+//     points half a pixel either side of it land, 5 x 5 taps over it where
+//     its longer side is over 1.5 source pixels): luma, YUYV, NV12 and I420,
+//     as luma bytes and as R'G'B' words, the coverage byte exact, and
+//     limited-range luma;
+//   - the prefilter: a D455's 1.33:1 takes one tap, as the one-tap
+//     reference has it byte for byte but at ties, half way between codes; at
+//     4.5:1 a checker grating past the view's Nyquist reads flat within 2
+//     levels, and step edges stay within 0.03 view pixels at every phase;
+//     through a near-equidistant 4K lens, a side edge's 1.5 x 3 footprint
+//     keeps rings that a centre-sized box would flatten;
 //   - the same pictures in device buffers give the same views, bit for bit;
 //   - V210 of a YUYV pair's codes times 4 gives YUYV's views bit for bit,
 //     both outputs, from the host and from device buffers;
@@ -39,7 +48,9 @@
 //   - a pair holds its frame's left picture but lets the right one go, its
 //     own owner (StereoFrame::right_pixels) or its device buffer;
 //   - what it refuses, at create and per frame;
-//   - the pass's time at 1280x720 to 960x544, both views, printed.
+//   - the pass's time at 1280x720 to 960x544, and at 3840x2160 V210 to
+//     960x544 through the 4K lens, every pixel averaged, both views,
+//     printed.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
 #include <algorithm>
@@ -672,13 +683,12 @@ struct Remap {
     fold = replica_fold(d);
   }
 
-  // Where the lens model puts rectified pixel (u, v) in the source, and the
-  // ray's normalized radius there, `*r`; false where the ray is behind the
-  // camera or lands outside the picture. The fold is not applied.
-  bool lands(std::uint32_t u, std::uint32_t v, float* sx, float* sy,
-             float* r) const {
-    const float x = (static_cast<float>(u) - cx) / fx;
-    const float y = (static_cast<float>(v) - cy) / fy;
+  // Where the lens model puts point (u, v) of the rectified view in the
+  // source, and the ray's normalized radius there, `*r`; false where the ray
+  // is behind the camera. The fold is not applied.
+  bool lens_at(float u, float v, float* sx, float* sy, float* r) const {
+    const float x = (u - cx) / fx;
+    const float y = (v - cy) / fy;
     const float rx = m[0][0] * x + m[1][0] * y + m[2][0];
     const float ry = m[0][1] * x + m[1][1] * y + m[2][1];
     const float rz = m[0][2] * x + m[1][2] * y + m[2][2];
@@ -690,7 +700,42 @@ struct Remap {
     camera::distort_rational(k, px, py, &xd, &yd);
     *sx = xd * sfx + scx;
     *sy = yd * sfy + scy;
-    return *sx >= -0.5f && *sy >= -0.5f && *sx <= sw - 0.5f && *sy <= sh - 0.5f;
+    return true;
+  }
+
+  // Where the lens model puts rectified pixel (u, v) in the source, and the
+  // ray's normalized radius there, `*r`; false where the ray is behind the
+  // camera or lands outside the picture. The fold is not applied.
+  bool lands(std::uint32_t u, std::uint32_t v, float* sx, float* sy,
+             float* r) const {
+    return lens_at(static_cast<float>(u), static_cast<float>(v), sx, sy, r) &&
+           *sx >= -0.5f && *sy >= -0.5f && *sx <= sw - 0.5f && *sy <= sh - 0.5f;
+  }
+
+  // Rectified pixel (u, v)'s footprint in the source, the spec's, worked
+  // out apart from the pass: where the points half a pixel either side of
+  // it land, across (`du`) and down (`dv`). 1 where the pass averages the
+  // pixel over it -- every neighbour's ray in front and inside the fold,
+  // the longer side over 1.5 source pixels -- 0 where it takes one tap, -1
+  // where the device and the host may decide either way (a side within
+  // 1e-3 of 1.5, a neighbour's ray near the fold).
+  int footprint(std::uint32_t u, std::uint32_t v, Vec2d* du, Vec2d* dv) const {
+    const float fu = static_cast<float>(u), fv = static_cast<float>(v);
+    const float at[4][2] = {
+        {fu - 0.5f, fv}, {fu + 0.5f, fv}, {fu, fv - 0.5f}, {fu, fv + 0.5f}};
+    Vec2d s[4];
+    for (int i = 0; i < 4; ++i) {
+      float sx = 0, sy = 0, r = 0;
+      if (!lens_at(at[i][0], at[i][1], &sx, &sy, &r)) return 0;
+      if (near_fold(r)) return -1;
+      if (r > fold) return 0;
+      s[i] = Vec2d(sx, sy);
+    }
+    *du = s[1] - s[0];
+    *dv = s[3] - s[2];
+    const double longer = std::max(glm::length(*du), glm::length(*dv));
+    if (std::fabs(longer - 1.5) < 1e-3) return -1;
+    return longer > 1.5 ? 1 : 0;
   }
 
   // Where rectified pixel (u, v) samples the source; false where the pass
@@ -731,6 +776,31 @@ float bilinear(const std::vector<std::uint8_t>& plane, std::uint32_t pw,
   const float top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * fx;
   const float bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * fx;
   return top + (bottom - top) * fy;
+}
+
+// The pass's taps a footprint side, the spec's: enough for a 4K picture's
+// 4.5:1 shrink to FFS's 960 x 544.
+constexpr int kTaps = 5;
+
+// The mean of `sample` (a source point to its luma, Cb and Cr) over a
+// footprint (`du`, `dv`) about `s`: `taps` x `taps` points, each at the
+// centre of one of as many equal cells, weighted alike.
+template <typename Sample>
+std::array<float, 3> area_mean(const Sample& sample, Vec2d s, Vec2d du,
+                               Vec2d dv, int taps) {
+  std::array<double, 3> sum = {0, 0, 0};
+  for (int j = 0; j < taps; ++j) {
+    for (int i = 0; i < taps; ++i) {
+      const double a = (i + 0.5) / taps - 0.5, b = (j + 0.5) / taps - 0.5;
+      const Vec2d p = s + du * a + dv * b;
+      const std::array<float, 3> got =
+          sample(static_cast<float>(p.x), static_cast<float>(p.y));
+      for (int c = 0; c < 3; ++c) sum[c] += got[c];
+    }
+  }
+  const double n = static_cast<double>(taps) * taps;
+  return {static_cast<float>(sum[0] / n), static_cast<float>(sum[1] / n),
+          static_cast<float>(sum[2] / n)};
 }
 
 // The luma code the pass writes for luma `y` sampled from a picture of that
@@ -778,6 +848,21 @@ int compare_view(const std::vector<std::uint8_t>& got, const Remap& remap,
       }
     }
   }
+  // Luma, Cb and Cr at source point (x, y), each at its siting (chroma
+  // sited left: its first sample at luma's (0, 0.5), and on every row for
+  // YUYV).
+  const auto sample = [&](float x, float y) {
+    std::array<float, 3> out = {
+        bilinear(picture.y, picture.w, picture.w, picture.h, x, y), 0.0f, 0.0f};
+    if (layout != sensor::YuvLayout::Luma) {
+      const float cx = x * 0.5f;
+      const float cy =
+          layout == sensor::YuvLayout::Yuyv ? y : (y - 0.5f) * 0.5f;
+      out[1] = bilinear(cb, pcw, pcw, pch, cx, cy);
+      out[2] = bilinear(cr, pcw, pcw, pch, cx, cy);
+    }
+    return out;
+  };
   int worst = 0;
   *compared = 0;
   for (std::uint32_t v = 0; v < remap.h; ++v) {
@@ -786,9 +871,14 @@ int compare_view(const std::vector<std::uint8_t>& got, const Remap& remap,
       float sx = 0, sy = 0, r = 0;
       const bool inside = remap.source(u, v, &sx, &sy, &r);
       if (remap.near_edge(sx, sy) || remap.near_fold(r)) continue;
-      const float luma =
-          inside ? bilinear(picture.y, picture.w, picture.w, picture.h, sx, sy)
-                 : 0.0f;
+      Vec2d du, dv;
+      const int area = inside ? remap.footprint(u, v, &du, &dv) : 0;
+      if (area < 0) continue;
+      const std::array<float, 3> ycc =
+          !inside     ? std::array<float, 3>{}
+          : area == 0 ? sample(sx, sy)
+                      : area_mean(sample, Vec2d(sx, sy), du, dv, kTaps);
+      const float luma = ycc[0];
       if (output == Rectifier::Output::Luma8) {
         const int want = inside ? luma_code(luma, full) : 0;
         worst = std::max(worst, std::abs(want - static_cast<int>(got[i])));
@@ -808,15 +898,8 @@ int compare_view(const std::vector<std::uint8_t>& got, const Remap& remap,
             static_cast<std::uint32_t>(luma_code(luma, full));
         want = g | (g << 8) | (g << 16);
       } else {
-        // Chroma sited left: its first sample at luma's (0, 0.5), and on
-        // every row for YUYV.
-        const float cx = (sx - 0.0f) * 0.5f;
-        const float cy =
-            layout == sensor::YuvLayout::Yuyv ? sy : (sy - 0.5f) * 0.5f;
-        const float u_c = bilinear(cb, pcw, pcw, pch, cx, cy);
-        const float v_c = bilinear(cr, pcw, pcw, pch, cx, cy);
         const std::array<int, 3> rgb = yuv_reference::rgb(
-            luma, u_c, v_c, sensor::VideoColorMatrix::Bt601, full);
+            luma, ycc[1], ycc[2], sensor::VideoColorMatrix::Bt601, full);
         want = static_cast<std::uint32_t>(rgb[0]) |
                (static_cast<std::uint32_t>(rgb[1]) << 8) |
                (static_cast<std::uint32_t>(rgb[2]) << 16);
@@ -1491,6 +1574,347 @@ int test_fold() {
   return 0;
 }
 
+// --- The area prefilter -----------------------------------------------------
+
+constexpr double kPi = 3.14159265358979323846;
+
+// A w x h luma picture, full range, of `level(x, y)` at each pixel, rows
+// kPad bytes longer.
+template <typename Level>
+Picture luma_of(std::uint32_t w, std::uint32_t h, const Level& level) {
+  Picture p;
+  p.w = w;
+  p.h = h;
+  p.y.resize(std::size_t{w} * h);
+  for (std::uint32_t r = 0; r < h; ++r) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      p.y[std::size_t{r} * w + x] = to_code(level(x, r));
+    }
+  }
+  const std::size_t stride = w + kPad;
+  p.bytes.assign(stride * h, 0xCD);
+  for (std::uint32_t r = 0; r < h; ++r) {
+    std::memcpy(&p.bytes[r * stride], &p.y[std::size_t{r} * w], w);
+  }
+  p.image.layout = sensor::YuvLayout::Luma;
+  p.image.host = p.bytes.data();
+  p.image.stride[0] = stride;
+  p.image.width = w;
+  p.image.height = h;
+  p.image.full_range = true;
+  return p;
+}
+
+// A pair rectified already: one pinhole camera, w x h, of focal length f,
+// the right one 0.1 m along +x.
+sensor::StereoInfo pinhole_pair(std::uint32_t w, std::uint32_t h, double f) {
+  sensor::StereoInfo info;
+  info.calibration.left = info.calibration.right =
+      CameraModel{{w, h}, {f, f, (w - 1) / 2.0, (h - 1) / 2.0}, {}};
+  info.calibration.left_to_right[3] = glm::dvec4(-0.1, 0.0, 0.0, 1.0);
+  return info;
+}
+
+// A near-equidistant lens on a 4K picture, r_d about atan(r) to 3% out to
+// 55 degrees (atan(r) / r's Pade [2/2] in r^2), which never folds: a
+// fisheye such as a 4K stereo pair's, whose view at 960x544 shrinks the
+// picture 4.8:1 at the centre and about 1.5 radially by 3 tangentially at
+// its side edges.
+CameraModel near_equidistant() {
+  CameraModel c{{3840, 2160}, {1500.0, 1500.0, 1919.5, 1079.5}, {}};
+  c.distortion.k1 = 735.0 / 945;
+  c.distortion.k2 = 64.0 / 945;
+  c.distortion.k4 = 1050.0 / 945;
+  c.distortion.k5 = 225.0 / 945;
+  return c;
+}
+
+// Rings about camera `c`'s principal point, `period` source pixels apart
+// radially, +-64 levels about 128.
+Picture rings_of(const CameraModel& c, double period) {
+  const double cx = c.intrinsics.cx, cy = c.intrinsics.cy;
+  return luma_of(c.size.width, c.size.height,
+                 [&](std::uint32_t x, std::uint32_t y) {
+                   const double r = std::hypot(x - cx, y - cy);
+                   return 128 + 64 * std::cos(2 * kPi * r / period);
+                 });
+}
+
+std::uint64_t fnv1a(const std::vector<std::uint8_t>& bytes) {
+  std::uint64_t h = 14695981039346656037ull;
+  for (const std::uint8_t b : bytes) {
+    h ^= b;
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+// Where the pixels a view's footprint averages are one tap -- a D455's
+// infrared pair, 1280x800, to FFS's 960x544, 1.33:1 -- random luma comes
+// back as the one-tap reference has it, byte for byte but at ties, half way
+// between two codes, which float rounds either way; its hash, printed,
+// compares builds by hand.
+int prefilter_one_tap() {
+  const sensor::StereoInfo info = pinhole_pair(1280, 800, 640.0);
+  const auto rectifier =
+      make(info, {{960, 544}, 0.0f, Rectifier::Output::Luma8});
+  CHECK(rectifier != nullptr);
+  const sensor::StereoRig& rig = rectifier->rig();
+  std::uint32_t state = 0x9E3779B9u;
+  const Picture pic =
+      luma_of(1280, 800, [&state](std::uint32_t, std::uint32_t) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        return static_cast<double>(state >> 24);
+      });
+  auto pair = rectifier->rectify(frame_of(pic, pic));
+  CHECK(pair.ok());
+  const std::vector<std::uint8_t> view =
+      read_view(*pair, *pair->left, view_bytes(rig, Rectifier::Output::Luma8));
+  CHECK(view.size() >= 960u * 544u);
+  const Remap remap(rig, info.calibration, 0);
+  // Ties: a sample within 0.02 of half way between two codes, which float
+  // may round either way: the device and the host place a sample 2e-5 px
+  // apart at x 1000, which steep random luma (up to 255 codes a pixel) turns
+  // into 0.01 of a code.
+  std::size_t off = 0, ties = 0, total = 0;
+  int worst = 0;
+  double longest = 0;
+  for (std::uint32_t v = 0; v < 544; ++v) {
+    for (std::uint32_t u = 0; u < 960; ++u) {
+      float sx = 0, sy = 0, r = 0;
+      CHECK(remap.source(u, v, &sx, &sy, &r));
+      Vec2d du, dv;
+      CHECK(remap.footprint(u, v, &du, &dv) == 0);
+      longest = std::max({longest, glm::length(du), glm::length(dv)});
+      const float y = bilinear(pic.y, pic.w, pic.w, pic.h, sx, sy);
+      const int want = luma_code(y, true);
+      const int got = view[std::size_t{v} * 960 + u];
+      worst = std::max(worst, std::abs(want - got));
+      const bool tie = std::fabs(y - std::floor(y) - 0.5f) < 0.02f;
+      ties += tie ? 1 : 0;
+      off += !tie && want != got ? 1 : 0;
+      ++total;
+    }
+  }
+  std::printf(
+      "  a D455's 1280x800 to 960x544: footprint %.3f source px at most, one "
+      "tap; of %zu pixels, %zu off the one-tap reference away from %zu "
+      "ties, worst %d; view FNV-1a %016llx\n",
+      longest, total, off, ties, worst,
+      static_cast<unsigned long long>(fnv1a(view)));
+  CHECK(longest < 1.4);
+  CHECK(worst <= 1);
+  CHECK(off == 0);
+  return 0;
+}
+
+// At 4.5:1 -- a pair rectified already, 4320x2448 to 960x544 -- a checker
+// grating of period 5 source pixels (1.1 view pixels: past the view's
+// Nyquist in both axes) reads flat, within 2 levels of its mean, where one
+// tap a pixel aliases it to tens; and a step edge stays where the rig puts
+// it, within 0.03 view pixels, at each of six sub-pixel phases, across and
+// down (its place read off the area under the view across it, which a box
+// keeps), where one tap a pixel moves it by up to a third of a pixel.
+int prefilter_shrink() {
+  const sensor::StereoInfo info = pinhole_pair(4320, 2448, 2000.0);
+  const auto rectifier =
+      make(info, {{960, 544}, 0.0f, Rectifier::Output::Luma8});
+  CHECK(rectifier != nullptr);
+  const sensor::StereoRig& rig = rectifier->rig();
+  const camera::PinholeIntrinsics& k = rig.camera.intrinsics;
+  CHECK(std::fabs(k.fx * 4.5 - 2000.0) < 1e-9);
+  const std::size_t bytes = view_bytes(rig, Rectifier::Output::Luma8);
+  const Remap remap(rig, info.calibration, 0);
+  const auto view_of = [&](const Picture& p) {
+    auto pair = rectifier->rectify(frame_of(p, p));
+    return pair.ok() ? read_view(*pair, *pair->left, bytes)
+                     : std::vector<std::uint8_t>{};
+  };
+  const auto one_tap = [&](const Picture& p, std::uint32_t u, std::uint32_t v) {
+    float sx = 0, sy = 0, r = 0;
+    remap.source(u, v, &sx, &sy, &r);
+    return luma_code(bilinear(p.y, p.w, p.w, p.h, sx, sy), true);
+  };
+
+  const Picture checker =
+      luma_of(4320, 2448, [](std::uint32_t x, std::uint32_t y) {
+        return 128 +
+               64 * std::cos(2 * kPi * x / 5.0) * std::cos(2 * kPi * y / 5.0);
+      });
+  const std::vector<std::uint8_t> flat = view_of(checker);
+  CHECK(flat.size() == bytes);
+  std::size_t compared = 0;
+  const int worst =
+      compare_view(flat, remap, checker, Rectifier::Output::Luma8, &compared);
+  int ripple = 0, aliased = 0;
+  for (std::uint32_t v = 0; v < 544; ++v) {
+    for (std::uint32_t u = 0; u < 960; ++u) {
+      ripple = std::max(ripple, std::abs(flat[std::size_t{v} * 960 + u] - 128));
+      aliased = std::max(aliased, std::abs(one_tap(checker, u, v) - 128));
+    }
+  }
+  std::printf(
+      "  4320x2448 to 960x544 (4.5:1), a checker grating of period 5 source "
+      "px, +-64: within %d levels of its mean (one tap a pixel: %d); %zu "
+      "pixels against the reference, worst %d\n",
+      ripple, aliased, compared, worst);
+  CHECK(worst >= 0 && worst <= 1);
+  CHECK(compared > 960u * 544u * 9 / 10);
+  CHECK(ripple <= 2);
+  CHECK(aliased >= 20);
+
+  // Six bands of rows, each a step across at its own column, one source
+  // pixel (two ninths of a view pixel) apart; then six bands of columns,
+  // each a step down at its own row.
+  const Picture across =
+      luma_of(4320, 2448, [](std::uint32_t x, std::uint32_t y) {
+        return x < 2000 + y / 408 ? 64.0 : 192.0;
+      });
+  const Picture down =
+      luma_of(4320, 2448, [](std::uint32_t x, std::uint32_t y) {
+        return y < 1200 + x / 720 ? 64.0 : 192.0;
+      });
+  const camera::PinholeIntrinsics& sk = info.calibration.left.intrinsics;
+  double worst_step = 0, worst_one = 0;
+  for (int axis = 0; axis < 2; ++axis) {
+    const Picture& pic = axis == 0 ? across : down;
+    const std::vector<std::uint8_t> view = view_of(pic);
+    CHECK(view.size() == bytes);
+    const double band_size = axis == 0 ? 408.0 : 720.0;
+    for (int band = 0; band < 6; ++band) {
+      // The step in the source (the bilinear ramp's middle, half a pixel
+      // before its first bright sample), and in the view.
+      const double edge = (axis == 0 ? 2000.0 : 1200.0) + band - 0.5;
+      const double at = axis == 0 ? (edge - sk.cx) / sk.fx * k.fx + k.cx
+                                  : (edge - sk.cy) / sk.fy * k.fy + k.cy;
+      const int first = static_cast<int>(std::floor(at)) - 6;
+      const int last = first + 12;
+      double err = 0, err_one = 0;
+      int lines = 0;
+      for (std::uint32_t l = 0; l < (axis == 0 ? 544u : 960u); ++l) {
+        // The line's place across the bands, in the source; only lines
+        // well inside the band.
+        const double c = axis == 0 ? (l - k.cy) / k.fy * sk.fy + sk.cy
+                                   : (l - k.cx) / k.fx * sk.fx + sk.cx;
+        if (c < band * band_size + 100 || c > (band + 1) * band_size - 100) {
+          continue;
+        }
+        double area = 0, area_one = 0;
+        for (int t = first; t <= last; ++t) {
+          const std::uint32_t u = axis == 0 ? static_cast<std::uint32_t>(t) : l;
+          const std::uint32_t v = axis == 0 ? l : static_cast<std::uint32_t>(t);
+          area += (view[std::size_t{v} * 960 + u] - 64.0) / 128.0;
+          area_one += (one_tap(pic, u, v) - 64.0) / 128.0;
+        }
+        err += last + 0.5 - area - at;
+        err_one += last + 0.5 - area_one - at;
+        ++lines;
+      }
+      CHECK(lines > 10);
+      worst_step = std::max(worst_step, std::fabs(err / lines));
+      worst_one = std::max(worst_one, std::fabs(err_one / lines));
+    }
+  }
+  std::printf(
+      "  step edges at 4.5:1, six phases across and six down: within %.4f "
+      "view px of where the rig puts them (one tap a pixel: %.3f)\n",
+      worst_step, worst_one);
+  CHECK(worst_step < 0.03);
+  return 0;
+}
+
+// Each pixel's own footprint, not the centre's: through the near-equidistant
+// lens, 3840x2160 to 960x544, the footprint is about 4.8 source pixels at
+// the centre and 1.5 across by 3 down at the side edge. Rings whose period
+// is the centre's footprint average out near the centre (past the view's
+// Nyquist there) and keep their contrast at the side edge (below its own,
+// 3 view pixels a ring), where a centre-sized box would flatten them too;
+// the view matches the host reference within a code.
+int prefilter_anisotropic() {
+  sensor::StereoInfo info;
+  info.calibration.left = info.calibration.right = near_equidistant();
+  info.calibration.left_to_right[3] = glm::dvec4(-0.4, 0.0, 0.0, 1.0);
+  const auto rectifier =
+      make(info, {{960, 544}, 0.0f, Rectifier::Output::Luma8});
+  CHECK(rectifier != nullptr);
+  const sensor::StereoRig& rig = rectifier->rig();
+  const Remap remap(rig, info.calibration, 0);
+  const auto cu =
+      static_cast<std::uint32_t>(std::lround(rig.camera.intrinsics.cx));
+  const auto cv =
+      static_cast<std::uint32_t>(std::lround(rig.camera.intrinsics.cy));
+  Vec2d cdu, cdv, edu, edv;
+  CHECK(remap.footprint(cu, cv, &cdu, &cdv) == 1);
+  CHECK(remap.footprint(959, cv, &edu, &edv) == 1);
+  const double centre = glm::length(cdu);
+  std::printf(
+      "  a near-equidistant lens, 3840x2160 to 960x544 (fx %.1f): footprint "
+      "%.2f x %.2f source px at the centre, %.2f x %.2f at the side edge "
+      "(across x down)\n",
+      rig.camera.intrinsics.fx, centre, glm::length(cdv), glm::length(edu),
+      glm::length(edv));
+  CHECK(centre > 4.4 && glm::length(cdv) > 4.4);
+  CHECK(glm::length(edu) < 1.7 && glm::length(edv) > 2.7);
+
+  const Picture rings = rings_of(info.calibration.left, centre);
+  auto pair = rectifier->rectify(frame_of(rings, rings));
+  CHECK(pair.ok());
+  const std::vector<std::uint8_t> view =
+      read_view(*pair, *pair->left, view_bytes(rig, Rectifier::Output::Luma8));
+  CHECK(view.size() >= 960u * 544u);
+  std::size_t compared = 0;
+  const int worst =
+      compare_view(view, remap, rings, Rectifier::Output::Luma8, &compared);
+  // Half the spread of levels along the middle row, from `from` to `to`.
+  const auto contrast = [](const auto& level, std::uint32_t from,
+                           std::uint32_t to) {
+    double lo = 255, hi = 0;
+    for (std::uint32_t u = from; u <= to; ++u) {
+      lo = std::min(lo, level(u));
+      hi = std::max(hi, level(u));
+    }
+    return (hi - lo) / 2;
+  };
+  const auto in_view = [&](std::uint32_t u) {
+    return static_cast<double>(view[std::size_t{cv} * 960 + u]);
+  };
+  // What a box of the centre's footprint, across and down, would give.
+  const auto centre_box = [&](std::uint32_t u) {
+    float sx = 0, sy = 0, r = 0;
+    remap.source(u, cv, &sx, &sy, &r);
+    const auto luma = [&](float x, float y) {
+      return std::array<float, 3>{
+          bilinear(rings.y, rings.w, rings.w, rings.h, x, y), 0.0f, 0.0f};
+    };
+    const std::array<float, 3> mean = area_mean(
+        luma, Vec2d(sx, sy), Vec2d(centre, 0.0), Vec2d(0.0, centre), kTaps);
+    return static_cast<double>(luma_code(mean[0], true));
+  };
+  const double kept = contrast(in_view, 928, 959);
+  const double boxed = contrast(centre_box, 928, 959);
+  const double middle = contrast(in_view, cu + 20, cu + 50);
+  std::printf(
+      "  rings of the centre's period, +-64: at the side edge +-%.1f kept (a "
+      "centre-sized box: +-%.1f); near the centre +-%.1f; %zu pixels against "
+      "the reference, worst %d\n",
+      kept, boxed, middle, compared, worst);
+  CHECK(worst >= 0 && worst <= 1);
+  CHECK(compared > 960u * 544u * 9 / 10);
+  CHECK(kept >= 32);
+  CHECK(boxed <= 10);
+  CHECK(middle <= 6);
+  return 0;
+}
+
+int test_prefilter() {
+  if (prefilter_one_tap() != 0) return 1;
+  if (prefilter_shrink() != 0) return 1;
+  if (prefilter_anisotropic() != 0) return 1;
+  return 0;
+}
+
 // A side-by-side frame's one plane, as a ZED's picture holds it:
 // row r is `l`'s row r, then `r`'s, then kPad bytes; `*stride` its bytes.
 std::vector<std::uint8_t> side_by_side_rows(const Picture& l, const Picture& r,
@@ -1824,6 +2248,39 @@ int test_timing() {
           kRuns);
     }
   }
+
+  // A 4K stereo camera's: 3840x2160 V210 in device buffers, through the
+  // near-equidistant lens, to 960x544 R'G'B', every pixel averaged.
+  sensor::StereoInfo wide;
+  wide.calibration.left = wide.calibration.right = near_equidistant();
+  wide.calibration.left_to_right[3] = glm::dvec4(-0.4, 0.0, 0.0, 1.0);
+  const auto rectifier =
+      make(wide, {{960, 544}, 0.0f, Rectifier::Output::Rgba8});
+  CHECK(rectifier != nullptr);
+  Picture rings = rings_of(wide.calibration.left, 4.8);
+  rings.cb.assign(rings.y.size(), 128);
+  rings.cr.assign(rings.y.size(), 128);
+  rings.image.kr = 0.2126f;
+  rings.image.kb = 0.0722f;
+  rings.image.full_range = false;
+  rings.image.chroma_location = sensor::ChromaLocation::Left;
+  const Picture v210 = as_v210(rings);
+  sensor::StereoFrame f = frame_of(v210, v210);
+  f.left = on_device(v210, 0);
+  f.right = on_device(v210, 0);
+  CHECK(f.left.device != nullptr && f.right.device != nullptr);
+  CHECK(rectifier->rectify(f).ok());  // warm
+  vkc::StageMetrics metrics;
+  for (int i = 0; i < kRuns; ++i) {
+    CHECK(rectifier->rectify(f, &metrics).ok());
+  }
+  for (const vkc::StageRow& row : metrics.rows()) {
+    if (std::strcmp(row.name, "stereo rectify") != 0) continue;
+    std::printf(
+        "  3840x2160 V210 in device buffers -> 960x544 Rgba8, both views, "
+        "averaged: %.3f ms device, %.3f ms host a pair, over %d\n",
+        row.gpu_ms / kRuns, row.cpu_ms / kRuns, kRuns);
+  }
   return 0;
 }
 
@@ -1841,6 +2298,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_pairs_hold_views() != 0) return 1;
   if (test_right_let_go() != 0) return 1;
   if (test_fold() != 0) return 1;
+  if (test_prefilter() != 0) return 1;
   if (test_taken_over() != 0) return 1;
   if (test_refusals() != 0) return 1;
   if (test_timing() != 0) return 1;
