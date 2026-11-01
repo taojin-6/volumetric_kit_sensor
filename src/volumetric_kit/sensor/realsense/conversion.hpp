@@ -64,14 +64,15 @@ core::Result<camera::Mat4d> transform_from(const rs2_extrinsics& extrinsics,
 // The two infrared cameras' calibration as the stereo tier takes it: each a
 // pinhole (the camera rectifies them: a lens on either is refused), the left
 // one's point in the right camera and in the colour camera, and the colour
-// camera with its lens. Refused as camera_model_from and transform_from
-// refuse.
+// camera with its lens; the rate `fps`, and the bound `together` keeps its
+// pictures to (half_frame_ns). Refused as camera_model_from and
+// transform_from refuse.
 core::Result<StereoInfo> stereo_info(const rs2_intrinsics& left,
                                      const rs2_intrinsics& right,
                                      const rs2_extrinsics& left_to_right,
                                      const rs2_intrinsics& color,
                                      const rs2_extrinsics& left_to_color,
-                                     const std::string& who);
+                                     std::uint32_t fps, const std::string& who);
 
 // The disparity's frame-to-frame sigma of the camera's own depth, in pixels:
 // 0.13, measured 2026-10-29 on a D455 at 1280x720, its projector on and off,
@@ -90,16 +91,19 @@ inline constexpr double kChipDisparitySigma = 0.13;
 DepthNoise chip_depth_noise(const camera::CameraModel& depth_camera,
                             const rs2_extrinsics& depth_to_right) noexcept;
 
-// Whether two frames stamped `a_ms` and `b_ms` are of one moment: no more
-// than half a frame apart at `fps`. As it starts, the D455 restarts its
-// depth for about 1.2 s, and librealsense's pipeline matches its last depth
-// frame with newer colour meanwhile.
+// Half a frame at `fps` in whole nanoseconds, rounded up; 0 for no rate.
+std::uint64_t half_frame_ns(std::uint32_t fps) noexcept;
+
+// Whether two frames stamped `a_ms` and `b_ms` are of one moment: their
+// stamps in whole nanoseconds, as the frames carry them, no more than
+// half_frame_ns(fps) apart. As it starts, the D455 restarts its depth for
+// about 1.2 s, and librealsense's pipeline matches its last depth frame with
+// newer colour meanwhile.
 bool same_moment(double a_ms, double b_ms, std::uint32_t fps) noexcept;
 
 // Whether a frameset of `count` frames stamped `stamps_ms` is one usable
-// moment of a camera opened at `opened` modes: a frame of each, and each
-// within half a frame of the first. A frameset that is not is counted
-// failed.
+// moment of a camera opened at `opened` modes: a frame of each, and every
+// two of one moment. A frameset that is not is counted failed.
 bool together(const double* stamps_ms, std::size_t count, std::size_t opened,
               std::uint32_t fps) noexcept;
 
@@ -144,19 +148,21 @@ core::Result<RgbdFrame> rgbd_frame(const FrameView& view,
                                    const std::string& who);
 
 // One frameset's two infrared pictures (Y8), colour (YUYV) and stamps, the
-// left infrared camera's.
+// left infrared camera's but for the right one's own.
 struct StereoView {
   PictureView left;
   PictureView right;
   PictureView color;
-  double timestamp_ms = 0.0;  // librealsense's global time
+  double timestamp_ms = 0.0;        // librealsense's global time
+  double right_timestamp_ms = 0.0;  // the right infrared picture's
   std::uint64_t sequence = 0;
   std::uint64_t arrival_ns = 0;
 };
 
 // The stereo frame, pointing into `view`'s pixels, which `pixels` holds: each
 // infrared picture as luma on the host (full range: the camera's 8-bit
-// infrared as it is), the colour as rgbd_frame's, the time in nanoseconds,
+// infrared as it is), the colour as rgbd_frame's, the time in nanoseconds and
+// the right picture's after it (0 on a D455, whose pair is one exposure),
 // placed by `color_to_world`. A view whose sizes differ from `info`'s
 // cameras', or whose rows are shorter than its width, contradicts its
 // streams: IoError, naming `who`.

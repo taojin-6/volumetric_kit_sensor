@@ -62,6 +62,12 @@ core::Result<Plan> plan(const YuvImage& picture, PictureReadback::Planes planes,
   if (picture.layout == YuvLayout::Yuyv) {
     return refuse("reads 4:2:0 pictures and luma alone, and this one is YUYV");
   }
+  if (picture.layout == YuvLayout::V210) {
+    // TODO(sensor): V210's luma unpacked to bytes on the GPU, for calib's
+    // DeckLink pairs.
+    return core::Status::unsupported(std::string(kWho) +
+                                     ": does not read V210 pictures yet");
+  }
   if (in_buffer && !as_images) {
     if (!picture.device->valid()) {
       return refuse("the picture's buffer is empty");

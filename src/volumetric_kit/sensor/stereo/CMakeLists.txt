@@ -3,11 +3,12 @@
 
 # --- sensor_stereo: calibrated stereo pairs, rectified on the GPU ------------
 # What a stereo camera driver implements (IStereoSensor) and hands out
-# (StereoFrame), and the StereoRectifier: the pair undistorted and rectified by
-# a compute pass a view, for a stereo matcher. No SDK; Vulkan on every platform.
-# The rectifier samples and converts through the colour pass's own shader code
-# and checks (prep's color_pass.hpp), so it links sensor_prep, privately: its
-# headers need only the interface and the core's Vulkan tier.
+# (StereoFrame), a pair from two calibration entries (stereo_calibration), and
+# the StereoRectifier: the pair undistorted and rectified by a compute pass a
+# view, for a stereo matcher. No SDK; Vulkan on every platform. The rectifier
+# samples and converts through the colour pass's own shader code and checks
+# (prep's color_pass.hpp), so it links sensor_prep, privately: its headers need
+# only the interface and the core's Vulkan tier.
 include(GenerateExportHeader)
 
 set(_vs_stereo_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
@@ -15,7 +16,8 @@ set(_vs_stereo_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 add_library(sensor_stereo)
 add_library(volumetric_kit::sensor_stereo ALIAS sensor_stereo)
 
-target_sources(sensor_stereo PRIVATE stereo_rectifier.cpp stereo_sensor.cpp)
+target_sources(sensor_stereo PRIVATE stereo_calibration.cpp
+                                     stereo_rectifier.cpp stereo_sensor.cpp)
 
 generate_export_header(
   sensor_stereo

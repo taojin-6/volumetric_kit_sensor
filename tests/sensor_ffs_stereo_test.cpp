@@ -6,8 +6,9 @@
 // difference of the two views' channels, (1/8, 2/8, 5/8), or half of it. So
 // each check reaches through the whole path: the rectifier's views read by
 // CUDA, the input kernel's normalisation and padding, TensorRT, and the depth
-// kernel's units and refusals, into a Vulkan buffer read as Vulkan readers
-// read it -- taken over from outside Vulkan -- and through GpuFramePrep. Each
+// kernel's units, refusals and near gate, into a Vulkan buffer read as Vulkan
+// readers read it -- taken over from outside Vulkan -- and through
+// GpuFramePrep. Each
 // frame states the noise its options' disparity sigma makes over the rig's fx
 // and baseline, or none for none, and GpuFramePrep hands it on. The
 // plan cache is checked by what it loads: another model's plan put under a
@@ -367,6 +368,45 @@ int depth_units(Fixture& t) {
   std::printf("  disparity sigma 0.04 px: c %.6g per metre (fx %.3f, B %.4f)\n",
               w->depth_noise.c, rig.camera.intrinsics.fx, rig.baseline);
   CHECK(std::abs(w->depth_noise.c - 0.01f) < 1e-6f);
+  return 0;
+}
+
+// --- The near gate ---------------------------------------------------------
+
+// Depth nearer than 1.05 * fx * baseline / max_disparity is no return, and
+// the frame's min_depth says so. At fx * baseline 4 and max_disparity 30 the
+// gate is 0.14 m: disparity 29 (0.138 m), inside the network's reach but
+// within 5% of it, has none, where min_depth alone (0.105 m) keeps it. A
+// gate nearer than min_depth leaves min_depth, and 0 is no gate.
+int near_gate(Fixture& t) {
+  std::puts("the near gate");
+  const sensor::StereoInfo info = pair_info(64, 32);
+  const sensor::FfsStereo::Options base =
+      options_for(kModel, t.scratch / "gate");
+  const double focal_baseline = kFocal * kBaseline;
+  struct Case {
+    float max_disparity;
+    double nearest;  // the depth nearer than which is no return
+  };
+  for (const Case c :
+       {Case{30.0f, 1.05 * focal_baseline / 30.0},
+        Case{1000.0f, base.min_depth}, Case{0.0f, base.min_depth}}) {
+    // Each matcher on a rectifier of its own: the first to read a view maps
+    // it.
+    auto rectifier = rectifier_for(t, info, Output::Luma8);
+    CHECK(rectifier != nullptr);
+    sensor::FfsStereo::Options o = base;
+    o.max_disparity = c.max_disparity;
+    auto ffs = ffs_for(t, *rectifier, o);
+    CHECK(ffs != nullptr);
+    sensor::FfsStereo::Options expected = o;
+    expected.min_depth = static_cast<float>(c.nearest);
+    std::optional<sensor::RgbdFrame> frame;
+    CHECK(run_luma(t, *rectifier, *ffs, expected, 0, 1.0, &frame) == 0);
+    std::printf("  max_disparity %.0f: nearer than %.4f m is no return\n",
+                c.max_disparity, frame->min_depth);
+    CHECK(std::abs(frame->min_depth - c.nearest) < 1e-6);
+  }
   return 0;
 }
 
@@ -850,6 +890,21 @@ int refusals(Fixture& t) {
     o.disparity_sigma = sigma;
     CHECK(code(o) == vkc::Status::Code::InvalidArgument);
   }
+  for (const float range : {-1.0f, std::numeric_limits<float>::quiet_NaN(),
+                            std::numeric_limits<float>::infinity()}) {
+    o = options_for(kModel, cache);
+    o.max_disparity = range;
+    CHECK(code(o) == vkc::Status::Code::InvalidArgument);
+  }
+  // A near gate past max_depth: 1.05 * 4 / 9 = 0.467 m, past 0.45 m.
+  o = options_for(kModel, cache);
+  o.max_disparity = 9.0f;
+  {
+    const auto refused =
+        sensor::FfsStereo::create(t.gpu.device, t.gpu.allocator, *rectifier, o);
+    CHECK(refused.status().domain() == vkc::Status::Code::InvalidArgument);
+    CHECK(refused.status().message().find("near gate") != std::string::npos);
+  }
   o = options_for(kData / "no_such_model.onnx", cache);
   CHECK(code(o) == vkc::Status::Code::NotFound);
   {
@@ -864,8 +919,9 @@ int refusals(Fixture& t) {
   o.plan_cache = t.scratch / "junk.onnx" / "plans";
   CHECK(code(o) == vkc::Status::Code::IoError);
   std::puts(
-      "  a bad depth range or disparity sigma, no model, a model TensorRT "
-      "cannot parse, no plan cache or one that cannot be made");
+      "  a bad depth range, disparity sigma or max_disparity, a near gate "
+      "past max_depth, no model, a model TensorRT cannot parse, no plan "
+      "cache or one that cannot be made");
 
   o = options_for(kModel, cache);
   auto ffs = ffs_for(t, *rectifier, o);
@@ -937,6 +993,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   const vkc::test::Scratch scratch("sensor_ffs_stereo_");
   Fixture t{gpu, scratch.path};
   CHECK(depth_units(t) == 0);
+  CHECK(near_gate(t) == 0);
   CHECK(plan_cache(t) == 0);
   CHECK(padding(t) == 0);
   CHECK(rgba_views(t) == 0);

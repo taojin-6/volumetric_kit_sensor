@@ -8,8 +8,8 @@
 // alone or every plane, one picture or a set; buffers taken over from the
 // readback's own family, a CONCURRENT buffer's other family and from outside
 // Vulkan, and images from outside Vulkan; the host memory grown and reused;
-// views that outlive their pictures; every refusal; and the stage row. Skips
-// without a device.
+// views that outlive their pictures; every refusal, V210 as not read yet;
+// and the stage row. Skips without a device.
 
 #include <cstddef>
 #include <cstdint>
@@ -528,6 +528,23 @@ int test_refusals(vkc::test::GpuContext& gpu) {
   bad = buffer;
   bad.layout = YuvLayout::Yuyv;
   CHECK(refused(bad, "YUYV"));
+  // A V210 picture, not read yet: Unsupported, alone or in a set.
+  {
+    YuvImage v210 = buffer;
+    v210.layout = YuvLayout::V210;
+    v210.width = 36;
+    v210.offset[0] = 0;
+    v210.stride[0] = 96;  // six groups
+    v210.height = 1;
+    const vkc::Status status = readback->read(v210, Planes::Luma).status();
+    CHECK(status.domain() == vkc::Status::Code::Unsupported &&
+          status.message().find("V210") != std::string::npos);
+    std::vector<std::optional<sensor::RgbdFrame>> set(2);
+    set[0].emplace().color = buffer;
+    set[1].emplace().color = v210;
+    CHECK(readback->read(set, Planes::All).status().domain() ==
+          vkc::Status::Code::Unsupported);
+  }
   YuvImage host;
   const std::uint8_t byte = 0;
   host.host = &byte;

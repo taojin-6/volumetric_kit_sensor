@@ -145,8 +145,9 @@ class VS_PREP_API PictureReadback {
   ///         outside their buffer, images that are not NV12's R8 and R8G8
   ///         planes at least the picture's size with `TRANSFER_SRC` usage,
   ///         in a layout a copy reads, a `queue_family` the device lacks, or
-  ///         `EXCLUSIVE` images from another of its families; or a buffer,
-  ///         submit or `Status::Code::OutOfMemory` failure.
+  ///         `EXCLUSIVE` images from another of its families;
+  ///         `Status::Code::Unsupported` for a V210 picture, not read yet;
+  ///         or a buffer, submit or `Status::Code::OutOfMemory` failure.
   core::Result<PictureView> read(YuvImage& picture, Planes planes,
                                  core::StageMetrics* metrics = nullptr);
 

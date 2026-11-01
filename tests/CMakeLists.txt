@@ -100,8 +100,8 @@ if(VS_CAMERA_ONLY)
 endif()
 
 # The package's own pieces: the version CMake wires through, the GLM aliases,
-# and what it asks of a device -- scalar block layout, and the decoders'
-# extensions as optional, which recon's list leaves to this one.
+# and what it asks of a device -- scalar block layout, and the decoders' and the
+# capture card's extensions as optional, which recon's list leaves to this one.
 add_executable(sensor_smoke_test smoke_test.cpp)
 target_link_libraries(sensor_smoke_test PRIVATE volumetric_kit::sensor_camera
                                                 volumetric_kit::sensor_frame)
@@ -289,13 +289,25 @@ add_test(NAME sensor_array_process COMMAND sensor_array_process_test)
 # tools/stereo_rectify_reference.py), rows aligned and the host reference of the
 # remap on a scene an independent renderer images, every layout from the host
 # and the device, a pair rectified already, the depth view, the views' lease and
-# export, the refusals, and the pass's time. Skips without a device.
+# export, the area prefilter where a view shrinks its picture, the refusals, and
+# the pass's time. Skips without a device.
 add_executable(sensor_stereo_rectifier_test sensor_stereo_rectifier_test.cpp)
 target_link_libraries(
   sensor_stereo_rectifier_test PRIVATE volumetric_kit::sensor_stereo
                                        volumetric_kit::core_test_policy)
 vs_target_warnings(sensor_stereo_rectifier_test)
 add_test(NAME sensor_stereo_rectifier COMMAND sensor_stereo_rectifier_test)
+
+# The stereo tier's own pieces: a pair from two calibration entries, which the
+# rectifier takes, and the sync contract every stereo source keeps
+# (stereo_contract.hpp). Host checks first; the rectifier's skips without a
+# device.
+add_executable(sensor_stereo_sensor_test sensor_stereo_sensor_test.cpp)
+target_link_libraries(
+  sensor_stereo_sensor_test PRIVATE volumetric_kit::sensor_stereo
+                                    volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_stereo_sensor_test)
+add_test(NAME sensor_stereo_sensor COMMAND sensor_stereo_sensor_test)
 
 # RGB-D sensor defaults, frame-return helpers, copied-frame ownership and stable
 # enum names. Host-only.
@@ -479,10 +491,10 @@ if(APPLE OR VS_WITH_FFMPEG)
     # FFS (sensor_ffs) on the test models in data/ffs
     # (tools/ffs/make_test_onnx.py), FFS's inputs and output with a disparity
     # worked out by hand: FfsStereo's depth units, no returns (coverage among
-    # them), padding, both view layouts, the plan cache, kept pairs' views, the
-    # depth read in place by GpuFramePrep and the refusals; and
-    # StereoDepthSensor on a test camera, as any IRgbdSensor, in a SensorArray.
-    # They skip as the interop test does.
+    # them), the near gate, padding, both view layouts, the plan cache, kept
+    # pairs' views, the depth read in place by GpuFramePrep and the refusals;
+    # and StereoDepthSensor on a test camera, as any IRgbdSensor, in a
+    # SensorArray. They skip as the interop test does.
     foreach(_vs_ffs_test stereo depth_sensor)
       add_executable(sensor_ffs_${_vs_ffs_test}_test
                      sensor_ffs_${_vs_ffs_test}_test.cpp)
@@ -519,6 +531,40 @@ if(APPLE OR VS_WITH_FFMPEG)
     add_test(NAME sensor_video_vt_jpeg_error
              COMMAND sensor_video_vt_jpeg_error_test)
   endif()
+endif()
+
+# The DeckLink driver's SDK-free units (sensor_decklink_units), with no card, on
+# every leg: the connectors and modes, the option refusals, the pairing and its
+# clock map, the counts and the sync contract (stereo_contract.hpp), and the
+# skew report's numbers, on the host; then the page pool, the device pictures
+# and the driver over a capture that writes pages as the card would, on the
+# device, which skips where the device lacks VK_EXT_external_memory_host.
+foreach(_vs_decklink_test pairing upload)
+  add_executable(sensor_decklink_${_vs_decklink_test}_test
+                 sensor_decklink_${_vs_decklink_test}_test.cpp)
+  target_link_libraries(
+    sensor_decklink_${_vs_decklink_test}_test
+    PRIVATE volumetric_kit::sensor_decklink_units
+            volumetric_kit::core_test_policy)
+  vs_target_warnings(sensor_decklink_${_vs_decklink_test}_test)
+  add_test(NAME sensor_decklink_${_vs_decklink_test}
+           COMMAND sensor_decklink_${_vs_decklink_test}_test)
+endforeach()
+
+# The DeckLink SDK prerequisite (VS_WITH_DECKLINK only), with no card opened:
+# the driver's codes are the SDK's, Desktop Video's library loads (or open is
+# NotFound naming it), and DecklinkStereo::open's refusals before any card.
+if(VS_WITH_DECKLINK)
+  add_executable(sensor_decklink_sdk_smoke_test decklink_sdk_smoke_test.cpp)
+  target_link_libraries(
+    sensor_decklink_sdk_smoke_test
+    PRIVATE volumetric_kit::sensor_decklink sensor_decklink_capture
+            volumetric_kit::core_test_policy)
+  target_include_directories(sensor_decklink_sdk_smoke_test SYSTEM
+                             PRIVATE "${VS_DECKLINK_INCLUDE_DIR}")
+  vs_target_warnings(sensor_decklink_sdk_smoke_test)
+  add_test(NAME sensor_decklink_sdk_smoke
+           COMMAND sensor_decklink_sdk_smoke_test)
 endif()
 
 # The worker each Orbbec colour decoder decodes on (decode_worker.hpp), driven
@@ -726,12 +772,13 @@ target_link_libraries(
 vs_target_warnings(sensor_io_image_test)
 add_test(NAME sensor_io_image COMMAND sensor_io_image_test)
 
-# The tests whose code runs threads -- the Orbbec decode workers and the audio
-# capture's queue -- which CI builds and runs again under ThreadSanitizer
-# (.github/workflows/_build.yml): one target to build them.
+# The tests whose code runs threads -- the Orbbec decode workers, the audio
+# capture's queue and the DeckLink driver's upload -- which CI builds and runs
+# again under ThreadSanitizer (.github/workflows/_build.yml): one target to
+# build them.
 add_custom_target(sensor_tsan_tests)
 add_dependencies(sensor_tsan_tests sensor_orbbec_decode_worker_test
-                 sensor_audio_capture_test)
+                 sensor_audio_capture_test sensor_decklink_upload_test)
 if(VS_WITH_ORBBEC)
   add_dependencies(sensor_tsan_tests sensor_orbbec_jpeg_test
                    sensor_orbbec_hevc_test sensor_orbbec_open_sensors_test)
@@ -793,11 +840,13 @@ add_test(NAME sensor_subproject_glsl
                  --target vs_glsl_consumer)
 set_tests_properties(sensor_subproject_glsl PROPERTIES FIXTURES_REQUIRED
                                                        vs_subproject_defaults)
+# A subproject builds neither the tests nor the DeckLink driver, so its floor is
+# the base one, not the 0.38.0 the driver's units need.
 _vs_add_subproject_test(sensor_subproject_old_core old_core -DVS_CORE_FIRST=ON
                         -DVKC_WITH_VULKAN=ON -DVS_CONSUMER_CORE_VERSION=0.0.1)
 _vs_expect_message(
   sensor_subproject_old_core
-  "volumetric_kit_sensor needs volumetric_kit_core ${VS_CORE_MIN_VERSION} or newer, but the core at .+ is 0.0.1: pin v${VS_CORE_MIN_VERSION} or newer"
+  "volumetric_kit_sensor needs volumetric_kit_core ${VS_CORE_BASE_MIN_VERSION} or newer, but the core at .+ is 0.0.1: pin v${VS_CORE_BASE_MIN_VERSION} or newer"
 )
 _vs_add_subproject_test(sensor_subproject_core_without_vulkan no_vulkan
                         -DVS_CORE_FIRST=ON -DVKC_WITH_VULKAN=OFF)
@@ -814,6 +863,25 @@ if(APPLE)
     sensor_subproject_apple_ffmpeg
     "on Apple the video decoders use VideoToolbox directly and need no FFmpeg. Configure this build with -DVS_WITH_FFMPEG=OFF."
   )
+endif()
+
+# VS_WITH_DECKLINK refused with the fix: on Linux x86-64 without the SDK
+# (cmake/vs_decklink.cmake), and anywhere else. CI never has the SDK.
+if(NOT VS_WITH_DECKLINK)
+  _vs_add_subproject_test(sensor_subproject_decklink_no_sdk decklink_no_sdk
+                          -DVS_WITH_DECKLINK=ON -DDeckLinkSDK_ROOT=)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES
+                                            "^(x86_64|AMD64)$")
+    _vs_expect_message(
+      sensor_subproject_decklink_no_sdk
+      "VS_WITH_DECKLINK is ON but no DeckLink SDK was found at DeckLinkSDK_ROOT=\"\": download the Desktop Video SDK"
+    )
+  else()
+    _vs_expect_message(
+      sensor_subproject_decklink_no_sdk
+      "VS_WITH_DECKLINK is ON, but the DeckLink driver builds on Linux x86-64 only."
+    )
+  endif()
 endif()
 
 # Start the slowest test first under `ctest --parallel`: without a COST, CTest

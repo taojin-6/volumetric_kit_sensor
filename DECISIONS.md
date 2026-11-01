@@ -284,7 +284,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   colour as its SDK hands it over, staged beside the depth as packed words
   are and converted on the device. `PictureReadback` refuses YUYV.
   *Amended the same day (the stereo entry):* luma alone (`YuvLayout::Luma`)
-  joins the layouts; `ColorParams` is 120 bytes.
+  joins the layouts; `ColorParams` is 120 bytes. *Amended 2026-11-01 (the
+  V210 entry):* V210 joins them; `ColorParams` is 124 bytes.
 - [**2026-10-29**](#2026-10-29--gpuframeprep-reads-depth-on-the-device-in-place-a-gpu-stages-depth-rgbdframedepth_device-taken-over-from-its-writers-queue-family-and-bound-where-it-is-amends-the-2026-10-06-sensor-frame-and-device-only-gpuframeprep-entries) —
   `GpuFramePrep` reads depth on the device in place:
   `RgbdFrame::depth_device` (a `DeviceDepth`), the 16-bit samples a GPU
@@ -379,6 +380,39 @@ entries relevant to your task; later amendments supersede earlier rules.
   of its returns, most on rims). A removed return still reaches fusion as
   no return, which carves a thin, passing ring into the background around a
   moving person; handing it on as unknown is the follow-up.
+- [**2026-11-01**](#2026-11-01--v210-pictures-sdis-10-bit-422-frame-prep-and-the-stereo-rectifier-read-them-at-10-bits-through-the-one-unpack-they-share-as-code--4-and-round-to-8-bits-once-picturereadback-refuses-them-for-now-amends-the-2026-10-29-host-planes-entry) —
+  V210 pictures (`YuvLayout::V210`, SDI's 10-bit 4:2:2, a DeckLink card's
+  capture): `GpuFramePrep` and `StereoRectifier` read them from the host or
+  a buffer through the one unpack they share (`color_planes.glsl`), each
+  sample as code / 4 on the 8-bit layouts' scale, and round to 8 bits once,
+  in their outputs. Limited range only; `PictureReadback` refuses them
+  (`Unsupported`) until it reads them.
+
+- [**2026-11-01**](#2026-11-01--a-stereo-frame-states-its-skew-and-its-sources-bound-the-right-picture-is-let-go-once-rectified-and-a-pair-comes-from-two-calibration-entries) —
+  A stereo frame states its skew, the right picture's time less the left's
+  (`StereoFrame::skew_ns`), and its source its bound
+  (`StereoInfo::max_skew_ns`), past which a frame is counted failed and
+  never handed out: one number for free-running and synced pairs alike. The
+  right picture may have its own owner (`right_pixels`), which the rectifier
+  lets go once read. `stereo_calibration` makes a pair from two entries of
+  a calibration file, keyed by camera name. A RealSense frameset is one
+  moment when every two of its pictures lie within half a frame, to the
+  nanosecond (amends the 2026-10-29 RealSense stereo entry).
+
+- [**2026-11-01**](#2026-11-01--the-stereo-rectifier-averages-each-pixel-over-its-own-footprint-where-it-shrinks-a-picture-and-ffs-drops-depth-inside-the-networks-reach-amends-the-2026-10-29-stereo-and-ffs-entries) —
+  Where the rectifier shrinks a picture, a view pixel whose footprint in it
+  is longer than 1.5 source pixels is the mean of 5 x 5 bilinear samples
+  over that footprint, found per pixel from where its neighbours land;
+  smaller footprints, a D455's included, keep one sample. FFS takes the
+  network's disparity range (`max_disparity`) and drops depth below 1.05
+  times `fx * baseline / max_disparity`, where saturated matches land.
+- [**2026-11-01**](#2026-11-01--a-decklink-stereo-camera-two-sdi-inputs-as-one-istereosensor-their-10-bit-pictures-written-by-the-card-into-pages-the-gpu-imports-and-copied-once-on-the-device-free-running-cameras-paired-by-the-cards-frame-times-each-pairs-skew-stated-the-calibration-optional) —
+  A DeckLink stereo camera (`DecklinkStereo`): two SDI inputs as one
+  `IStereoSensor`, their 10-bit V210 pictures written by the card into host
+  pages the GPU imports and copied once into device buffers; free-running
+  cameras paired by the card's frame times within half a frame, each pair's
+  skew stated; the cameras' settings their own. Without a calibration it
+  hands out raw pairs, and the rectifier refuses it.
 
 ## Decision record
 
@@ -4167,6 +4201,8 @@ this package, fused 100 live frames of the rig's 4 Femtos (25 sets) at
 *Amended the same day (the stereo entry, below):* luma alone
 (`YuvLayout::Luma`) joins the layouts, grey through `GpuFramePrep` and
 read by `PictureReadback`; `ColorParams` gains `luma_only`, 120 bytes.
+*Amended 2026-11-01 (the V210 entry):* `YuvLayout::V210` joins them, read
+through the same buffer entry; `ColorParams` gains `v210`, 124 bytes.
 
 **The rule.** `YuvImage` gains `host`, its planes on the host at `offset` and
 `stride` from that pointer, one of `device`, `host` and `image`; and
@@ -5433,3 +5469,308 @@ suite (main `32f013e5`) on this checkout, on the M5 Max: 41 of 42 pass.
 4x4-pixel patch, 16 returns, under the 20-point floor, so the filter
 removes it. With the filter off in that test it passes, which recon's
 re-pin, the PR that picks the default up, does. No camera was opened.
+
+### 2026-11-01 — V210 pictures, SDI's 10-bit 4:2:2: frame prep and the stereo rectifier read them at 10 bits through the one unpack they share, as code / 4, and round to 8 bits once; `PictureReadback` refuses them for now (amends the 2026-10-29 host-planes entry).
+
+**The rule.** `YuvLayout::V210` is 10-bit 4:2:2 in one plane, as SDI
+carries it (DeckLink's `bmdFormat10BitYUV`): each six pixels four
+little-endian words of three 10-bit samples from the low bits,
+Cb0 Y0 Cr0 | Y1 Cb2 Y2 | Cr2 Y3 Cb4 | Y4 Cr4 Y5, chroma on every row and
+sited by `chroma_location` across. `check_yuv_planes` takes it of even
+width, rows of at least `ceil(width / 6) * 16` bytes (a partial group's
+words whole), its offset and stride multiples of 4; `bind_planes` refuses
+it in full range. It comes from the host or a buffer; as images it is
+refused, as YUYV is. `color_planes.glsl`'s `v210_at` is the one unpack.
+Each sample comes back as code / 4, so `luma_level`, the matrix and
+the rectifier's outputs are the 8-bit layouts' code, unchanged.
+`ColorParams` gains one word, `v210`: 124 bytes of the 128 Vulkan
+guarantees. `PictureReadback` refuses V210 with `Unsupported`:
+`TODO(sensor)`, its luma unpacked on the GPU, for calib's DeckLink pairs.
+
+**Why.** The owner's DeckLink design (2026-11-01): the card captures v210,
+the path measured with no lost frame, and nothing rounds 10 bits to 8
+before the one rounding prep and the rectifier make; the colour response's
+falloff gain, once it applies here, stretches codes and needs them most. A
+picture is 22,118,400 bytes at 2160p, a third more than 8-bit UYVY.
+- **code / 4.** Limited range's 10-bit levels are its 8-bit ones times 4
+  (64..940 is 16..235, chroma's 512 is 128), so `(y - 16) / 219` of
+  code / 4 is `(Y - 64) / 876` exactly, and one conversion serves both.
+  Scaling by a power of two is exact in float, so 8-bit codes times 4
+  convert bit for bit as the 8-bit picture does, which the tests hold.
+- **Limited range only.** Full-range 10-bit levels are code / 1023, which
+  code / 4 on the 255 scale misses by up to 0.75 of a code (luma at 1023);
+  SDI is limited range, so V210 in full range is refused rather than read
+  slightly wrong.
+- **A flag, not a layout code.** The push constants carry one word a
+  behaviour the kernel switches on (`luma_only`, `chroma_full_rows`); a
+  layout code would repeat them.
+
+**Tests.**
+- `sensor_gpu_frame_prep`: V210 packed from an 8-bit picture's codes times
+  4 (`tests/v210.hpp`, written word by word from the table above, apart from
+  the shader's indexing) gives the YUYV picture's words bit for bit:
+  through the barrel lens at 320x240, chroma sited left and centred, and
+  through a mild pincushion lens that samples the last columns (to x
+  3839.4, 3841.5 and 4095.5) at 3840x16, 3842x16 and 4096x16, whose last
+  groups hold two and four pixels (4096 is DCI 4K's width);
+  from the host, rows padded and from byte 20, and from a device buffer.
+  Codes off the 8-bit grid (none a multiple of 4) through a pinhole that
+  leaves each pixel where it is, 3842x8, come out within 0.5 of a code of
+  BT.709's limited-range conversion of the 10-bit samples in double (worst
+  0.5000); the same codes cut to 8 bits miss it by 2.96, so the two low bits
+  are read. Refused: odd width, a short stride, an offset or stride off a
+  word, full range, planes as images.
+- `sensor_stereo_rectifier`: a lensed 1280x720 pair as V210 of its YUYV
+  codes times 4, limited range, gives YUYV's views bit for bit, as R'G'B'
+  words and as luma bytes, from the host and from device buffers.
+- `sensor_picture_readback`: a V210 picture is `Unsupported`, alone and in
+  a set.
+Three planted bugs in `v210_at` and `chroma_at` each failed
+`sensor_gpu_frame_prep` and `sensor_stereo_rectifier`: Cb and Cr swapped
+inside a group, word 2's samples read in reverse order, and the samples
+read without the / 4; so did chroma bound from the binding's first byte
+rather than the plane's (the device pictures), and chroma halved down as
+4:2:0's is. Samples read without their two low bits failed the 10-bit
+check alone, as the 8-bit-times-4 pictures have none.
+
+**Validation.** Apple M5 Max, macOS 27.2, MoltenVK 1.4.2, Release with
+warnings as errors, under the validation layer: the whole suite passes, 40
+tests. No NVIDIA machine was run by hand: the code is portable Vulkan, and
+CI's NVIDIA legs and lavapipe sanitizer job run the same tests. recon's
+suite was not run: the change
+is to `sensor_interface` and `sensor_prep`, not `frame`, and recon's code
+names no `YuvImage`. No camera was opened.
+
+### 2026-11-01 — A stereo frame states its skew and its source's bound, the right picture is let go once rectified, and a pair comes from two calibration entries.
+
+**The rule.**
+- `StereoFrame::skew_ns` is the right picture's capture time less the
+  left's (`timestamp_ns`), on the source's clock, 0 for one exposure.
+  `StereoInfo::max_skew_ns` is the source's sync guarantee: the most any two
+  pictures of a frame, a third colour camera's included, lie apart. A frame
+  past it is counted `failed` and never handed out.
+- `StereoFrame::right_pixels` is the right picture's own owner, where
+  `pixels` does not own it. `StereoRectifier::rectify` lets the right
+  picture go once its pass has read it, so `RectifiedPair::source` holds
+  the left and colour pictures only; `StereoDepthSensor` lets the camera's
+  frame go once rectified. A depth frame holds the left picture alone.
+- `stereo_calibration(file, left_id, right_id)` makes a pair from two
+  entries of a calibration file, each camera a sensor of its own, posed,
+  with a colour model: `left_to_right = inverse(right.color_to_world) *
+  left.color_to_world`.
+- `RealSenseStereo` states its right infrared stamp less its left one, 0 on
+  a D455, and half a frame, rounded up to the nanosecond, as its bound.
+  `together` keeps it exactly, for both RealSense drivers: a frameset is
+  one moment when every two of its pictures lie within that bound in the
+  whole-nanosecond stamps the frames carry. This amends the 2026-10-29
+  RealSense stereo entry's rule, each picture within half a frame of the
+  first in milliseconds, which let two pictures lie a frame apart and the
+  nanosecond stamps pass the bound by the doubles' 244 ns.
+- One test helper checks the contract on what any source hands out
+  (`tests/stereo_contract.hpp`): skew within the bound, sequences and times
+  increasing, the counters' rule.
+
+**Why.** A pair of free-running cine cameras on two capture inputs (the
+Blackmagic pair on the lab's DeckLink, owner 2026-11-01: no genlock in v1)
+is matched by its frame times, within half a frame; measured 8.2 ms apart,
+drifting 0.037 ms a minute. The skew is what tells a consumer how far apart
+a pair is, and the bound is a number, not a code path: genlocked pairs set
+it lower. Such a driver hands out each picture in a device buffer of its
+own; letting the right one go after the rectifier's pass returns it while
+FFS runs on the pair (12.5 ms on a 5090), and the queued depth frames hold
+one buffer each. Two entries keyed by camera name, not one pair entry,
+keep the calibration file's format, and recabling edits the capture's
+config, not the file. RealSense computes its skew from its stamps rather
+than writing 0, the rule every source follows; its pair is one exposure.
+
+**Tests.** `sensor_stereo_sensor` (new): the pair from a synthetic file
+matches its `left_to_right` to 1e-12, named either way round, and
+`StereoRectifier::create` takes it, the baseline the cameras' distance;
+each refusal; and the contract helper passes good frames and names each
+rule broken. `sensor_stereo_rectifier`: a pair lets its right picture's
+owner and device buffer go and keeps the left. `sensor_realsense_conversion`:
+skew 0 from one stamp, +0.5 ms from stamps 0.5 ms apart, the bound half a
+frame; a frameset whose pictures each lie within half a frame of the first
+but 32 ms apart is refused, and stamps 16,666,667 ns apart at 30 fps are
+one moment, 16,666,668 ns not. `sensor_ffs_depth_sensor`: the right owner
+goes before its depth frame is published, the frame holds the left owner,
+and the test camera's pairs keep the contract. Each of these fails with
+its rule undone: the pair's `left_to_right` inverted, the skew's sign
+flipped, the rectifier keeping the right picture, the depth thread keeping
+the camera's frame, `together` holding each picture to the first, and
+`same_moment` comparing milliseconds.
+
+**Validation.** Release with warnings as errors, RealSense, FFmpeg, CUDA and
+FFS on, under the validation layer: the whole suite passes on the lab's RTX
+5090 (Ubuntu 26.04, driver 615.71.10, TensorRT 11.4), 48 tests. No camera
+was opened.
+
+### 2026-11-01 — The stereo rectifier averages each pixel over its own footprint where it shrinks a picture, and FFS drops depth inside the network's reach (amends the 2026-10-29 stereo and FFS entries).
+
+**The rule.**
+- `rectify.comp` finds each view pixel's footprint in the source picture,
+  the map's Jacobian there: where the points half a pixel either side of
+  it land, across and down. Where its longer side is over 1.5 source
+  pixels, the pixel is the mean of 5 x 5 bilinear samples, one at the
+  centre of each of 25 equal cells of that parallelogram, Y'CbCr averaged
+  and converted once. Else, and where a neighbour's ray is behind the
+  camera or past the fold, it takes one sample, as before. There is no
+  option: the footprint decides. `undistort_color.glsl`'s `ycbcr_word` is
+  split into `ycbcr_sample` and `ycbcr_to_word`, so the average is
+  converted by the one conversion; prep calls `ycbcr_word` as before.
+- `FfsStereo::Options::max_disparity` is the network's disparity search
+  range at the rig's size. Depth below `1.05 * fx * baseline /
+  max_disparity` is no return, and the frame's `min_depth` is the larger of
+  that and `Options::min_depth`. 0, the default, is no gate; `create`
+  refuses a value not finite and at least 0, and a gate not below
+  `max_depth`.
+
+**Why.** A 4K stereo pair matched at FFS's 960 x 544 (the DeckLink pair,
+owner 2026-11-01) is a 4.5:1 shrink. One bilinear sample a pixel aliases
+fine texture and moves an edge with its sub-pixel phase, which a matcher
+reads as disparity. An area mean over each pixel's footprint (OpenCV's
+`INTER_AREA`, but per pixel through the lens) does neither.
+- **Per pixel.** A near-equidistant lens shrinks its picture 4.8:1 at the
+  centre and about 1.5 across by 3 down at its side edge. A box of the
+  centre's size would blur that edge three times too much radially.
+- **5 x 5, from 1.5.** Five samples a side put one at least every source
+  pixel up to 5:1. Below 1.5 one sample is kept: a D455's 1.33:1 views are
+  unchanged, byte for byte.
+- **Its limit.** A box one view pixel wide still passes part of a 1-D
+  grating just past the view's Nyquist (its response there). A wider
+  kernel would blur what FFS matches; not taken without a measured need.
+- **The near gate.** A surface nearer than `fx * baseline /
+  max_disparity` has a disparity past the network's range, so it comes
+  back saturated, at or a little past that depth: wrong depth that looks
+  valid. Dropping depth within 5% past it removes those, and true
+  surfaces there with them. The gate is FFS's because only `FfsStereo`
+  knows the rectified fx and baseline when it is made; an opener would
+  have to copy the rectification.
+
+**Tests.** `sensor_stereo_rectifier`:
+- the host reference (`Remap::footprint`, `area_mean`) prefilters as the
+  spec says, and every existing view check holds to it within a code: the
+  layout and V210 tests' 2:1 shrink is averaged, the 1.33:1 ones are not;
+- a D455's 1280x800 to 960x544: footprint 1.333, one sample; random luma
+  over 32 codes matches the one-tap reference in all 522,240 pixels away
+  from ties (within 0.02 of a half code), where averaging moves 362,475 of
+  them, by up to 8 codes;
+- 4320x2448 to 960x544 (4.5:1): a checker grating of period 5 source
+  pixels, +-64 levels, reads within 1 level of its mean (one sample a
+  pixel: 44);
+- step edges at six sub-pixel phases, across and down, stay within 0.0087
+  view pixels of where the rig puts them (one sample a pixel: 0.333);
+- the near-equidistant lens, 3840x2160 to 960x544 (fx 310.4): footprint
+  4.83 x 4.83 at the centre and 1.50 x 3.13 at the side edge; rings of the
+  centre's period keep +-47.5 of +-64 at the side edge (a centre-sized box:
+  +-1.0) and average out to +-1.5 near the centre.
+
+`sensor_ffs_stereo`: at `fx * baseline` 4 and `max_disparity` 30 the gate
+is 0.14 m, so disparity 29 (0.138 m) has no return where `min_depth` alone
+keeps it, and the frame's `min_depth` is 0.14; a gate nearer than
+`min_depth` leaves it, and 0 is none; -1, NaN, infinity and a gate past
+`max_depth` are refused.
+
+Four planted bugs each failed: the taps shifted half a tap (the steps,
+0.108 view px), the footprint taken at the view's centre (the side edge's
+rings, +-1.0), weights summing to 25/24 (the grating, 6 levels), and the
+gate at 1.0x (`sensor_ffs_stereo`).
+
+**Validation.** The lab's RTX 5090 (Ubuntu 26.04, driver 615.71.10,
+TensorRT 11.4), Release with warnings as errors, RealSense, FFmpeg, CUDA
+and FFS on, under the validation layer: the whole suite passes, 48
+tests. The D455 view's FNV-1a hash is the same built on this branch and on
+0.17.0 (`95cdad83d4b9af47`). A 3840x2160 V210 pair in device buffers,
+rectified to 960x544 `Rgba8`, every pixel averaged, takes 0.77-0.78 ms of
+device time for both views, with other jobs on the GPU; the 1.33:1 cases
+take 0.008 ms more than on 0.17.0 (0.023 ms against 0.015 ms, luma in
+device buffers), the four neighbours' lens. No camera was opened.
+
+### 2026-11-01 — A DeckLink stereo camera: two SDI inputs as one `IStereoSensor`, their 10-bit pictures written by the card into pages the GPU imports and copied once on the device; free-running cameras paired by the card's frame times, each pair's skew stated; the calibration optional.
+
+**The rule.** `DecklinkStereo` (`sensor_decklink`, `VS_WITH_DECKLINK`)
+captures two connectors of a DeckLink 8K Pro under the profile "four
+sub-devices half-duplex" at 2160p 24, 25 or 30, as v210 only. The card's
+DMA writes each picture into host pages the device imports
+(`core::create_imported_host_buffer`), through the SDK's capture allocator;
+one GPU copy a picture moves it into a device buffer, which the rectifier
+and prep read in place, and the SDK's frames go back once the copy's fence
+has signalled. The cameras free-run: a frame pairs with the other input's
+newest unpaired frame within `max_skew_ns` (default just under half a
+frame), on the card's frame times, and carries the skew. A mode other than
+the one opened is refused with the camera's own fix, never followed.
+`Options::calibration` is optional; without it the driver hands out raw
+pairs and reports no calibration (a default `StereoCalibration`), which
+`StereoRectifier::create` refuses, naming it. The SDK-free parts are a
+target of their own, built and tested on every leg; `capture.cpp` is the one
+SDK user. How each part works is DESIGN.md's (`decklink`).
+
+**Why** (the owner's choices, 2026-11-01):
+- **V210, 10-bit.** The path measured with no lost frame (5991 a camera),
+  no rounding to 8 bits on the card, and the colour response's falloff gain
+  stretches codes, so it needs them. A third more bytes than 8-bit UYVY.
+- **Zero-copy on any GPU.** The CPU copies nothing; the 1.33 GB/s a pair is
+  2% of the 5090's link. A copy rather than kernels reading the pages: the
+  core keeps kernels off host memory, and the rectifier and prep both read
+  the left picture, which would cross PCIe twice. GPUDirect for Video does
+  not start on the GeForce 5090 (`dvpInitCUDAContext` fails), so it is not
+  used.
+- **No genlock in v1** (the owner's choice: SDI 3 and 4 stay inputs for a
+  second pair). The pair is matched in software and states its skew: 8.2 ms
+  today, drifting 0.037 ms a minute. A genlocked rig lowers the bound; it
+  is a number, not a second code path.
+- **Time and sequence.** The card's clock is the host's raw clock, 18.8 ppm
+  off the disciplined one, so a frame's host time takes the two clocks'
+  offset sampled in its own callback; one offset fixed at start would be
+  68 ms off after an hour. The sequence adds whole periods between left
+  frames: the cameras run 27 ppm slow, and rounding the time since the
+  first would slip half a frame in about 10 minutes.
+- **Camera settings are the camera's own** (its menu, or USB PTP): the
+  only control path without a cable into its SDI
+  IN. A firmware update resets these cameras to 24p, so `start` and `poll`
+  name the mode and the fix.
+- **The calibration optional** (calib's lens mode, 2026-11-01): pictures
+  are captured before any lens exists. A source with none states it the
+  one way every source can, with no new field.
+- **`start` failing for no pair is `IoError`**, as RealSense's camera that
+  delivers nothing is: the core has no "unavailable" code.
+- **No CI leg builds the SDK's part** (the SDK headers in the CI image
+  await the owner's licence call), so everything but the SDK's calls sits
+  in units a test drives with a capture that writes pages as the card does.
+
+**Tests.** `sensor_decklink_pairing` (host, every leg): the connectors,
+modes, rows and the mode fix; each option refused, named, lenses only when
+given; free-running cameras 8.2 ms apart pair in either arrival order; a
+lost left frame is a sequence gap, a lost right frame, no signal and a
+partner past the bound fail that left frame; the newest unpaired frame
+wins; restart and stop; the counts and the sync contract
+(`tests/stereo_contract.hpp`) on what it paired; a card clock 18.78 ppm
+off the host's mapped within 10 us over an hour (1.0 us worst), and a
+camera 27 ppm off nominal with no false gap in 108,000 frames; the skew
+report on a synthetic copy of the free run, -8.20 ms right less left at
+the start and +0.0367 ms a minute (SDI 2 lagging SDI 1 by 8.20 ms, falling
+0.0367 ms a minute), losses and refusals. `sensor_decklink_upload` (the
+device; it skips, naming the extension, where the device lacks
+`VK_EXT_external_memory_host`): pages found by address, made on demand,
+none past 8, reused; device pictures reused and capped; the driver over a
+test capture: device bytes equal the pages at 96x16 and 2160p, both SDK
+frames back before the frame is published and after the copy (the pages
+are overwritten as they go back), the newest pair wins under a slow poller
+(3 dropped), 4 device buffers and no more after warm-up, the rectifier
+lets the right picture go and the left stays, the contract, a mode change
+failing `poll`, `start` failing after `lock_timeout` naming the silent input
+or the cameras' -8.20 ms, and a camera at another mode. `sensor_decklink_sdk_smoke`
+(`VS_WITH_DECKLINK`): the codes are the SDK's, Desktop Video's API is 16 or
+newer (or `open` is `NotFound` naming the install), and `open` refuses bad
+options before any card. `sensor_subproject_decklink_no_sdk`: the option
+refused with the fix where the SDK is missing. `sensor_stereo_sensor`: the
+rectifier refuses a source with no calibration. Three planted bugs each
+failed their test: the oldest unpaired frame kept as the partner, the
+clocks' offset sampled once, and the SDK's frames handed back before the
+copy's fence.
+
+**Validation.** Release with warnings as errors, DeckLink (SDK 16.0,
+Desktop Video 16.5), RealSense, FFmpeg, CUDA and FFS on, under the
+validation layer: the whole suite passes on the lab's RTX 5090, 51 tests,
+and the upload test on lavapipe too. No camera was opened: the cameras are
+checked by hand.

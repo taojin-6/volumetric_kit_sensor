@@ -4,6 +4,106 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-11-01
+
+### Added
+
+- **`DecklinkStereo`** (`decklink/decklink_stereo.hpp`,
+  `volumetric_kit::sensor_decklink`, `VS_WITH_DECKLINK`, Linux x86-64): two
+  SDI inputs of a DeckLink 8K Pro as one `IStereoSensor`. Each camera's
+  10-bit V210 picture is written by the card into host pages the device
+  imports and copied once into a device buffer of its own; free-running
+  cameras are paired by the card's frame times within `max_skew_ns`, each
+  pair stamped on the host's clock with its skew. `Options::calibration` is
+  optional, for the raw pairs a calibration is made from. Needs the
+  DeckLink SDK's headers (`DeckLinkSDK_ROOT`, `cmake/vs_decklink.cmake`)
+  and, to capture, Desktop Video 16.0 or newer, loaded at run time.
+  DECISIONS.md, the 2026-11-01 DeckLink entry.
+- `decklink_skew_report` (with `VS_WITH_DECKLINK`): the two inputs' frames,
+  losses, rates and the pairs' skew and drift, by hand.
+- `device_requirements()` asks for `VK_EXT_external_memory_host` where
+  offered, which `DecklinkStereo` needs.
+
+### Changed
+
+- `StereoRectifier::create`, and so `StereoDepthSensor::create`, refuses a
+  source with no calibration (`StereoInfo::calibration` both cameras
+  0 x 0) with `InvalidArgument`, naming it.
+- The core is pinned at 0.38.0 (core #82, `create_imported_host_buffer`).
+  0.38.0 is the floor where the DeckLink driver's units build
+  (`VS_WITH_DECKLINK`, or the tests); elsewhere the floor stays 0.29.0, so
+  a decoder-only consumer at an older core still builds.
+
+## [0.18.0] - 2026-11-01
+
+### Added
+
+- **FFS's near gate.** `FfsStereo::Options::max_disparity`, the network's
+  disparity search range at the rig's size (192 for the exported
+  23-36-37 checkpoint): depth below `1.05 * fx * baseline / max_disparity`
+  is no return, as nearer surfaces come back saturated at about that
+  depth, and the frame's `min_depth` is the bound kept. 0, the default, is
+  no gate; a gate not below `max_depth` is refused.
+
+### Changed
+
+- **The stereo rectifier prefilters where it shrinks a picture.** A view
+  pixel whose footprint in the source (from where the points half a pixel
+  either side of it land) is longer than 1.5 source pixels on a side is
+  the mean of 5 x 5 bilinear samples spread over that footprint, Y'CbCr
+  averaged and converted once, so a 4K picture shrunk 4.5:1 to 960 x 544
+  does not alias, and a fisheye's edge, shrunk less than its centre, is
+  averaged over less. Smaller footprints, a D455's 1.33:1 among them, take
+  one sample as before. DECISIONS.md, the 2026-11-01 prefilter entry.
+
+## [0.17.0] - 2026-11-01
+
+### Added
+
+- **A stereo frame's skew and its source's bound.** `StereoFrame::skew_ns`,
+  the right picture's capture time less the left's (`timestamp_ns`), and
+  `StereoInfo::max_skew_ns`, the most any two pictures of a frame lie apart:
+  frames past it are counted failed, never handed out. `RealSenseStereo`
+  states its two infrared stamps' difference, 0 on a D455 (one exposure),
+  and half a frame, the bound its framesets keep.
+- **The right picture's own owner.** `StereoFrame::right_pixels`, for a
+  source whose right picture is apart from `pixels`.
+- **`stereo_calibration(file, left_id, right_id)`**
+  (`stereo/stereo_calibration.hpp`): the `StereoCalibration` two entries of
+  a calibration file make, each camera posed with a colour model,
+  `left_to_right = inverse(right.color_to_world) * left.color_to_world`;
+  `InvalidArgument` for a file the validator refuses, one id twice, an id
+  missing, unposed or without colour, cameras at one place, or lenses of
+  different sizes.
+- `tests/stereo_contract.hpp`: the sync contract every stereo source's
+  frames keep, one check for a test camera and each driver's unit.
+
+### Changed
+
+- **BREAKING: `StereoRectifier::rectify` lets the right picture go** once
+  its pass has read it: `RectifiedPair::source` has no right planes and no
+  `right_pixels`. `StereoDepthSensor` lets the camera's frame go once
+  rectified, so the right picture is free before FFS runs and a depth frame
+  holds the left picture alone. DECISIONS.md, the 2026-11-01 stereo-sync
+  entry.
+- A RealSense frameset is one moment when every two of its pictures lie
+  within half a frame, in the whole-nanosecond stamps its frames carry (each
+  was held to the first, in milliseconds), so `RealSenseStereo`'s frames
+  keep their bound exactly. Both drivers share the rule; a D455's framesets
+  pass as before.
+
+## [0.16.0] - 2026-11-01
+
+### Added
+
+- **V210 pictures (SDI's 10-bit 4:2:2).** `YuvLayout::V210`, one plane of
+  words, six pixels in four, as a DeckLink card captures it: `GpuFramePrep`
+  and `StereoRectifier` read it from the host or a buffer at 10 bits and
+  round to their 8-bit outputs once. Limited range only, of even width,
+  rows `ceil(width / 6) * 16` bytes or more, offset and stride whole words;
+  `PictureReadback` refuses it (`Unsupported`) until it reads it.
+  DECISIONS.md, the 2026-11-01 V210 entry.
+
 ## [0.13.0] - 2026-10-31
 
 ### Changed

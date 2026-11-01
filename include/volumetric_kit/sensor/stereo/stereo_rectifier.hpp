@@ -90,11 +90,13 @@ struct RectifiedPair {
   /// @ref kQueueFamilyIgnored.
   std::uint32_t queue_family = kQueueFamilyIgnored;
   StereoRig rig;  ///< The views' camera and baseline.
-  /// The frame they came from: colour and times pass through, and its
-  /// pictures stay held. A picture in a buffer the pass took over -- the left
-  /// and right ones, and a colour picture in one of their buffers -- reads
-  /// @ref kQueueFamilyIgnored here, so a later stage reads this frame, not
-  /// the one passed to @ref StereoRectifier::rectify.
+  /// The frame they came from: colour and times pass through, and its left
+  /// and colour pictures stay held. The right picture, read, is let go: it has
+  /// no planes here, and `right_pixels` is null. A picture in a buffer the
+  /// pass took over -- the left one, and a colour picture in the left or
+  /// right one's buffer -- reads @ref kQueueFamilyIgnored here, so a later
+  /// stage reads this frame, not the one passed to
+  /// @ref StereoRectifier::rectify.
   StereoFrame source;
 };
 
@@ -118,12 +120,19 @@ struct RectifiedPair {
 /// Each frame is one compute pass a view: each rectified pixel's ray turned
 /// into the source camera, through its lens, and the source picture sampled
 /// there bilinearly and converted as `GpuFramePrep` converts colour (the
-/// same shader code). The pictures come in any layout the package reads --
-/// luma alone, YUYV, NV12, I420 -- on the host, copied into one persistent
-/// slot (`core::HostRing`) as `GpuFramePrep` stages host planes, or in a
-/// buffer on the device, taken over from `YuvImage::queue_family`, once a
-/// buffer. Nothing is allocated a frame while each pair is dropped before the
-/// next is rectified (@ref RectifiedPair).
+/// same shader code). Where the view shrinks the picture -- the pixel's
+/// footprint in it, from where the points half a pixel either side of it
+/// land, longer than 1.5 source pixels on a side -- the pixel is the mean of
+/// 5 x 5 bilinear samples spread over that footprint, converted once: a 4K
+/// picture shrunk 4.5:1 does not alias, and a lens that shrinks less at its
+/// edge than at its centre is averaged over less there. A smaller shrink,
+/// such as a D455's 1.33:1, takes one sample. The pictures come in any
+/// layout the package reads --
+/// luma alone, YUYV, V210, NV12, I420 -- on the host, copied into one
+/// persistent slot (`core::HostRing`) as `GpuFramePrep` stages host planes,
+/// or in a buffer on the device, taken over from `YuvImage::queue_family`,
+/// once a buffer. Nothing is allocated a frame while each pair is dropped
+/// before the next is rectified (@ref RectifiedPair).
 ///
 /// @code
 /// VKC_ASSIGN(auto rectifier,
@@ -163,7 +172,8 @@ class VS_STEREO_API StereoRectifier final {
   ///                   object and its pairs).
   /// @param info       The pair's calibration, and any colour camera.
   /// @param options    The rectified size, alpha and output.
-  /// @return The rectifier; `Status::Code::InvalidArgument` for a camera
+  /// @return The rectifier; `Status::Code::InvalidArgument` for a source
+  ///         with no calibration (@ref StereoInfo::calibration), a camera
   ///         that `camera::check_camera_model` refuses or that is past
   ///         float's range, cameras of different sizes, a `left_to_right` or
   ///         `left_to_color` that is not rigid, cameras at one place, a pair
@@ -212,7 +222,8 @@ class VS_STEREO_API StereoRectifier final {
   ///         planes, planes as images (a buffer or the host only), a picture
   ///         that `GpuFramePrep` would refuse as a frame's colour (its size
   ///         not its camera's, an unknown layout or chroma location, a bad
-  ///         matrix, YUYV of odd width, strides, offsets, overlap or a buffer
+  ///         matrix, YUYV or V210 of odd width, V210 in full range,
+  ///         strides, offsets, overlap or a buffer
   ///         it cannot bind), a `queue_family` the device lacks, or pictures
   ///         in one buffer that name different writers' queue families;
   ///         `Status::Code::OutOfMemory` for a host allocation failure; or a

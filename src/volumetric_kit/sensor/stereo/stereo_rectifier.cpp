@@ -424,6 +424,14 @@ core::Result<std::unique_ptr<StereoRectifier>> StereoRectifier::create(
     const StereoInfo& info, const Options& options) try {
   VKC_TRY(check_device_requirements(device, "StereoRectifier::create"));
   const StereoCalibration& calibration = info.calibration;
+  const auto none = [](const camera::ImageSize& size) {
+    return size.width == 0 && size.height == 0;
+  };
+  if (none(calibration.left.size) && none(calibration.right.size)) {
+    return refuse(
+        "the stereo source has no calibration (StereoInfo::calibration is "
+        "empty): open it with the pair's calibration");
+  }
   VKC_TRY(detail::check_camera(kWho, "left", calibration.left));
   VKC_TRY(detail::check_camera(kWho, "right", calibration.right));
   if (calibration.left.size.width != calibration.right.size.width ||
@@ -790,10 +798,13 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
   pair.queue_family = exported ? kQueueFamilyExternal : kQueueFamilyIgnored;
   pair.rig = rectification.rig;
   pair.source = frame;
-  // Taken over by the pass's family: the left and right pictures, and a
-  // colour picture in one of their buffers.
-  for (YuvImage* image :
-       {&pair.source.left, &pair.source.right, &pair.source.color}) {
+  // The right picture is read: it goes, its own owner with it, so its buffer
+  // may return to the source while a matcher runs.
+  pair.source.right = {};
+  pair.source.right_pixels = nullptr;
+  // Taken over by the pass's family: the left picture, and a colour picture
+  // in its buffer or the right one's.
+  for (YuvImage* image : {&pair.source.left, &pair.source.color}) {
     if (image->device != nullptr && taken.find(*image->device) >= 0) {
       image->queue_family = kQueueFamilyIgnored;
     }
