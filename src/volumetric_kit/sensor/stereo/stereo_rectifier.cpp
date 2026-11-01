@@ -424,6 +424,14 @@ core::Result<std::unique_ptr<StereoRectifier>> StereoRectifier::create(
     const StereoInfo& info, const Options& options) try {
   VKC_TRY(check_device_requirements(device, "StereoRectifier::create"));
   const StereoCalibration& calibration = info.calibration;
+  const auto none = [](const camera::ImageSize& size) {
+    return size.width == 0 && size.height == 0;
+  };
+  if (none(calibration.left.size) && none(calibration.right.size)) {
+    return refuse(
+        "the stereo source has no calibration (StereoInfo::calibration is "
+        "empty): open it with the pair's calibration");
+  }
   VKC_TRY(detail::check_camera(kWho, "left", calibration.left));
   VKC_TRY(detail::check_camera(kWho, "right", calibration.right));
   if (calibration.left.size.width != calibration.right.size.width ||

@@ -237,6 +237,15 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   std::printf("  rectified: baseline %.9f m (cameras %.9f m apart), fx %.2f\n",
               baseline, distance, (*rectifier)->rig().camera.intrinsics.fx);
   CHECK(std::fabs(baseline - distance) < 1e-9);
+
+  // A source with no calibration (a DeckLink pair opened to calibrate its
+  // lenses) is refused, named, before its cameras are checked.
+  auto none = sensor::StereoRectifier::create(
+      gpu.device, gpu.allocator, sensor::StereoInfo{},
+      {{960, 544}, 0.0f, sensor::StereoRectifier::Output::Rgba8});
+  CHECK(!none.ok());
+  CHECK(none.status().domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(none.status().message().find("no calibration") != std::string::npos);
   std::puts("sensor_stereo_sensor: OK");
   return 0;
 }

@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(
   volumetric_kit_sensor
-  VERSION 0.18.0
+  VERSION 0.19.0
   DESCRIPTION
     "Cameras, capture and the device-frame contract for the volumetric_kit family"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_sensor"
@@ -69,6 +69,14 @@ option(VS_WITH_FFS
 # (cmake/vs_portaudio.cmake).
 option(VS_WITH_PORTAUDIO
        "Build the microphone driver (requires an installed PortAudio)" OFF)
+# OFF by default too: the DeckLink SDK's headers are a prerequisite you unpack
+# (cmake/vs_decklink.cmake), Linux x86-64 only. The driver's SDK-free parts
+# build and are tested without it. TODO(sensor): a CI leg with the SDK's
+# headers, once the owner decides on their licence.
+option(
+  VS_WITH_DECKLINK
+  "Build the DeckLink stereo driver (requires the DeckLink SDK; DeckLinkSDK_ROOT)"
+  OFF)
 
 # Semicolon list of sanitizers (e.g. "address;undefined"); empty = off. Applied
 # globally -- see cmake/vs_sanitizers.cmake for why.
@@ -77,8 +85,15 @@ set(VS_SANITIZE
     CACHE STRING "Sanitizers to enable, e.g. address;undefined (empty = off)")
 
 if(VS_CAMERA_ONLY)
-  foreach(_vs_option VS_WITH_ORBBEC VS_WITH_REALSENSE VS_WITH_FFMPEG
-                     VS_WITH_CUDA VS_WITH_FFS VS_WITH_PORTAUDIO)
+  foreach(
+    _vs_option
+    VS_WITH_ORBBEC
+    VS_WITH_REALSENSE
+    VS_WITH_FFMPEG
+    VS_WITH_CUDA
+    VS_WITH_FFS
+    VS_WITH_PORTAUDIO
+    VS_WITH_DECKLINK)
     if(${_vs_option})
       message(FATAL_ERROR "VS_CAMERA_ONLY builds the camera tier alone: "
                           "turn ${_vs_option} OFF")
@@ -105,8 +120,8 @@ if(NOT VS_CAMERA_ONLY)
 endif()
 
 # The Orbbec SDK (ob::OrbbecSDK), librealsense, FFmpeg, the CUDA toolkit,
-# TensorRT and PortAudio: installed once, outside the repo, and never fetched
-# (the 2026-09-24 decision).
+# TensorRT, PortAudio and the DeckLink SDK: installed once, outside the repo,
+# and never fetched (the 2026-09-24 decision).
 if(VS_WITH_ORBBEC)
   include(vs_orbbec)
 endif()
@@ -125,14 +140,31 @@ endif()
 if(VS_WITH_PORTAUDIO)
   include(vs_portaudio)
 endif()
+if(VS_WITH_DECKLINK)
+  include(vs_decklink)
+endif()
 
 # The core this package builds with (third_party/ checks the core that arrives):
-# 0.29.0, whose vulkan/fwd.hpp the public headers include, with 0.27.0's
-# vkc_export_glsl and 0.28.0's test support.
-set(VS_CORE_MIN_VERSION 0.29.0)
+# 0.29.0's vulkan/fwd.hpp, with 0.27.0's vkc_export_glsl and 0.28.0's test
+# support. Where the DeckLink driver's units build (VS_WITH_DECKLINK, or the
+# tests), 0.38.0, whose create_imported_host_buffer their pages are. A consumer
+# with neither, such as a decoder-only build at an application's older core,
+# keeps 0.29.0.
+set(VS_CORE_BASE_MIN_VERSION 0.29.0)
+if(VS_WITH_DECKLINK OR VS_BUILD_TESTS)
+  set(VS_CORE_MIN_VERSION 0.38.0)
+else()
+  set(VS_CORE_MIN_VERSION ${VS_CORE_BASE_MIN_VERSION})
+endif()
 add_subdirectory(third_party)
 
 add_subdirectory(src)
+
+# decklink_skew_report, the DeckLink pair's timing by hand (README, "DeckLink
+# stereo driver"); it opens the cameras, so no test runs it.
+if(VS_WITH_DECKLINK)
+  add_subdirectory(tools/decklink_skew_report)
+endif()
 
 if(VS_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
   enable_testing()

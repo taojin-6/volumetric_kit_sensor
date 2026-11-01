@@ -43,8 +43,9 @@ recon's examples assemble the rest.
   pinhole cameras and `ColorEncoding`, so it
   depends on **`camera` and `frame` alone** — it sits beside recon's fusion tiers,
   not on top of them — and bundles **no drivers**: one ships here only if this package can build
-  *and* test it (the 2026-08-02 decision). The ones that do, Orbbec and
-  RealSense, are targets of their own (`orbbec/`, `realsense/`), so
+  *and* test it (the 2026-08-02 decision). The ones that do, Orbbec,
+  RealSense and DeckLink, are targets of their own (`orbbec/`, `realsense/`,
+  `decklink/`), so
   `sensor_interface` never links a vendor SDK. The HEVC and JPEG decoders are another target of
   their own (`video/`, on the GPU's hardware) and link no camera tier:
   `frame` and, on Apple, the Apple importer (`apple/`), which links
@@ -60,6 +61,10 @@ recon's examples assemble the rest.
   `StereoRectifier`, the pair undistorted and rectified on the GPU for a
   stereo matcher. On the interface; it links `prep` privately, whose colour
   pass it shares.
+- **`decklink`** — two SDI inputs of a DeckLink card as one stereo camera
+  (`DecklinkStereo`, `VS_WITH_DECKLINK`, Linux x86-64). On `stereo`; its
+  SDK-free units are a static target of their own, built and tested on
+  every leg.
 - **`ffs`** — stereo depth on NVIDIA's GPUs (`VS_WITH_FFS`): `FfsStereo`,
   Fast-FoundationStereo on TensorRT with CUDA kernels either side, and
   `StereoDepthSensor`, a stereo camera as an `IRgbdSensor`. On `stereo`; it
@@ -705,7 +710,8 @@ consumer of depth never sees it: a depth source built on a stereo camera
 
 - **`stereo/stereo_sensor.hpp`** — `StereoCalibration` (the two cameras,
   lenses included, and `left_to_right`, OpenCV's `R`, `T`), `StereoInfo`
-  (the pair and any third, colour camera with `left_to_color`, what the
+  (the pair -- none, both cameras 0 x 0, from a source opened before its
+  cameras are calibrated, which the rectifier refuses -- and any third, colour camera with `left_to_color`, what the
   source is as `SensorInfo` has it: id, model, clock, rate, colour exposure,
   and `max_skew_ns`, its sync guarantee: the most a frame's pictures lie
   apart, frames past it counted failed and never handed out), `StereoFrame`
@@ -820,6 +826,57 @@ consumer of depth never sees it: a depth source built on a stereo camera
   lost, since it writes every word. A submit or wait that fails leaves the
   rectifier refusing every later frame, as the device may still run the
   pass.
+
+### decklink
+
+`sensor_decklink` (`VS_WITH_DECKLINK`; the DeckLink SDK's headers, Desktop
+Video at run time) is `DecklinkStereo`, two inputs of a DeckLink 8K Pro as
+one `IStereoSensor`. Three targets keep the SDK to one file: the units
+(`sensor_decklink_units`, static, internal, `EXCLUDE_FROM_ALL`, on every
+leg), the capture (`sensor_decklink_capture`, static, internal:
+`capture.cpp` and the SDK's dispatch file, which loads
+`libDeckLinkAPI.so`), and the public class, which maps its options onto the
+units' driver and hands it the SDK's capture.
+
+- **Inputs.** Connectors are named as on the bracket and mapped to the
+  sub-devices of the profile "four sub-devices half-duplex" (`ports.hpp`);
+  `open` finds the first DeckLink 8K Pro, refuses another profile with the
+  fix, checks each input can capture the mode as v210
+  (`DoesSupportVideoMode`), and logs (`Info`) the SDK device each connector
+  opened, to check against the cabling. `start` enables both at the fixed mode with
+  format detection, waits for each to lock (no picture-less frames), then
+  starts them; a detected mode other than the one opened fails `start`, or
+  later `poll`, with the camera's own fix -- never a silent re-mode.
+- **Pages.** The card writes each picture through the SDK's capture
+  allocator (`EnableVideoInputWithAllocatorProvider`) into a `PagePool`'s
+  host pages, which the device imports (`core::create_imported_host_buffer`),
+  made on demand at the SDK's `bufferSize`, at most 8 an input, past which
+  the allocator answers `E_OUTOFMEMORY` and the SDK drops a frame. A
+  frame's pages are found again by the address the SDK hands back.
+- **Callbacks** (one SDK thread an input) stamp and pair and touch no
+  pixel (`pairing.hpp`): a frame's host time is its card time plus the two
+  clocks' offset sampled together in its own callback, so the card clock's
+  drift against the host's is tracked frame by frame; the newest unpaired
+  frame of each input is kept, and a frame pairs with the other's within
+  `max_skew_ns`, taking the left one's time; the left frames' sequence adds
+  whole periods, so a gap is a lost frame and a camera off nominal never
+  slips one.
+- **Upload** (`upload.hpp`, one thread): a pair's two pictures copied into
+  device buffers in one batch, its fence waited, then the SDK's frames
+  handed back -- never before, as the card may write those pages again; the
+  pair published, the newest winning. The device buffers (`DevicePictures`)
+  are each picture's own owner (`YuvImage::device`), back in the pool once
+  no frame holds them, so none is made after warm-up; past 24 a pair fails
+  rather than fill the device. A copy that fails keeps its pages from the
+  card for good and fails every later poll.
+- **Counts**, in left frames: received, every left frame; failed, one not
+  delivered in a pair (no partner, no signal, past the bound, no device
+  buffer free); dropped, a pair replaced before a poll. `stop` logs the
+  pools' high marks (`Info`).
+- **`decklink_skew_report`** times both inputs through the same capture,
+  on the SDK's own buffers (`skew_stats.hpp`): each input's frames, losses
+  and rate against the card clock, and the pairs' skew, right less left,
+  with its fit at the start and its drift a minute.
 
 ### stereo depth (FFS)
 

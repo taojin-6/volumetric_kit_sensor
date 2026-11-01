@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-11-01
+
+### Added
+
+- **`DecklinkStereo`** (`decklink/decklink_stereo.hpp`,
+  `volumetric_kit::sensor_decklink`, `VS_WITH_DECKLINK`, Linux x86-64): two
+  SDI inputs of a DeckLink 8K Pro as one `IStereoSensor`. Each camera's
+  10-bit V210 picture is written by the card into host pages the device
+  imports and copied once into a device buffer of its own; free-running
+  cameras are paired by the card's frame times within `max_skew_ns`, each
+  pair stamped on the host's clock with its skew. `Options::calibration` is
+  optional, for the raw pairs a calibration is made from. Needs the
+  DeckLink SDK's headers (`DeckLinkSDK_ROOT`, `cmake/vs_decklink.cmake`)
+  and, to capture, Desktop Video 16.0 or newer, loaded at run time.
+  DECISIONS.md, the 2026-11-01 DeckLink entry.
+- `decklink_skew_report` (with `VS_WITH_DECKLINK`): the two inputs' frames,
+  losses, rates and the pairs' skew and drift, by hand.
+- `device_requirements()` asks for `VK_EXT_external_memory_host` where
+  offered, which `DecklinkStereo` needs.
+
+### Changed
+
+- `StereoRectifier::create`, and so `StereoDepthSensor::create`, refuses a
+  source with no calibration (`StereoInfo::calibration` both cameras
+  0 x 0) with `InvalidArgument`, naming it.
+- The core is pinned at 0.38.0 (core #82, `create_imported_host_buffer`).
+  0.38.0 is the floor where the DeckLink driver's units build
+  (`VS_WITH_DECKLINK`, or the tests); elsewhere the floor stays 0.29.0, so
+  a decoder-only consumer at an older core still builds.
+
 ## [0.18.0] - 2026-11-01
 
 ### Added
