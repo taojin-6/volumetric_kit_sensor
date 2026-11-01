@@ -289,7 +289,8 @@ add_test(NAME sensor_array_process COMMAND sensor_array_process_test)
 # tools/stereo_rectify_reference.py), rows aligned and the host reference of the
 # remap on a scene an independent renderer images, every layout from the host
 # and the device, a pair rectified already, the depth view, the views' lease and
-# export, the refusals, and the pass's time. Skips without a device.
+# export, the area prefilter where a view shrinks its picture, the refusals, and
+# the pass's time. Skips without a device.
 add_executable(sensor_stereo_rectifier_test sensor_stereo_rectifier_test.cpp)
 target_link_libraries(
   sensor_stereo_rectifier_test PRIVATE volumetric_kit::sensor_stereo
@@ -490,10 +491,10 @@ if(APPLE OR VS_WITH_FFMPEG)
     # FFS (sensor_ffs) on the test models in data/ffs
     # (tools/ffs/make_test_onnx.py), FFS's inputs and output with a disparity
     # worked out by hand: FfsStereo's depth units, no returns (coverage among
-    # them), padding, both view layouts, the plan cache, kept pairs' views, the
-    # depth read in place by GpuFramePrep and the refusals; and
-    # StereoDepthSensor on a test camera, as any IRgbdSensor, in a SensorArray.
-    # They skip as the interop test does.
+    # them), the near gate, padding, both view layouts, the plan cache, kept
+    # pairs' views, the depth read in place by GpuFramePrep and the refusals;
+    # and StereoDepthSensor on a test camera, as any IRgbdSensor, in a
+    # SensorArray. They skip as the interop test does.
     foreach(_vs_ffs_test stereo depth_sensor)
       add_executable(sensor_ffs_${_vs_ffs_test}_test
                      sensor_ffs_${_vs_ffs_test}_test.cpp)
