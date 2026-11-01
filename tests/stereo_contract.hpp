@@ -9,7 +9,7 @@
 // counters' rule (SensorStats: delivered + dropped + failed <= received, and
 // delivered the frames taken). One check for every source, a test camera's
 // and each driver's own unit, so a driver proves the rule rather than a test
-// of its own (sensor-robustness-generic).
+// of its own (the same robustness rule for every driver).
 
 #include <cstdint>
 #include <string>
