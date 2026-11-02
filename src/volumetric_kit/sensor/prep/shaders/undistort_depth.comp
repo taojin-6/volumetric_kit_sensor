@@ -12,7 +12,10 @@
 // pixel. Z depth is along the optical axis, which undistortion does not move,
 // so the value is kept, less the sensor's pc.depth_offset_m (+ where it reads
 // too far), per raw pixel before any mix: a return the offset takes to 0 or
-// below is no return, and 0 stays no return whatever the offset's sign.
+// below is no return, and 0 stays no return whatever the offset's sign. A
+// frame gated by its confidence plane (pc.min_confidence above 0) drops each
+// raw pixel whose level lies below the floor first, so it is a hole the mix
+// skips and the outlier filter counts as no return.
 //
 // With pc.within_color, set for a frame with colour, the pixel is also kept
 // only inside the colour camera's field of view and where the colour pass
@@ -36,7 +39,9 @@ layout(local_size_x = 256) in;
 // sample pc.raw_first of the binding: sample j is the low half of word j/2
 // when j is even. The binding starts where a binding's offset may, at or
 // below the first sample, so depth left on the device at any even byte is
-// read where it is.
+// read where it is. A gated frame's confidence plane follows in the same
+// binding, a byte a sample, little-endian, its first at byte
+// pc.confidence_first.
 layout(set = 0, binding = 0, scalar) readonly buffer Raw { uint raw[]; };
 layout(set = 0, binding = 1, scalar) writeonly buffer Depth { float depth[]; };
 // The frame's two cameras (rgbd_overlap.glsl), read only under
@@ -51,6 +56,10 @@ layout(push_constant, scalar) uniform Params {
   uint within_color;
   float depth_offset_m;
   uint raw_first;  // the image's first sample in the binding
+  // The confidence plane's first byte in the binding, and the floor below
+  // which a raw sample is no return; 0 reads no plane.
+  uint confidence_first;
+  uint min_confidence;
 } pc;
 
 // Whether point or direction `q` of the colour camera's frame lies in front
@@ -97,8 +106,18 @@ uint raw_at(uint i) {
   return (raw[j >> 1] >> ((j & 1u) * 16u)) & 0xFFFFu;
 }
 
-// Raw pixel i in metres, less the depth offset; 0 is no return.
+// Raw pixel i's confidence level.
+uint level_at(uint i) {
+  uint b = pc.confidence_first + i;
+  return (raw[b >> 2] >> ((b & 3u) * 8u)) & 0xFFu;
+}
+
+// Raw pixel i in metres, less the depth offset; 0 is no return, as is a
+// pixel below the frame's confidence floor.
 float metres_at(uint i) {
+  if (pc.min_confidence != 0u && level_at(i) < pc.min_confidence) {
+    return 0.0;
+  }
   float z = float(raw_at(i)) * pc.metres_per_unit;
   return z > 0.0 ? max(z - pc.depth_offset_m, 0.0) : 0.0;
 }

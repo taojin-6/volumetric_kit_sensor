@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.24.0] - 2026-11-02
+## [0.26.0] - 2026-11-02
 
 ### Added
 
@@ -53,6 +53,52 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The iOS build check also compiles `sensor_video_testing` and the Apple
   headers as plain C++, and links an app's encoder calls into an iOS
   executable.
+
+## [0.25.0] - 2026-11-02
+
+### Added
+
+- **A tracked sensor's registration** (`camera/tracked_registration.hpp`,
+  `sensor_camera`, every build): `TrackedRegistration`, the one rigid
+  `tracking_to_world` that places a tracked sensor's world (ARKit's) in a
+  sensor array's world for one capture session's world epoch, with the
+  array's world it registers into (one sensor or one tag) and the tag fit
+  that solved it (`rms_px`, `views`, `edge_m`). A frame posed
+  `cam_to_tracking` sits at `tracking_to_world * cam_to_tracking`.
+  `validate_`, `parse_`, `read_`, `format_` and `write_tracked_registration`
+  read and write the file, `"volumetric_kit.tracked_registration"` version
+  1, through the core's `read_file` and `write_file`; the session is 32 hex
+  digits, byte 0 first. calib's `register_tracked` writes it; a tracked
+  source reads it at open. DECISIONS.md, the 2026-11-02 tracked
+  registration entry.
+
+### Changed
+
+- The array calibration file's world block, its transforms, and the JSON
+  numbers, objects and text under them are read and written in one internal
+  place (`camera/calibration_json.{hpp,cpp}`), which the registration
+  shares, and so is the check that a world is one sensor or one tag. The
+  file reads, refuses and writes as before, every message the same.
+
+## [0.24.0] - 2026-11-02
+
+### Added
+
+- **A depth confidence plane** (`RgbdFrame::depth_confidence`,
+  `RgbdFrame::min_confidence`): beside host depth, one byte a sample in the
+  sensor's own levels (ARKit's 0 low, 1 medium, 2 high), and the floor below
+  which `GpuFramePrep` drops a sample on the GPU, per raw sample, before the
+  depth offset, the mix, the colour-view test and the outlier filter, so a
+  dropped sample is a hole. Level 0 is never integrated: a producer that
+  invalidates a sample, such as one it masks as a moving person, writes 0
+  there, and every floor drops it. A plane comes with a floor of 1 or more,
+  which its producer sets, and is copied into the pass's slot after the
+  depth; a frame without a plane is prepared bit for bit as before.
+  `prepare` refuses a plane beside device depth or at a floor of 0, and a
+  floor without a plane (`InvalidArgument`). DECISIONS.md, the 2026-11-02
+  confidence plane entry.
+- `sensor_gpu_frame_prep_confidence`: the gate at every floor, per raw
+  sample, the slot, sets and the refusals.
 
 ## [0.23.0] - 2026-11-02
 

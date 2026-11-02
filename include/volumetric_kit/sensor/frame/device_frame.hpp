@@ -48,8 +48,9 @@ struct DeviceFrame {
   /// Row-major depth in metres, `depth_camera.width * height` floats, less
   /// any depth offset the producer corrects for; 0 where the sensor had no
   /// return, the offset leaves none, the lens maps outside its image, or the
-  /// producer drops the return (`GpuFramePrep`: outside the colour camera's
-  /// view, or an outlier unless `depth_outliers` is off).
+  /// producer drops the return (`GpuFramePrep`: below the frame's
+  /// confidence floor, outside the colour camera's view, or an outlier
+  /// unless `depth_outliers` is off).
   std::shared_ptr<const core::Buffer> depth;
   /// Row-major colour, `color_camera.width * height` words: R, G and B in the
   /// low three bytes, and the pixel's coverage in the high one -- 0xFF where
