@@ -9,9 +9,10 @@
 // with a side 0 with one), each frame's skew within its info's bound
 // (StereoInfo::max_skew_ns),
 // sequences and times increasing, and the counters' rule (SensorStats:
-// delivered + dropped + failed <= received, and delivered the frames taken).
-// One check for every source, a test camera's and each driver's own unit, so
-// a driver proves the rule rather than a test of its own (the same robustness
+// delivered + dropped + failed <= received, and delivered the frames taken),
+// the last two the RGB-D contract's own (testing/rgbd_contract.hpp). One
+// check for every source, a test camera's and each driver's own unit, so a
+// driver proves the rule rather than a test of its own (the same robustness
 // rule for every driver).
 
 #include <cstdint>
@@ -20,6 +21,7 @@
 
 #include "volumetric_kit/sensor/rgbd_sensor.hpp"
 #include "volumetric_kit/sensor/stereo/stereo_sensor.hpp"
+#include "volumetric_kit/sensor/testing/rgbd_contract.hpp"
 
 namespace stereo_contract {
 
@@ -71,24 +73,11 @@ inline std::string breach(const sensor::StereoInfo& info, Opened opened,
     }
     if (i == 0) continue;
     const sensor::StereoFrame& before = frames[i - 1];
-    if (f.sequence <= before.sequence) {
-      return at + "sequence " + std::to_string(f.sequence) + " after " +
-             std::to_string(before.sequence);
-    }
-    if (f.timestamp_ns <= before.timestamp_ns) {
-      return at + "time " + std::to_string(f.timestamp_ns) + " ns after " +
-             std::to_string(before.timestamp_ns);
-    }
+    const std::string order = sensor::testing::order_breach(
+        before.sequence, before.timestamp_ns, f.sequence, f.timestamp_ns);
+    if (!order.empty()) return at + order;
   }
-  if (stats.delivered != frames.size()) {
-    return "delivered " + std::to_string(stats.delivered) + ", taken " +
-           std::to_string(frames.size());
-  }
-  if (stats.delivered + stats.dropped + stats.failed > stats.received) {
-    return "delivered + dropped + failed past received " +
-           std::to_string(stats.received);
-  }
-  return {};
+  return sensor::testing::stats_breach(stats, frames.size());
 }
 
 }  // namespace stereo_contract

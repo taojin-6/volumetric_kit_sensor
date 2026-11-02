@@ -39,6 +39,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
+#include "volumetric_kit/sensor/testing/index_band.hpp"
 #include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace volumetric_kit::sensor::testing {
@@ -54,13 +55,6 @@ struct HostNv12 {
   /// first: 2 x (@ref width + 1) / 2 bytes a row.
   std::vector<std::uint8_t> chroma;
 };
-
-/// @brief The side of one square of @ref test_pattern's index band, in luma
-///        pixels: 16, a coding block's, so each square is whole blocks.
-inline constexpr std::uint32_t kIndexSquare = 16;
-/// @brief The bits of the index @ref test_pattern's band holds: 14, so it
-///        names `index % 16384`.
-inline constexpr std::uint32_t kIndexBits = 14;
 
 /// @return Picture @p index of the family's test pattern, @p width x
 ///         @p height: 8-bit codes, with 0 and 255 in them where the picture

@@ -15,10 +15,12 @@ namespace {
 // spans [-0.5, W-0.5] rather than [0, W]: matching those spans gives
 // (c + 0.5)/W == (c' + 0.5)/W', hence c' = (c + 0.5)*s - 0.5. Dropping it
 // biases every unprojected ray by 0.5*(1 - s) px -- and would stop a centred
-// principal point mapping to the centre.
-void rescale_axis(float scale, float& focal, float& principal) {
+// principal point mapping to the centre. One path for the depth camera's
+// floats and the colour camera's doubles.
+template <typename T>
+void rescale_axis(T scale, T& focal, T& principal) {
   focal *= scale;
-  principal = (principal + 0.5f) * scale - 0.5f;
+  principal = (principal + T(0.5)) * scale - T(0.5);
 }
 
 }  // namespace
@@ -85,6 +87,28 @@ core::Result<DepthCameraParams> depth_from_registered_color(
   // point -- two independently-assigned poses are free to drift apart.
   depth.cam_to_world = color.cam_to_world;
   return depth;
+}
+
+core::Result<camera::CameraModel> color_from_registered_depth(
+    const camera::CameraModel& depth, std::uint32_t width,
+    std::uint32_t height) {
+  if (width == 0 || height == 0) {
+    return core::Status::invalid_argument(
+        "color_from_registered_depth: colour image size must be non-zero");
+  }
+  const core::Status usable = camera::check_camera_model(depth);
+  if (!usable.ok()) {
+    return core::Status::invalid_argument(
+        "color_from_registered_depth: depth camera: " + usable.message());
+  }
+  // The lens is kept: it acts on normalised coordinates, which the rescale
+  // leaves as they are.
+  camera::CameraModel color = depth;
+  color.size = {width, height};
+  camera::PinholeIntrinsics& k = color.intrinsics;
+  rescale_axis(static_cast<double>(width) / depth.size.width, k.fx, k.cx);
+  rescale_axis(static_cast<double>(height) / depth.size.height, k.fy, k.cy);
+  return color;
 }
 
 }  // namespace volumetric_kit::sensor

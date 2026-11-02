@@ -67,6 +67,16 @@ target_link_libraries(sensor_depth_lens_fold_test
 vs_target_warnings(sensor_depth_lens_fold_test)
 add_test(NAME sensor_depth_lens_fold COMMAND sensor_depth_lens_fold_test)
 
+# The index-coded test depth (testing/rgbd_pattern.hpp): the index read back,
+# the readings that are none, the planes as documented. The header is on the
+# standard library alone, so camera-only builds, which have no Vulkan, build and
+# run it too.
+add_executable(sensor_rgbd_pattern_test sensor_rgbd_pattern_test.cpp)
+target_include_directories(sensor_rgbd_pattern_test
+                           PRIVATE "${PROJECT_SOURCE_DIR}/include")
+vs_target_warnings(sensor_rgbd_pattern_test)
+add_test(NAME sensor_rgbd_pattern COMMAND sensor_rgbd_pattern_test)
+
 # A project that adds the package (subproject/) takes each dependency this build
 # fetched as a local source, so it needs no network.
 file(
@@ -285,6 +295,15 @@ target_link_libraries(sensor_conventions_test
                       PRIVATE volumetric_kit::sensor_interface)
 vs_target_warnings(sensor_conventions_test)
 add_test(NAME sensor_conventions COMMAND sensor_conventions_test)
+
+# The frame contract's checker (testing/rgbd_contract.hpp) on fake frames: each
+# rule broken once and named, a clean script empty, the first breach kept. Host-
+# only.
+add_executable(sensor_rgbd_contract_test sensor_rgbd_contract_test.cpp)
+target_link_libraries(sensor_rgbd_contract_test
+                      PRIVATE volumetric_kit::sensor_interface)
+vs_target_warnings(sensor_rgbd_contract_test)
+add_test(NAME sensor_rgbd_contract COMMAND sensor_rgbd_contract_test)
 
 # The sensor array's trigger grouper, driven by synthetic streams -- drops, a
 # silent sensor, a slow poll, a clock off by more than the tolerance, a late
@@ -703,6 +722,24 @@ if(VS_WITH_REALSENSE)
                         PRIVATE volumetric_kit::sensor_realsense)
   vs_target_warnings(sensor_realsense_open_test)
   add_test(NAME sensor_realsense_open COMMAND sensor_realsense_open_test)
+
+  # The frame contract (testing/rgbd_contract.hpp) under injected faults:
+  # RealSenseSensor's own conversion, poll, drain and counters, compiled here
+  # with a camera stub (realsense_camera_stub.cpp, librealsense's software
+  # device) in place of camera.cpp, as the Orbbec stub tests do.
+  add_executable(
+    sensor_realsense_contract_test
+    sensor_realsense_contract_test.cpp realsense_camera_stub.cpp
+    ${_vs_realsense_src}/realsense_sensor.cpp
+    ${_vs_realsense_src}/conversion.cpp)
+  target_link_libraries(sensor_realsense_contract_test
+                        PRIVATE volumetric_kit::sensor_realsense)
+  vs_link_realsense_sdk(sensor_realsense_contract_test)
+  target_include_directories(sensor_realsense_contract_test
+                             PRIVATE ${_vs_realsense_src})
+  vs_target_warnings(sensor_realsense_contract_test)
+  add_test(NAME sensor_realsense_contract
+           COMMAND sensor_realsense_contract_test)
 endif()
 
 # The Orbbec SDK prerequisite (VS_WITH_ORBBEC only): the copy the build found is
@@ -798,6 +835,21 @@ if(VS_WITH_ORBBEC)
   vs_target_warnings(sensor_orbbec_open_sensors_test)
   add_test(NAME sensor_orbbec_open_sensors
            COMMAND sensor_orbbec_open_sensors_test)
+
+  # The frame contract (testing/rgbd_contract.hpp) under injected faults:
+  # OrbbecSensor's own poll, drain and counters on the camera stub, whose take,
+  # read and counters play a script of pairs.
+  add_executable(
+    sensor_orbbec_contract_test
+    sensor_orbbec_contract_test.cpp orbbec_camera_stub.cpp
+    ${_vs_orbbec_src}/orbbec_sensor.cpp ${_vs_orbbec_src}/frame_conversion.cpp)
+  target_link_libraries(sensor_orbbec_contract_test
+                        PRIVATE volumetric_kit::sensor_orbbec)
+  vs_link_orbbec_sdk(sensor_orbbec_contract_test)
+  target_include_directories(sensor_orbbec_contract_test
+                             PRIVATE ${_vs_orbbec_src})
+  vs_target_warnings(sensor_orbbec_contract_test)
+  add_test(NAME sensor_orbbec_contract COMMAND sensor_orbbec_contract_test)
 
   # The driver's H.265 colour decoder, with no camera: the committed patch clip
   # wrapped in SDK frames. Internal and unexported, so the test compiles its

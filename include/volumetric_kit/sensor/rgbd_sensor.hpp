@@ -121,6 +121,21 @@ struct SensorStats {
 
 /// @brief One RGB-D sensor, polled for the frames it captures.
 ///
+/// **The frame contract**, which every driver keeps and
+/// `testing::rgbd_breach` (testing/rgbd_contract.hpp) checks on what one
+/// handed out:
+/// 1. **Same capture.** A frame's colour is the picture of the capture its
+///    depth is from, never another frame's.
+/// 2. **Whole frames.** A sensor whose @ref SensorInfo names a colour camera
+///    hands out a frame only with its own picture. A frame whose picture is
+///    lost or fails to decode is dropped and counted in
+///    `SensorStats::failed`.
+/// 3. **Loss.** A gap in `RgbdFrame::sequence` is a frame lost after the
+///    sensor numbered it. Frames a rate gate never chose leave no gap.
+///
+/// Within one start, sequences and timestamps increase, and the counters
+/// keep @ref SensorStats' rule.
+///
 /// **Polled, not called back**, as the rest of the capture code is: a sensor
 /// that delivers on a thread of its own holds what arrives, and @ref poll or
 /// @ref drain hands it over on the caller's thread. It holds up to
