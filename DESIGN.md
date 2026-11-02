@@ -275,8 +275,10 @@ the prepared one. The producers, each its own value:
   model's, so whoever opens a camera states it.
 
 No per-pixel sigma, no `SensorInfo` field and no calibration-file key: no
-producer has a per-pixel confidence, recon's libraries cannot read
-`SensorInfo`, and no unit has been measured to differ from its model.
+producer has a per-pixel confidence that sets a noise (a phone's confidence
+plane only gates samples, `RgbdFrame::min_confidence`), recon's libraries
+cannot read `SensorInfo`, and no unit has been measured to differ from its
+model.
 `device_requirements()` names what the package's kernels and decoders need
 (`scalarBlockLayout`; `VK_KHR_external_memory_fd` and `VK_EXT_metal_objects`
 where offered); an application opening one device for recon and this package
@@ -694,9 +696,25 @@ without colour keeps all its depth. `depth_offset_m`
 (0 by default) is subtracted from every raw return in the depth pass, before
 the mix and that test: for `z > 0`, `z = max(z - offset, 0)`, so 0 stays no
 return whatever the sign; a `SensorArray` sets it per sensor from the
-calibration. With `depth_outliers` on, the depth pass writes a buffer of the
-pass's own (`sensor.undistorted_depth`, grown as larger frames ask), and a
-third pass (`remove_depth_outliers.comp`, the internal
+calibration. Host depth may carry a confidence plane
+(`RgbdFrame::depth_confidence`, a byte a sample in the producer's levels,
+ARKit's 0 low, 1 medium, 2 high) and, with it, a floor of 1 or more that
+the producer sets (`min_confidence`; the 2026-11-02 confidence plane
+decision). The plane is copied into the slot at the word after the depth,
+inside the depth's binding, which grows to cover it
+(`DepthParams::confidence_first`, the plane's first byte there); host
+colour goes after both. The depth pass reads a raw pixel's level first, in
+`metres_at`, and a level below the floor is no return, before the offset,
+so the mix skips it, the colour-view test never sees it and the outlier
+filter counts it as none: exactly as if the sensor had returned 0 there.
+Level 0 is what a producer writes on the samples it invalidates, such as
+those it masks as a moving person, and every floor drops it. No plane
+leaves the slot, the binding and the copy as before and the branch
+untaken, so the output is bit-identical; a plane beside device depth or at
+a floor of 0, and a floor without one, are refused. With `depth_outliers`
+on, the depth pass writes a buffer of the pass's own
+(`sensor.undistorted_depth`, grown as larger frames ask), and a third pass
+(`remove_depth_outliers.comp`, the internal
 `detail::DepthOutlierPass`) filters it into the output: a thread per pixel
 scans the box that holds the image of the return's ball, in square rings from
 the centre, until the count is reached or can no longer be; its arithmetic is
