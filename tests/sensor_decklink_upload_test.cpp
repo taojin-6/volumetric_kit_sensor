@@ -17,8 +17,9 @@
 //     on what it handed out; a mode change fails poll, named; start fails
 //     after lock_timeout naming the silent input or the cameras' offset, and
 //     for a camera at another mode; a restart;
-//   - with no calibration: raw pairs handed out, and the rectifier refusing
-//     the info, named.
+//   - with no calibration: raw pairs handed out, the info both cameras 0 x 0
+//     and the pair the contract's, and the rectifier refusing the info,
+//     named.
 
 #include <array>
 #include <atomic>
@@ -364,7 +365,8 @@ int test_driver(vkc::test::Gpu& gpu) {
       static_cast<unsigned long long>(stats.delivered),
       static_cast<unsigned long long>(stats.dropped),
       static_cast<unsigned long long>(stats.failed));
-  const std::string breach = stereo_contract::breach(info, handed, stats);
+  const std::string breach = stereo_contract::breach(
+      info, stereo_contract::Opened::Calibrated, handed, stats);
   if (!breach.empty()) std::fprintf(stderr, "  %s\n", breach.c_str());
   CHECK(breach.empty());
   CHECK(stats.received == 65 && stats.failed == 0);
@@ -459,13 +461,14 @@ int test_no_calibration(vkc::test::Gpu& gpu) {
   CHECK(made.ok());
   dl::Driver& driver = **made;
   const sensor::StereoInfo& info = driver.info();
-  CHECK(info.calibration.left.size.width == 0 &&
-        info.calibration.left.size.height == 0);
-  CHECK(info.calibration.right.size.width == 0 &&
-        info.calibration.right.size.height == 0);
   CHECK(driver.start().ok());
   std::optional<sensor::StereoFrame> f = poll_until(driver);
   CHECK(f.has_value());
+  // Both cameras exactly 0 x 0, and the pair the contract's.
+  const std::string breach = stereo_contract::breach(
+      info, stereo_contract::Opened::Uncalibrated, {*f}, driver.stats());
+  if (!breach.empty()) std::fprintf(stderr, "  %s\n", breach.c_str());
+  CHECK(breach.empty());
   CHECK(f->left.layout == sensor::YuvLayout::V210 && f->left.device);
   CHECK(f->right.layout == sensor::YuvLayout::V210 && f->right.device);
   CHECK(f->skew_ns == -8'200'000);

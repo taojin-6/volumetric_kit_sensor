@@ -33,12 +33,12 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 
 | Target | Headers | What | Links |
 | --- | --- | --- | --- |
-| `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file; no Vulkan | core base, GLM |
+| `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file; a stereo pair (`stereo_calibration`), its rectification (`rectify_stereo`) and a lens's fold (`fold_radius2`) on the host; no Vulkan | core base, GLM |
 | `sensor_frame` | `frame/` | `DeviceFrame`, the pinhole cameras, `DepthNoise`, `ColorEncoding` and the sRGB curve, `pinhole.glsl`, `device_requirements()`; header-only | core Vulkan |
 | `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions; `IAudioSensor`, `AudioChunk` | camera, frame |
 | `sensor_prep` | `prep/` | `GpuFramePrep`, `PictureReadback` | interface |
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
-| `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `stereo_calibration` (a pair from two calibration entries), `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
+| `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
 | `sensor_video_syntax` | `video/` | H.265 syntax read on the host, every build | core base |
 | `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, CUDA interop | frame |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, every Apple build | frame |
@@ -204,8 +204,18 @@ no option and no SDK. A stereo camera's driver implements `IStereoSensor`
 (`stereo/stereo_rectifier.hpp`) undistorts and rectifies its pairs on the
 GPU into a row-aligned pinhole pair, `Luma8` or `Rgba8`, at the size a
 matcher takes. Two cameras with an entry each in a calibration file make
-a pair through `stereo_calibration(file, left_id, right_id)`
-(`stereo/stereo_calibration.hpp`), a driver's `StereoInfo::calibration`.
+a pair through `stereo_calibration(file, left_id, right_id)`, a driver's
+`StereoInfo::calibration`. That function, the rectification the rectifier
+computes (`rectify_stereo`) and a lens's fold (`fold_radius2`) are the
+camera tier's (`camera/stereo_rectification.hpp`), so a tool that checks a
+pair's rows or a lens without a GPU links `sensor_camera` alone:
+
+```cpp
+VKC_ASSIGN(const sensor::StereoCalibration pair,
+           sensor::stereo_calibration(file, "bm-1", "bm-2"));
+VKC_ASSIGN(const sensor::StereoRectification rect,
+           sensor::rectify_stereo(pair, {960, 544}, 0.0));  // R1, R2, the rig
+```
 
 ```cpp
 VKC_ASSIGN(auto rectifier,
@@ -337,7 +347,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.18.0), carried by the umbrella as
+The version is `project()`'s (0.20.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

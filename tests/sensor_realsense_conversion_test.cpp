@@ -10,7 +10,8 @@
 //     lens models with coefficients are refused, named; bad intrinsics too;
 //   - the extrinsic moves points as rs2_transform_point_to_point does, and a
 //     non-rigid one is refused;
-//   - the infrared cameras' StereoInfo: a point projects where rsutil.h puts
+//   - the infrared cameras' StereoInfo: calibrated, as the stereo contract
+//     has it (stereo_contract.hpp); a point projects where rsutil.h puts
 //     it in the left, right and colour cameras, on one row in both infrared
 //     ones, fx * baseline / z apart; a lens on either infrared camera and a
 //     non-rigid extrinsic are refused, each named;
@@ -42,6 +43,7 @@
 #include <librealsense2/rsutil.h>
 
 #include "conversion.hpp"
+#include "stereo_contract.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/sensor/camera/projection.hpp"
 
@@ -258,6 +260,10 @@ int test_stereo_info() {
   auto made = realsense::stereo_info(ir, ir, l2r, color, l2c, 30, kWho);
   CHECK(made.ok());
   const sensor::StereoInfo& info = made.value();
+  // The factory calibration: the contract's, a source opened calibrated.
+  CHECK(stereo_contract::calibration_breach(info,
+                                            stereo_contract::Opened::Calibrated)
+            .empty());
   const sensor::StereoCalibration& cal = info.calibration;
   for (const camera::CameraModel* c : {&cal.left, &cal.right}) {
     CHECK(c->size.width == 1280 && c->size.height == 720);

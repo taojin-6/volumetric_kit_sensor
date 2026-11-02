@@ -4,10 +4,42 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.20.0] - 2026-11-01
+
+### Added
+
+- **A stereo pair's rectification and a lens's fold, on the host**
+  (`camera/stereo_rectification.hpp`, `volumetric_kit::sensor_camera`, so
+  camera-only builds have them):
+  - `rectify_stereo(pair, size, alpha)`: Bouguet's rectification, as
+    `StereoRectifier::create` computes it, now public. It returns a
+    `StereoRectification`: the `StereoRig` (`R1` is its
+    `rectified_to_left`'s rotation, transposed) and `right_to_rectified`,
+    OpenCV's `R2`. `InvalidArgument` for a bad camera, cameras of different
+    sizes, a `left_to_right` that is not rigid, an alpha or size out of
+    range, a coincident, vertical or swapped pair, or a degenerate result.
+  - `fold_radius2(distortion)`: where a lens's radial model folds, the
+    squared radius the rectifier cuts its views at, now public.
+  DECISIONS.md, the 2026-11-01 host rectification entry.
 
 ### Changed
 
+- `StereoCalibration` (was `stereo/stereo_sensor.hpp`'s), `StereoRig` (was
+  `stereo/stereo_rectifier.hpp`'s) and `stereo_calibration` (was
+  `sensor_stereo`'s) move to `camera/stereo_rectification.hpp` and
+  `sensor_camera`, names and namespace unchanged. The stereo headers
+  include it, and `stereo/stereo_calibration.hpp` forwards to it, so every
+  include compiles as before; `sensor_stereo` links `sensor_camera`, so no
+  consumer's link changes.
+- `StereoRectifier::create` calls `rectify_stereo` and `fold_radius2`: its
+  rigs and views are bit-identical. Its refusals of the pair's sizes,
+  `left_to_right`, alpha and the size now read
+  `StereoRectifier: rectify_stereo: ...`, with the same codes.
+- `StereoInfo::calibration` states the rule for every source: both cameras
+  0 x 0 is a source opened without a calibration, which `StereoRectifier`
+  and `StereoDepthSensor` refuse, and a source opened with one reports
+  neither camera 0 x 0. `tests/stereo_contract.hpp` checks it on every
+  driver's unit (`Opened`, `calibration_breach`).
 - CI: the 24.04 leg builds the DeckLink driver's SDK part
   (`VS_WITH_DECKLINK`) against the SDK's headers the core keeps, checked out
   at the core pin and held to their SHA256s, and runs its SDK smoke test.

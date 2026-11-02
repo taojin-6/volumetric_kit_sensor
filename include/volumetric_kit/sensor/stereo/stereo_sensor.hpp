@@ -25,6 +25,7 @@
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/camera/color_controls.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/camera/stereo_rectification.hpp"
 #include "volumetric_kit/sensor/frame/color_space.hpp"
 #include "volumetric_kit/sensor/rgbd_sensor.hpp"
 #include "volumetric_kit/sensor/stereo/export.hpp"
@@ -32,29 +33,17 @@
 
 namespace volumetric_kit::sensor {
 
-/// @brief Two calibrated cameras: each with its own lens, and where the right
-///        one is.
-///
-/// "Left" and "right" are the matcher's: the right camera sits along the left
-/// one's +x, give or take the small rotations and offsets rectification
-/// removes.
-struct StereoCalibration {
-  camera::CameraModel left;   ///< The left camera, lens included.
-  camera::CameraModel right;  ///< The right camera, lens included.
-  /// A left-camera point in the right camera (OpenCV's `R`, `T`), metres.
-  camera::Mat4d left_to_right = camera::Mat4d(1.0);
-};
-
 /// @brief What a stereo source delivers, known when it opens: before a frame.
 ///
 /// Besides the cameras, what the source is, as `SensorInfo` has it: a depth
 /// source built on it reports these as its own (`StereoRectifier::depth_info`
 /// copies them), so a sensor array can name, check and group it.
 struct StereoInfo {
-  /// The pair; none -- both cameras 0 x 0, as a default
-  /// @ref StereoCalibration -- from a source opened before its cameras are
-  /// calibrated, whose pictures a calibration is made from.
-  /// `StereoRectifier` refuses such a source.
+  /// The pair (@ref StereoCalibration, the camera tier's). Both cameras
+  /// 0 x 0, as a default @ref StereoCalibration, is a source opened without
+  /// a calibration, whose pictures a calibration is made from:
+  /// `StereoRectifier` and `StereoDepthSensor` refuse it. A source opened
+  /// with one reports neither camera 0 x 0. No other field says which.
   StereoCalibration calibration;
   /// A third, colour camera (a RealSense's); empty when `left` is the colour.
   std::optional<camera::CameraModel> color;

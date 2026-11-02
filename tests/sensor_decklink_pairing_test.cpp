@@ -247,8 +247,8 @@ int test_pairing() {
     stats.received = pairing.received();
     stats.failed = pairing.failed();
     stats.delivered = taken.pairs.size();
-    const std::string breach =
-        stereo_contract::breach(info, taken.frames(), stats);
+    const std::string breach = stereo_contract::breach(
+        info, stereo_contract::Opened::Uncalibrated, taken.frames(), stats);
     if (!breach.empty()) std::fprintf(stderr, "  %s\n", breach.c_str());
     CHECK(breach.empty());
     CHECK(stats.delivered + stats.failed == stats.received);

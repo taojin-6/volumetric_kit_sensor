@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-#include "volumetric_kit/sensor/stereo/stereo_calibration.hpp"
+// stereo_calibration, declared in camera/stereo_rectification.hpp.
+#include "volumetric_kit/sensor/camera/stereo_rectification.hpp"
 
 #include <new>
 #include <string>

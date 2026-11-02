@@ -305,7 +305,10 @@ entries relevant to your task; later amendments supersede earlier rules.
   taken back with no transfer; a pair rectified already keeps square pixels.
   *Again (the RealSense stereo entry):* `StereoInfo` carries the source's
   id, model, clock, rate and colour exposure, which `depth_info()` copies;
-  `IStereoSensor` gains `set_frame_notify`.
+  `IStereoSensor` gains `set_frame_notify`. *Amended 2026-11-01 (the host
+  rectification entry):* the rectification and the fold are the camera
+  tier's, public (`rectify_stereo`, `fold_radius2`), and the rectifier
+  calls them; `StereoCalibration` and `StereoRig` live there too.
 
 - [**2026-10-29**](#2026-10-29--the-realsense-d400-driver-is-sensor_realsense-the-cameras-own-depth-and-its-colour-cameras-yuyv-on-the-host-librealsense-a-prerequisite-ci-installs-tested-against-rsutilh-with-no-camera) —
   The RealSense D400 driver is `sensor_realsense` (`RealSenseSensor`): the
@@ -397,7 +400,10 @@ entries relevant to your task; later amendments supersede earlier rules.
   lets go once read. `stereo_calibration` makes a pair from two entries of
   a calibration file, keyed by camera name. A RealSense frameset is one
   moment when every two of its pictures lie within half a frame, to the
-  nanosecond (amends the 2026-10-29 RealSense stereo entry).
+  nanosecond (amends the 2026-10-29 RealSense stereo entry). *Amended the
+  same day (the host rectification entry):* `stereo_calibration` is the
+  camera tier's, and the contract helper checks a source's calibration
+  too.
 
 - [**2026-11-01**](#2026-11-01--the-stereo-rectifier-averages-each-pixel-over-its-own-footprint-where-it-shrinks-a-picture-and-ffs-drops-depth-inside-the-networks-reach-amends-the-2026-10-29-stereo-and-ffs-entries) —
   Where the rectifier shrinks a picture, a view pixel whose footprint in it
@@ -412,7 +418,18 @@ entries relevant to your task; later amendments supersede earlier rules.
   pages the GPU imports and copied once into device buffers; free-running
   cameras paired by the card's frame times within half a frame, each pair's
   skew stated; the cameras' settings their own. Without a calibration it
-  hands out raw pairs, and the rectifier refuses it.
+  hands out raw pairs, and the rectifier refuses it. *Amended the same day
+  (the host rectification entry):* "no calibration", both cameras 0 x 0, is
+  `StereoInfo`'s rule for every source, checked for every driver.
+- [**2026-11-01**](#2026-11-01--a-stereo-pairs-rectification-and-a-lenss-fold-are-the-camera-tiers-on-the-host-rectify_stereo-and-fold_radius2-public-and-the-rectifiers-own-stereo_calibration-moves-there-too-and-both-cameras-0-x-0-is-every-sources-no-calibration-amends-the-2026-10-29-stereo-and-the-2026-11-01-stereo-sync-and-decklink-entries) —
+  A stereo pair's rectification and a lens's fold are the camera tier's,
+  on the host: `rectify_stereo` (Bouguet's, returning the rig and OpenCV's
+  `R2`) and `fold_radius2`, public, the ones `StereoRectifier` uses, with
+  `StereoCalibration`, `StereoRig` and `stereo_calibration` beside them,
+  names and namespace unchanged, so a tool links `sensor_camera` alone and
+  checks a pair or a lens the way the runtime sees it. `StereoInfo`'s
+  calibration both cameras 0 x 0 is a source opened without one, for every
+  source, and the contract helper checks it for every driver; no flag.
 
 ## Decision record
 
@@ -4393,6 +4410,10 @@ not checked for a matrix or a siting.
 `StereoInfo` carries what the source is as `SensorInfo` has it (id, model,
 clock, rate, colour exposure) and `depth_info()` copies it;
 `IStereoSensor` gains `set_frame_notify`.
+*Amended 2026-11-01 (the host rectification entry, below):* the
+rectification `create` computes is the camera tier's public
+`rectify_stereo`, and the fold its pass cuts at the camera tier's
+`fold_radius2`; `StereoCalibration` and `StereoRig` are declared there.
 
 **The rule.** A tier of its own, `sensor_stereo`, on the interface, linking
 `prep` privately; no SDK, every platform. `IStereoSensor` is what a stereo
@@ -5543,6 +5564,11 @@ names no `YuvImage`. No camera was opened.
 
 ### 2026-11-01 — A stereo frame states its skew and its source's bound, the right picture is let go once rectified, and a pair comes from two calibration entries.
 
+*Amended the same day (the host rectification entry, below):*
+`stereo_calibration` is the camera tier's (`camera/stereo_rectification.hpp`;
+`stereo/stereo_calibration.hpp` includes it), and the contract helper
+checks a source's calibration as it was opened, besides the sync rules.
+
 **The rule.**
 - `StereoFrame::skew_ns` is the right picture's capture time less the
   left's (`timestamp_ns`), on the source's clock, 0 for one exposure.
@@ -5688,6 +5714,11 @@ device buffers), the four neighbours' lens. No camera was opened.
 
 ### 2026-11-01 — A DeckLink stereo camera: two SDI inputs as one `IStereoSensor`, their 10-bit pictures written by the card into pages the GPU imports and copied once on the device; free-running cameras paired by the card's frame times, each pair's skew stated; the calibration optional.
 
+*Amended the same day (the host rectification entry, below):* a source
+with no calibration reporting both cameras 0 x 0 is `StereoInfo`'s rule
+for every source, not this driver's alone, and the contract helper checks
+it on this driver opened both ways.
+
 **The rule.** `DecklinkStereo` (`sensor_decklink`, `VS_WITH_DECKLINK`)
 captures two connectors of a DeckLink 8K Pro under the profile "four
 sub-devices half-duplex" at 2160p 24, 25 or 30, as v210 only. The card's
@@ -5777,3 +5808,81 @@ Desktop Video 16.5), RealSense, FFmpeg, CUDA and FFS on, under the
 validation layer: the whole suite passes on the lab's RTX 5090, 51 tests,
 and the upload test on lavapipe too. No camera was opened: the cameras are
 checked by hand.
+
+### 2026-11-01 — A stereo pair's rectification and a lens's fold are the camera tier's, on the host: `rectify_stereo` and `fold_radius2`, public and the rectifier's own; `stereo_calibration` moves there too; and both cameras 0 x 0 is every source's "no calibration" (amends the 2026-10-29 stereo and the 2026-11-01 stereo-sync and DeckLink entries).
+
+**The rule.**
+- `camera/stereo_rectification.hpp` (`sensor_camera`, no Vulkan) holds
+  `StereoCalibration`, `StereoRig` and `stereo_calibration(file, left,
+  right)`, moved from the stereo tier, names and namespace (`sensor`)
+  unchanged. `stereo/stereo_sensor.hpp` and `stereo/stereo_rectifier.hpp`
+  include it and `stereo/stereo_calibration.hpp` forwards to it, so every
+  include compiles as before.
+- `rectify_stereo(pair, size, alpha)` is the rectifier's Bouguet, public. It
+  returns a `StereoRectification`: the `StereoRig` (`R1` is
+  `rectified_to_left`'s rotation, transposed) and `right_to_rectified`,
+  OpenCV's `R2`. It checks its own inputs (each camera, one size, a rigid
+  `left_to_right`, alpha, the size) and refuses a coincident, vertical or
+  swapped pair, `InvalidArgument`, the reason named.
+  `StereoRectifier::create` calls it, keeps only its own checks (a
+  calibration at all, float's range, the colour camera) and passes a
+  refusal up under its name.
+- `fold_radius2(distortion)` is the rectifier's fold, public: the
+  undistorted radius, squared, where the radial model turns back or meets
+  its pole; float's largest for a lens that does not fold within 89.99
+  degrees of the axis.
+- `StereoInfo::calibration` with both cameras 0 x 0 is a source opened
+  without a calibration, for every source; a source opened with one
+  reports neither camera 0 x 0. `StereoRectifier` and `StereoDepthSensor`
+  refuse the first. `tests/stereo_contract.hpp` checks it, every driver's
+  test saying how it opened its source (`Opened`): DeckLink both ways,
+  RealSense's factory calibration, the test cameras.
+
+**Why.**
+- calib's solver links `sensor_camera` alone, with no Vulkan, and judges a
+  pair's rectified row error and a lens's fold. Both must be what the
+  runtime does: one home for Bouguet and for the fold, not a copy in calib.
+  The owner approved the move (2026-11-01).
+- Only `R2` is added: `R1` is the rig's already, and a second copy of it
+  could disagree.
+- A public function checks what it is given, so the pair's checks move
+  with it; the rectifier keeps those only it needs.
+- "Not calibrated" needs no flag. A consumer takes picture sizes from the
+  pictures, and a flag could disagree with the cameras. It is the generic
+  `StereoInfo`'s rule, not DeckLink's, so every driver keeps it (the
+  owner's rule: guarantees in the sensor contract, for every driver).
+- `stereo_calibration` needs only camera geometry, so it moves with the
+  pair it makes.
+
+**Tests.** `sensor_camera_stereo_rectification` (new; host only, so the
+camera-only build runs it): `stereo_calibration`'s tests, moved from
+`sensor_stereo_sensor`; 6318 synthetic correspondences (one point's rays
+in both cameras) over three pairs -- toed in, the Blackmagic pair's
+provisional calibration, converging barrel lenses -- at 960x544 and their
+own size, alpha 0, 0.5 and 1, on one row within 2.7e-12 px and
+`fx * baseline / z` apart within 2.2e-12 px; `R2 * R` within 2.2e-16 of
+`R1` and `R2 * T` on -x within 1e-15 m, `R1` and `R2` at least 0.016
+apart; a pair rectified already resampled, both rotations the identity,
+scaled by 0.75 or 0.68 about the centres; the file's pair's baseline the
+cameras' distance; refused, named: coincident, vertical, swapped (the
+file's pair reversed, and a pinhole pair that would be rectified already),
+and each bad input. The fold: k1 alone from -0.3 to -0.01 at
+`r^2 = -1/(3 k1)` within 1e-6 of it; k4 = -0.2 alone at its pole,
+`r^2 = 5`; a pinhole and the provisional calibration's lens never (float's
+largest); a 2024 fit of a Blackmagic lens (bm-2) at 74.83 degrees.
+`sensor_stereo_sensor`: the contract's calibration rule kept and each
+breach named, and the rectifier's rig `rectify_stereo`'s bit for bit.
+`sensor_decklink_upload`: the contract on the driver opened with and
+without a calibration. `sensor_realsense_conversion`: the infrared pair's
+info calibrated. `sensor_stereo_rectifier` is unchanged. Each of these
+mutants failed a test: `R2` returned as `R1` (rows 44 px apart; the
+rectifier's view test too), the fold's pole case dropped (k4's pole read as
+no fold), and the already-rectified branch skipped (fx 480.918 against
+480.375; the rectifier's own test too).
+
+**Validation.** Release with warnings as errors on the M5 Max (MoltenVK),
+under the validation layer: the default build's suite, 45 tests, and the
+camera-only build's, 7 tests (its consumer including the new header). By
+hand, the rectifier built from main and from this change gave the same
+rigs, to the bit, and the same view bytes (FNV-1a) for nine pairs, both
+outputs.
