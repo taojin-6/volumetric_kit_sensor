@@ -98,12 +98,10 @@ endif()
 
 target_compile_features(sensor_video PUBLIC cxx_std_17)
 
-# PRIVATE: the colour codes (frame_color.hpp) and, on Apple, the H.265 syntax
-# are read inside; no public header of the decoders includes them.
-target_link_libraries(
-  sensor_video
-  PUBLIC sensor_frame
-  PRIVATE sensor_video_syntax)
+# PUBLIC: video/frame_color.hpp resolves the H.273 codes a stream declares
+# (ColorCodes), which sensor_video_syntax reads off its SPS (hevc::Sps::color);
+# on Apple the decoder reads its streams with that syntax too.
+target_link_libraries(sensor_video PUBLIC sensor_frame sensor_video_syntax)
 if(APPLE)
   # VideoToolbox decodes on the hardware directly (vt_hevc.cpp, vt_jpeg.cpp,
   # their sessions in videotoolbox.cpp), and its pictures reach Vulkan through

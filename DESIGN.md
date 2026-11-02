@@ -394,6 +394,13 @@ coded corner, which it fills from the corner instead -- is refused,
 `Unsupported`, from then on, after the pictures decoded before it. On
 Apple each SPS is read whole, to its trailing bits, before it can refuse
 the stream: a malformed one is `IoError` and cannot latch a refusal.
+Both paths describe a picture from the H.273 codes its stream declares
+through **`video/frame_color.hpp`**, public, the one home of what the codes
+mean: `resolve_matrix` (a matrix `VideoColorMatrix` cannot name taken by
+the height, as players do), `resolve_encoding` (empty for an encoding
+`ColorEncoding` cannot name) and `resolve_chroma_location` (left for a code
+H.273 does not name), so capture code that holds codes, an SPS's or a
+pixel buffer's tags, reads them as the decoders do.
 VideoToolbox's decoder sessions for both decoders open in one place
 (`videotoolbox.cpp`): NV12 on Metal-compatible IOSurfaces, on the hardware
 decoder or not at all.
@@ -471,7 +478,10 @@ Metal texture imported as an image (`VK_EXT_metal_objects`), with a view and
 `SAMPLED` and `TRANSFER_SRC` usage, so `GpuFramePrep` samples it and
 `PictureReadback` copies it, made once per
 surface and kept while pictures keep arriving on it, the images holding the
-pixel buffer. The images are EXCLUSIVE unless `create` is given the queue
+pixel buffer. The Metal device the textures are made on is read once, in
+`create`, off a 1x1 probe image's exported texture (internal
+`metal_device.mm`, which the importer's test reads Metal's allocations
+through too). The images are EXCLUSIVE unless `create` is given the queue
 families that read them, by `BufferDesc::queue_families`' rule with the
 device's own family among them: two or more distinct make them CONCURRENT, so
 a renderer on another family (gfx's, on MoltenVK) reads them in place. The
@@ -1061,6 +1071,22 @@ Errors name the file and backend reason. Public functions validate their input
 and translate backend exceptions that reach them into `Status`/`Result`;
 private third-party types never appear in public headers. The backend is the
 pinned stb source, a private implementation dependency of `sensor_image_io`.
+
+### test support
+
+`include/volumetric_kit/sensor/testing/` is the package's test support,
+for its own tests and a consumer's, header-only and with no test framework
+(the 2026-11-02 colour codes and test support entry). `hevc_clip.hpp`
+splits a clip at its access unit delimiters and reads
+`VS_TEST_HEVC_BACKEND`, which makes a decoder test fail rather than skip. `nv12_picture.hpp` holds `HostNv12`, the family's
+test pattern and `device_picture`. The pattern's index band, luma rows 0
+to 15 and columns 0 to 255, is 16 squares of 16 x 16: a 255 and a 0
+reference, then bits 0 to 13 of the index, each square 255 or 0, so a
+reader recovers the index from square means after lossy coding; elsewhere
+the planes are smooth triangle waves that move with the index.
+`device_picture` writes a picture into R8 and R8G8 plane images in
+`GENERAL` through the core's `write_image`, padded past the planes where a
+test asks, as VideoToolbox's images can be.
 
 ## Next work
 

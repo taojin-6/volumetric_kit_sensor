@@ -447,6 +447,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   `sensor_video_syntax`, on every platform. They are the Orbbec colour
   decoder's gate and key scan (`hevc_color.hpp`), moved with their
   behaviour unchanged.
+- [**2026-11-02**](#2026-11-02--what-h273-colour-codes-mean-is-public-and-the-familys-nv12-test-picture-and-clip-helpers-are-the-packages-test-support-amends-the-2026-10-25-public-syntax-entry) —
+  What H.273 colour codes mean is public (`video/frame_color.hpp`), so
+  code that holds codes resolves them as the decoders do. The family's NV12
+  test picture and clip helpers are header-only test support under
+  `testing/`; the test pattern's index band is read by square means after
+  lossy coding. The Metal device under a Vulkan device is found in one
+  place.
 
 ## Decision record
 
@@ -6074,3 +6081,55 @@ unnumbered unit not resetting the last number, the driver's index 0 taken
 as a number, and the scan resuming past a unit's second header byte. Run
 once by hand, the deleted scan and `first_slice_type` with `is_irap` agreed
 on 2,000,000 random byte strings. No camera was opened.
+
+### 2026-11-02 — What H.273 colour codes mean is public, and the family's NV12 test picture and clip helpers are the package's test support (amends the 2026-10-25 public-syntax entry).
+
+**The rule.** `video/frame_color.hpp` (`sensor_video`) is public:
+`resolve_matrix`, `resolve_encoding` and `resolve_chroma_location` turn a
+`ColorCodes` into a `VideoColorMatrix`, a `ColorEncoding` and a
+`ChromaLocation`, the one home of that mapping. The decoders' internal
+`describe_color` is made of the three. `sensor_video` links
+`sensor_video_syntax` PUBLIC, since the codes it resolves are the ones the
+syntax reader returns (`hevc::Sps::color`). Test support for this package
+and its consumers lives in `include/volumetric_kit/sensor/testing/`,
+header-only, with no test framework: `hevc_clip.hpp` (a clip's access
+units at its delimiters, and `hevc_decoder_promised()`) and
+`nv12_picture.hpp` (`HostNv12`, `test_pattern`, `device_picture`). The
+Metal device under a Vulkan device is read in one place, `sensor_apple`'s
+internal `metal_device.mm`.
+
+**Why.**
+- **One mapping.** Capture code that holds codes, a camera's pixel-buffer
+  tags on iOS or a stream's SPS on a receiver, would otherwise keep a copy
+  of the decoders' table, which drifts. Public, it is the table they use.
+- **One test picture, one clip split.** The package's tests each made NV12
+  plane images and split clips in a local helper, and so did consumers'
+  tests. One header each serves them all; a consumer reaches them through
+  the include directory every sensor target carries.
+- **A pattern a coded stream keeps.** Tests that code and decode the
+  picture, or carry it across a link, need to know which picture arrived.
+  The index band is squares of whole 16 x 16 coding blocks, each 255 or 0,
+  beside a 255 and a 0 reference: a square's mean away from its edges lands
+  on the right side of the references' midpoint after lossy coding and
+  after a change of range. Fourteen bits fit the band in 256 columns, the
+  fixtures' width. Elsewhere the planes are smooth and move with the
+  index, so a predicted picture codes well.
+- **Every leg.** The frame colour test still compiles `frame_color.cpp`
+  itself, with the export header generated for its own object library, so
+  the legs without the decoders run it as before.
+
+**Not here.** Writing a picture into an encoder's target in a batch waits
+for that target: `CommandBatch` uploads buffers only, and images through
+the core's `write_image`, which submits on its own.
+`hevc_encoder_promised()` lands with the encoder it promises.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer, `VS_TEST_HEVC_BACKEND=videotoolbox` and the
+Orbbec driver, on top of the key gate entry above: the whole suite passes,
+56 tests. The new clip (`centred_full_256x144.h265`) decodes on
+VideoToolbox to libavcodec's MD5, full range, BT.709 and centred, and is
+among the clips `first_slice_type` is checked on. Planted bugs, each failing its test: code
+1 resolved to `TopLeft` (`sensor_video_frame_color` and
+`sensor_video_hevc`), the band's bits read one square off, the padding
+written as 0 rather than 0xEE, and a four-byte start code split as three
+(`sensor_testing_support`).

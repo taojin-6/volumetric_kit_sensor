@@ -8,7 +8,6 @@
 // skips or fails, and a device the decoders refuse.
 
 #include <cstdio>
-#include <cstdlib>
 #include <string>
 
 #include "volumetric_kit/core/base/result.hpp"
@@ -16,6 +15,7 @@
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/testing/hevc_clip.hpp"
 
 namespace vs_test {
 
@@ -23,11 +23,11 @@ namespace sensor = volumetric_kit::sensor;
 namespace vkc = volumetric_kit::core;
 
 // What a decoder test returns when the decoders have no device path here (no
-// GPU this build's hardware path reaches): it skips, or fails where CI sets
-// VS_TEST_HEVC_BACKEND, as on every leg that promises one.
+// GPU this build's hardware path reaches): it skips, or fails where the run
+// promises one (testing/hevc_clip.hpp's hevc_decoder_promised), as CI's
+// VS_TEST_HEVC_BACKEND does on every leg that has one.
 inline int no_decoder(const std::string& why) {
-  const char* promise = std::getenv("VS_TEST_HEVC_BACKEND");
-  const bool required = promise != nullptr && *promise != '\0';
+  const bool required = sensor::testing::hevc_decoder_promised();
   std::fprintf(stderr, "no device path for the decoders (%s); %s\n",
                why.c_str(), required ? "failing" : "skipping");
   return required ? 1 : vkc::test::kSkipExitCode;

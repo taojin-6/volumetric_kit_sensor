@@ -40,9 +40,9 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
 | `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
 | `sensor_video_syntax` | `video/` | H.265 syntax read on the host and `KeyGate` (which units decode after a loss), every build | core base |
-| `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, CUDA interop | frame |
+| `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, what H.273 colour codes mean (`frame_color.hpp`), CUDA interop | frame, video_syntax |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, every Apple build | frame |
-| `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video, video syntax |
+| `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video, video_syntax |
 | `sensor_realsense` | `realsense/` | `RealSenseSensor`, `RealSenseStereo` | interface, stereo |
 | `sensor_ffs` | `ffs/` | `FfsStereo` (Fast-FoundationStereo on TensorRT), `StereoDepthSensor` (any stereo camera as an `IRgbdSensor`); NVIDIA only | stereo; video, privately |
 | `sensor_decklink` | `decklink/` | `DecklinkStereo` (two SDI inputs of a DeckLink card as one stereo camera); Linux x86-64 | stereo |
@@ -347,9 +347,19 @@ cmake -S "$sensor_root" -B "$sensor_root/build" \
 VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 ```
 
+## Test support
+
+Header-only and framework-free, for this package's tests and a consumer's:
+`testing/hevc_clip.hpp` splits a clip into its access units and says
+whether the run promises a hardware decoder (`VS_TEST_HEVC_BACKEND`);
+`testing/nv12_picture.hpp` makes the family's NV12 test picture, whose
+index band a reader recovers after coding, and hands it out on the device
+as a hardware decoder would. The picture's device half writes through the
+core's `core_test_policy`, which the test links.
+
 ## Versions
 
-The version is `project()`'s (0.22.0), carried by the umbrella as
+The version is `project()`'s (0.23.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

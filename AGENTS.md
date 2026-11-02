@@ -46,8 +46,9 @@ PCM in host memory.
 - A tier links only the tiers below it: `camera` the core's base tier and
   GLM; `frame` the core's Vulkan tier; the interface `camera` and `frame`;
   `prep` the interface; `array` the prep; `stereo` the interface and,
-  privately, the prep; `apple` `frame`; `video` `frame` (and, on Apple,
-  `apple`); `orbbec` the interface, `video` and `video_syntax`;
+  privately, the prep; `apple` `frame`; `video` `frame` and `video_syntax`
+  (and, on Apple, `apple`); `orbbec` the interface, `video` and
+  `video_syntax`;
   `realsense` the interface and `stereo`; `ffs` `stereo` and, privately,
   `video`; `decklink` `stereo` and, privately, its SDK-free units; `audio`
   the interface; `video_syntax` and `io` the base tier.

@@ -78,6 +78,7 @@
 #include "volumetric_kit/sensor/camera/projection.hpp"
 #include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/testing/nv12_picture.hpp"
 
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
@@ -890,24 +891,21 @@ Planes patterned(std::uint32_t w, std::uint32_t h) {
 }
 
 // `p` as NV12 plane images, as VideoToolbox hands them out, which the pass
-// samples; BT.709 limited range.
+// samples (testing/nv12_picture.hpp); BT.709 limited range. No images if
+// they cannot be made.
 sensor::YuvImage nv12_images(const Planes& p) {
   std::vector<std::uint8_t> cbcr(2 * p.cb.size());
   for (std::size_t i = 0; i < p.cb.size(); ++i) {
     cbcr[2 * i] = p.cb[i];
     cbcr[2 * i + 1] = p.cr[i];
   }
-  sensor::YuvImage images;
-  images.layout = sensor::YuvLayout::Nv12;
-  images.width = p.w;
-  images.height = p.h;
+  auto made = sensor::testing::device_picture(*g_device, *g_allocator,
+                                              {p.w, p.h, p.y, cbcr});
+  if (!made) return {};
+  sensor::YuvImage images = std::move(made).value();
   images.kr = 0.2126f;
   images.kb = 0.0722f;
   images.full_range = false;
-  images.image[0] =
-      image_of(VK_FORMAT_R8_UNORM, 1, p.w, p.h, p.y.data(), p.w, p.h, kSampled);
-  images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p.cw, p.ch, cbcr.data(),
-                             2 * p.cw, p.ch, kSampled);
   return images;
 }
 
@@ -2099,22 +2097,9 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   // Camera 1's planes written by CUDA.
   frames[1]->color.queue_family = sensor::kQueueFamilyExternal;
   // Camera 3's as NV12 plane images, as VideoToolbox hands them out.
-  const Planes& p3 = planes[3];
-  std::vector<std::uint8_t> cbcr(2 * p3.cb.size());
-  for (std::size_t i = 0; i < p3.cb.size(); ++i) {
-    cbcr[2 * i] = p3.cb[i];
-    cbcr[2 * i + 1] = p3.cr[i];
-  }
-  sensor::YuvImage& images = frames[3]->color;
-  images.device = nullptr;
-  images.offset[0] = images.offset[1] = images.offset[2] = 0;
-  images.stride[0] = images.stride[1] = images.stride[2] = 0;
-  images.layout = sensor::YuvLayout::Nv12;
-  images.image[0] = image_of(VK_FORMAT_R8_UNORM, 1, p3.w, p3.h, p3.y.data(),
-                             p3.w, p3.h, kSampled);
-  images.image[1] = image_of(VK_FORMAT_R8G8_UNORM, 2, p3.cw, p3.ch, cbcr.data(),
-                             2 * p3.cw, p3.ch, kSampled);
-  CHECK(images.image[0] != nullptr && images.image[1] != nullptr);
+  frames[3]->color = nv12_images(planes[3]);
+  CHECK(frames[3]->color.image[0] != nullptr &&
+        frames[3]->color.image[1] != nullptr);
   // Camera 4's as packed words on the host, as a dataset decodes them.
   const std::vector<std::uint32_t> words = packed_words(raws[4].size(), 3);
   frames[4]->color = {};
