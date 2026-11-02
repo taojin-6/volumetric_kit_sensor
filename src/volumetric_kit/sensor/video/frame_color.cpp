@@ -3,7 +3,7 @@
 
 #include "frame_color.hpp"
 
-namespace volumetric_kit::sensor::video {
+namespace volumetric_kit::sensor {
 namespace {
 
 // The H.273 code points named here.
@@ -30,7 +30,7 @@ constexpr int kPrimariesDisplayP3 = 12;  // SMPTE EG 432-1
 
 }  // namespace
 
-VideoColorMatrix resolve_matrix(int matrix, int height) noexcept {
+VideoColorMatrix resolve_matrix(int matrix, std::uint32_t height) noexcept {
   switch (matrix) {
     case kMatrixBt709:
       return VideoColorMatrix::Bt709;
@@ -90,6 +90,25 @@ std::optional<ColorEncoding> resolve_encoding(int transfer,
   return encoding;
 }
 
+ChromaLocation resolve_chroma_location(int code) noexcept {
+  switch (code) {
+    case 1:
+      return ChromaLocation::Center;
+    case 2:
+      return ChromaLocation::TopLeft;
+    case 3:
+      return ChromaLocation::Top;
+    case 4:
+      return ChromaLocation::BottomLeft;
+    case 5:
+      return ChromaLocation::Bottom;
+    default:
+      return ChromaLocation::Left;
+  }
+}
+
+namespace video {
+
 void describe_color(
     const ColorCodes& codes,
     const std::optional<VideoColorDescription>& unlabelled_color,
@@ -102,33 +121,15 @@ void describe_color(
     matrix = unlabelled_color->matrix;
     yuv.full_range = unlabelled_color->full_range;
   } else {
-    matrix = resolve_matrix(codes.matrix, static_cast<int>(yuv.height));
+    matrix = resolve_matrix(codes.matrix, yuv.height);
     yuv.full_range = codes.full_range;
   }
   const YcbcrWeights weights = ycbcr_weights(matrix);
   yuv.kr = weights.kr;
   yuv.kb = weights.kb;
   picture.encoding = resolve_encoding(codes.transfer, codes.primaries);
-  switch (codes.chroma_location) {
-    case 1:
-      yuv.chroma_location = ChromaLocation::Center;
-      break;
-    case 2:
-      yuv.chroma_location = ChromaLocation::TopLeft;
-      break;
-    case 3:
-      yuv.chroma_location = ChromaLocation::Top;
-      break;
-    case 4:
-      yuv.chroma_location = ChromaLocation::BottomLeft;
-      break;
-    case 5:
-      yuv.chroma_location = ChromaLocation::Bottom;
-      break;
-    default:
-      yuv.chroma_location = ChromaLocation::Left;
-      break;
-  }
+  yuv.chroma_location = resolve_chroma_location(codes.chroma_location);
 }
 
-}  // namespace volumetric_kit::sensor::video
+}  // namespace video
+}  // namespace volumetric_kit::sensor

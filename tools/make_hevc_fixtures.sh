@@ -26,12 +26,16 @@
 #       then 2 frames of 4:0:0 grey, which no hardware path hands out: the
 #       decoder refuses the stream with pictures still held for display.
 #
+#   tests/data/hevc/centred_full_256x144.h265  8 frames of testsrc2, P-frames
+#       only, an IDR every 4: BT.709, full range, its chroma sited at the
+#       centre (chroma_sample_loc_type 1), as JPEG sites it.
+#
 # 256x144: NVDEC's smallest HEVC picture is 144x144.
 #
 # And 8 frames of testsrc2 at 128x64, with B-frames, for VideoToolbox. The
-# patch clip, the cropped one and these decode to the MD5 of libavcodec's own
-# decode of each, in display order, which the script prints last
-# (tests/sensor_video_hevc_test.cpp holds them).
+# patch clip, the cropped one, the centred one and these decode to the MD5 of
+# libavcodec's own decode of each, in display order, which the script prints
+# last (tests/sensor_video_hevc_test.cpp holds them).
 #   tests/data/hevc/testsrc2_128x64.h265  no colour description: video range.
 #   tests/data/hevc/testsrc2_full_128x64.h265  BT.709, full range.
 #   tests/data/hevc/testsrc2_cropped_120x56.h265  the first, its display
@@ -89,6 +93,16 @@ ffmpeg -hide_banner -loglevel error -y -f lavfi \
   -frames:v 2 -c:v libx265 -x265-params "$x265" -f hevc "$grey"
 cat "$tmp" "$grey" >"$root/tests/data/hevc/refused_256x144.h265"
 
+# Sampled centred too: out_chroma_loc=2 is FFmpeg's AVCHROMA_LOC_CENTER.
+x265_c="keyint=4:min-keyint=4:bframes=0:scenecut=0:open-gop=0:repeat-headers=1"
+x265_c+=":aud=1:info=0:qp=20:range=full:colorprim=bt709:transfer=bt709"
+x265_c+=":colormatrix=bt709:chromaloc=1:log-level=error"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc2=s=256x144:r=30" \
+  -frames:v 8 \
+  -vf scale=out_color_matrix=bt709:out_range=full:out_chroma_loc=2,format=yuv420p \
+  -c:v libx265 -x265-params "$x265_c" -f hevc \
+  "$root/tests/data/hevc/centred_full_256x144.h265"
+
 t2="testsrc2=s=128x64:r=30"
 x265_t2="keyint=8:min-keyint=8:bframes=2:b-adapt=0:scenecut=0:open-gop=0"
 x265_t2+=":repeat-headers=1:aud=1:info=0:qp=20:log-level=error"
@@ -108,8 +122,8 @@ ffmpeg -hide_banner -loglevel error -y \
   -i "$root/tests/data/hevc/testsrc2_128x64.h265" -c copy \
   -bsf:v hevc_metadata=crop_right=8:crop_bottom=8 -f hevc \
   "$root/tests/data/hevc/testsrc2_cropped_120x56.h265"
-for clip in patches_256x144 cropped_240x128 testsrc2_128x64 \
-  testsrc2_full_128x64 testsrc2_cropped_120x56; do
+for clip in patches_256x144 cropped_240x128 centred_full_256x144 \
+  testsrc2_128x64 testsrc2_full_128x64 testsrc2_cropped_120x56; do
   printf '%s ' "$clip"
   ffmpeg -hide_banner -loglevel error \
     -i "$root/tests/data/hevc/$clip.h265" -fps_mode passthrough -f md5 -

@@ -46,6 +46,7 @@
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "volumetric_kit/sensor/prep/luma_pass.hpp"
 #include "volumetric_kit/sensor/prep/picture_readback.hpp"
+#include "volumetric_kit/sensor/testing/nv12_picture.hpp"
 #include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace sensor = volumetric_kit::sensor;
@@ -152,7 +153,8 @@ std::shared_ptr<const vkc::Buffer> on_device(
 
 // A `w` x `h` picture of `layout` at `where`, its codes from `seed`: planes
 // after a lead, at odd offsets and strides (V210's on words), padding junk;
-// NV12 images 3 texels wider and 2 rows taller than the picture. Its range
+// NV12 images 3 texels wider and taller than the picture
+// (testing/nv12_picture.hpp). Its range
 // alternates with the seed (V210's is limited). `image.width` is 0 if it
 // cannot be made.
 Source make_source(const vkc::Device& device, vkc::Allocator& allocator,
@@ -207,13 +209,12 @@ Source make_source(const vkc::Device& device, vkc::Allocator& allocator,
           cbcr.push_back(cr[i]);
         }
         if (where == Where::Images) {
-          image.image[0] =
-              test_image::with_corner(device, allocator, VK_FORMAT_R8_UNORM, 1,
-                                      w + 3, h + 2, s.luma.data(), w, h);
-          image.image[1] = test_image::with_corner(
-              device, allocator, VK_FORMAT_R8G8_UNORM, 2, cw + 3, ch + 2,
-              cbcr.data(), 2 * cw, ch);
-          if (image.image[0] == nullptr || image.image[1] == nullptr) {
+          auto images = sensor::testing::device_picture(
+              device, allocator, {w, h, s.luma, cbcr}, 3);
+          if (images.ok()) {
+            image.image[0] = images->image[0];
+            image.image[1] = images->image[1];
+          } else {
             image.width = 0;
           }
           image.stride[0] = 0;

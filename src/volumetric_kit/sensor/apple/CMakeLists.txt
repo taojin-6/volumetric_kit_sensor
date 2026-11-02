@@ -16,9 +16,11 @@ set(_vs_sensor_apple_generated_inc
 add_library(sensor_apple)
 add_library(volumetric_kit::sensor_apple ALIAS sensor_apple)
 
-target_sources(sensor_apple PRIVATE pixel_buffer_importer.mm)
-set_source_files_properties(pixel_buffer_importer.mm PROPERTIES COMPILE_OPTIONS
-                                                                -fobjc-arc)
+# metal_device.mm: the Metal device under a Vulkan device, which the importer
+# and the tests read (internal; a test compiles it itself).
+target_sources(sensor_apple PRIVATE metal_device.mm pixel_buffer_importer.mm)
+set_source_files_properties(metal_device.mm pixel_buffer_importer.mm
+                            PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 
 generate_export_header(
   sensor_apple

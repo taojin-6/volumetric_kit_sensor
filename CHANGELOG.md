@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-11-02
+
+### Added
+
+- **What H.273 colour codes mean, public** (`video/frame_color.hpp`,
+  `sensor_video`): `resolve_matrix(matrix, height)`,
+  `resolve_encoding(transfer, primaries)` and
+  `resolve_chroma_location(code)` give a `ColorCodes`' `VideoColorMatrix`,
+  `ColorEncoding` and `ChromaLocation`, as the decoders describe their
+  pictures by them, for any caller holding codes (an SPS's, a capture
+  source's tags). They resolve as they did inside; `resolve_matrix` takes
+  the height as `std::uint32_t`. DECISIONS.md, the 2026-11-02 entry.
+- **Test support** (`testing/`, header-only, no test framework):
+  - `testing/hevc_clip.hpp`: `split_access_units` and
+    `access_units_of_file`, a clip's access units at its delimiters, and
+    `hevc_decoder_promised()`, whether `VS_TEST_HEVC_BACKEND` promises a
+    hardware decoder.
+  - `testing/nv12_picture.hpp`: `HostNv12`; `test_pattern(width, height,
+    index)`, the family's NV12 test picture, whose index band names
+    `index % 16384` in 16 x 16 cells beside a 255 and a 0 reference
+    (`kIndexCell`, `kIndexBits`); and `device_picture(device, allocator,
+    picture, pad)`, the picture as R8 and R8G8 plane images in `GENERAL`,
+    as a hardware decoder hands one out, written through the core's
+    `core_test_policy`.
+- `tests/data/hevc/centred_full_256x144.h265` (`tools/make_hevc_fixtures.sh`):
+  testsrc2 at BT.709 full range, its chroma sited at the centre, an IDR
+  every 4. The decoder test decodes it to libavcodec's MD5 on both paths and
+  checks its range and siting; the syntax test reads its SPS.
+
+### Changed
+
+- `sensor_video` links `sensor_video_syntax` PUBLIC (was PRIVATE):
+  `frame_color.hpp` resolves the codes the syntax reader returns.
+- The Metal device under a Vulkan device is found in one place,
+  `sensor_apple`'s internal `metal_device.mm`, which `PixelBufferImporter`
+  and the importer's test both call; the importer behaves as before.
+- The package's tests are on the test support: `tests/hevc_fixture.hpp` is
+  gone, `decoder_test.hpp`'s promise is `hevc_decoder_promised()`, and the
+  frame prep, readback and luma tests make their NV12 plane images with
+  `device_picture` (the readback and luma tests' 3 texels wider and 3 rows
+  taller, where they were 3 and 2).
+  The frame colour test calls the public resolvers and still runs on every
+  leg, with or without the decoders.
+
 ## [0.21.0] - 2026-11-01
 
 ### Added

@@ -22,12 +22,13 @@
 #include <string>
 #include <vector>
 
-#include "hevc_fixture.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/test_allocation_failure.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
+#include "volumetric_kit/sensor/testing/hevc_clip.hpp"
 
 namespace hevc = volumetric_kit::sensor::hevc;
+namespace testing = volumetric_kit::sensor::testing;
 namespace vkc = volumetric_kit::core;
 using Code = vkc::Status::Code;
 
@@ -64,7 +65,7 @@ struct Read {
 
 Read read_clip(const char* name) {
   Read out;
-  const Units units = vs_test::hevc_access_units(clip(name).c_str());
+  const Units units = testing::access_units_of_file(clip(name).c_str());
   out.ok = !units.empty();
   std::vector<hevc::Nal> nals;
   for (const auto& unit : units) {
@@ -260,6 +261,18 @@ int test_parameter_sets() {
   const Read t2_full = read_clip("testsrc2_full_128x64");
   CHECK(t2_full.ok && t2_full.sps.front().color.full_range &&
         t2_full.sps.front().color.matrix == 1);
+  // BT.709 at full range, its chroma sited at the centre; an IDR every 4.
+  const Read centred = read_clip("centred_full_256x144");
+  CHECK(centred.ok);
+  if (check_size(centred.sps.front(), 256, 144, 256, 144) != 0) return 1;
+  const hevc::Sps& c = centred.sps.front();
+  CHECK(c.color.matrix == 1 && c.color.transfer == 1 &&
+        c.color.primaries == 1 && c.color.full_range &&
+        c.color.chroma_location == 1);
+  CHECK(centred.picture_types.size() == 8 &&
+        hevc::is_idr(centred.picture_types[0]) &&
+        !hevc::is_irap(centred.picture_types[1]) &&
+        hevc::is_idr(centred.picture_types[4]));
   const Read t2_cropped = read_clip("testsrc2_cropped_120x56");
   CHECK(t2_cropped.ok);
   if (check_size(t2_cropped.sps.front(), 128, 64, 120, 56) != 0) return 1;
@@ -304,7 +317,7 @@ int test_picture_order() {
 // header is read without a read out of bounds.
 int test_malformed() {
   const Units units =
-      vs_test::hevc_access_units(clip("testsrc2_full_128x64").c_str());
+      testing::access_units_of_file(clip("testsrc2_full_128x64").c_str());
   CHECK(!units.empty());
   std::vector<hevc::Nal> nals;
   CHECK(hevc::split_annex_b(units[0].data(), units[0].size(), nals).ok());
@@ -414,7 +427,7 @@ bool contains_allocation_failure(const Call& call) {
 // growing its list, and each parser building a refusal.
 int test_allocation_failure() {
   const Units units =
-      vs_test::hevc_access_units(clip("testsrc2_full_128x64").c_str());
+      testing::access_units_of_file(clip("testsrc2_full_128x64").c_str());
   CHECK(!units.empty());
   const std::vector<std::uint8_t>& au = units[0];
   std::vector<hevc::Nal> nals;

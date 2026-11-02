@@ -134,6 +134,19 @@ vs_target_warnings(sensor_decoder_test_harness_test)
 add_test(NAME sensor_decoder_test_harness
          COMMAND sensor_decoder_test_harness_test)
 
+# The package's test support (include/volumetric_kit/sensor/testing/): a clip's
+# access units, the decoder promise and the NV12 test pattern on the host, and
+# the pattern on the device; the device part skips without one.
+add_executable(sensor_testing_support_test sensor_testing_support_test.cpp)
+target_link_libraries(
+  sensor_testing_support_test PRIVATE volumetric_kit::sensor_frame
+                                      volumetric_kit::core_test_policy)
+target_compile_definitions(
+  sensor_testing_support_test
+  PRIVATE VS_HEVC_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data/hevc")
+vs_target_warnings(sensor_testing_support_test)
+add_test(NAME sensor_testing_support COMMAND sensor_testing_support_test)
+
 # GPU pre-processing (sensor_prep) on synthetic frames: undistortion in the
 # right direction, the colour matrix, a host reference of the sampling, the
 # refusals, the outputs' sharing, read on another queue family. Fusing its
@@ -380,13 +393,19 @@ endif()
 # Apple's pixel buffers imported as images (sensor_apple, any Apple build, with
 # or without FFmpeg): buffers made here, read back in place, prepared as a
 # frame's colour, what the import allocates in Metal (metal_allocation.mm), and
-# the refusals. Skips without a device.
+# the refusals. Skips without a device. The Metal device is sensor_apple's
+# internal metal_device, so the test compiles its source itself.
 if(APPLE)
+  set(_vs_apple_src ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/apple)
   add_executable(
     sensor_apple_pixel_buffer_importer_test
-    sensor_apple_pixel_buffer_importer_test.cpp metal_allocation.mm)
-  set_source_files_properties(metal_allocation.mm PROPERTIES COMPILE_OPTIONS
-                                                             -fobjc-arc)
+    sensor_apple_pixel_buffer_importer_test.cpp metal_allocation.mm
+    ${_vs_apple_src}/metal_device.mm)
+  set_source_files_properties(
+    metal_allocation.mm ${_vs_apple_src}/metal_device.mm
+    PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+  target_include_directories(sensor_apple_pixel_buffer_importer_test
+                             PRIVATE ${_vs_apple_src})
   target_link_libraries(
     sensor_apple_pixel_buffer_importer_test
     PRIVATE volumetric_kit::core_test_policy
@@ -403,16 +422,35 @@ if(APPLE)
 endif()
 
 # The video decoders' host pieces, with no codec and no GPU, so on every leg:
-# the colour H.273 codes describe, compiling the internal source itself, as the
-# Orbbec conversion test does; and the public H.265 syntax (sensor_video_syntax)
-# on the committed clips.
+# the colour H.273 codes describe (video/frame_color.hpp, and the internal
+# describe_color), compiling the source itself, as the Orbbec conversion test
+# does, so legs without sensor_video run it too; and the public H.265 syntax
+# (sensor_video_syntax) on the committed clips. The source's own object library
+# carries sensor_video's export header, static, which a leg without the decoders
+# does not generate.
+include(GenerateExportHeader)
 set(_vs_video_src ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/video)
-add_executable(sensor_video_frame_color_test sensor_video_frame_color_test.cpp
-                                             ${_vs_video_src}/frame_color.cpp)
+add_library(sensor_video_frame_color_source OBJECT
+            ${_vs_video_src}/frame_color.cpp)
+set(_vs_frame_color_inc "${CMAKE_CURRENT_BINARY_DIR}/frame_color/include")
+generate_export_header(
+  sensor_video_frame_color_source
+  BASE_NAME
+  VS_VIDEO
+  EXPORT_MACRO_NAME
+  VS_VIDEO_API
+  EXPORT_FILE_NAME
+  "${_vs_frame_color_inc}/volumetric_kit/sensor/video/export.hpp")
+target_compile_definitions(sensor_video_frame_color_source
+                           PUBLIC VS_VIDEO_STATIC_DEFINE)
+target_include_directories(sensor_video_frame_color_source
+                           PUBLIC ${_vs_video_src} ${_vs_frame_color_inc})
+target_link_libraries(sensor_video_frame_color_source
+                      PUBLIC volumetric_kit::sensor_interface)
+vs_target_warnings(sensor_video_frame_color_source)
+add_executable(sensor_video_frame_color_test sensor_video_frame_color_test.cpp)
 target_link_libraries(sensor_video_frame_color_test
-                      PRIVATE volumetric_kit::sensor_interface)
-target_include_directories(sensor_video_frame_color_test
-                           PRIVATE ${_vs_video_src})
+                      PRIVATE sensor_video_frame_color_source)
 vs_target_warnings(sensor_video_frame_color_test)
 add_test(NAME sensor_video_frame_color COMMAND sensor_video_frame_color_test)
 
