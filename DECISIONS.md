@@ -6169,8 +6169,8 @@ own PRs; until NVENC, a Linux build's `create` refuses.
 
 **Why a coding thread.** In this mode VideoToolbox codes inside
 `VTCompressionSessionEncodeFrame`: 5.6-5.9 ms at 1920x1440 and 15.2-15.4 ms
-at 3840x2160 on the M5 Max (the efficiency review's probe), and leaving the
-mode loses `SupportsBaseFrameQP`. NVENC on Linux blocks the same way. The
+at 3840x2160 on the M5 Max (a probe of the bare session, before this
+encoder), and leaving the mode loses `SupportsBaseFrameQP`. NVENC on Linux blocks the same way. The
 thread keeps that wait off the producer: `send_pixel_buffer` returns in
 0.008 ms p50 (0.021 p95) at 1920x1440 and 0.009 (0.020) at 3840x2160, one
 picture in flight. One session codes no faster with two in flight (181.6
@@ -6179,8 +6179,8 @@ sessions on their own threads code side by side at full speed (2 x 182.8;
 2 x 66.8). With one in flight, send to access unit is 5.51 ms p50 at
 1920x1440 and 14.85 ms at 3840x2160, at or under the synchronous call.
 
-**What VideoToolbox does, measured here** (the M5 Max, macOS 27.2;
-the probes in the plan's notes):
+**What VideoToolbox does, measured here** (the M5 Max, macOS 27.2, with
+probes of the bare session on synthetic buffers):
 - It writes every code of the set into the VUI as given; it refuses matrix
   5 as a property (hence the normalization), and writes transfer 6, 14 and
   15 as 1.
@@ -6240,4 +6240,4 @@ always video range (C10) and the buffer's range not checked (C11), a drop
 neither failing the picture behind it nor owing a key (C7) and one owing a
 key but not failing it (C13), the IDR coded at the P-pictures' QP (C5), the
 siting tag not added (C4), and a lost session not reopened (C8). The
-benchmark ran on battery; the review's baseline on AC.
+encoder's timings ran on battery, the bare session's on AC power.

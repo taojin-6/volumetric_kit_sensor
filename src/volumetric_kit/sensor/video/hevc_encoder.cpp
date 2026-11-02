@@ -81,7 +81,7 @@ VideoBackend video_backend() noexcept {
 }
 
 #if !defined(__APPLE__)
-// TODO(sensor): NVENC through FFmpeg (the encoder plan's HV4).
+// TODO(sensor): NVENC through FFmpeg, on this file's coding thread.
 namespace video {
 
 struct HevcEncodeSession::Impl {};
