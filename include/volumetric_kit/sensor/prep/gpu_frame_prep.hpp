@@ -187,6 +187,14 @@ struct GpuFramePrepConfig {
 /// planes, or every camera's depth -- so they must all name the family that
 /// wrote it.
 ///
+/// Host depth may carry a confidence plane (@ref RgbdFrame::depth_confidence)
+/// and, with it, a floor of 1 or more (@ref RgbdFrame::min_confidence),
+/// copied into the slot after the depth: each raw sample below the floor is
+/// no return before anything else reads it, so the mix skips it and the
+/// outlier filter counts it as none. Level 0, which a producer writes on
+/// the samples it invalidates, is dropped at every floor. A frame without a
+/// plane is prepared exactly as before, bit for bit.
+///
 /// A frame with colour keeps only what both its cameras see, so each pixel
 /// handed out is in both views: a depth sensor's field of view and its colour
 /// camera's rarely match, and the overlap is each sensor's own, from its
@@ -204,11 +212,12 @@ struct GpuFramePrepConfig {
 /// that a nearer surface hides from it is kept. A frame without colour keeps
 /// all its depth (every frame has depth).
 ///
-/// A frame's host depth and host colour are copied into the pass's persistent
-/// slot (`core::HostRing`), which its batch binds: in place where the device's
-/// mapped memory is cached (Apple, lavapipe), and through one copy of the used
-/// range elsewhere (a discrete GPU). Nothing else goes up from the host, and
-/// nothing is allocated per frame.
+/// A frame's host depth, the confidence plane it is gated by, and its host
+/// colour are copied into the pass's persistent slot (`core::HostRing`),
+/// which its batch binds: in place where the device's mapped memory is
+/// cached (Apple, lavapipe), and through one copy of the used range elsewhere
+/// (a discrete GPU). Nothing else goes up from the host, and nothing is
+/// allocated per frame.
 ///
 /// Every check on the frame is made before anything is recorded, so a refused
 /// frame leaves the pass and the frames it handed out as they were.
@@ -302,7 +311,9 @@ class VS_PREP_API GpuFramePrep {
   /// @return The frame, which holds its buffers; @ref
   ///         Status::Code::InvalidArgument for a moved-from pass, a frame
   ///         without depth or with depth both on the host and on the device,
-  ///         device depth at an odd offset, past its buffer (to the word
+  ///         a confidence plane beside device depth or at a
+  ///         `min_confidence` of 0, a `min_confidence` above 0 without a
+  ///         plane, device depth at an odd offset, past its buffer (to the word
   ///         holding its last sample) or in one that is empty, without
   ///         storage usage or not device-local, a depth range that is not
   ///         finite with
@@ -446,10 +457,11 @@ class VS_PREP_API GpuFramePrep {
   core::DescriptorPool images_pool_;
   core::GpuTimer gpu_timer_;
 
-  // Each frame's depth and colour on the host, copied into its one slot, the
-  // colour range at minStorageBufferOffsetAlignment, and a word for a frame
-  // with neither, which its batch binds all the same; made at the first
-  // record, grown as a larger frame asks. The host only writes
+  // Each frame's depth, the confidence plane it is gated by, and colour on
+  // the host, copied into its one slot, the plane at the word after the
+  // depth and the colour range at minStorageBufferOffsetAlignment, and a
+  // word for a frame with neither, which its batch binds all the same; made
+  // at the first record, grown as a larger frame asks. The host only writes
   // the slot (core::HostAccess::SequentialWrite), so where the ring is
   // copied, as on a discrete GPU, it is write-combined staging.
   std::unique_ptr<core::HostRing> inputs_;

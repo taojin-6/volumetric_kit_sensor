@@ -190,6 +190,21 @@ vs_target_warnings(sensor_gpu_frame_prep_outliers_test)
 add_test(NAME sensor_gpu_frame_prep_outliers
          COMMAND sensor_gpu_frame_prep_outliers_test)
 
+# The frame prep's confidence gate on synthetic frames: exact through a pinhole
+# at every floor, a level-0 sample dropped at each; per raw sample, before the
+# offset, the mix, the colour-view test and the outlier filter, bit for bit as
+# the same frame zeroed on the host; bit-identical without a plane; the slot's
+# colour after the plane; sets; and its refusals, a plane at a floor of 0 among
+# them. Skips where no device is present.
+add_executable(sensor_gpu_frame_prep_confidence_test
+               sensor_gpu_frame_prep_confidence_test.cpp)
+target_link_libraries(
+  sensor_gpu_frame_prep_confidence_test
+  PRIVATE volumetric_kit::sensor_prep volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_gpu_frame_prep_confidence_test)
+add_test(NAME sensor_gpu_frame_prep_confidence
+         COMMAND sensor_gpu_frame_prep_confidence_test)
+
 # Allocation failure while staging is an OutOfMemory result, and a retained
 # frame survives it. Separate executable for its replacement operator new.
 add_executable(sensor_gpu_frame_prep_oom_test
