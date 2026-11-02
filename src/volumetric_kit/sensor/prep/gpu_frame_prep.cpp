@@ -113,14 +113,13 @@ VkDeviceSize round_up(VkDeviceSize bytes, VkDeviceSize alignment) noexcept {
 // A frame's depth half, checked: the range the kernel binds, where the image
 // starts in it, and the bytes it moves. Host samples are copied into the slot
 // from byte 0 and bound from there, a frame's confidence plane after them at
-// the next word when it is gated; samples in a buffer are read where they
-// are, bound from the first one rounded down to the alignment a binding's
-// offset needs.
+// the next word; samples in a buffer are read where they are, bound from the
+// first one rounded down to the alignment a binding's offset needs.
 struct DepthLayout {
   std::uint32_t pixels = 0;
   bool on_device = false;
-  // Gated by its confidence plane (a floor above 0): the plane's first byte
-  // in the slot and the binding.
+  // Gated by its confidence plane, which comes with a floor of 1 or more:
+  // the plane's first byte in the slot and the binding.
   bool gated = false;
   VkDeviceSize confidence_at = 0;
   // Host samples, and any plane, the slot takes, to a word.
@@ -154,11 +153,18 @@ core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
         "GpuFramePrep: the depth must be on the host or on the device, not "
         "both");
   }
-  // The plane comes from the host, as the depth it sits beside; a floor
-  // with nothing to read it from would gate nothing.
+  // The plane comes from the host, as the depth it sits beside, and a plane
+  // comes with a floor of 1 or more: at 0 the samples its producer
+  // invalidated (level 0) would be fused, and a floor with nothing to read it
+  // from would gate nothing.
   if (frame.depth_confidence != nullptr && device.buffer != nullptr) {
     return core::Status::invalid_argument(
         "GpuFramePrep: a confidence plane goes only beside host depth");
+  }
+  if (frame.depth_confidence != nullptr && frame.min_confidence == 0) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep: a depth_confidence plane needs a min_confidence of 1 "
+        "or more, or the samples it invalidates (level 0) are fused");
   }
   if (frame.min_confidence > 0 && frame.depth_confidence == nullptr) {
     return core::Status::invalid_argument(
@@ -199,7 +205,7 @@ core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
     // Copied into the slot from byte 0, which the kernel reads in words, and
     // a gated frame's plane after it from the next word, a byte a sample.
     out.staged_bytes = out.bind_bytes = round_up4(bytes);
-    if (frame.min_confidence > 0) {
+    if (frame.depth_confidence != nullptr) {
       out.gated = true;
       out.confidence_at = out.staged_bytes;
       out.staged_bytes = out.bind_bytes = round_up4(out.confidence_at + pixels);

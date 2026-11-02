@@ -461,10 +461,11 @@ entries relevant to your task; later amendments supersede earlier rules.
   byte a sample in the sensor's levels) and a floor (`min_confidence`):
   `GpuFramePrep` drops each raw sample below the floor on the GPU, before
   the depth offset, the mix, the colour-view test and the outlier filter, as
-  a hole the sensor left. Level 0 is never integrated: a driver writes it on
-  the samples it invalidates, as a phone's driver does on person pixels, and
-  every floor of 1 or more drops it. No plane, or a floor of 0, is
-  bit-identical to before; a plane beside device depth is refused.
+  a hole the sensor left. Level 0 is never integrated: a producer writes it
+  on the samples it invalidates, such as those it masks as a moving person,
+  and a plane comes with a floor of 1 or more, which drops it. No plane is
+  bit-identical to before; a plane beside device depth or at a floor of 0 is
+  refused.
 
 ## Decision record
 
@@ -6149,26 +6150,32 @@ written as 0 rather than 0xEE, and a four-byte start code split as three
 
 **The rule.** `RgbdFrame` gains `depth_confidence`, beside host `depth`: one
 byte a sample, in the depth's order, in the sensor's own levels (ARKit's 0
-low, 1 medium, 2 high), held by `pixels`; and `min_confidence`, the floor.
-With a floor above 0, `GpuFramePrep` copies the plane into the pass's slot
-at the word after the depth, inside the depth's binding, which grows to
-cover it; host colour goes after both. The depth pass reads each raw
-pixel's level first (`metres_at`), and a level below the floor is no return
-(0) before the depth offset, so the 2x2 mix skips it, the colour-view test
-never sees it and the outlier filter counts it as none, exactly as a sample
-the sensor returned as 0. `DepthParams` gains `confidence_first` (the
-plane's first byte in the binding) and `min_confidence`, 72 to 80 bytes of
-push constants; there is no new binding, and `DeviceFrame` gains nothing.
-`prepare` refuses a plane beside device depth, at any floor, and a floor
-above 0 without a plane (`InvalidArgument`), before anything is recorded.
+low, 1 medium, 2 high), held by `pixels`; and `min_confidence`, the floor,
+1 or more with a plane and 0 without one. `GpuFramePrep` copies the plane
+into the pass's slot at the word after the depth, inside the depth's
+binding, which grows to cover it; host colour goes after both. The depth
+pass reads each raw pixel's level first (`metres_at`), and a level below
+the floor is no return (0) before the depth offset, so the 2x2 mix skips
+it, the colour-view test never sees it and the outlier filter counts it as
+none, exactly as a sample the sensor returned as 0. `DepthParams` gains
+`confidence_first` (the plane's first byte in the binding) and
+`min_confidence`, 72 to 80 bytes of push constants; there is no new
+binding, and `DeviceFrame` gains nothing.
+`prepare` refuses a plane beside device depth, at any floor, a plane at a
+floor of 0, and a floor above 0 without a plane (`InvalidArgument`), before
+anything is recorded.
 
 **Level 0 is never integrated.** The owner (2026-11-02): "when handling
 scene dynamics, we also need to provide zero out the confidence mask to
-invalidated person is not intergrated". A driver that invalidates a sample
-writes level 0 there, as the phone's driver does on the pixels its person
-segmentation marks, and every floor of 1 or more drops it, whatever the
-depth holds. A floor of 0 reads no plane, so a frame with a plane sets one
-of at least 1; phone depth sets 2, high only.
+invalidated person is not intergrated". This is a contract on producers:
+one that invalidates a sample, such as one it masks as a moving person,
+writes level 0 there, and every floor drops it, whatever the depth holds.
+The gate drops the depth only. No producer masks people yet; one that does
+writes 0 in its plane, with no change here. The producer, which knows its
+levels, sets the floor; phone depth sets 2, high only. A plane at a floor
+of 0 is refused rather than read as no plane: a receiver that forgot the
+floor would otherwise fuse every sample its producer invalidated, with no
+error (this PR's review).
 
 **Why this form.**
 - **The wire is raw.** The stream's depth record is u16 millimetres plus
@@ -6192,12 +6199,12 @@ elsewhere, at ARKit's levels and floors and at every floor from 1 to 255
 over levels 0 to 255, a level-0 sample kept at none; through a lens, a gated
 frame bit for bit the same frame with its gated samples zeroed on the host,
 with the filter off, and on beside a depth offset and colour; a frame without
-a plane, with one all at the floor, and with one at levels 0 and 1 and a
-floor of 0 alike, bit for bit; the slot's colour after the plane at depth
-and plane sizes that end part-way through a word; gated and ungated frames
-in one set, recorded or prepared, each as alone; and the refusals, alone or
-in a set, with nothing recorded, submitted or timed. The other prep suites
-are unchanged.
+a plane and with one all at the floor alike, bit for bit; the slot's colour
+after the plane at depth and plane sizes that end part-way through a word;
+gated and ungated frames in one set, recorded or prepared, each as alone;
+and the refusals (a plane beside device depth, a plane at a floor of 0, a
+floor without a plane), alone or in a set, with nothing recorded, submitted
+or timed. The other prep suites are unchanged.
 
 **Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
 under the validation layer (and synchronization validation for the new

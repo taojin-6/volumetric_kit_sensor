@@ -179,9 +179,9 @@ add_test(NAME sensor_gpu_frame_prep_outliers
 # The frame prep's confidence gate on synthetic frames: exact through a pinhole
 # at every floor, a level-0 sample dropped at each; per raw sample, before the
 # offset, the mix, the colour-view test and the outlier filter, bit for bit as
-# the same frame zeroed on the host; bit-identical without a plane or at a floor
-# of 0; the slot's colour after the plane; sets; and its refusals. Skips where
-# no device is present.
+# the same frame zeroed on the host; bit-identical without a plane; the slot's
+# colour after the plane; sets; and its refusals, a plane at a floor of 0 among
+# them. Skips where no device is present.
 add_executable(sensor_gpu_frame_prep_confidence_test
                sensor_gpu_frame_prep_confidence_test.cpp)
 target_link_libraries(

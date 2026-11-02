@@ -11,15 +11,15 @@
 //     prepares bit for bit as the same frame with its gated samples zeroed on
 //     the host, where gated samples lie within the mix's span of their kept
 //     neighbours (so a gate after the mix would blend them in) or 9 m away;
-//   - a frame without a plane, with a plane all at the floor, and with a
-//     plane at levels 0 and 1 and a floor of 0 prepare bit for bit alike;
+//   - a frame without a plane and with a plane all at the floor prepare bit
+//     for bit alike;
 //   - a gated frame with host colour, its depth and plane ending part-way
 //     through a word, keeps its colour as without the plane, and its depth as
 //     the zeroed frame's;
 //   - gated and ungated frames in one set, recorded or prepared, each as
 //     alone;
-//   - a plane beside device depth, and a floor without a plane, refused
-//     before anything is recorded.
+//   - a plane beside device depth or at a floor of 0, and a floor without a
+//     plane, refused before anything is recorded.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
 #include <cstdint>
@@ -353,9 +353,8 @@ int test_before_mix(vkc::Device& device, vkc::Allocator& allocator) {
 }
 
 // Bit-identical: one frame through a lens, with holes, an edge, colour, a
-// depth offset and the outlier filter, prepared without a plane, with a plane
-// all high at a floor of 2, and with a plane of levels 0 and 1 at a floor of
-// 0, which is read nowhere.
+// depth offset and the outlier filter, prepared without a plane and with a
+// plane all high at a floor of 2.
 int test_unchanged(vkc::Device& device, vkc::Allocator& allocator) {
   sensor::GpuFramePrepConfig config;
   config.depth_offset_m = 0.008f;
@@ -374,21 +373,16 @@ int test_unchanged(vkc::Device& device, vkc::Allocator& allocator) {
   f.color_packed = words.data();
   f.color_camera = lensed(160, 120);
   const std::vector<std::uint8_t> high(raw.size(), kHigh);
-  std::vector<std::uint8_t> low(raw.size());
-  for (std::size_t i = 0; i < low.size(); ++i) {
-    low[i] = static_cast<std::uint8_t>(i % 2);
-  }
   const Prepared none = prepared(prep, f);
   const Prepared all_high = prepared(prep, gated(f, high, kHigh));
-  const Prepared floor_0 = prepared(prep, gated(f, low, 0));
   CHECK(!none.depth.empty() && !none.color.empty());
   std::size_t holes = 0;
   for (const std::uint32_t w : none.depth) holes += w == 0u;
-  std::printf("  unchanged: %zu and %zu words off, %zu holes of %zu\n",
-              differing(none.depth, all_high.depth),
-              differing(none.depth, floor_0.depth), holes, none.depth.size());
-  CHECK(all_high.depth == none.depth && floor_0.depth == none.depth);
-  CHECK(all_high.color == none.color && floor_0.color == none.color);
+  std::printf(
+      "  unchanged: %zu depth and %zu colour words off, %zu holes of %zu\n",
+      differing(none.depth, all_high.depth),
+      differing(none.color, all_high.color), holes, none.depth.size());
+  CHECK(all_high.depth == none.depth && all_high.color == none.color);
   CHECK(holes > none.depth.size() / 50 && holes < none.depth.size() / 2);
   return 0;
 }
@@ -502,9 +496,9 @@ std::shared_ptr<const vkc::Buffer> on_device(
   return std::make_shared<const vkc::Buffer>(std::move(made).value());
 }
 
-// A plane beside device depth, at any floor, and a floor without a plane:
-// refused, alone or in a set, with nothing recorded or timed. A plane at a
-// floor of 0 is taken, and read nowhere.
+// A plane beside device depth, at any floor, a plane beside host depth at a
+// floor of 0, where its level-0 samples would be fused, and a floor without
+// a plane: refused, alone or in a set, with nothing recorded or timed.
 int test_refusals(vkc::Device& device, vkc::Allocator& allocator) {
   const auto invalid = vkc::Status::Code::InvalidArgument;
   std::vector<sensor::GpuFramePrep> preps;
@@ -536,7 +530,8 @@ int test_refusals(vkc::Device& device, vkc::Allocator& allocator) {
        "confidence plane"},
       {"plane beside device depth, floor 0", gated(device_depth, level, 0),
        "confidence plane"},
-      {"floor without a plane", no_plane, "min_confidence"},
+      {"plane at floor 0", gated(host, level, 0), "min_confidence of 1"},
+      {"floor without a plane", no_plane, "no depth_confidence plane"},
   };
   for (const Refused& r : refused) {
     // Recorded: refused, and the batch holds nothing to submit.
@@ -563,8 +558,6 @@ int test_refusals(vkc::Device& device, vkc::Allocator& allocator) {
     CHECK(metrics.rows().empty());
     CHECK(device.counters().submits == was.submits);
   }
-  // A plane at a floor of 0 is taken, as a frame without one.
-  CHECK(prep.prepare(gated(host, level, 0)).ok());
   // The pass is as it was.
   CHECK(prep.prepare(gated(host, level, kHigh)).ok());
   return 0;

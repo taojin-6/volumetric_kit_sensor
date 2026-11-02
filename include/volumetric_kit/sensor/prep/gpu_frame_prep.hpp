@@ -187,14 +187,13 @@ struct GpuFramePrepConfig {
 /// planes, or every camera's depth -- so they must all name the family that
 /// wrote it.
 ///
-/// Host depth may carry a confidence plane (@ref RgbdFrame::depth_confidence),
-/// copied into the slot after it when the frame sets a floor
-/// (@ref RgbdFrame::min_confidence): each raw sample below the floor is no
-/// return before anything else reads it, so the mix skips it and the outlier
-/// filter counts it as none. Level 0, which a driver writes on samples it
-/// invalidates, is dropped at every floor of 1 or more. A frame without a
-/// plane, or with a floor of 0, is prepared exactly as before, bit for bit,
-/// and copies no more.
+/// Host depth may carry a confidence plane (@ref RgbdFrame::depth_confidence)
+/// and, with it, a floor of 1 or more (@ref RgbdFrame::min_confidence),
+/// copied into the slot after the depth: each raw sample below the floor is
+/// no return before anything else reads it, so the mix skips it and the
+/// outlier filter counts it as none. Level 0, which a producer writes on
+/// the samples it invalidates, is dropped at every floor. A frame without a
+/// plane is prepared exactly as before, bit for bit.
 ///
 /// A frame with colour keeps only what both its cameras see, so each pixel
 /// handed out is in both views: a depth sensor's field of view and its colour
@@ -312,9 +311,9 @@ class VS_PREP_API GpuFramePrep {
   /// @return The frame, which holds its buffers; @ref
   ///         Status::Code::InvalidArgument for a moved-from pass, a frame
   ///         without depth or with depth both on the host and on the device,
-  ///         a confidence plane beside device depth, a `min_confidence`
-  ///         above 0 without a plane,
-  ///         device depth at an odd offset, past its buffer (to the word
+  ///         a confidence plane beside device depth or at a
+  ///         `min_confidence` of 0, a `min_confidence` above 0 without a
+  ///         plane, device depth at an odd offset, past its buffer (to the word
   ///         holding its last sample) or in one that is empty, without
   ///         storage usage or not device-local, a depth range that is not
   ///         finite with
