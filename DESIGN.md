@@ -24,8 +24,10 @@ recon's examples assemble the rest.
 - **`camera`** — the camera vocabulary the drivers and the interface
   share: the double-precision `CameraModel` (image size, intrinsics, OpenCV's
   rational lens), the lens as a scalar template, rigid transforms, the
-  sensor array's calibration file (`camera/array_calibration.hpp`), and a
-  stereo pair, its rectification and a lens's fold, on the host
+  sensor array's calibration file (`camera/array_calibration.hpp`), a
+  tracked sensor's registration into its world
+  (`camera/tracked_registration.hpp`), and a stereo pair, its
+  rectification and a lens's fold, on the host
   (`camera/stereo_rectification.hpp`). No Vulkan (the 2026-10-06
   decisions), so a tool that solves or checks a calibration without a GPU
   links it alone.
@@ -220,6 +222,23 @@ decision): unprojection and rescaling come with their first caller.
   version 2 is refused.
   `format_` / `write_array_calibration` write it
   through the core's `write_file`; version 1 is read for its poses.
+- **`camera/tracked_registration.hpp`** — a tracked sensor's world (ARKit's,
+  which it starts afresh each session and moves at each reset) placed in an
+  array's world for one session's world epoch: `TrackedRegistration`, its
+  sensor's id, the session's 16-byte id (never all zero) and the epoch, the
+  array's world (one sensor or one tag, the array file's block), the rigid
+  `tracking_to_world` in `depth_to_color`'s form, and the tag fit's RMS,
+  stills and mean edge. A frame posed `cam_to_tracking` sits at
+  `tracking_to_world * cam_to_tracking`; a reader refuses frames of another
+  session or epoch, and the registration for an array of another world.
+  The file is `"volumetric_kit.tracked_registration"` version 1, the
+  session as 32 hex digits, byte 0 first, written lowercase and read in
+  either case; it reads, checks and writes as the array file does. calib's
+  `register_tracked` writes it, and a tracked source reads it at open.
+  The two files' world block (read, written, and checked as one sensor or
+  one tag), transforms, numbers and text live in one internal place
+  (`calibration_json.{hpp,cpp}`); each file's public functions prefix its
+  refusals with its name.
 - **`camera/stereo_rectification.hpp`** — a stereo pair on the host, in
   `sensor`'s namespace as when it was the stereo tier's (the 2026-11-01
   host rectification decision): `StereoCalibration` (the two cameras,
@@ -275,8 +294,10 @@ the prepared one. The producers, each its own value:
   model's, so whoever opens a camera states it.
 
 No per-pixel sigma, no `SensorInfo` field and no calibration-file key: no
-producer has a per-pixel confidence, recon's libraries cannot read
-`SensorInfo`, and no unit has been measured to differ from its model.
+producer has a per-pixel confidence that sets a noise (a phone's confidence
+plane only gates samples, `RgbdFrame::min_confidence`), recon's libraries
+cannot read `SensorInfo`, and no unit has been measured to differ from its
+model.
 `device_requirements()` names what the package's kernels and decoders need
 (`scalarBlockLayout`; `VK_KHR_external_memory_fd` and `VK_EXT_metal_objects`
 where offered); an application opening one device for recon and this package
@@ -700,9 +721,25 @@ without colour keeps all its depth. `depth_offset_m`
 (0 by default) is subtracted from every raw return in the depth pass, before
 the mix and that test: for `z > 0`, `z = max(z - offset, 0)`, so 0 stays no
 return whatever the sign; a `SensorArray` sets it per sensor from the
-calibration. With `depth_outliers` on, the depth pass writes a buffer of the
-pass's own (`sensor.undistorted_depth`, grown as larger frames ask), and a
-third pass (`remove_depth_outliers.comp`, the internal
+calibration. Host depth may carry a confidence plane
+(`RgbdFrame::depth_confidence`, a byte a sample in the producer's levels,
+ARKit's 0 low, 1 medium, 2 high) and, with it, a floor of 1 or more that
+the producer sets (`min_confidence`; the 2026-11-02 confidence plane
+decision). The plane is copied into the slot at the word after the depth,
+inside the depth's binding, which grows to cover it
+(`DepthParams::confidence_first`, the plane's first byte there); host
+colour goes after both. The depth pass reads a raw pixel's level first, in
+`metres_at`, and a level below the floor is no return, before the offset,
+so the mix skips it, the colour-view test never sees it and the outlier
+filter counts it as none: exactly as if the sensor had returned 0 there.
+Level 0 is what a producer writes on the samples it invalidates, such as
+those it masks as a moving person, and every floor drops it. No plane
+leaves the slot, the binding and the copy as before and the branch
+untaken, so the output is bit-identical; a plane beside device depth or at
+a floor of 0, and a floor without one, are refused. With `depth_outliers`
+on, the depth pass writes a buffer of the pass's own
+(`sensor.undistorted_depth`, grown as larger frames ask), and a third pass
+(`remove_depth_outliers.comp`, the internal
 `detail::DepthOutlierPass`) filters it into the output: a thread per pixel
 scans the box that holds the image of the return's ball, in square rings from
 the centre, until the count is reached or can no longer be; its arithmetic is
@@ -1112,8 +1149,9 @@ one.
 handed out. `RgbdContract` takes each frame as it is handed out and keeps
 none, for a run of any length, one checker a start, and its
 `breach(stats)` names the first rule broken with its frame's place: with
-`SensorInfo::depth`, depth present and its camera that size; with
-`SensorInfo::color`, colour present, its camera that size and the picture
+`SensorInfo::depth`, depth present and its camera that size; a confidence
+plane only beside host depth at a floor of 1 or more, and a floor only with
+one; with `SensorInfo::color`, colour present, its camera that size and the picture
 its camera's, without it no colour; then `order_breach` (sequences
 increase, and times where both are reported: 0 is no time) and
 `stats_breach` (`delivered` the frames taken, `delivered + dropped +

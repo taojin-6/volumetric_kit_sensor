@@ -137,8 +137,10 @@ struct SensorStats {
 ///    sensor numbered it. Frames a rate gate never chose leave no gap.
 ///
 /// Within one start, sequences increase, and so do the timestamps a sensor
-/// reports: a non-zero one, 0 being none (`RgbdFrame::timestamp_ns`). The
-/// counters keep @ref SensorStats' rule.
+/// reports: a non-zero one, 0 being none (`RgbdFrame::timestamp_ns`). A
+/// confidence plane comes beside host depth at a floor of 1 or more, and a
+/// floor only with one (`RgbdFrame::depth_confidence`). The counters keep
+/// @ref SensorStats' rule.
 ///
 /// **Polled, not called back**, as the rest of the capture code is: a sensor
 /// that delivers on a thread of its own holds what arrives, and @ref poll or

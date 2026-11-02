@@ -75,7 +75,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   an edge or a hole; and a frame with colour keeps only what both its
   cameras see, depth and colour each cropped to the other's field of view,
   no longer an option (depth's an option from 2026-09-29; the same-view
-  entry).
+  entry). *Amended 2026-11-02:* host depth may carry a confidence plane,
+  each sample below the frame's floor dropped before anything reads it (the
+  confidence plane entry).
 - [**2026-09-28**](#2026-09-28--a-decoded-colour-frame-never-leaves-the-gpu-the-platforms-hardware-decoder-for-h265-and-mjpeg-alike-hands-its-picture-to-vulkan-in-place-and-gpuframeprep-takes-i420-or-nv12-from-the-host-or-the-device) —
   A decoded colour frame never leaves the GPU: the platform's hardware
   decoder, for H.265 and MJPEG alike, hands its picture to Vulkan in place,
@@ -454,10 +456,28 @@ entries relevant to your task; later amendments supersede earlier rules.
   `testing/`; the test pattern's index band is read by square means after
   lossy coding. The Metal device under a Vulkan device is found in one
   place.
+- [**2026-11-02**](#2026-11-02--host-depth-may-carry-a-confidence-plane-which-frame-prep-gates-on-the-gpu-per-raw-sample-before-anything-else-reads-it-level-0-is-never-integrated-and-a-frame-without-a-plane-is-prepared-bit-for-bit-as-before-amends-the-2026-09-28-gpu-pre-processing-entry) —
+  Host depth may carry a confidence plane (`RgbdFrame::depth_confidence`, a
+  byte a sample in the sensor's levels) and a floor (`min_confidence`):
+  `GpuFramePrep` drops each raw sample below the floor on the GPU, before
+  the depth offset, the mix, the colour-view test and the outlier filter, as
+  a hole the sensor left. Level 0 is never integrated: a producer writes it
+  on the samples it invalidates, such as those it masks as a moving person,
+  and a plane comes with a floor of 1 or more, which drops it. No plane is
+  bit-identical to before; a plane beside device depth or at a floor of 0 is
+  refused.
+- [**2026-11-02**](#2026-11-02--a-tracked-sensors-world-is-registered-into-an-arrays-for-one-sessions-world-epoch-by-one-rigid-transform-in-a-file-of-its-own-cameratracked_registrationhpp-the-array-files-world-block-and-transforms-are-read-and-written-in-one-place-that-both-files-share) —
+  A tracked sensor's world (ARKit's) is registered into an array's for one
+  capture session's world epoch by one rigid `tracking_to_world`, in a file
+  of its own (`camera/tracked_registration.hpp`), with the array's world it
+  registers into and the tag fit that solved it. The array file's world
+  block and transforms are read and written in one internal place that
+  both files call.
 - [**2026-11-02**](#2026-11-02--every-rgb-d-driver-keeps-one-frame-contract-same-capture-whole-frames-loss-read-off-the-sequence-checked-by-rgbd_breach-in-every-drivers-fake-the-colour-camera-derives-from-registered-depth-and-test-depth-carries-the-pictures-index-band) —
   Every RGB-D driver keeps one frame contract, stated in `IRgbdSensor`'s
   doc: same capture, whole frames, the sizes `SensorInfo` names, loss read
-  off the sequence, a time of 0 being none.
+  off the sequence, a time of 0 being none, a confidence plane as frame prep
+  takes it.
   `testing/rgbd_contract.hpp` checks it, incrementally or over a vector,
   and every driver's fake runs it under injected faults.
   `color_from_registered_depth` derives the colour camera from registered
@@ -6143,6 +6163,169 @@ among the clips `first_slice_type` is checked on. Planted bugs, each failing its
 written as 0 rather than 0xEE, and a four-byte start code split as three
 (`sensor_testing_support`).
 
+### 2026-11-02 — Host depth may carry a confidence plane, which frame prep gates on the GPU per raw sample before anything else reads it; level 0 is never integrated, and a frame without a plane is prepared bit for bit as before (amends the 2026-09-28 GPU pre-processing entry).
+
+**The rule.** `RgbdFrame` gains `depth_confidence`, beside host `depth`: one
+byte a sample, in the depth's order, in the sensor's own levels (ARKit's 0
+low, 1 medium, 2 high), held by `pixels`; and `min_confidence`, the floor,
+1 or more with a plane and 0 without one. `GpuFramePrep` copies the plane
+into the pass's slot at the word after the depth, inside the depth's
+binding, which grows to cover it; host colour goes after both. The depth
+pass reads each raw pixel's level first (`metres_at`), and a level below
+the floor is no return (0) before the depth offset, so the 2x2 mix skips
+it, the colour-view test never sees it and the outlier filter counts it as
+none, exactly as a sample the sensor returned as 0. `DepthParams` gains
+`confidence_first` (the plane's first byte in the binding) and
+`min_confidence`, 72 to 80 bytes of push constants; there is no new
+binding, and `DeviceFrame` gains nothing.
+`prepare` refuses a plane beside device depth, at any floor, a plane at a
+floor of 0, and a floor above 0 without a plane (`InvalidArgument`), before
+anything is recorded.
+
+**Level 0 is never integrated.** The owner (2026-11-02): "when handling
+scene dynamics, we also need to provide zero out the confidence mask to
+invalidated person is not intergrated". This is a contract on producers:
+one that invalidates a sample, such as one it masks as a moving person,
+writes level 0 there, and every floor drops it, whatever the depth holds.
+The gate drops the depth only. No producer masks people yet; one that does
+writes 0 in its plane, with no change here. The producer, which knows its
+levels, sets the floor; phone depth sets 2, high only. A plane at a floor
+of 0 is refused rather than read as no plane: a receiver that forgot the
+floor would otherwise fuse every sample its producer invalidated, with no
+error (this PR's review).
+
+**Why this form.**
+- **The wire is raw.** The stream's depth record is u16 millimetres plus
+  the u8 plane, as ARKit hands them over (owner, 2026-11-02: "yeah u16 mm,
+  and u8 confidence is good"), so the receiver hands both planes to prep as
+  they arrived and the gate, like the units, stays on the GPU.
+- **Per raw sample, first.** A low-confidence sample is a hole the sensor
+  left, not a value to blend: gated after the mix, a block holding it and
+  its kept neighbours would still be mixed (they lie within the mix's 4 cm),
+  and the filter would count it.
+- **Nothing for the rig.** A Femto or stereo frame has no plane: its slot,
+  binding and copy are as before, and the one uniform branch is never taken,
+  so its depth is bit-identical.
+- **Host only.** The plane arrives from the wire beside host depth; no GPU
+  stage writes one, so device depth with a plane is refused rather than
+  given a second binding.
+
+**Tests.** `sensor_gpu_frame_prep_confidence`, on every GPU leg: through a
+pinhole, a sample kept exactly where its level reaches the floor and 0
+elsewhere, at ARKit's levels and floors and at every floor from 1 to 255
+over levels 0 to 255, a level-0 sample kept at none; through a lens, a gated
+frame bit for bit the same frame with its gated samples zeroed on the host,
+with the filter off, and on beside a depth offset and colour; a frame without
+a plane and with one all at the floor alike, bit for bit; the slot's colour
+after the plane at depth and plane sizes that end part-way through a word;
+gated and ungated frames in one set, recorded or prepared, each as alone;
+and the refusals (a plane beside device depth, a plane at a floor of 0, a
+floor without a plane), alone or in a set, with nothing recorded, submitted
+or timed. The other prep suites are unchanged.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer (and synchronization validation for the new
+test): the whole suite passes, 49 tests. Planted bugs, each failing the new
+test: the gate on the mixed value, by the nearest raw pixel's level (7,255
+of 19,200 pixels off through the lens); `<=` for `<` (the floor's own level
+dropped: 1,008 off at floor 1); host colour placed after the depth
+alone, over the plane (the slot case: 1,033 depth pixels off at 63 x 47,
+while the colour itself still matches); and the floor-0 refusal dropped
+(the refusal case: the plane at a floor of 0 is taken). A depth binding
+not grown over the plane passes on MoltenVK, which reads past a binding,
+but fails the gate case on the RTX 5090 and on lavapipe, which read 0
+there (2,016 of 3,072 pixels off at floor 1), so the Linux legs catch it;
+under GPU-assisted validation on the 5090 the layer also names the read
+(`VUID-vkCmdDispatch-storageBuffers-06936`), and the test as committed
+runs clean there.
+
+**On the devices** (Release, a bench built against this commit and against
+main). The lab RTX 5090: the lab's take1, 300 sets of four Femto Mega
+cameras, its recorded 640 x 576 depth fed as raw depth through each
+camera's factory lens and depth offset, beside packed colour at a quarter of
+its colour camera, prepared as the rig does (`prepare_batch`, the outlier
+filter on): every camera's depth and colour bytes, 1,193 frames, are the
+same on main and on this commit, run twice each. The set's device time,
+interleaved main, this commit, main, this commit: p50 0.568 / 0.575 /
+0.565 / 0.573 ms, p95 1.963 / 1.958 / 1.961 / 1.960 ms; with a plane at
+floor 2 on every camera, 0.651 / 2.218 ms. An idle RTX 4090 (synthetic,
+256 x 192, one camera, 300 prepares each, interleaved): device p50 / p95
+0.0208 / 0.0211 ms on main, 0.0208 / 0.0212 ms here without a plane, and
+0.0259-0.0284 / 0.0287 ms with a plane at floor 2, a plane's cost of 5-8
+microseconds. With the floor-0 refusal, rechecked there, interleaved twice:
+device p50 0.0208 ms on main, 0.0208-0.0209 ms without a plane and
+0.0283-0.0284 ms with one; host p50 0.096-0.099, 0.090-0.093 and
+0.099-0.101 ms.
+
+### 2026-11-02 — A tracked sensor's world is registered into an array's for one session's world epoch, by one rigid transform in a file of its own (`camera/tracked_registration.hpp`); the array file's world block and transforms are read and written in one place that both files share.
+
+**The rule.** `camera/tracked_registration.hpp` (`sensor_camera`) is the
+file a tracked sensor's registration lives in:
+`"volumetric_kit.tracked_registration"`, version 1. `TrackedRegistration`
+holds the sensor's id, the capture session's 16-byte id and the world
+epoch it holds for, the array's world it registers into (the array file's
+world block: one sensor or one tag, never neither or both), the rigid
+`tracking_to_world` in the array file's `depth_to_color` form, and the
+tag fit as its solver states it: the RMS reprojection error, the stills it
+used (at least 1) and the tag's mean edge as they placed it. A frame
+posed `cam_to_tracking`, in this package's camera convention (+Z forward,
++Y down; ARKit's poses through `cv_from_gl_camera` first), sits at
+`tracking_to_world * cam_to_tracking`. The
+session is written as 32 hex digits, byte 0 first, lowercase, and read in
+either case; an all-zero session, which a session uses for none, is
+refused. It is read, checked and written as the array file is: the same
+validate, parse, read, format and write, numbers that read back to the
+same double, unknown keys ignored, a later version refused. The array
+file's world block, transforms, and the JSON numbers, objects and text
+under them move out of `array_calibration.cpp` into the internal
+`calibration_json.{hpp,cpp}`, which both files call, with the check that
+a world is one sensor or one tag (`check_world_kind`; only the array file
+allows neither); its refusals name no file, and each file's public
+functions prefix theirs with its name.
+
+**Why.**
+- **A file of its own.** The array file holds an array's calibration,
+  which outlives every session. A tracked sensor starts its world afresh
+  each session and moves it at each reset, so its registration holds for
+  one session's epoch alone; in the array file it would go stale with the
+  first restart and change the array file's version for a field most
+  arrays never have.
+- **One rigid transform.** The tracking world is metric, so the
+  registration is rigid; a scale error in the tracking shows in `edge_m`
+  against the tag's `size_m`, where the solver and the reader can judge
+  it, rather than hidden in a similarity.
+- **The session, the epoch and the world, written down.** A reader refuses
+  frames of another session or epoch, and the registration for an array of
+  another world, so a registration is never applied to poses it was not
+  solved for. Each of the three is what the reader compares, so each is in
+  the file.
+- **One reader and one writer per block.** The registration names its
+  world with the array file's block and writes its transform in the array
+  file's form, so both files call the same code for them; a copy would
+  drift. The array file reads, refuses and writes as before, every message
+  the same.
+
+**Not here.** The solve (calib's `register_tracked`) and the readers (a
+tracked source, which compares the session and the epoch with each
+frame's) land with their own PRs. No `WorldFrame` equality: only the
+mobile lane compares an array's world with a registration's, so it adds
+one with its first caller.
+
+**Validation.** Apple M5 Max, Release with warnings as errors: the whole
+suite passes (49 tests), and the camera-only build's 8, its consumer
+including the new header. The array file's refusal messages are byte for
+byte those of `main`'s build, and its suite now requires each to start
+with the file's name. Planted bugs, each failing
+`sensor_camera_tracked_registration`: the writer writing
+`world_to_tracking` (the golden writer's direction), the session's digits
+read nibble-swapped and its bytes reversed (the golden session), an
+all-zero session accepted (its refusal), a byte's high digit read without
+its hex check (a non-hex high digit's refusal), and a world of neither
+kind accepted (its refusal). The shared world check accepting a tag's
+negative id fails both files' suites, and accepting both kinds fails each
+suite for its own file. The array file's parse refusals without its name
+fail `sensor_camera_array_calibration`.
+
 ### 2026-11-02 — Every RGB-D driver keeps one frame contract (same capture, whole frames, loss read off the sequence), checked by `rgbd_breach` in every driver's fake; the colour camera derives from registered depth, and test depth carries the picture's index band.
 
 **The rule.** `IRgbdSensor`'s doc states the frame contract every driver
@@ -6155,7 +6338,9 @@ cameras are the sizes `SensorInfo` names, its picture its colour camera's;
 a gap in `RgbdFrame::sequence` is a frame lost after the sensor numbered
 it, and frames a rate gate never chose leave no gap. Within one start,
 sequences increase, and so do the timestamps a sensor reports (non-zero:
-0 is none), and the counters keep `SensorStats`' rule.
+0 is none), a confidence plane comes beside host depth at a floor of 1 or
+more and a floor only with one (the confidence plane entry above, as
+`GpuFramePrep` takes it), and the counters keep `SensorStats`' rule.
 `testing/rgbd_contract.hpp` checks it on what a source handed out:
 `RgbdContract` frame by frame, one checker a start, `rgbd_breach` over a
 vector, and the rules they share with the stereo contract,
@@ -6183,6 +6368,10 @@ picture's index band, whose layout moves to the standard-library-only
   a sensor reports, each against the last non-zero one, and the sequence
   alone where a frame has none. The stereo contract counts every time, 0
   included, as before; whether it skips a 0 too is the owner's call.
+- **The plane as prep takes it.** A tracked source (the iPad's pattern
+  source) hands out a confidence plane, which `GpuFramePrep` refuses beside
+  device depth or at a floor of 0, as it refuses a floor without one; the
+  checker names such a frame where the source hands it out.
 - **A stand-in for each camera's mailbox.** The Orbbec camera stub stands
   in for `CameraStream`'s mailbox, take and read, playing a script of
   captures with counts of its own, so `OrbbecSensor`'s poll, drain (its
@@ -6216,7 +6405,8 @@ the host or a GPU kernel means it is the owner's open choice. Until then
 
 **Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
 under the validation layer, `VS_TEST_HEVC_BACKEND=videotoolbox` and the
-Orbbec driver: the whole suite passes, 60 tests. The M4 Mac mini, the same
+Orbbec driver: the whole suite passes, 62 tests on 0.25.0's main (60
+before it). The M4 Mac mini, the same
 with the RealSense driver (librealsense 2.59.1): 55 tests pass, the
 RealSense contract test among them. `test_pattern`'s bytes are pinned by
 MD5 to sensor 0.23.0's. Planted bugs, each failing its test:
@@ -6228,4 +6418,6 @@ reading each square's centre sample alone (`sensor_rgbd_pattern`); and
 `OrbbecSensor::drain` leaving one pair after a refusal uncounted
 (`sensor_orbbec_contract`); a size match on width or height alone, a
 picture refused only when both differ, a time of 0 ordered as a time,
-and a 0 kept as the last time (`sensor_rgbd_contract`).
+a 0 kept as the last time, and a confidence plane taken beside device
+depth or at a floor of 0, or a floor of 1 without one
+(`sensor_rgbd_contract`).

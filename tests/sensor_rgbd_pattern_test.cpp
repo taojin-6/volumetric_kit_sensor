@@ -116,7 +116,8 @@ int test_planes() {
       CHECK(d.confidence[at] == x % 3);
     }
   }
-  // A floor at each level keeps every square and drops part of the plane.
+  // Either floor a plane comes with, 1 or 2, keeps every square and drops
+  // part of the plane.
   for (std::uint8_t floor = 1; floor <= 2; ++floor) {
     std::size_t dropped = 0;
     for (std::size_t k = 0; k < d.confidence.size(); ++k) {

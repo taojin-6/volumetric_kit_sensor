@@ -9,20 +9,25 @@
 // with a depth camera of another size, with a colour camera a frame without
 // colour, with a colour camera or a picture of another size, without one a
 // frame with colour, delivered other than taken and the counters past
-// received. Each size differs in its width alone and in its height alone. A
-// time of 0 is none: frames with none pass, the sequence still ordered, and
-// a time that goes back past a 0 breaks the rule. A sensor without a depth
+// received, a confidence plane at a floor of 0 or beside device depth and a
+// floor without one. Each size differs in its width alone and in its height
+// alone. A time of 0 is none: frames with none pass, the sequence still
+// ordered, and a time that goes back past a 0 breaks the rule. A plane
+// beside host depth at a floor of 1 or 2 passes. A sensor without a depth
 // camera may hand out frames without depth. Only the first breach is kept,
 // and rgbd_breach over a vector says what the class says.
 
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "volumetric_kit/core/testing/test_check.hpp"
+#include "volumetric_kit/core/vulkan/buffer.hpp"
 #include "volumetric_kit/sensor/testing/rgbd_contract.hpp"
 
+namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::sensor;
 namespace camera = volumetric_kit::sensor::camera;
 namespace testing = volumetric_kit::sensor::testing;
@@ -31,6 +36,7 @@ namespace {
 
 const std::uint16_t kDepth[1] = {1000};
 const std::uint8_t kPlanes[1] = {0};
+const std::uint8_t kConfidence[1] = {2};
 const std::uint32_t kPacked[1] = {0};
 
 camera::CameraModel model(std::uint32_t width, std::uint32_t height) {
@@ -154,6 +160,30 @@ int test_rules() {
   bad[3].depth_camera = model(256, 96);
   CHECK(names(info, bad, stats_of(4),
               "frame 3: depth camera 256 x 96, not the sensor's 256 x 192"));
+
+  // A confidence plane (RgbdFrame::depth_confidence) beside host depth at a
+  // floor of 1 or 2 keeps it; one at a floor of 0, one beside device depth,
+  // and a floor without one break it.
+  std::vector<sensor::RgbdFrame> gated = clean;
+  for (sensor::RgbdFrame& f : gated) {
+    f.depth_confidence = kConfidence;
+    f.min_confidence = 2;
+  }
+  gated[1].min_confidence = 1;
+  CHECK(names(info, gated, stats_of(4), ""));
+  bad = gated;
+  bad[2].min_confidence = 0;
+  CHECK(names(info, bad, stats_of(4),
+              "frame 2: a confidence plane at a floor of 0"));
+  bad = gated;
+  bad[3].depth = nullptr;
+  bad[3].depth_device.buffer = std::make_shared<const vkc::Buffer>();
+  CHECK(names(info, bad, stats_of(4),
+              "frame 3: a confidence plane without host depth"));
+  bad = clean;
+  bad[1].min_confidence = 1;
+  CHECK(names(info, bad, stats_of(4),
+              "frame 1: a confidence floor of 1 without a plane"));
 
   // Colour, from a sensor with a colour camera: none, a camera of another
   // width or height, a picture of another width or height than its camera's.

@@ -64,8 +64,9 @@ struct PatternDepth {
   /// leaving no hole.
   std::vector<std::uint16_t> depth;
   /// One byte a sample, in ARKit's levels: 2 (high) on every square of the
-  /// band; elsewhere 0, 1, 2 by column (`x % 3`). A floor at any level then
-  /// drops part of the plane and nothing of a square.
+  /// band; elsewhere 0, 1, 2 by column (`x % 3`). Either floor a plane comes
+  /// with, 1 or 2 (`RgbdFrame::min_confidence`), then drops part of the
+  /// plane and nothing of a square.
   std::vector<std::uint8_t> confidence;
 };
 

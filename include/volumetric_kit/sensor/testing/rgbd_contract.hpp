@@ -93,6 +93,9 @@ class RgbdContract {
   ///         frame checked in this order:
   ///         - with `SensorInfo::depth`, it has depth and its depth camera is
   ///           that size; without it, any depth or none;
+  ///         - a confidence plane (`RgbdFrame::depth_confidence`) is beside
+  ///           host depth at a floor of 1 or more, and a floor
+  ///           (`RgbdFrame::min_confidence`) comes only with a plane;
   ///         - with `SensorInfo::color`, it has colour, its colour camera is
   ///           that size, and its picture (`RgbdFrame::color`) is its
   ///           camera's size; without it, it has no colour;
@@ -144,6 +147,15 @@ inline std::string RgbdContract::frame_breach(const RgbdFrame& frame) const {
              ", not the sensor's " +
              size_text(info_.depth->size.width, info_.depth->size.height);
     }
+  }
+  // As GpuFramePrep takes a plane: beside host depth, at a floor of 1 or
+  // more, and a floor only with one.
+  if (frame.depth_confidence != nullptr) {
+    if (frame.depth == nullptr) return "a confidence plane without host depth";
+    if (frame.min_confidence == 0) return "a confidence plane at a floor of 0";
+  } else if (frame.min_confidence != 0) {
+    return "a confidence floor of " + std::to_string(frame.min_confidence) +
+           " without a plane";
   }
   if (!info_.color) {
     if (frame.has_color()) return "colour from a sensor with no colour camera";
