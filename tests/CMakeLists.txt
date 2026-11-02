@@ -42,6 +42,21 @@ vs_target_warnings(sensor_camera_array_calibration_test)
 add_test(NAME sensor_camera_array_calibration
          COMMAND sensor_camera_array_calibration_test)
 
+# The camera tier's stereo pair: a pair from two entries of a calibration file
+# (stereo_calibration), its rectification on the host (rectify_stereo: rows
+# aligned within 1e-9 px, R2 the right camera's own, OpenCV's numbers as
+# tools/stereo_rectify_reference.py pinned them, a pair rectified already
+# resampled, the refusals) and a lens's fold (fold_radius2: k1's turn, k4's
+# pole, lenses that never fold, a 2024 fit that folds at 74.8 degrees).
+# Host-only, so camera-only builds run it too.
+add_executable(sensor_camera_stereo_rectification_test
+               camera_stereo_rectification_test.cpp)
+target_link_libraries(sensor_camera_stereo_rectification_test
+                      PRIVATE volumetric_kit::sensor_camera)
+vs_target_warnings(sensor_camera_stereo_rectification_test)
+add_test(NAME sensor_camera_stereo_rectification
+         COMMAND sensor_camera_stereo_rectification_test)
+
 # The frame prep's same-K depth crop against a folding lens: a forward scan of
 # distort_rational that finds a strong barrel lens's fold, run on a stand-in for
 # a Femto Mega's NFOV depth lens (not an SDK report). It needs sensor_camera
@@ -284,13 +299,12 @@ target_link_libraries(
 vs_target_warnings(sensor_array_process_test)
 add_test(NAME sensor_array_process COMMAND sensor_array_process_test)
 
-# The stereo tier's rectifier (sensor_stereo) on synthetic calibrated pairs: its
-# rectification against OpenCV's numbers (pinned by
-# tools/stereo_rectify_reference.py), rows aligned and the host reference of the
-# remap on a scene an independent renderer images, every layout from the host
-# and the device, a pair rectified already, the depth view, the views' lease and
-# export, the area prefilter where a view shrinks its picture, the refusals, and
-# the pass's time. Skips without a device.
+# The stereo tier's rectifier (sensor_stereo) on synthetic calibrated pairs:
+# rows aligned and the host reference of the remap on a scene an independent
+# renderer images, every layout from the host and the device, a pair rectified
+# already, the depth view, the views' lease and export, the area prefilter where
+# a view shrinks its picture, the refusals, and the pass's time. Skips without a
+# device.
 add_executable(sensor_stereo_rectifier_test sensor_stereo_rectifier_test.cpp)
 target_link_libraries(
   sensor_stereo_rectifier_test PRIVATE volumetric_kit::sensor_stereo
@@ -298,10 +312,11 @@ target_link_libraries(
 vs_target_warnings(sensor_stereo_rectifier_test)
 add_test(NAME sensor_stereo_rectifier COMMAND sensor_stereo_rectifier_test)
 
-# The stereo tier's own pieces: a pair from two calibration entries, which the
-# rectifier takes, and the sync contract every stereo source keeps
-# (stereo_contract.hpp). Host checks first; the rectifier's skips without a
-# device.
+# The stereo tier's own pieces: the contract every stereo source keeps
+# (stereo_contract.hpp: the calibration as the source was opened, the sync
+# rules), and the rectifier taking a pair from two calibration entries, its rig
+# rectify_stereo's bit for bit. Host checks first; the rectifier's skips without
+# a device.
 add_executable(sensor_stereo_sensor_test sensor_stereo_sensor_test.cpp)
 target_link_libraries(
   sensor_stereo_sensor_test PRIVATE volumetric_kit::sensor_stereo

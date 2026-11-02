@@ -23,9 +23,12 @@ recon's examples assemble the rest.
 
 - **`camera`** — the camera vocabulary the drivers and the interface
   share: the double-precision `CameraModel` (image size, intrinsics, OpenCV's
-  rational lens), the lens as a scalar template, rigid transforms, and the
-  sensor array's calibration file (`camera/array_calibration.hpp`). No
-  Vulkan (the 2026-10-06 decisions).
+  rational lens), the lens as a scalar template, rigid transforms, the
+  sensor array's calibration file (`camera/array_calibration.hpp`), and a
+  stereo pair, its rectification and a lens's fold, on the host
+  (`camera/stereo_rectification.hpp`). No Vulkan (the 2026-10-06
+  decisions), so a tool that solves or checks a calibration without a GPU
+  links it alone.
 
 - **`frame`** — the contract recon's fusion, texturing and sender read,
   header-only on the family core's Vulkan tier: `DeviceFrame` and
@@ -59,8 +62,8 @@ recon's examples assemble the rest.
 - **`stereo`** — calibrated stereo pairs: what a stereo camera driver
   implements and hands out (`IStereoSensor`, `StereoFrame`), and
   `StereoRectifier`, the pair undistorted and rectified on the GPU for a
-  stereo matcher. On the interface; it links `prep` privately, whose colour
-  pass it shares.
+  stereo matcher, through the camera tier's rectification. On the
+  interface; it links `prep` privately, whose colour pass it shares.
 - **`decklink`** — two SDI inputs of a DeckLink card as one stereo camera
   (`DecklinkStereo`, `VS_WITH_DECKLINK`, Linux x86-64). On `stereo`; its
   SDK-free units are a static target of their own, built and tested on
@@ -216,6 +219,21 @@ decision): unprojection and rescaling come with their first caller.
   version 2 is refused.
   `format_` / `write_array_calibration` write it
   through the core's `write_file`; version 1 is read for its poses.
+- **`camera/stereo_rectification.hpp`** — a stereo pair on the host, in
+  `sensor`'s namespace as when it was the stereo tier's (the 2026-11-01
+  host rectification decision): `StereoCalibration` (the two cameras,
+  lenses included, and `left_to_right`, OpenCV's `R`, `T`) and
+  `stereo_calibration(file, left, right)`, which makes one from two entries
+  of a calibration file (a pair of cine cameras, each a sensor of its own);
+  `rectify_stereo(pair, size, alpha)`, OpenCV's `stereoRectify` with
+  `CALIB_ZERO_DISPARITY` (Bouguet's method) step for step in double,
+  returning the `StereoRig` and OpenCV's `R2`; and `fold_radius2(lens)`,
+  where a radial model stops carrying rays outward. `StereoRectifier` uses
+  both, so a tool without a GPU checks a pair or a lens as the runtime
+  does. The method, what each function checks and what it refuses are the
+  header's. A pair rectified already is only resampled, its camera scaled
+  by one factor so its pixels keep their shape (a learned matcher assumes
+  square ones); a vertical pair is refused (`TODO(sensor)`).
 
 ### frame
 
@@ -708,10 +726,12 @@ stereo camera's driver presents it, and its rectification on the GPU. A
 consumer of depth never sees it: a depth source built on a stereo camera
 (rectification, then a matcher) is an `IRgbdSensor`.
 
-- **`stereo/stereo_sensor.hpp`** — `StereoCalibration` (the two cameras,
-  lenses included, and `left_to_right`, OpenCV's `R`, `T`), `StereoInfo`
-  (the pair -- none, both cameras 0 x 0, from a source opened before its
-  cameras are calibrated, which the rectifier refuses -- and any third, colour camera with `left_to_color`, what the
+- **`stereo/stereo_sensor.hpp`** — `StereoInfo` (the pair, the camera
+  tier's `StereoCalibration`: both cameras 0 x 0 for a source opened
+  without a calibration, whose pictures a calibration is made from, which
+  the rectifier and so `StereoDepthSensor` refuse, and neither camera with
+  a side 0 for one opened with one, with no other flag; any third, colour
+  camera with `left_to_color`; what the
   source is as `SensorInfo` has it: id, model, clock, rate, colour exposure,
   and `max_skew_ns`, its sync guarantee: the most a frame's pictures lie
   apart, frames past it counted failed and never handed out), `StereoFrame`
@@ -725,37 +745,23 @@ consumer of depth never sees it: a depth source built on a stereo camera
   `set_frame_notify` where it can (`Unsupported`, the default, where it
   cannot), which a RealSense's infrared pair (`RealSenseStereo`), a
   Blackmagic pair or a ZED implements.
-- **`stereo/stereo_calibration.hpp`** — `stereo_calibration(file, left,
-  right)`: the pair two entries of a calibration file make, each camera a
-  sensor of its own keyed by its id, posed and with a colour model (a pair
-  of cine cameras); its refusals are the header's.
-- **The sync contract** every stereo source keeps is checked by one test
-  helper (`tests/stereo_contract.hpp`): skew within the bound, sequences and
-  times increasing, and the counters' rule, on a test camera's pairs and on
-  each driver's own unit, not by a check of each driver's own.
-- **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` computes
-  the rectification once, on the host, as OpenCV's `stereoRectify` does with
-  `CALIB_ZERO_DISPARITY` (Bouguet's method), step for step in double: the
-  relative rotation split in half between the cameras, the baseline then
-  turned onto x, one focal length for both views (the cameras' vertical
-  ones, scaled to the rectified height), one principal point where the
-  corners, undistorted and turned, centre, and `alpha`'s scale between the
-  rectangle every view's pixels are valid in (0) and the one holding every
-  source pixel (1), from the border of a 9 x 9 grid; the undistortion of
-  corners and borders is OpenCV's own five fixed-point iterations
-  (`undistortPoints`' default). It refuses a vertical pair and one whose
-  right camera is on the left one's -x side (`TODO(sensor)`: vertical
-  pairs). A pair that is rectified already -- no rotation, no lens, one
-  camera model, the right camera along +x alone, each within 1e-9 -- is only
-  resampled, with no rotation: its camera scaled to the size by one factor
-  `s`, so its pixels keep their shape (a learned matcher assumes square
-  ones), about the centres (`fx * s`, `(w' - 1) / 2 + (cx - (w - 1) / 2) * s`).
-  Alpha picks `s` between the larger of `w' / w` and `h' / h` (0: the view
-  filled, the picture cropped) and the smaller (1: all of the picture, the
-  view bordered); at the picture's own aspect ratio both are the scale edge
-  to edge. `rig()` is the views' camera (pinhole), the baseline (metres,
-  above 0) and `rectified_to_left` (OpenCV's `R1` transposed); the right
-  view's rotation is `R1 * R^T`. `depth_info()` is the `SensorInfo` a
+- **`stereo/stereo_calibration.hpp`** includes
+  `camera/stereo_rectification.hpp`, where `stereo_calibration` is now, and
+  `stereo/stereo_sensor.hpp`, so an include of its old path keeps compiling
+  (`TODO(sensor)`: remove once the family includes the camera header).
+- **The contract** every stereo source keeps is checked by one test helper
+  (`tests/stereo_contract.hpp`): the calibration as the source was opened
+  (`StereoInfo`'s rule, above), skew within the bound, sequences and times
+  increasing, and the counters' rule, on a test camera's pairs and on each driver's own unit
+  (DeckLink's opened both ways, RealSense's factory calibration), not by a
+  check of each driver's own.
+- **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` checks
+  the source (a calibration, each camera within float's range, a colour
+  camera and `left_to_color`), takes the rectification once from the camera
+  tier's `rectify_stereo`, which checks the rest and refuses with its own
+  reason under the rectifier's name, and builds its pass. `rig()` is that
+  rectification's `StereoRig`; the right view's rotation is its
+  `right_to_rectified`. `depth_info()` is the `SensorInfo` a
   matcher's depth is prepared with: depth in the rectified left camera,
   colour the third camera or the left one with its lens (its picture is the
   colour), and `depth_to_color = left_to_color * rectified_to_left`; the
@@ -784,15 +790,12 @@ consumer of depth never sees it: a depth source built on a stereo camera
   `Luma8` writes Y' by the picture's range, full
   range, four pixels a word; `Rgba8` R'G'B' and the coverage byte, as
   `GpuFramePrep`'s colour. A ray behind the camera, past the source lens's
-  fold or out of the picture is 0. The fold is where the radial model stops
-  carrying rays outward (`r * radial(r^2)` stops growing, or its denominator
-  reaches 0); past it the model turns back and would put rays the lens
-  cannot image inside the picture, mirrored, which alpha above 0 reaches on
-  a strong lens. `create` finds it once a camera on the derivative's sign --
-  with `s = r^2`, `N D + 2 s (N' D - N D')` or `D` no longer positive --
-  marched by the angle off the axis, 0.01 degrees a step, then bisected,
-  and the pass compares one squared radius. Pictures in a buffer are bound
-  where they are, taken over from `YuvImage::queue_family` once a buffer: a
+  fold or out of the picture is 0: alpha above 0 reaches past the fold on a
+  strong lens, where the model would put rays back inside the picture,
+  mirrored. `create` takes each camera's fold once from the camera tier's
+  `fold_radius2`, and the pass compares one squared radius. Pictures in a
+  buffer are bound where they are, taken over from `YuvImage::queue_family`
+  once a buffer: a
   side-by-side frame's two pictures in one buffer, a colour picture beside
   them, must name the family that wrote it, as `GpuFramePrep`'s inputs must
   (`transfer_family`, `sharing_families.hpp`, which both call), and

@@ -25,6 +25,7 @@
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/camera/stereo_rectification.hpp"
 #include "volumetric_kit/sensor/rgbd_sensor.hpp"
 #include "volumetric_kit/sensor/stereo/export.hpp"
 #include "volumetric_kit/sensor/stereo/stereo_sensor.hpp"
@@ -32,30 +33,16 @@
 
 namespace volumetric_kit::sensor {
 
-/// @brief The rectified pair: both views are @ref camera, the right one
-///        @ref baseline metres along the left one's +x.
-///
-/// A point at depth `z` in the rectified left camera shows in the right view
-/// `camera.intrinsics.fx * baseline / z` pixels to the left, on the same row:
-/// what a matcher's disparity turns back into depth.
-struct StereoRig {
-  /// Both views' camera: pinhole (no lens), at the rectified size.
-  camera::CameraModel camera;
-  double baseline = 0.0;  ///< Metres; above 0.
-  /// The rectified left camera's frame to the source left camera's: a
-  /// rotation, so depth from the pair is posed through it.
-  camera::Mat4d rectified_to_left = camera::Mat4d(1.0);
-};
-
 /// @brief Both views of one frame, rectified on the GPU.
 ///
 /// Each view is `rig.camera.size` pixels of @ref
 /// StereoRectifier::Options::output, rows packed: `Luma8` a byte a pixel, four
 /// to a word, the first in the low byte; `Rgba8` a word a pixel, `R | G << 8 |
 /// B << 16 | coverage << 24`, R'G'B' as the source pictures encoded it. A pixel
-/// whose ray misses its source picture, or passes its lens's fold (where the
-/// lens model stops carrying rays outward and turns back), is 0, coverage
-/// included. The pass has finished when the pair is handed out.
+/// whose ray misses its source picture, or passes its lens's fold (@ref
+/// fold_radius2: where the lens model stops carrying rays outward and turns
+/// back), is 0, coverage included. The pass has finished when the pair is
+/// handed out.
 ///
 /// The buffers are device-local storage buffers, the rectifier's own, one a
 /// view, leased to the pair. **Use each pair in turn -- rectify, read, drop
@@ -103,19 +90,11 @@ struct RectifiedPair {
 /// @brief Undistorts and rectifies a calibrated stereo pair on the GPU,
 ///        resampled to one size.
 ///
-/// The rectification is computed once, at @ref create, on the host:
-/// Bouguet's method, as OpenCV's `stereoRectify` computes it with
-/// `CALIB_ZERO_DISPARITY` -- the relative rotation split between the two
-/// cameras, then the baseline turned onto +x; one pinhole camera for both
-/// views, its focal length the two cameras' vertical one scaled to the
-/// rectified height, and @ref Options::alpha choosing between only valid
-/// pixels and every source pixel. A pair that is rectified already -- no
-/// rotation between the cameras, no lens, one camera model, the right camera
-/// along +x alone, as a RealSense's infrared pair -- is only resampled: its
-/// camera scaled to the size by one factor, so its pixels keep their shape,
-/// about the centres; alpha chooses between filling the view, the picture
-/// cropped (0), and fitting the whole picture, the view bordered (1), which
-/// differ only where the size changes the aspect ratio.
+/// The rectification is computed once, at @ref create, on the host: @ref
+/// rectify_stereo's, Bouguet's method as OpenCV's `stereoRectify` computes
+/// it, @ref Options::alpha choosing between only valid pixels and every
+/// source pixel. A pair that is rectified already, as a RealSense's infrared
+/// pair, is only resampled, its pixels keeping their shape.
 ///
 /// Each frame is one compute pass a view: each rectified pixel's ray turned
 /// into the source camera, through its lens, and the source picture sampled
@@ -173,15 +152,12 @@ class VS_STEREO_API StereoRectifier final {
   /// @param info       The pair's calibration, and any colour camera.
   /// @param options    The rectified size, alpha and output.
   /// @return The rectifier; `Status::Code::InvalidArgument` for a source
-  ///         with no calibration (@ref StereoInfo::calibration), a camera
-  ///         that `camera::check_camera_model` refuses or that is past
-  ///         float's range, cameras of different sizes, a `left_to_right` or
-  ///         `left_to_color` that is not rigid, cameras at one place, a pair
-  ///         whose right camera is not along the left one's +x after the
-  ///         rotation is split (a vertical pair, or the two swapped), an
-  ///         alpha outside [0, 1], a size with one side 0, a view past a
-  ///         single dispatch or a storage binding, or a rectification that
-  ///         comes out degenerate; or a device that lacks what the package's
+  ///         with no calibration (@ref StereoInfo::calibration), a camera,
+  ///         the colour one included, that `camera::check_camera_model`
+  ///         refuses or that is past float's range, a `left_to_color` that
+  ///         is not rigid, a pair, size or alpha that @ref rectify_stereo
+  ///         refuses (its reason named), or a view past a single dispatch or
+  ///         a storage binding; or a device that lacks what the package's
   ///         kernels need, or a pipeline or buffer failure.
   static core::Result<std::unique_ptr<StereoRectifier>> create(
       const core::Device& device, core::Allocator& allocator,

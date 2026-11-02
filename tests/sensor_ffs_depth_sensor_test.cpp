@@ -407,7 +407,8 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
     const std::lock_guard<std::mutex> lock(log->mutex);
     CHECK(log->taken.size() == 7);
     const std::string breach =
-        stereo_contract::breach(log->info, log->taken, log->counts);
+        stereo_contract::breach(log->info, stereo_contract::Opened::Calibrated,
+                                log->taken, log->counts);
     if (!breach.empty()) std::fprintf(stderr, "%s\n", breach.c_str());
     CHECK(breach.empty());
   }
