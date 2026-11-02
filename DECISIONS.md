@@ -5880,9 +5880,11 @@ rectifier's view test too), the fold's pole case dropped (k4's pole read as
 no fold), and the already-rectified branch skipped (fx 480.918 against
 480.375; the rectifier's own test too).
 
-**Validation.** Release with warnings as errors on the M5 Max (MoltenVK),
-under the validation layer: the default build's suite, 45 tests, and the
-camera-only build's, 7 tests (its consumer including the new header). By
-hand, the rectifier built from main and from this change gave the same
-rigs, to the bit, and the same view bytes (FNV-1a) for nine pairs, both
-outputs.
+**Validation.** Release with warnings as errors, under the validation
+layer: on the M5 Max (MoltenVK) the default build's suite, 45 tests, and
+the camera-only build's, 7 tests (its consumer including the new header);
+on the lab's RTX 5090 (Ubuntu 26.04, driver 615.71.10, TensorRT 11.4),
+with CUDA, FFmpeg, FFS, RealSense and DeckLink (SDK 16.0) on, the whole
+suite, 52 tests. By hand, the rectifier built from main and from this
+change gave the same rigs, to the bit, and the same view bytes (FNV-1a)
+for nine pairs, both outputs, on the Mac. No camera was opened.
