@@ -2,15 +2,17 @@
 // Copyright (c) 2026 Tao Jin
 
 // OrbbecSensor keeps the frame contract (testing/rgbd_contract.hpp) under
-// injected faults, its own poll, drain and counters running on a camera stub
-// (orbbec_camera_stub.hpp) that plays a script of captures: captures pushed
-// out of a full queue and passed over by a poll, a colour frame lost (a gap
-// in the sequences, counted failed), a capture the SDK failed on skipped and
-// counted, one refused mid-poll, and IoError mid-drain with the frames before
-// it handed out and the rest counted dropped. Every frame handed out keeps the
-// contract, and so do the counters, exactly as the faults say. No camera or SDK
-// context; the executable compiles orbbec_sensor.cpp, as the sync-apply test
-// does.
+// injected faults, its own poll, drain and stats running on a camera stub
+// (orbbec_camera_stub.hpp) that stands in for CameraStream's mailbox, take
+// and read, with counts of its own, and plays a script of captures: captures
+// pushed out of a full queue and passed over by a poll, a colour frame lost
+// (a gap in the sequences, counted failed), a capture the SDK failed on
+// skipped and counted, one refused mid-poll, and IoError mid-drain with the
+// frames before it handed out and the rest counted dropped. Every frame
+// handed out keeps the contract, and so do the counters, exactly as the
+// faults say. CameraStream's own counting is checked only on a camera. No
+// camera or SDK context; the executable compiles orbbec_sensor.cpp, as the
+// sync-apply test does.
 
 #include <cstdint>
 #include <cstdio>

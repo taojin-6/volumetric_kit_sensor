@@ -8,8 +8,9 @@
 // no samples, read as none; one sample changed in a square's central half,
 // torn depth (two frames' halves) and swapped references read as none,
 // while a change past the central half still reads; the depth's values, the
-// hole, and the confidence plane as documented; and a size too small for
-// the band made without reading or writing past it.
+// hole, and the confidence plane as documented, the band over the hole at
+// 12 rows; and a size too small for the band made without reading or
+// writing past it.
 
 #include <cstddef>
 #include <cstdint>
@@ -133,6 +134,9 @@ int test_planes() {
   CHECK(small.depth[0] == 1000 && small.depth[16] == 2000);
   CHECK(small.depth[std::size_t{20} * 37] == 0);  // the hole, below the band
   CHECK(!read(small));
+  // At 16 rows or fewer the band may cover the hole: none at 300 x 12.
+  const testing::PatternDepth flat = testing::pattern_depth(300, 12, 3);
+  for (const std::uint16_t v : flat.depth) CHECK(v != 0);
   const testing::PatternDepth empty = testing::pattern_depth(0, 0, 3);
   CHECK(empty.depth.empty() && empty.confidence.empty());
   std::puts("the depth, its hole and the confidence plane as documented");

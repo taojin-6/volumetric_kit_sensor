@@ -10,9 +10,10 @@
 // 1 mm) and a colour module (YUYV), each with one mode, the depth's
 // extrinsic to the colour 5 cm across. The test sends it captures; each
 // becomes an SDK frameset of both modes, which lands in the driver's frame
-// queue as the SDK's thread lands one, so the sensor's own conversion, poll,
-// drain and counters run on real framesets. Only one camera is open at a
-// time.
+// queue as the SDK's thread lands one, counted received here in place of
+// camera.cpp's callback, so the sensor's own conversion, poll, drain, its
+// delivered and failed counts and the queue's drops run on real framesets.
+// Only one camera is open at a time.
 
 #include <cstdint>
 

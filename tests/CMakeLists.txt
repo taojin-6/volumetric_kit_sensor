@@ -724,9 +724,9 @@ if(VS_WITH_REALSENSE)
   add_test(NAME sensor_realsense_open COMMAND sensor_realsense_open_test)
 
   # The frame contract (testing/rgbd_contract.hpp) under injected faults:
-  # RealSenseSensor's own conversion, poll, drain and counters, compiled here
-  # with a camera stub (realsense_camera_stub.cpp, librealsense's software
-  # device) in place of camera.cpp, as the Orbbec stub tests do.
+  # RealSenseSensor's own conversion, poll, drain and stats, compiled here with
+  # a camera stub (realsense_camera_stub.cpp, librealsense's software device) in
+  # place of camera.cpp, as the Orbbec stub tests do.
   add_executable(
     sensor_realsense_contract_test
     sensor_realsense_contract_test.cpp realsense_camera_stub.cpp
@@ -837,8 +837,8 @@ if(VS_WITH_ORBBEC)
            COMMAND sensor_orbbec_open_sensors_test)
 
   # The frame contract (testing/rgbd_contract.hpp) under injected faults:
-  # OrbbecSensor's own poll, drain and counters on the camera stub, whose take,
-  # read and counters play a script of pairs.
+  # OrbbecSensor's own poll, drain and stats on the camera stub, whose mailbox,
+  # take and read, in place of CameraStream's, play a script of captures.
   add_executable(
     sensor_orbbec_contract_test
     sensor_orbbec_contract_test.cpp orbbec_camera_stub.cpp

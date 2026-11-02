@@ -9,12 +9,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **The frame contract**, in `IRgbdSensor`'s doc (`rgbd_sensor.hpp`): a
-  frame's colour is its own capture's picture; a sensor that names a colour
-  camera hands out whole frames only, a lost or undecoded picture counted in
-  `SensorStats::failed`; a gap in `RgbdFrame::sequence` is a frame lost
-  after the sensor numbered it, and a rate gate's skips leave none
-  (`RgbdFrame::sequence`'s doc says so too). DECISIONS.md, the 2026-11-02
-  frame contract entry.
+  frame's colour is its own capture's picture; a sensor that names a depth
+  or colour camera hands out whole frames only, a lost or undecoded picture
+  counted in `SensorStats::failed`; a frame's cameras are the sizes
+  `SensorInfo` names; a gap in `RgbdFrame::sequence` is a frame lost after
+  the sensor numbered it, and a rate gate's skips leave none
+  (`RgbdFrame::sequence`'s doc says so too); a timestamp of 0 is none, so
+  only reported times increase. DECISIONS.md, the 2026-11-02 frame contract
+  entry.
 - **`color_from_registered_depth(depth, width, height)`**
   (`camera_conventions.hpp`, `sensor_interface`): the colour camera a depth
   image is registered to, a `camera::CameraModel` in and out, the inverse
@@ -23,9 +25,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `check_camera_model` refuses.
 - **Test support** (`testing/`, header-only):
   - `testing/rgbd_contract.hpp`: `RgbdContract`, which checks a source's
-    frames one at a time and keeps none, `rgbd_breach` over a vector, and
-    the rules they share with the stereo contract, `order_breach` and
-    `stats_breach`.
+    frames one at a time, one start each, and keeps none, `rgbd_breach`
+    over a vector, and the rules they share with the stereo contract,
+    `sequence_breach`, `order_breach` and `stats_breach`.
   - `testing/rgbd_pattern.hpp` (standard library alone): `PatternDepth`,
     `pattern_depth(width, height, index)`, u16 millimetres carrying the
     index band at the picture's pixels and a confidence plane, and
@@ -38,11 +40,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `tests/stereo_contract.hpp` calls `order_breach` and `stats_breach`; the
   stereo suites are unchanged.
-- The Orbbec camera stub plays a script of captures through its take, read
-  and counters, and `tests/realsense_camera_stub.cpp` stands in for the
-  RealSense camera with librealsense's software device: the Orbbec,
+- The Orbbec camera stub stands in for `CameraStream`'s mailbox, take and
+  read, playing a script of captures with counts of its own, and
+  `tests/realsense_camera_stub.cpp` stands in for the RealSense camera
+  (`camera.cpp`) with librealsense's software device: the Orbbec,
   RealSense and FFS depth sensors' tests run `rgbd_breach` under injected
-  faults.
+  faults through each sensor's poll, drain and stats. The cameras' own
+  counting is checked only on a camera.
 
 ## [0.23.0] - 2026-11-02
 

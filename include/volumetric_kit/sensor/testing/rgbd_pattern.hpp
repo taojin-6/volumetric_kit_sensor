@@ -59,7 +59,9 @@ struct PatternDepth {
   /// @ref width x @ref height samples in millimetres (`metres_per_unit`
   /// 0.001), rows packed: the band's squares at @ref kPatternNearMm or
   /// @ref kPatternFarMm, the plane around them at @ref kPatternFarMm, and 0
-  /// (no return) across the left half of the bottom eighth.
+  /// (no return) across the left half of the bottom `height / 8` rows where
+  /// the band is not: at 16 rows or fewer the band may cover all of it,
+  /// leaving no hole.
   std::vector<std::uint16_t> depth;
   /// One byte a sample, in ARKit's levels: 2 (high) on every square of the
   /// band; elsewhere 0, 1, 2 by column (`x % 3`). A floor at any level then

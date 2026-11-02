@@ -126,15 +126,19 @@ struct SensorStats {
 /// handed out:
 /// 1. **Same capture.** A frame's colour is the picture of the capture its
 ///    depth is from, never another frame's.
-/// 2. **Whole frames.** A sensor whose @ref SensorInfo names a colour camera
-///    hands out a frame only with its own picture. A frame whose picture is
-///    lost or fails to decode is dropped and counted in
-///    `SensorStats::failed`.
-/// 3. **Loss.** A gap in `RgbdFrame::sequence` is a frame lost after the
+/// 2. **Whole frames.** A sensor whose @ref SensorInfo names a depth camera
+///    hands out a frame only with depth, and one that names a colour camera
+///    only with its own picture; one that names no colour camera hands out
+///    no colour. A frame whose picture is lost or fails to decode is dropped
+///    and counted in `SensorStats::failed`.
+/// 3. **Sizes.** A frame's depth and colour cameras are the sizes
+///    @ref SensorInfo names, and its picture is its colour camera's size.
+/// 4. **Loss.** A gap in `RgbdFrame::sequence` is a frame lost after the
 ///    sensor numbered it. Frames a rate gate never chose leave no gap.
 ///
-/// Within one start, sequences and timestamps increase, and the counters
-/// keep @ref SensorStats' rule.
+/// Within one start, sequences increase, and so do the timestamps a sensor
+/// reports: a non-zero one, 0 being none (`RgbdFrame::timestamp_ns`). The
+/// counters keep @ref SensorStats' rule.
 ///
 /// **Polled, not called back**, as the rest of the capture code is: a sensor
 /// that delivers on a thread of its own holds what arrives, and @ref poll or

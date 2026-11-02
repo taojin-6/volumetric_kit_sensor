@@ -2,14 +2,15 @@
 // Copyright (c) 2026 Tao Jin
 
 // RealSenseSensor keeps the frame contract (testing/rgbd_contract.hpp) under
-// injected faults, its own conversion, poll, drain and counters running on
-// real framesets from a camera stub (realsense_camera_stub.hpp, a software
-// device, in place of camera.cpp): framesets pushed out of a full queue and
-// passed over by a poll, a capture never sent (a gap in the sequences), a
-// frame stamped on the camera's clock refused and counted failed mid-poll,
-// and the same refusal mid-drain, the frames before it handed out and the
-// rest counted dropped. Every frame handed out keeps the contract, and so do
-// the counters, exactly as the faults say. No camera attached.
+// injected faults, its own conversion, poll, drain and stats running on real
+// framesets from a camera stub (realsense_camera_stub.hpp, a software device,
+// in place of camera.cpp and its received count): framesets pushed out of a
+// full queue and passed over by a poll, a capture never sent (a gap in the
+// sequences), a frame stamped on the camera's clock refused and counted
+// failed mid-poll, and the same refusal mid-drain, the frames before it
+// handed out and the rest counted dropped. Every frame handed out keeps the
+// contract, and so do the counters, exactly as the faults say. No camera
+// attached.
 
 #include <cstdint>
 #include <cstdio>

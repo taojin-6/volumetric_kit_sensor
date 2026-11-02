@@ -10,8 +10,10 @@
 // NotFound, as discovery does. The stub's cameras open and take sync writes
 // and colour-control writes, the latter through the driver's own sequence
 // (write_color_controls). Once started, a camera plays a script of captures
-// (`FakeCamera::batches`) through its take, read and counters, so
-// OrbbecSensor's own poll, drain and stats run on them.
+// (`FakeCamera::batches`) through a mailbox, take and read with counts of
+// their own in place of CameraStream's, so OrbbecSensor's own poll, drain
+// and stats run on them; CameraStream's counting is checked only on a
+// camera.
 
 #include <cstdint>
 #include <deque>

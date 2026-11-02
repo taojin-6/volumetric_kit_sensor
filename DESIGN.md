@@ -307,9 +307,10 @@ the one per-axis rescale, the lens kept), `to_canonical`, which
 only the iOS scanner and the tests call until the scanner moves onto the
 interface (2026-10-07). Every driver keeps **the frame contract**, stated
 in `IRgbdSensor`'s doc (the 2026-11-02 frame contract entry): same
-capture, whole frames, loss read off the sequence.
-`testing/rgbd_contract.hpp` checks it (below, "### test support"). Links `sensor_camera` and `sensor_frame` alone;
-drivers live with the platform that can build *and* test them. The
+capture, whole frames, the sizes `SensorInfo` names, loss read off the
+sequence. `testing/rgbd_contract.hpp` checks it (below, under test
+support). Links `sensor_camera` and `sensor_frame` alone; drivers live
+with the platform that can build *and* test them. The
 implementer every recon dataset example runs is
 recon's `examples/common/replica_sensor.hpp`, which plays a Replica sequence back
 through the interface, its frames prepared on the GPU as a camera's.
@@ -1109,19 +1110,26 @@ one.
 
 `rgbd_contract.hpp` checks the frame contract on what an `IRgbdSensor`
 handed out. `RgbdContract` takes each frame as it is handed out and keeps
-none, for a run of any length, and its `breach(stats)` names the first rule
-broken with its frame's place: depth present and its camera
-`SensorInfo::depth`'s size; with `SensorInfo::color`, colour present, its
-camera that size and the picture its camera's, without it no colour; then
-`order_breach` (sequences and times increase) and `stats_breach`
-(`delivered` the frames taken, `delivered + dropped + failed <=
-received`), which the stereo contract (`tests/stereo_contract.hpp`) calls
-too. `rgbd_breach` runs it over a vector. The Orbbec, RealSense and FFS
-depth sensors' tests run it under injected faults: the Orbbec camera stub
-plays a script of captures through its take, read and counters, and
-the RealSense camera stub (`tests/realsense_camera_stub.cpp`, in place of
-`camera.cpp`) sends librealsense software-device framesets, so each
-sensor's own poll, drain and counters run.
+none, for a run of any length, one checker a start, and its
+`breach(stats)` names the first rule broken with its frame's place: with
+`SensorInfo::depth`, depth present and its camera that size; with
+`SensorInfo::color`, colour present, its camera that size and the picture
+its camera's, without it no colour; then `order_breach` (sequences
+increase, and times where both are reported: 0 is no time) and
+`stats_breach` (`delivered` the frames taken, `delivered + dropped +
+failed <= received`), which the stereo contract
+(`tests/stereo_contract.hpp`) calls too, a time of 0 counted as one
+there. `rgbd_breach` runs it over a vector. The Orbbec, RealSense and FFS depth
+sensors' tests run it under injected faults. The Orbbec camera stub stands
+in for `CameraStream`'s mailbox, take and read, and plays a script of
+captures with counts of its own, so `OrbbecSensor`'s poll, drain (its
+discards after a refusal) and stats (failed plus lost) run on it. The
+RealSense camera stub (`tests/realsense_camera_stub.cpp`, in place of
+`camera.cpp`, the SDK callback's received count and `stats()` included)
+sends librealsense software-device framesets into the driver's frame
+queue, so `RealSenseSensor`'s conversion, poll, drain, its delivered and
+failed counts and the queue's drops run. `CameraStream`'s and
+`camera.cpp`'s own counting is checked only on a camera.
 
 ## Next work
 

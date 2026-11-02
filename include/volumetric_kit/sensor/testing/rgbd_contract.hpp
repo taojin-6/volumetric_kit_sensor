@@ -21,17 +21,29 @@
 
 namespace volumetric_kit::sensor::testing {
 
-/// @return The ordering rule a frame breaks, named, when it is taken right
-///         after one at (@p sequence_before, @p time_before) and itself sits
-///         at (@p sequence, @p time), times in nanoseconds; empty when both
-///         increase. A stereo pair keeps it too.
-inline std::string order_breach(std::uint64_t sequence_before,
-                                std::uint64_t time_before,
-                                std::uint64_t sequence, std::uint64_t time) {
+/// @return The sequence rule a frame breaks, named, when it is taken right
+///         after one numbered @p sequence_before and is itself numbered
+///         @p sequence; empty when the sequence increases.
+inline std::string sequence_breach(std::uint64_t sequence_before,
+                                   std::uint64_t sequence) {
   if (sequence <= sequence_before) {
     return "sequence " + std::to_string(sequence) + " after " +
            std::to_string(sequence_before);
   }
+  return {};
+}
+
+/// @return The ordering rule a frame breaks, named, when it is taken right
+///         after one at (@p sequence_before, @p time_before) and itself sits
+///         at (@p sequence, @p time), times in nanoseconds: the
+///         @ref sequence_breach, then the time's; empty when both increase.
+///         A stereo pair keeps it too, 0 counted as a time there, where
+///         @ref RgbdContract takes 0 as no time.
+inline std::string order_breach(std::uint64_t sequence_before,
+                                std::uint64_t time_before,
+                                std::uint64_t sequence, std::uint64_t time) {
+  std::string why = sequence_breach(sequence_before, sequence);
+  if (!why.empty()) return why;
   if (time <= time_before) {
     return "time " + std::to_string(time) + " ns after " +
            std::to_string(time_before);
@@ -57,6 +69,9 @@ inline std::string stats_breach(const SensorStats& stats, std::uint64_t taken) {
 /// @brief Checks a source's frames one at a time, as it hands them out, so a
 ///        run of any length keeps none of them.
 ///
+/// One checker covers one start: sequences, times and counters begin again
+/// when a source restarts, so each start takes a new checker.
+///
 /// @code
 /// testing::RgbdContract contract(sensor.info());
 /// // ... each frame taken: contract.take(*frame);
@@ -76,13 +91,15 @@ class RgbdContract {
   /// @return The first rule broken, named with its frame's place among those
   ///         taken, from 0 ("frame 12: ..."): the earliest frame's, each
   ///         frame checked in this order:
-  ///         - it has depth, and its depth camera is the size of
-  ///           `SensorInfo::depth`'s where that names one;
+  ///         - with `SensorInfo::depth`, it has depth and its depth camera is
+  ///           that size; without it, any depth or none;
   ///         - with `SensorInfo::color`, it has colour, its colour camera is
   ///           that size, and its picture (`RgbdFrame::color`) is its
   ///           camera's size; without it, it has no colour;
-  ///         - its sequence and timestamp increase on the frame's before it
-  ///           (@ref order_breach).
+  ///         - its sequence increases on the frame's before it, and its
+  ///           timestamp on the last non-zero one taken, where it is
+  ///           non-zero itself: 0 is no time (`RgbdFrame::timestamp_ns`)
+  ///           (@ref order_breach, @ref sequence_breach).
   ///         Then the counters against @p stats (@ref stats_breach). Empty
   ///         when every rule holds.
   std::string breach(const SensorStats& stats) const {
@@ -97,7 +114,7 @@ class RgbdContract {
   SensorInfo info_;
   std::uint64_t taken_ = 0;
   std::uint64_t last_sequence_ = 0;
-  std::uint64_t last_time_ = 0;
+  std::uint64_t last_time_ = 0;  // the last non-zero time taken; 0 before one
   std::string first_;
 };
 
@@ -119,12 +136,14 @@ inline std::string RgbdContract::frame_breach(const RgbdFrame& frame) const {
                             const camera::ImageSize& b) {
     return a.width == b.width && a.height == b.height;
   };
-  if (!frame.has_depth()) return "no depth";
-  const camera::ImageSize& depth = frame.depth_camera.size;
-  if (info_.depth && !same_size(depth, info_.depth->size)) {
-    return "depth camera " + size_text(depth.width, depth.height) +
-           ", not the sensor's " +
-           size_text(info_.depth->size.width, info_.depth->size.height);
+  if (info_.depth) {
+    if (!frame.has_depth()) return "no depth from a sensor with a depth camera";
+    const camera::ImageSize& depth = frame.depth_camera.size;
+    if (!same_size(depth, info_.depth->size)) {
+      return "depth camera " + size_text(depth.width, depth.height) +
+             ", not the sensor's " +
+             size_text(info_.depth->size.width, info_.depth->size.height);
+    }
   }
   if (!info_.color) {
     if (frame.has_color()) return "colour from a sensor with no colour camera";
@@ -145,11 +164,13 @@ inline std::string RgbdContract::frame_breach(const RgbdFrame& frame) const {
              ", not its camera's " + size_text(color.width, color.height);
     }
   }
-  if (taken_ > 0) {
-    return order_breach(last_sequence_, last_time_, frame.sequence,
-                        frame.timestamp_ns);
+  if (taken_ == 0) return {};
+  // A time of 0 is none, so times order only where both are reported.
+  if (frame.timestamp_ns == 0 || last_time_ == 0) {
+    return sequence_breach(last_sequence_, frame.sequence);
   }
-  return {};
+  return order_breach(last_sequence_, last_time_, frame.sequence,
+                      frame.timestamp_ns);
 }
 
 inline void RgbdContract::take(const RgbdFrame& frame) {
@@ -157,7 +178,7 @@ inline void RgbdContract::take(const RgbdFrame& frame) {
     const std::string why = frame_breach(frame);
     if (!why.empty()) first_ = "frame " + std::to_string(taken_) + ": " + why;
     last_sequence_ = frame.sequence;
-    last_time_ = frame.timestamp_ns;
+    if (frame.timestamp_ns != 0) last_time_ = frame.timestamp_ns;
   }
   ++taken_;
 }

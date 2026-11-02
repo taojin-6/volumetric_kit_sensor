@@ -5,11 +5,15 @@
 // host-only: a clean script passes, a gap in the sequences among them, and
 // so does one whose counters sum to exactly what was received; each rule
 // broken once is the one named, with its frame's place: a repeated sequence
-// and a time that goes back, a frame without depth or with a depth camera of
-// another size, with a colour camera a frame without colour, with a colour
-// camera or a picture of another size, without one a frame with colour,
-// delivered other than taken and the counters past received. Only the first
-// breach is kept, and rgbd_breach over a vector says what the class says.
+// and a time that goes back, with a depth camera a frame without depth or
+// with a depth camera of another size, with a colour camera a frame without
+// colour, with a colour camera or a picture of another size, without one a
+// frame with colour, delivered other than taken and the counters past
+// received. Each size differs in its width alone and in its height alone. A
+// time of 0 is none: frames with none pass, the sequence still ordered, and
+// a time that goes back past a 0 breaks the rule. A sensor without a depth
+// camera may hand out frames without depth. Only the first breach is kept,
+// and rgbd_breach over a vector says what the class says.
 
 #include <cstdint>
 #include <cstdio>
@@ -120,31 +124,61 @@ int test_rules() {
   CHECK(names(info, bad, stats_of(4),
               "frame 1: time 999999999 ns after 1000000000"));
 
-  // Depth: none, on the host or the device, and a camera of another size.
+  // A time of 0 is none (RgbdFrame::timestamp_ns): frames with none keep
+  // the order, a 0 between rising times too, but the sequence still counts,
+  // and a time after a 0 still increases on the last one reported.
+  bad = clean;
+  for (sensor::RgbdFrame& f : bad) f.timestamp_ns = 0;
+  CHECK(names(info, bad, stats_of(4), ""));
+  bad[2].sequence = bad[1].sequence;
+  CHECK(names(info, bad, stats_of(4), "frame 2: sequence 2 after 2"));
+  bad = clean;
+  bad[0].timestamp_ns = 0;
+  bad[2].timestamp_ns = 0;
+  CHECK(names(info, bad, stats_of(4), ""));
+  bad[3].timestamp_ns = bad[1].timestamp_ns - 1;
+  CHECK(names(info, bad, stats_of(4),
+              "frame 3: time 1033333332 ns after 1033333333"));
+
+  // Depth: none, on the host or the device, and a camera of another width
+  // or of another height.
   bad = clean;
   bad[0].depth = nullptr;
-  CHECK(names(info, bad, stats_of(4), "frame 0: no depth"));
-  bad = clean;
-  bad[3].depth_camera = model(128, 96);
   CHECK(names(info, bad, stats_of(4),
-              "frame 3: depth camera 128 x 96, not the sensor's 256 x 192"));
+              "frame 0: no depth from a sensor with a depth camera"));
+  bad = clean;
+  bad[3].depth_camera = model(128, 192);
+  CHECK(names(info, bad, stats_of(4),
+              "frame 3: depth camera 128 x 192, not the sensor's 256 x 192"));
+  bad = clean;
+  bad[3].depth_camera = model(256, 96);
+  CHECK(names(info, bad, stats_of(4),
+              "frame 3: depth camera 256 x 96, not the sensor's 256 x 192"));
 
   // Colour, from a sensor with a colour camera: none, a camera of another
-  // size, a picture of another size than its camera's.
+  // width or height, a picture of another width or height than its camera's.
   bad = clean;
   bad[1].color = sensor::YuvImage{};
   CHECK(names(info, bad, stats_of(4),
               "frame 1: no colour from a sensor with a colour camera"));
   bad = clean;
-  bad[2].color_camera = model(1440, 1920);
+  bad[2].color_camera = model(1440, 1440);
   CHECK(names(info, bad, stats_of(4),
-              "frame 2: colour camera 1440 x 1920, not the sensor's 1920 x "
+              "frame 2: colour camera 1440 x 1440, not the sensor's 1920 x "
+              "1440"));
+  bad = clean;
+  bad[2].color_camera = model(1920, 1080);
+  CHECK(names(info, bad, stats_of(4),
+              "frame 2: colour camera 1920 x 1080, not the sensor's 1920 x "
               "1440"));
   bad = clean;
   bad[1].color.width = 960;
+  CHECK(names(info, bad, stats_of(4),
+              "frame 1: picture 960 x 1440, not its camera's 1920 x 1440"));
+  bad = clean;
   bad[1].color.height = 720;
   CHECK(names(info, bad, stats_of(4),
-              "frame 1: picture 960 x 720, not its camera's 1920 x 1440"));
+              "frame 1: picture 1920 x 720, not its camera's 1920 x 1440"));
   // Packed host words are their camera's size: no picture size to break.
   std::vector<sensor::RgbdFrame> packed = clean;
   for (sensor::RgbdFrame& f : packed) {
@@ -167,10 +201,16 @@ int test_rules() {
   bad = plain;
   bad[3].sequence = bad[2].sequence;
   CHECK(names(depth_only, bad, stats_of(4), "frame 3: sequence 4 after 4"));
-  // A sensor that names no depth camera holds no size to keep.
+  // A sensor that names no depth camera holds no size to keep, and may hand
+  // out frames without depth.
   sensor::SensorInfo unnamed = depth_only;
   unnamed.depth.reset();
   CHECK(names(unnamed, plain, stats_of(4), ""));
+  sensor::SensorInfo color_only = info;
+  color_only.depth.reset();
+  std::vector<sensor::RgbdFrame> pictures = clean;
+  for (sensor::RgbdFrame& f : pictures) f.depth = nullptr;
+  CHECK(names(color_only, pictures, stats_of(4), ""));
 
   // The counters: delivered not the frames taken, and past received.
   CHECK(names(info, clean, stats_of(3), "delivered 3, taken 4"));
@@ -184,17 +224,21 @@ int test_rules() {
   bad = clean;
   bad[1].depth = nullptr;
   bad[3].sequence = 1;
-  CHECK(names(info, bad, stats_of(9), "frame 1: no depth"));
+  CHECK(names(info, bad, stats_of(9),
+              "frame 1: no depth from a sensor with a depth camera"));
   std::puts("only the first breach is kept");
   return 0;
 }
 
 // The counter and order rules on their own, as the stereo contract calls
-// them.
+// them: a time of 0 counts there.
 int test_rules_alone() {
   CHECK(testing::order_breach(1, 10, 2, 11).empty());
   CHECK(testing::order_breach(5, 10, 5, 11) == "sequence 5 after 5");
   CHECK(testing::order_breach(5, 10, 6, 10) == "time 10 ns after 10");
+  CHECK(testing::order_breach(5, 0, 6, 0) == "time 0 ns after 0");
+  CHECK(testing::sequence_breach(1, 2).empty());
+  CHECK(testing::sequence_breach(5, 4) == "sequence 4 after 5");
   sensor::SensorStats s;
   s.received = 3;
   s.delivered = 2;
@@ -204,7 +248,7 @@ int test_rules_alone() {
   s.dropped = 1;
   CHECK(testing::stats_breach(s, 2) ==
         "delivered + dropped + failed past received 3");
-  std::puts("order_breach and stats_breach");
+  std::puts("sequence_breach, order_breach and stats_breach");
   return 0;
 }
 
