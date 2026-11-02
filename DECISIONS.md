@@ -5637,11 +5637,14 @@ ungated, the returns with the output are those without it on 99.9975% of
 the samples (|dz| median 0.3 mm, p99 2.4 mm: a rebuild's noise); two
 processes on one plan give the same bits; and the gate at 0.2 px drops
 9.03% of the returns, adds none and leaves every kept one bit-identical.
-Merged with 0.13.0 (the outlier filter on by default), Release with
-warnings as errors under the validation layer: the M5 Max suite, 40 tests,
-passes with default options, and the RTX 5090's, 56 tests, with every
-option and synchronization validation; the gate rounds still drop 0, 545
-and 0 returns at 64 x 32 and 456 at 60 x 30.
+Merged with 0.21.0 (the outlier filter on by default, the near gate),
+Release with warnings as errors under the validation layer and
+synchronization validation: the M5 Max suite, 46 tests, passes with
+default options, and the RTX 5090's, 53 tests, with DeckLink, RealSense,
+FFmpeg, CUDA and FFS; the gate rounds drop 0, 545 and 0 returns at
+64 x 32, 456 at 60 x 30 and 422 beside the near gate. It fails with the
+near gate lost while the spread gate is on (97 samples off, that round
+alone), the spread check inverted, and the spread's refusal dropped.
 
 ### 2026-11-01 — V210 pictures, SDI's 10-bit 4:2:2: frame prep and the stereo rectifier read them at 10 bits through the one unpack they share, as code / 4, and round to 8 bits once; `PictureReadback` refuses them for now (amends the 2026-10-29 host-planes entry).
 
