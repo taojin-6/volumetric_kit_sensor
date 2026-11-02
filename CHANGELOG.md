@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-11-01
+
+### Added
+
+- **`LumaPass`** (`prep/luma_pass.hpp`, `sensor_prep`): every picture of a
+  list made into its 8-bit luma and its half on the GPU, in one batch and
+  one submit, from any layout a driver hands out -- V210 (its 10-bit Y
+  rounded once, `(code + 2) / 4`), NV12, I420, YUYV and luma alone, in a
+  buffer or on the host, and NV12 plane images. Each `DeviceLuma` holds its
+  `full` and `half` (`(w / 2) x (h / 2)`, each the rounded mean of a 2x2
+  block) as `YuvLayout::Luma` pictures in a pooled device buffer, reused
+  once no copy holds it, and CONCURRENT across the queue families
+  `create` is given. DECISIONS.md, the 2026-11-01 luma entry.
+- `PictureReadback::read(pictures, planes, metrics)`: a list of pictures
+  read in one submit, a view each; pictures that share a buffer, as a
+  `DeviceLuma`'s two do, are taken over once.
+
+### Changed
+
+- `PictureReadback` refuses pictures in one buffer that name two writers'
+  queue families (the buffer is taken over once), and its V210 refusal
+  (`Unsupported`, as before) names `LumaPass`.
+
 ## [0.20.0] - 2026-11-01
 
 ### Added

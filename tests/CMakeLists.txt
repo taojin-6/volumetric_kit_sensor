@@ -187,10 +187,24 @@ if(UNIX)
            COMMAND sensor_gpu_frame_prep_submit_test)
 endif()
 
+# Any picture's 8-bit luma and half on the GPU (sensor_prep's LumaPass): every
+# layout from a buffer, the host and NV12 images, bit for bit against a host
+# reference (V210 through tests/v210.hpp), odd edges, 3840 and 3842 wide, a
+# mixed list in one submit, the pooled outputs reused and held, the families and
+# the refusals. VS_TEST_LUMA_TIMING=<runs> times a DeckLink pair by hand. Skips
+# with no device.
+add_executable(sensor_luma_pass_test sensor_luma_pass_test.cpp)
+target_link_libraries(
+  sensor_luma_pass_test PRIVATE volumetric_kit::sensor_prep
+                                volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_luma_pass_test)
+add_test(NAME sensor_luma_pass COMMAND sensor_luma_pass_test)
+
 # A set's pictures read back to the host (sensor_prep's PictureReadback) on
 # synthetic NV12 images and NV12 and I420 buffers: exact bytes at odd sizes,
-# offsets and strides, every queue family a buffer comes from, the host memory
-# grown and reused, the refusals and the stage row. Skips with no device.
+# offsets and strides, every queue family a buffer comes from, a list read, the
+# host memory grown and reused, the refusals and the stage row. Skips with no
+# device.
 add_executable(sensor_picture_readback_test sensor_picture_readback_test.cpp)
 target_link_libraries(
   sensor_picture_readback_test PRIVATE volumetric_kit::sensor_prep
