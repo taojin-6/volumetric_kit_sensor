@@ -392,14 +392,14 @@ core::Result<std::unique_ptr<FfsStereo>> FfsStereo::create(
     return refuse(
         "disparity_sigma must be finite and at least 0 (0: unknown noise)");
   }
+  if (!(std::isfinite(options.max_disparity) &&
+        options.max_disparity >= 0.0f)) {
+    return refuse("max_disparity must be finite and at least 0 (0: no gate)");
+  }
   if (!(std::isfinite(options.max_disparity_spread) &&
         options.max_disparity_spread >= 0.0f)) {
     return refuse(
         "max_disparity_spread must be finite and at least 0 (0: no gate)");
-  }
-  if (!(std::isfinite(options.max_disparity) &&
-        options.max_disparity >= 0.0f)) {
-    return refuse("max_disparity must be finite and at least 0 (0: no gate)");
   }
   if (options.plan_cache.empty()) {
     return refuse("no plan_cache: the plan takes minutes to build");

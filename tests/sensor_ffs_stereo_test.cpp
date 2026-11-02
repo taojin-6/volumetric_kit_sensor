@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Tao Jin
 
 // FfsStereo on the test models in tests/data/ffs (tools/ffs/make_test_onnx.py):
-// FFS's inputs and output, and a disparity worked out by hand -- a weighted
+// FFS's inputs and outputs, and a disparity worked out by hand -- a weighted
 // difference of the two views' channels, (1/8, 2/8, 5/8), or half of it. So
 // each check reaches through the whole path: the rectifier's views read by
 // CUDA, the input kernel's normalisation and padding, TensorRT, and the depth
