@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "calibration_json.hpp"
 #include "volumetric_kit/core/base/exception_status.hpp"
 
 namespace volumetric_kit::sensor::camera {
@@ -21,6 +21,24 @@ namespace volumetric_kit::sensor::camera {
 namespace {
 
 using nlohmann::json;
+
+// The JSON both of the tier's files read and write (calibration_json.hpp).
+using detail::bad;
+using detail::check_world_kind;
+using detail::is_utf8;
+using detail::number;
+using detail::object_at;
+using detail::text;
+using detail::transform;
+using detail::transform_text;
+using detail::unsupported;
+using detail::vector_text;
+using detail::whole_number;
+using detail::world_frame;
+using detail::world_text;
+
+// What this file's refusals are prefixed with, at its public functions.
+constexpr const char* kWho = "array calibration";
 
 constexpr std::string_view kFormat = "volumetric_kit.array_calibration";
 // The version a calibration without a correction is written as, and the one a
@@ -36,97 +54,11 @@ constexpr double kMaxDepthOffset = 0.05;
 // exactly, so this absorbs only the Rodrigues round trip.
 constexpr double kOriginTolerance = 1e-9;
 
-core::Status bad(const std::string& what) {
-  return core::Status::invalid_argument("array calibration: " + what);
-}
-
-core::Status unsupported(const std::string& what) {
-  return core::Status::unsupported("array calibration: " + what);
-}
-
 const char* to_string(IntrinsicsSource source) {
   return source == IntrinsicsSource::Calibrated ? "calibrated" : "factory";
 }
 
-bool is_utf8(const std::string& s) {
-  try {  // JSON text is UTF-8, and dump() throws on anything else
-    (void)json(s).dump();
-    return true;
-  } catch (const json::exception&) {
-    return false;
-  }
-}
-
 // --- reading -----------------------------------------------------------------
-
-core::Result<double> number(const json& object, const char* key,
-                            const std::string& where) {
-  const auto it = object.find(key);
-  if (it == object.end() || !it->is_number()) {
-    return bad(where + "missing number \"" + key + "\"");
-  }
-  const double v = it->get<double>();
-  if (!std::isfinite(v)) return bad(where + "\"" + key + "\" is not finite");
-  return v;
-}
-
-core::Result<std::uint32_t> whole_number(const json& object, const char* key,
-                                         const std::string& where) {
-  const auto it = object.find(key);
-  if (it == object.end() || !it->is_number_unsigned() ||
-      it->get<std::uint64_t>() > std::numeric_limits<std::uint32_t>::max()) {
-    return bad(where + "\"" + key + "\" is not a 32-bit whole number");
-  }
-  return static_cast<std::uint32_t>(it->get<std::uint64_t>());
-}
-
-// A whole number, signed, in an int's range; validate judges its sign.
-core::Result<int> integer(const json& object, const char* key,
-                          const std::string& where) {
-  const auto it = object.find(key);
-  const bool fits =
-      it != object.end() &&
-      (it->is_number_unsigned()
-           ? it->get<std::uint64_t>() <=
-                 std::uint64_t{std::numeric_limits<int>::max()}
-           : it->is_number_integer() &&
-                 it->get<std::int64_t>() >= std::numeric_limits<int>::min());
-  if (!fits) return bad(where + "\"" + key + "\" is not a 32-bit integer");
-  return static_cast<int>(it->get<std::int64_t>());
-}
-
-// The object at `key`; null when there is none.
-core::Result<const json*> object_at(const json& parent, const char* key,
-                                    const std::string& where) {
-  const auto it = parent.find(key);
-  if (it == parent.end()) return static_cast<const json*>(nullptr);
-  if (!it->is_object()) return bad(where + "\"" + key + "\" is not an object");
-  return &*it;
-}
-
-core::Result<Vec3d> vector3(const json& object, const char* key,
-                            const std::string& where) {
-  const auto it = object.find(key);
-  if (it == object.end() || !it->is_array() || it->size() != 3) {
-    return bad(where + "\"" + key + "\" is not 3 numbers");
-  }
-  Vec3d v(0.0);
-  for (std::size_t i = 0; i < 3; ++i) {
-    const json& e = (*it)[i];
-    if (!e.is_number() || !std::isfinite(e.get<double>())) {
-      return bad(where + "\"" + key + "\" is not 3 finite numbers");
-    }
-    v[static_cast<int>(i)] = e.get<double>();
-  }
-  return v;
-}
-
-core::Result<Mat4d> transform(const json& block, const std::string& where) {
-  RodriguesTransform t;
-  VKC_ASSIGN(t.rvec, vector3(block, "rvec", where));
-  VKC_ASSIGN(t.tvec, vector3(block, "tvec", where));
-  return matrix_from_rodrigues(t);
-}
 
 core::Result<PinholeIntrinsics> pinhole(const json& block,
                                         const std::string& where) {
@@ -227,36 +159,6 @@ core::Result<SensorCalibration> sensor_v2(const std::string& id,
   return sensor;
 }
 
-// Both kinds are read where a world names both, for validate to refuse.
-core::Result<WorldFrame> world_v2(const json& block) {
-  WorldFrame world;
-  const auto sensor = block.find("sensor");
-  VKC_ASSIGN(const json* tag, object_at(block, "apriltag", "world: "));
-  if (sensor == block.end() && tag == nullptr) {
-    return unsupported(
-        "world: this reader knows {\"sensor\": id} and {\"apriltag\": tag}");
-  }
-  if (sensor != block.end()) {
-    if (!sensor->is_string()) return bad("world: \"sensor\" is not a string");
-    world.sensor = sensor->get<std::string>();
-    // Empty is the struct's "not a sensor", so a named sensor has an id.
-    if (world.sensor.empty()) return bad("world: \"sensor\" is empty");
-  }
-  if (tag != nullptr) {
-    const std::string where = "world: apriltag ";
-    AprilTagWorld t;
-    const auto family = tag->find("family");
-    if (family == tag->end() || !family->is_string()) {
-      return bad(where + "missing string \"family\"");
-    }
-    t.family = family->get<std::string>();
-    VKC_ASSIGN(t.id, integer(*tag, "id", where));
-    VKC_ASSIGN(t.size_m, number(*tag, "size_m", where));
-    world.apriltag = std::move(t);
-  }
-  return world;
-}
-
 core::Result<ArrayCalibration> parse_v2(const json& doc) {
   const auto version = doc.find("version");
   if (version == doc.end() || !version->is_number_unsigned()) {
@@ -276,7 +178,7 @@ core::Result<ArrayCalibration> parse_v2(const json& doc) {
   ArrayCalibration array;
   VKC_ASSIGN(const json* world, object_at(doc, "world", ""));
   if (world != nullptr) {
-    VKC_ASSIGN(array.world, world_v2(*world));
+    VKC_ASSIGN(array.world, world_frame(*world));
   }
   VKC_ASSIGN(const json* controls, object_at(doc, "color_controls", ""));
   if (controls != nullptr) {
@@ -317,22 +219,6 @@ core::Result<ArrayCalibration> parse_v1(const json& doc) {
 }
 
 // --- writing -----------------------------------------------------------------
-
-// A value as JSON text: a number in a form that reads back to the same double
-// (at most 17 significant digits), a string quoted and escaped.
-std::string text(double v) { return json(v).dump(); }
-std::string text(std::uint64_t v) { return json(v).dump(); }
-std::string text(const std::string& s) { return json(s).dump(); }
-
-std::string vector_text(const Vec3d& v) {
-  return "[" + text(v.x) + ", " + text(v.y) + ", " + text(v.z) + "]";
-}
-
-std::string transform_text(const Mat4d& transform) {
-  const RodriguesTransform t = rodrigues_from_matrix(transform);
-  return "{\"rvec\": " + vector_text(t.rvec) +
-         ", \"tvec\": " + vector_text(t.tvec) + "}";
-}
 
 std::string camera_text(const CameraCalibration& camera,
                         const std::string& indent) {
@@ -401,28 +287,11 @@ core::Status check_color_controls(const ColorControls& controls) {
   return {};
 }
 
-// A tag is not in the array, so nothing of it is checked against the poses.
-core::Status check_apriltag(const AprilTagWorld& tag) {
-  const std::string where = "world: apriltag ";
-  if (tag.family.empty()) return bad(where + "\"family\" is empty");
-  if (!is_utf8(tag.family)) return bad(where + "\"family\" is not UTF-8");
-  if (tag.id < 0) return bad(where + "\"id\" is negative");
-  if (!std::isfinite(tag.size_m) || !(tag.size_m > 0.0)) {
-    return bad(where + "\"size_m\" is not a finite length above 0");
-  }
-  return {};
-}
-
+// The world's kind, then a sensor world's place: in the array, at the origin.
 core::Status check_world(const ArrayCalibration& array) {
+  VKC_TRY(check_world_kind(array.world, /*allow_none=*/true));
   const std::string& id = array.world.sensor;
-  if (array.world.apriltag) {
-    if (!id.empty()) {
-      return bad("world: names both sensor " + id +
-                 " and an AprilTag; it is one or the other");
-    }
-    return check_apriltag(*array.world.apriltag);
-  }
-  if (id.empty()) return {};
+  if (array.world.apriltag || id.empty()) return {};
   const SensorCalibration* sensor = find_sensor(array, id);
   if (sensor == nullptr) {
     return bad("world: sensor " + id + " is not in the array");
@@ -452,7 +321,10 @@ const SensorCalibration* find_sensor(const ArrayCalibration& array,
   return nullptr;
 }
 
-core::Status validate_array_calibration(const ArrayCalibration& array) try {
+namespace {
+
+// validate_array_calibration's checks, their refusals not yet named.
+core::Status check_array(const ArrayCalibration& array) {
   if (array.sensors.empty()) return bad("no sensors");
   for (std::size_t i = 0; i < array.sensors.size(); ++i) {
     const std::string& id = array.sensors[i].id;
@@ -469,13 +341,10 @@ core::Status validate_array_calibration(const ArrayCalibration& array) try {
     VKC_TRY(check_color_controls(*array.color_controls));
   }
   return check_world(array);
-} catch (...) {
-  return core::exception_status("array calibration",
-                                core::Status::Code::InvalidArgument);
 }
 
-core::Result<ArrayCalibration> parse_array_calibration(
-    std::string_view json_text) try {
+// parse_array_calibration's reading, its refusals not yet named.
+core::Result<ArrayCalibration> parse_document(std::string_view json_text) {
   const json doc = json::parse(json_text, nullptr, /*allow_exceptions=*/false);
   if (doc.is_discarded()) return bad("not JSON");
   if (!doc.is_object()) return bad("not a JSON object");
@@ -496,11 +365,25 @@ core::Result<ArrayCalibration> parse_array_calibration(
             [](const SensorCalibration& a, const SensorCalibration& b) {
               return a.id < b.id;
             });
-  VKC_TRY(validate_array_calibration(array));
+  VKC_TRY(check_array(array));
+  return array;
+}
+
+}  // namespace
+
+core::Status validate_array_calibration(const ArrayCalibration& array) try {
+  return check_array(array).with_context(kWho);
+} catch (...) {
+  return core::exception_status(kWho, core::Status::Code::InvalidArgument);
+}
+
+core::Result<ArrayCalibration> parse_array_calibration(
+    std::string_view json_text) try {
+  auto array = parse_document(json_text);
+  if (!array.ok()) return array.status().with_context(kWho);
   return array;
 } catch (...) {
-  return core::exception_status("array calibration",
-                                core::Status::Code::InvalidArgument);
+  return core::exception_status(kWho, core::Status::Code::InvalidArgument);
 }
 
 core::Result<ArrayCalibration> read_array_calibration(
@@ -510,8 +393,7 @@ core::Result<ArrayCalibration> read_array_calibration(
   if (!array.ok()) return array.status().with_context(path);
   return array;
 } catch (...) {
-  return core::exception_status("array calibration",
-                                core::Status::Code::InvalidArgument);
+  return core::exception_status(kWho, core::Status::Code::InvalidArgument);
 }
 
 core::Result<std::string> format_array_calibration(
@@ -526,13 +408,8 @@ core::Result<std::string> format_array_calibration(
   std::string out =
       "{\n  \"format\": " + text(std::string(kFormat)) + ",\n  \"version\": " +
       text(corrected(array) ? kCorrectedVersion : kVersion) + ",\n";
-  if (!array.world.sensor.empty()) {
-    out += "  \"world\": {\"sensor\": " + text(array.world.sensor) + "},\n";
-  }
-  if (const auto& tag = array.world.apriltag) {
-    out += "  \"world\": {\"apriltag\": {\"family\": " + text(tag->family) +
-           ", \"id\": " + text(static_cast<std::uint64_t>(tag->id)) +
-           ", \"size_m\": " + text(tag->size_m) + "}},\n";
+  if (!array.world.sensor.empty() || array.world.apriltag) {
+    out += "  \"world\": " + world_text(array.world) + ",\n";
   }
   if (const auto& controls = array.color_controls) {
     out += "  \"color_controls\": {\"exposure\": " +
@@ -570,8 +447,7 @@ core::Result<std::string> format_array_calibration(
   out += "\n  }\n}\n";
   return out;
 } catch (...) {
-  return core::exception_status("array calibration",
-                                core::Status::Code::InvalidArgument);
+  return core::exception_status(kWho, core::Status::Code::InvalidArgument);
 }
 
 core::Status write_array_calibration(const std::string& path,

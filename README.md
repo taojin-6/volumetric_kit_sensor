@@ -33,7 +33,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 
 | Target | Headers | What | Links |
 | --- | --- | --- | --- |
-| `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file; a stereo pair (`stereo_calibration`), its rectification (`rectify_stereo`) and a lens's fold (`fold_radius2`) on the host; no Vulkan | core base, GLM |
+| `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file and a tracked sensor's registration into it; a stereo pair (`stereo_calibration`), its rectification (`rectify_stereo`) and a lens's fold (`fold_radius2`) on the host; no Vulkan | core base, GLM |
 | `sensor_frame` | `frame/` | `DeviceFrame`, the pinhole cameras, `DepthNoise`, `ColorEncoding` and the sRGB curve, `pinhole.glsl`, `device_requirements()`; header-only | core Vulkan |
 | `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions; `IAudioSensor`, `AudioChunk` | camera, frame |
 | `sensor_prep` | `prep/` | `GpuFramePrep`, `LumaPass` (any picture's 8-bit luma and its half, on the GPU), `PictureReadback` | interface |
@@ -359,7 +359,7 @@ core's `core_test_policy`, which the test links.
 
 ## Versions
 
-The version is `project()`'s (0.24.0), carried by the umbrella as
+The version is `project()`'s (0.25.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

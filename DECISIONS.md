@@ -466,6 +466,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   and a plane comes with a floor of 1 or more, which drops it. No plane is
   bit-identical to before; a plane beside device depth or at a floor of 0 is
   refused.
+- [**2026-11-02**](#2026-11-02--a-tracked-sensors-world-is-registered-into-an-arrays-for-one-sessions-world-epoch-by-one-rigid-transform-in-a-file-of-its-own-cameratracked_registrationhpp-the-array-files-world-block-and-transforms-are-read-and-written-in-one-place-that-both-files-share) —
+  A tracked sensor's world (ARKit's) is registered into an array's for one
+  capture session's world epoch by one rigid `tracking_to_world`, in a file
+  of its own (`camera/tracked_registration.hpp`), with the array's world it
+  registers into and the tag fit that solved it. The array file's world
+  block and transforms are read and written in one internal place that
+  both files call.
 
 ## Decision record
 
@@ -6239,3 +6246,72 @@ microseconds. With the floor-0 refusal, rechecked there, interleaved twice:
 device p50 0.0208 ms on main, 0.0208-0.0209 ms without a plane and
 0.0283-0.0284 ms with one; host p50 0.096-0.099, 0.090-0.093 and
 0.099-0.101 ms.
+
+### 2026-11-02 — A tracked sensor's world is registered into an array's for one session's world epoch, by one rigid transform in a file of its own (`camera/tracked_registration.hpp`); the array file's world block and transforms are read and written in one place that both files share.
+
+**The rule.** `camera/tracked_registration.hpp` (`sensor_camera`) is the
+file a tracked sensor's registration lives in:
+`"volumetric_kit.tracked_registration"`, version 1. `TrackedRegistration`
+holds the sensor's id, the capture session's 16-byte id and the world
+epoch it holds for, the array's world it registers into (the array file's
+world block: one sensor or one tag, never neither or both), the rigid
+`tracking_to_world` in the array file's `depth_to_color` form, and the
+tag fit as its solver states it: the RMS reprojection error, the stills it
+used (at least 1) and the tag's mean edge as they placed it. A frame
+posed `cam_to_tracking`, in this package's camera convention (+Z forward,
++Y down; ARKit's poses through `cv_from_gl_camera` first), sits at
+`tracking_to_world * cam_to_tracking`. The
+session is written as 32 hex digits, byte 0 first, lowercase, and read in
+either case; an all-zero session, which a session uses for none, is
+refused. It is read, checked and written as the array file is: the same
+validate, parse, read, format and write, numbers that read back to the
+same double, unknown keys ignored, a later version refused. The array
+file's world block, transforms, and the JSON numbers, objects and text
+under them move out of `array_calibration.cpp` into the internal
+`calibration_json.{hpp,cpp}`, which both files call, with the check that
+a world is one sensor or one tag (`check_world_kind`; only the array file
+allows neither); its refusals name no file, and each file's public
+functions prefix theirs with its name.
+
+**Why.**
+- **A file of its own.** The array file holds an array's calibration,
+  which outlives every session. A tracked sensor starts its world afresh
+  each session and moves it at each reset, so its registration holds for
+  one session's epoch alone; in the array file it would go stale with the
+  first restart and change the array file's version for a field most
+  arrays never have.
+- **One rigid transform.** The tracking world is metric, so the
+  registration is rigid; a scale error in the tracking shows in `edge_m`
+  against the tag's `size_m`, where the solver and the reader can judge
+  it, rather than hidden in a similarity.
+- **The session, the epoch and the world, written down.** A reader refuses
+  frames of another session or epoch, and the registration for an array of
+  another world, so a registration is never applied to poses it was not
+  solved for. Each of the three is what the reader compares, so each is in
+  the file.
+- **One reader and one writer per block.** The registration names its
+  world with the array file's block and writes its transform in the array
+  file's form, so both files call the same code for them; a copy would
+  drift. The array file reads, refuses and writes as before, every message
+  the same.
+
+**Not here.** The solve (calib's `register_tracked`) and the readers (a
+tracked source, which compares the session and the epoch with each
+frame's) land with their own PRs. No `WorldFrame` equality: only the
+mobile lane compares an array's world with a registration's, so it adds
+one with its first caller.
+
+**Validation.** Apple M5 Max, Release with warnings as errors: the whole
+suite passes (49 tests), and the camera-only build's 8, its consumer
+including the new header. The array file's refusal messages are byte for
+byte those of `main`'s build, and its suite now requires each to start
+with the file's name. Planted bugs, each failing
+`sensor_camera_tracked_registration`: the writer writing
+`world_to_tracking` (the golden writer's direction), the session's digits
+read nibble-swapped and its bytes reversed (the golden session), an
+all-zero session accepted (its refusal), a byte's high digit read without
+its hex check (a non-hex high digit's refusal), and a world of neither
+kind accepted (its refusal). The shared world check accepting a tag's
+negative id fails both files' suites, and accepting both kinds fails each
+suite for its own file. The array file's parse refusals without its name
+fail `sensor_camera_array_calibration`.

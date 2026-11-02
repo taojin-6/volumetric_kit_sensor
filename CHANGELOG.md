@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-11-02
+
+### Added
+
+- **A tracked sensor's registration** (`camera/tracked_registration.hpp`,
+  `sensor_camera`, every build): `TrackedRegistration`, the one rigid
+  `tracking_to_world` that places a tracked sensor's world (ARKit's) in a
+  sensor array's world for one capture session's world epoch, with the
+  array's world it registers into (one sensor or one tag) and the tag fit
+  that solved it (`rms_px`, `views`, `edge_m`). A frame posed
+  `cam_to_tracking` sits at `tracking_to_world * cam_to_tracking`.
+  `validate_`, `parse_`, `read_`, `format_` and `write_tracked_registration`
+  read and write the file, `"volumetric_kit.tracked_registration"` version
+  1, through the core's `read_file` and `write_file`; the session is 32 hex
+  digits, byte 0 first. calib's `register_tracked` writes it; a tracked
+  source reads it at open. DECISIONS.md, the 2026-11-02 tracked
+  registration entry.
+
+### Changed
+
+- The array calibration file's world block, its transforms, and the JSON
+  numbers, objects and text under them are read and written in one internal
+  place (`camera/calibration_json.{hpp,cpp}`), which the registration
+  shares, and so is the check that a world is one sensor or one tag. The
+  file reads, refuses and writes as before, every message the same.
+
 ## [0.24.0] - 2026-11-02
 
 ### Added
