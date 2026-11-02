@@ -293,6 +293,18 @@ core::Status split_annex_b(const std::uint8_t* data, std::size_t size,
   return core::exception_status("split_annex_b", core::Status::Code::IoError);
 }
 
+std::optional<int> first_slice_type(const std::uint8_t* data,
+                                    std::size_t size) noexcept {
+  if (data == nullptr) return std::nullopt;
+  for (std::size_t i = 0; i + 3 < size; ++i) {
+    if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1) continue;
+    const int type = (data[i + 3] >> 1) & 0x3f;
+    if (type < 32) return type;
+    i += 2;  // on from the unit's header
+  }
+  return std::nullopt;
+}
+
 BitReader::BitReader(const Nal& nal) noexcept
     : data_(nal.size > 2 ? nal.data + 2 : nullptr),
       size_(nal.size > 2 ? nal.size - 2 : 0) {}

@@ -11,8 +11,9 @@
 // up to the next key frame, as do the pairs a decoder too far behind drops
 // from its queue, a pause in the timestamps costs nothing, and decoding starts
 // at the first key frame; a stream the hardware refuses stops the decoder; the
-// pictures are shared with the queue families it is given. The frame-index
-// gate is tested on its own, since a test cannot set an SDK frame's index.
+// pictures are shared with the queue families it is given. The gate and the
+// key-frame scan it uses are sensor_video_syntax's (key_gate.hpp,
+// hevc_syntax.hpp), tested there.
 //
 // Where no device path opens the test skips; VS_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one, makes it fail instead.
@@ -368,19 +369,6 @@ int test_hands_on_device_pictures() {
   return 0;
 }
 
-int test_key_frames() {
-  const auto units = vs_test::hevc_access_units(kUnlabelled);
-  CHECK(units.size() == 8);
-  for (std::size_t i = 0; i < units.size(); ++i) {
-    // keyint 4: frames 0 and 4.
-    CHECK(orbbec::is_key_frame(units[i].data(), units[i].size()) ==
-          (i % 4 == 0));
-  }
-  const std::uint8_t none[] = {0, 0, 1};
-  CHECK(!orbbec::is_key_frame(none, sizeof(none)));
-  return 0;
-}
-
 int test_every_pair_in_order() {
   const Run r = run(
       pairs(vs_test::hevc_access_units(kUnlabelled), {0, 1, 2, 3, 4, 5, 6, 7}));
@@ -443,35 +431,6 @@ int test_pause_costs_nothing() {
       return 1;
     }
   }
-  return 0;
-}
-
-// The gate: key frames start a stream, a skipped or repeated index stops it
-// until the next, an unnumbered frame (index 0) is never a gap, and resync()
-// waits too. The key frame that ends a wait restarts the stream; one within
-// an unbroken stream continues it.
-int test_gate() {
-  using A = orbbec::ColorStreamGate::Admission;
-  orbbec::ColorStreamGate gate;
-  CHECK(gate.admit(1, false) == A::Drop);  // before the first key frame
-  CHECK(gate.admit(2, true) == A::Restart);
-  CHECK(gate.admit(3, false) == A::Decode);
-  CHECK(gate.admit(4, true) == A::Decode);
-  CHECK(gate.admit(6, false) == A::Drop);  // 5 went missing
-  CHECK(gate.admit(7, false) == A::Drop);
-  CHECK(gate.admit(8, true) == A::Restart);
-  CHECK(gate.admit(9, false) == A::Decode);
-  CHECK(gate.admit(9, false) == A::Drop);  // repeated
-  CHECK(gate.admit(10, true) == A::Restart);
-  CHECK(gate.admit(2, false) == A::Drop);  // backwards: a restarted camera
-  CHECK(gate.admit(3, true) == A::Restart);
-  gate.resync();
-  CHECK(gate.admit(4, false) == A::Drop);
-  CHECK(gate.admit(5, true) == A::Restart);
-  orbbec::ColorStreamGate unnumbered;
-  CHECK(unnumbered.admit(0, true) == A::Restart);
-  CHECK(unnumbered.admit(0, false) == A::Decode);
-  CHECK(unnumbered.admit(0, false) == A::Decode);
   return 0;
 }
 
@@ -831,8 +790,6 @@ int main() {
   // The SDK writes a log file into the working directory unless told not to.
   ob::Context::setLoggerToFile(OB_LOG_SEVERITY_OFF, "");
   ob::Context::setLoggerToConsole(OB_LOG_SEVERITY_WARN);
-  if (test_key_frames() != 0) return 1;
-  if (test_gate() != 0) return 1;
   if (test_start_needs_device() != 0) return 1;
 
   return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);

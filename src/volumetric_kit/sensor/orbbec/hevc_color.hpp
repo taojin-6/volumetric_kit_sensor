@@ -26,44 +26,9 @@
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/sensor/frame/color_space.hpp"
 #include "volumetric_kit/sensor/video/hevc_decoder.hpp"
+#include "volumetric_kit/sensor/video/key_gate.hpp"
 
 namespace volumetric_kit::sensor::orbbec {
-
-// Whether an Annex B access unit holds a key frame: an IRAP slice (BLA, IDR
-// or CRA; NAL types 16-23), from which decoding can start.
-bool is_key_frame(const std::uint8_t* data, std::size_t size) noexcept;
-
-// Which H.265 frames can be decoded. A frame lost on the way leaves the ones
-// after it predicted from a picture the decoder never had, until the next key
-// frame; the camera's frame index, one up per frame it encodes, is what shows
-// the loss. Its timestamps cannot: a sync secondary's first frame comes as
-// soon as it starts and the rest only once the primary triggers it, up to
-// seconds later, with no frame between (measured on the rig).
-class ColorStreamGate {
- public:
-  enum class Admission {
-    Drop,     // waiting for a key frame: not decodable
-    Decode,   // the next frame of an unbroken stream
-    Restart,  // the key frame that ends a wait: the stream starts afresh
-  };
-  // What to do with frame `index` (0: unnumbered, never a gap).
-  Admission admit(std::uint64_t index, bool key_frame) noexcept {
-    if (index != 0 && last_index_ != 0 && index != last_index_ + 1) {
-      waiting_for_key_ = true;
-    }
-    last_index_ = index;
-    if (!waiting_for_key_) return Admission::Decode;
-    if (!key_frame) return Admission::Drop;
-    waiting_for_key_ = false;
-    return Admission::Restart;
-  }
-  // Wait for the next key frame: a decode failed, or frames were dropped.
-  void resync() noexcept { waiting_for_key_ = true; }
-
- private:
-  bool waiting_for_key_ = true;  // the first frame decoded is a key frame
-  std::uint64_t last_index_ = 0;
-};
 
 // The Femto Mega's colour stream: BT.601 full range, which it writes no VUI
 // to say (the 2026-09-28 decision). Taken for a stream that declares no
@@ -142,8 +107,12 @@ class HevcColorDecoder {
   Sink sink_;
   std::optional<HevcDecoder> decoder_;
 
-  // The decode thread's alone.
-  ColorStreamGate gate_;
+  // The decode thread's alone. The gate is given the camera's frame index,
+  // one up per frame it encodes, which is what shows a loss (index 0 is
+  // unnumbered). Its timestamps cannot: a sync secondary's first frame comes
+  // as soon as it starts and the rest only once the primary triggers it, up
+  // to seconds later, with no frame between (measured on the rig).
+  KeyGate gate_;
   std::int64_t next_pts_ = 0;
   // Pairs sent and not yet decoded, by the pts they were sent with.
   std::map<std::int64_t, std::shared_ptr<ob::FrameSet>> in_flight_;

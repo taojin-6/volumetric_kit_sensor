@@ -64,7 +64,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   decoded as BT.601 full range, which it codes and does not say. Its RGB
   output, and the RGB mode its calibration was read from, went on
   2026-10-06, and its host decoding the same day. *Amended 2026-10-27:*
-  H.265 at 3840x2160 and 25 fps is the default.
+  H.265 at 3840x2160 and 25 fps is the default. *Amended 2026-11-02:* the
+  colour gate is `sensor_video_syntax`'s `KeyGate`.
 - [**2026-09-28**](#2026-09-28--gpu-pre-processing-is-recon_sensor_utils-a-driver-hands-out-the-frame-as-captured-the-device-undistorts-depth-and-undistorts-and-converts-colour-and-fusion-reads-the-buffers-in-place-depth-and-colour-each-with-its-own-camera-rather-than-registered) —
   GPU pre-processing is `recon_sensor_utils`: a driver hands out the frame as
   captured, the device undistorts depth and undistorts and converts colour,
@@ -439,6 +440,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   rounded 2x2 mean. The outputs are pooled device buffers, leased like frame
   prep's, CONCURRENT across the families the caller names.
   `PictureReadback` reads a list in one submit.
+- [**2026-11-02**](#2026-11-02--which-access-units-decode-after-a-loss-is-keygate-and-whether-one-is-a-key-hevcfirst_slice_type-public-in-sensor_video_syntax-the-orbbec-colour-decoders-gate-and-key-scan-moved-there-unchanged-amends-the-2026-09-28-h265-and-2026-10-25-public-syntax-entries) —
+  Which access units of a predicted H.265 stream decode after a loss is
+  `KeyGate` (`video/key_gate.hpp`), and whether one is a key
+  `hevc::first_slice_type` with `is_irap`: public, in
+  `sensor_video_syntax`, on every platform. They are the Orbbec colour
+  decoder's gate and key scan (`hevc_color.hpp`), moved with their
+  behaviour unchanged.
 
 ## Decision record
 
@@ -6021,3 +6029,48 @@ validation layer: the whole suite passes, 40 tests; the core's shared test
 device takes two queues of one family there, so the cross-family case
 skips. recon's suite was not
 run: `frame` is unchanged.
+
+### 2026-11-02 — Which access units decode after a loss is `KeyGate`, and whether one is a key `hevc::first_slice_type`: public in `sensor_video_syntax`, the Orbbec colour decoder's gate and key scan moved there unchanged (amends the 2026-09-28 H.265 and 2026-10-25 public-syntax entries).
+
+**The rule.** `KeyGate` (`video/key_gate.hpp`) says which access units of a
+predicted H.265 stream to send after a loss, and `hevc::first_slice_type`
+(`video/hevc_syntax.hpp`) the type of an access unit's first slice, which
+with `is_irap` says whether it is a key. Both are public, in
+`sensor_video_syntax`, host code on the core's base tier on every platform.
+The Orbbec colour decoder uses them; its own gate and key scan
+(`is_key_frame`, `hevc_color.hpp`) go.
+
+**The semantics, as they were.** The gate waits for a key at the start,
+after a number other than one up from the last, and after `lose()` (was
+`resync()`). The key that ends a wait is `Restart`, and the caller resets
+the decoder before sending it; a unit of an unbroken stream is `Take` (was
+`Decode`); one while waiting is `Skip` (was `Drop`). An unnumbered unit is
+an empty number, where Orbbec's was index 0: it is never a gap, and the
+unit after it is not checked. The driver passes its frame index with 0 as
+empty, so 0 is still unnumbered there, while the gate itself takes 0 as a
+number. `first_slice_type` is the old scan: the first unit after a start
+code whose type is below 32, its header not checked further, with no
+allocation and no failure. Null data, which the driver never passes, has
+no slice.
+
+**Why public.** Any caller of `HevcDecoder` whose stream can lose units
+needs this rule and this scan; one public copy, beside the syntax it reads,
+leaves none in a driver.
+
+**Tests.** `sensor_video_key_gate`, on every leg: the Orbbec gate's cases,
+moved with the names changed, then the start, a gap, an unnumbered unit
+resetting the last number, `lose()`, and a key while waiting.
+`sensor_video_hevc_syntax`: on every access unit of every committed clip,
+`first_slice_type` is the type of the first slice `split_annex_b` finds; the
+unlabelled clip's keys are its units 0 and 4 (the Orbbec test's case,
+moved); and three- and four-byte start codes, units before the slice, bytes
+before the first start code, no slice, a cut header and null data. The
+Orbbec HEVC test is otherwise unchanged.
+
+**Validation.** Apple M5 Max, macOS 27.2, Release with the Orbbec driver,
+under the validation layer on VideoToolbox (`VS_TEST_HEVC_BACKEND`): the 55
+tests pass. Each of these fails a test: the gate's gap check removed, an
+unnumbered unit not resetting the last number, the driver's index 0 taken
+as a number, and the scan resuming past a unit's second header byte. Run
+once by hand, the deleted scan and `first_slice_type` with `is_irap` agreed
+on 2,000,000 random byte strings. No camera was opened.
