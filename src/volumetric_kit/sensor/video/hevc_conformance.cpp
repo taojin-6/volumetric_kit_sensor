@@ -207,11 +207,11 @@ class Run {
 };
 
 core::Result<CVPixelBufferRef> Run::picture(std::uint32_t i) {
-  Pixels& slot = ring_[i % kRing];
-  if (slot == nullptr) {
-    VKC_ASSIGN(slot, make_pixels(o_.width, o_.height, i % kRing, o_.color));
+  Pixels& made = ring_[i % kRing];
+  if (made == nullptr) {
+    VKC_ASSIGN(made, make_pixels(o_.width, o_.height, i % kRing, o_.color));
   }
-  return slot.get();
+  return made.get();
 }
 
 core::Result<std::string> Run::refusals() {
