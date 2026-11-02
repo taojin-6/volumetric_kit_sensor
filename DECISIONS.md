@@ -6207,3 +6207,18 @@ of 19,200 pixels off through the lens); `<=` for `<` (the floor's own level
 dropped: 1,008 off at floor 1); and host colour placed after the depth
 alone, over the plane (the slot case: 1,033 depth pixels off at 63 x 47,
 while the colour itself still matches).
+
+**On the devices** (Release, a bench built against this commit and against
+main). The lab RTX 5090: the lab's take1, 300 sets of four Femto Mega
+cameras, its recorded 640 x 576 depth fed as raw depth through each
+camera's factory lens and depth offset, beside packed colour at a quarter of
+its colour camera, prepared as the rig does (`prepare_batch`, the outlier
+filter on): every camera's depth and colour bytes, 1,193 frames, are the
+same on main and on this commit, run twice each. The set's device time,
+interleaved main, this commit, main, this commit: p50 0.568 / 0.575 /
+0.565 / 0.573 ms, p95 1.963 / 1.958 / 1.961 / 1.960 ms; with a plane at
+floor 2 on every camera, 0.651 / 2.218 ms. An idle RTX 4090 (synthetic,
+256 x 192, one camera, 300 prepares each, interleaved): device p50 / p95
+0.0208 / 0.0211 ms on main, 0.0208 / 0.0212 ms here without a plane, and
+0.0259-0.0284 / 0.0287 ms with a plane at floor 2, a plane's cost of 5-8
+microseconds.
