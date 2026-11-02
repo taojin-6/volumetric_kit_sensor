@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Tao Jin
-"""OpenCV's stereoRectify on the pairs tests/sensor_stereo_rectifier_test.cpp
-pins, printed as that test's kOpenCvCases initializer.
+"""OpenCV's stereoRectify on the pairs tests/stereo_rectify_reference.hpp
+holds, printed as its kOpenCvCases initializer: the numbers rectify_stereo's
+test pins, and the pairs the rectifier's tests image.
 
 The build never needs OpenCV: these numbers are generated once and committed
-in the test. Regenerate them, after changing a case here, with OpenCV in a
+in that header. Regenerate them, after changing a case here, with OpenCV in a
 virtual environment of its own:
 
     python3 -m venv venv && venv/bin/pip install opencv-python-headless numpy
     venv/bin/python tools/stereo_rectify_reference.py
 
-and paste the output over the test's kOpenCvCases. The flags are OpenCV's
-default, CALIB_ZERO_DISPARITY, which StereoRectifier keeps: both views share
+and paste the output over the header's kOpenCvCases. The flags are OpenCV's
+default, CALIB_ZERO_DISPARITY, which rectify_stereo keeps: both views share
 one principal point.
 """
 

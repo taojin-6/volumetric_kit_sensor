@@ -4,8 +4,8 @@
 // The stereo tier's own pieces, no camera:
 //   - the contract every stereo source keeps (stereo_contract.hpp): a source
 //     opened without a calibration reports both cameras 0 x 0 and one opened
-//     with one neither, and frames that keep the sync rules pass; each rule
-//     broken is the one named;
+//     with one neither camera with a side 0, and frames that keep the sync
+//     rules pass; each rule broken is the one named;
 //   - StereoRectifier::create takes a pair from two entries of a calibration
 //     file (stereo_calibration), its rig rectify_stereo's bit for bit, the
 //     baseline the cameras' distance; and refuses a source with no
@@ -91,7 +91,7 @@ int test_contract() {
              .empty());
 
   // The calibration says how the source was opened: both cameras 0 x 0
-  // without one, neither with one.
+  // without one, neither camera with a side 0 with one.
   sensor::StereoInfo calibrated = info;
   auto pair =
       sensor::stereo_calibration(stereo_pair_file::pair_file(), "bm-1", "bm-2");
@@ -118,6 +118,11 @@ int test_contract() {
   half.calibration.left.size = {0, 2160};
   CHECK(says(stereo_contract::calibration_breach(half, Opened::Uncalibrated),
              "the left camera is 0 x 2160"));
+  half = calibrated;
+  half.calibration.left.size = {0, 2160};
+  CHECK(says(stereo_contract::calibration_breach(half, Opened::Calibrated),
+             "the left camera is 0 x 2160 from a source opened with a "
+             "calibration"));
   std::puts("the contract: kept, and each rule broken named");
   return 0;
 }

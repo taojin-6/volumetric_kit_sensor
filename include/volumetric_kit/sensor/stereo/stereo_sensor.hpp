@@ -42,8 +42,8 @@ struct StereoInfo {
   /// The pair (@ref StereoCalibration, the camera tier's). Both cameras
   /// 0 x 0, as a default @ref StereoCalibration, is a source opened without
   /// a calibration, whose pictures a calibration is made from:
-  /// `StereoRectifier` and `StereoDepthSensor` refuse it. A source opened
-  /// with one reports neither camera 0 x 0. No other field says which.
+  /// `StereoRectifier` and `StereoDepthSensor` refuse it. In a source opened
+  /// with one, neither camera has a side 0. No other field says which.
   StereoCalibration calibration;
   /// A third, colour camera (a RealSense's); empty when `left` is the colour.
   std::optional<camera::CameraModel> color;

@@ -225,8 +225,9 @@ VKC_ASSIGN(auto rectifier,
 VKC_ASSIGN(sensor::RectifiedPair pair, rectifier->rectify(frame));
 ```
 
-`tools/stereo_rectify_reference.py` regenerates the OpenCV numbers its test
-pins (OpenCV in a virtual environment; the build never needs it).
+`tools/stereo_rectify_reference.py` regenerates the OpenCV numbers
+`rectify_stereo`'s test pins (OpenCV in a virtual environment; the build
+never needs it).
 
 ## Stereo depth (FFS)
 

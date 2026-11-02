@@ -37,8 +37,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `StereoRectifier: rectify_stereo: ...`, with the same codes.
 - `StereoInfo::calibration` states the rule for every source: both cameras
   0 x 0 is a source opened without a calibration, which `StereoRectifier`
-  and `StereoDepthSensor` refuse, and a source opened with one reports
-  neither camera 0 x 0. `tests/stereo_contract.hpp` checks it on every
+  and `StereoDepthSensor` refuse; in a source opened with one, neither
+  camera has a side 0. `tests/stereo_contract.hpp` checks it on every
   driver's unit (`Opened`, `calibration_breach`).
 - CI: the 24.04 leg builds the DeckLink driver's SDK part
   (`VS_WITH_DECKLINK`) against the SDK's headers the core keeps, checked out

@@ -6,6 +6,11 @@
 //   - stereo_calibration: a pair from two entries of a calibration file, the
 //     left camera's point in the right one, to round-off, named either way
 //     round, and each refusal, named;
+//   - rectify_stereo is OpenCV's stereoRectify (Bouguet's, zero disparity),
+//     to the numbers tools/stereo_rectify_reference.py pinned
+//     (stereo_rectify_reference.hpp): R1, R2, the camera and the baseline,
+//     for mild and strong lenses, toed-in and converging pairs, alpha 0, 0.5
+//     and 1, resized or not;
 //   - rectify_stereo: synthetic correspondences -- one point's rays in the
 //     two cameras -- land on one row of the views within 1e-9 px, and
 //     fx * baseline / z apart, for a toed-in pair, the Blackmagic pair's
@@ -22,6 +27,7 @@
 //     the provisional calibration's lens never fold (float's largest); a 2024
 //     fit of a Blackmagic lens folds at 74.8 degrees off the axis.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -29,6 +35,7 @@
 #include <vector>
 
 #include "stereo_pair_file.hpp"
+#include "stereo_rectify_reference.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/sensor/camera/array_calibration.hpp"
@@ -49,6 +56,8 @@ using camera::Vec3d;
 using stereo_pair_file::left_to_right;
 using stereo_pair_file::lens;
 using stereo_pair_file::pair_file;
+using stereo_rectify_reference::kOpenCvCases;
+using stereo_rectify_reference::OpenCvCase;
 
 // The lens of the Blackmagic pair's provisional calibration (2026-11-01):
 // the 2026-09-29 fit of one camera at 1080p, scaled to 2160p, on both
@@ -288,6 +297,67 @@ int test_rows() {
   return 0;
 }
 
+// A row-major 3x3, as OpenCV prints one, in GLM's columns.
+Mat3d from_rows(const double* m) {
+  Mat3d out;
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) out[c][r] = m[r * 3 + c];
+  }
+  return out;
+}
+
+// Bouguet's rectification is OpenCV's: R1 and R2 to round-off, the camera
+// (P1 and P2, one principal point) and the baseline (-P2's Tx / f).
+int test_opencv() {
+  double worst_r = 0, worst_f = 0, worst_c = 0, worst_b = 0;
+  for (const OpenCvCase& c : kOpenCvCases) {
+    sensor::StereoCalibration pair;
+    pair.left = c.left;
+    pair.right = c.right;
+    pair.left_to_right =
+        camera::matrix_from_rodrigues({Vec3d(c.rvec[0], c.rvec[1], c.rvec[2]),
+                                       Vec3d(c.tvec[0], c.tvec[1], c.tvec[2])});
+    auto made = sensor::rectify_stereo(pair, c.size, c.alpha);
+    if (!made) {
+      std::fprintf(stderr, "%s: %s\n", c.name, made.status().message().c_str());
+    }
+    CHECK(made.ok());
+    const sensor::StereoRig& rig = made->rig;
+    const Mat3d r1 = glm::transpose(Mat3d(rig.rectified_to_left));
+    worst_r =
+        std::max({worst_r, worst_difference(r1, from_rows(c.r1)),
+                  worst_difference(made->right_to_rectified, from_rows(c.r2))});
+    const camera::ImageSize size = c.size.width != 0 ? c.size : c.left.size;
+    CHECK(rig.camera.size.width == size.width &&
+          rig.camera.size.height == size.height);
+    const camera::RationalDistortion& d = rig.camera.distortion;
+    CHECK(d.k1 == 0 && d.k2 == 0 && d.p1 == 0 && d.p2 == 0 && d.k3 == 0 &&
+          d.k4 == 0 && d.k5 == 0 && d.k6 == 0);
+    CHECK(rig.rectified_to_left[3] == glm::dvec4(0, 0, 0, 1));
+    const camera::PinholeIntrinsics& k = rig.camera.intrinsics;
+    for (const double* p : {c.p1, c.p2}) {
+      worst_f =
+          std::max({worst_f, std::fabs(k.fx - p[0]), std::fabs(k.fy - p[5])});
+      worst_c =
+          std::max({worst_c, std::fabs(k.cx - p[2]), std::fabs(k.cy - p[6])});
+    }
+    worst_b = std::max(worst_b, std::fabs(rig.baseline + c.p2[3] / c.p2[0]));
+  }
+  std::printf(
+      "  OpenCV's stereoRectify, %zu pairs: rotations within %.2g, focal "
+      "length %.2g px, principal point %.2g px, baseline %.2g m\n",
+      sizeof(kOpenCvCases) / sizeof(kOpenCvCases[0]), worst_r, worst_f, worst_c,
+      worst_b);
+  // OpenCV undistorts the corners in float, so its principal point and,
+  // through alpha's scale, its focal length carry float's round-off.
+  CHECK(worst_r < 1e-12);
+  CHECK(worst_f < 1e-4);
+  CHECK(worst_c < 1e-4);
+  CHECK(worst_b < 1e-12);
+  std::puts("rectify_stereo: OpenCV's numbers");
+  return 0;
+}
+
 // A pair rectified already: both rotations the identity, its camera scaled
 // by one factor about the centres, cropped at alpha 0 and fitted at 1.
 int test_already_rectified() {
@@ -439,6 +509,7 @@ int test_fold() {
 int main() {
   if (test_calibration() != 0) return 1;
   if (test_rows() != 0) return 1;
+  if (test_opencv() != 0) return 1;
   if (test_already_rectified() != 0) return 1;
   if (test_refusals() != 0) return 1;
   if (test_fold() != 0) return 1;

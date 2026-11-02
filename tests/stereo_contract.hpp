@@ -5,8 +5,9 @@
 
 // The contract every stereo source keeps, checked on its info and on what it
 // handed out since its start: its calibration says how it was opened
-// (StereoInfo::calibration: both cameras 0 x 0 without one, neither with
-// one), each frame's skew within its info's bound (StereoInfo::max_skew_ns),
+// (StereoInfo::calibration: both cameras 0 x 0 without one, neither camera
+// with a side 0 with one), each frame's skew within its info's bound
+// (StereoInfo::max_skew_ns),
 // sequences and times increasing, and the counters' rule (SensorStats:
 // delivered + dropped + failed <= received, and delivered the frames taken).
 // One check for every source, a test camera's and each driver's own unit, so

@@ -5832,8 +5832,8 @@ checked by hand.
   its pole; float's largest for a lens that does not fold within 89.99
   degrees of the axis.
 - `StereoInfo::calibration` with both cameras 0 x 0 is a source opened
-  without a calibration, for every source; a source opened with one
-  reports neither camera 0 x 0. `StereoRectifier` and `StereoDepthSensor`
+  without a calibration, for every source; in a source opened with one,
+  neither camera has a side 0. `StereoRectifier` and `StereoDepthSensor`
   refuse the first. `tests/stereo_contract.hpp` checks it, every driver's
   test saying how it opened its source (`Opened`): DeckLink both ways,
   RealSense's factory calibration, the test cameras.
@@ -5856,8 +5856,13 @@ checked by hand.
 
 **Tests.** `sensor_camera_stereo_rectification` (new; host only, so the
 camera-only build runs it): `stereo_calibration`'s tests, moved from
-`sensor_stereo_sensor`; 6318 synthetic correspondences (one point's rays
-in both cameras) over three pairs -- toed in, the Blackmagic pair's
+`sensor_stereo_sensor`; OpenCV's `stereoRectify` on the five pinned pairs,
+moved from `sensor_stereo_rectifier` and checked on `rectify_stereo` itself
+(`R1`, `right_to_rectified` as `R2`, the camera and the baseline: rotations
+within 5.1e-15, focal length 1.1e-5 px, principal point 7.3e-6 px), the
+table now `tests/stereo_rectify_reference.hpp`, which the rectifier's tests
+still image; 6318 synthetic correspondences (one point's rays in both
+cameras) over three pairs -- toed in, the Blackmagic pair's
 provisional calibration, converging barrel lenses -- at 960x544 and their
 own size, alpha 0, 0.5 and 1, on one row within 2.7e-12 px and
 `fx * baseline / z` apart within 2.2e-12 px; `R2 * R` within 2.2e-16 of
@@ -5874,11 +5879,13 @@ largest); a 2024 fit of a Blackmagic lens (bm-2) at 74.83 degrees.
 breach named, and the rectifier's rig `rectify_stereo`'s bit for bit.
 `sensor_decklink_upload`: the contract on the driver opened with and
 without a calibration. `sensor_realsense_conversion`: the infrared pair's
-info calibrated. `sensor_stereo_rectifier` is unchanged. Each of these
-mutants failed a test: `R2` returned as `R1` (rows 44 px apart; the
+info calibrated. `sensor_stereo_rectifier` keeps its GPU checks. Each of
+these mutants failed a test: `R2` returned as `R1` (rows 44 px apart; the
 rectifier's view test too), the fold's pole case dropped (k4's pole read as
-no fold), and the already-rectified branch skipped (fx 480.918 against
-480.375; the rectifier's own test too).
+no fold), the already-rectified branch skipped (fx 480.918 against
+480.375; the rectifier's own test too), and, past the rows check, the
+focal length from `fx` rather than `fy` (0.015 px off OpenCV's) and
+alpha's two scales swapped (140 px off).
 
 **Validation.** Release with warnings as errors, under the validation
 layer: on the M5 Max (MoltenVK) the default build's suite, 45 tests, and
@@ -5887,4 +5894,6 @@ on the lab's RTX 5090 (Ubuntu 26.04, driver 615.71.10, TensorRT 11.4),
 with CUDA, FFmpeg, FFS, RealSense and DeckLink (SDK 16.0) on, the whole
 suite, 52 tests. By hand, the rectifier built from main and from this
 change gave the same rigs, to the bit, and the same view bytes (FNV-1a)
-for nine pairs, both outputs, on the Mac. No camera was opened.
+for nine pairs, both outputs, on the Mac. The review's round changed tests
+and documents only; the Mac's two suites were run again on it, the lab's
+was not. No camera was opened.

@@ -44,7 +44,8 @@ add_test(NAME sensor_camera_array_calibration
 
 # The camera tier's stereo pair: a pair from two entries of a calibration file
 # (stereo_calibration), its rectification on the host (rectify_stereo: rows
-# aligned within 1e-9 px, R2 the right camera's own, a pair rectified already
+# aligned within 1e-9 px, R2 the right camera's own, OpenCV's numbers as
+# tools/stereo_rectify_reference.py pinned them, a pair rectified already
 # resampled, the refusals) and a lens's fold (fold_radius2: k1's turn, k4's
 # pole, lenses that never fold, a 2024 fit that folds at 74.8 degrees).
 # Host-only, so camera-only builds run it too.
@@ -298,13 +299,12 @@ target_link_libraries(
 vs_target_warnings(sensor_array_process_test)
 add_test(NAME sensor_array_process COMMAND sensor_array_process_test)
 
-# The stereo tier's rectifier (sensor_stereo) on synthetic calibrated pairs: its
-# rectification against OpenCV's numbers (pinned by
-# tools/stereo_rectify_reference.py), rows aligned and the host reference of the
-# remap on a scene an independent renderer images, every layout from the host
-# and the device, a pair rectified already, the depth view, the views' lease and
-# export, the area prefilter where a view shrinks its picture, the refusals, and
-# the pass's time. Skips without a device.
+# The stereo tier's rectifier (sensor_stereo) on synthetic calibrated pairs:
+# rows aligned and the host reference of the remap on a scene an independent
+# renderer images, every layout from the host and the device, a pair rectified
+# already, the depth view, the views' lease and export, the area prefilter where
+# a view shrinks its picture, the refusals, and the pass's time. Skips without a
+# device.
 add_executable(sensor_stereo_rectifier_test sensor_stereo_rectifier_test.cpp)
 target_link_libraries(
   sensor_stereo_rectifier_test PRIVATE volumetric_kit::sensor_stereo

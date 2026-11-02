@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// StereoRectifier on synthetic calibrated pairs, no camera:
-//   - its rectification is OpenCV's stereoRectify (Bouguet's, zero
-//     disparity), to the numbers tools/stereo_rectify_reference.py pinned:
-//     both rotations, the camera and the baseline, for mild and strong lenses,
-//     toed-in and converging pairs, alpha 0, 0.5 and 1, resized or not;
+// StereoRectifier on synthetic calibrated pairs, no camera (its
+// rectification is rectify_stereo's, which camera_stereo_rectification_test
+// pins to OpenCV's numbers):
 //   - blobs on a plane, imaged through two lensed cameras, rotated and
 //     offset, by an independent host renderer (each camera pixel's ray found
 //     by inverting the lens iteratively, where the pass runs it forward),
@@ -66,6 +64,7 @@
 #include <utility>
 #include <vector>
 
+#include "stereo_rectify_reference.hpp"
 #include "v210.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
@@ -96,140 +95,17 @@ using camera::Mat3d;
 using camera::Mat4d;
 using camera::Vec2d;
 using camera::Vec3d;
+using stereo_rectify_reference::kOpenCvCases;
+using stereo_rectify_reference::OpenCvCase;
 using Rectifier = sensor::StereoRectifier;
 
 vkc::Device* g_device = nullptr;
 vkc::Allocator* g_allocator = nullptr;
 
-// --- OpenCV's numbers -------------------------------------------------------
+// --- The pinned pairs -------------------------------------------------------
 
-struct OpenCvCase {
-  const char* name;
-  CameraModel left, right;
-  double rvec[3], tvec[3];  // left_to_right, as OpenCV's R (Rodrigues) and T
-  camera::ImageSize size;
-  double alpha;
-  double r1[9], r2[9], p1[12], p2[12];  // row-major, as OpenCV prints them
-};
-
-// tools/stereo_rectify_reference.py, OpenCV 5.0.0
-const OpenCvCase kOpenCvCases[] = {
-    {"mild lenses, toed in, to 960x544, alpha 0",
-     {{1280, 720},
-      {652.5, 651.75, 641.25, 358.5},
-      {-0.052, 0.031, 0.0007, -0.0004, -0.0061, 0.012, 0.0021, -0.0009}},
-     {{1280, 720},
-      {649.25, 650.5, 636.75, 362.25},
-      {-0.047, 0.026, -0.0003, 0.0006, -0.0048, 0.009, 0.0, 0.0}},
-     {0.0123, -0.0347, 0.0061},
-     {-0.09503, 0.0012, -0.0021},
-     {960, 544},
-     0.0,
-     {0.9997488061688111, -0.01866291464067818, -0.012410486741139221,
-      0.018584449851300255, 0.9998067590793931, -0.006408020200098485,
-      0.012527680861266353, 0.006175768476483172, 0.99990245379035},
-     {0.999676262151829, -0.01262350325772873, 0.022091130701028836,
-      0.01248423827298086, 0.9999013899773131, 0.006430716614845072,
-      -0.02217013046626626, -0.0061528438090947615, 0.9997352788754479},
-     {491.30709188830133, 0.0, 475.7912893295288, 0.0, 0.0, 491.30709188830133,
-      272.30182562934027, 0.0, 0.0, 0.0, 1.0, 0.0},
-     {491.30709188830133, 0.0, 475.7912893295288, -46.704032805226554, 0.0,
-      491.30709188830133, 272.30182562934027, 0.0, 0.0, 0.0, 1.0, 0.0}},
-    {"mild lenses, toed in, to 960x544, alpha 1",
-     {{1280, 720},
-      {652.5, 651.75, 641.25, 358.5},
-      {-0.052, 0.031, 0.0007, -0.0004, -0.0061, 0.012, 0.0021, -0.0009}},
-     {{1280, 720},
-      {649.25, 650.5, 636.75, 362.25},
-      {-0.047, 0.026, -0.0003, 0.0006, -0.0048, 0.009, 0.0, 0.0}},
-     {0.0123, -0.0347, 0.0061},
-     {-0.09503, 0.0012, -0.0021},
-     {960, 544},
-     1.0,
-     {0.9997488061688111, -0.01866291464067818, -0.012410486741139221,
-      0.018584449851300255, 0.9998067590793931, -0.006408020200098485,
-      0.012527680861266353, 0.006175768476483172, 0.99990245379035},
-     {0.999676262151829, -0.01262350325772873, 0.022091130701028836,
-      0.01248423827298086, 0.9999013899773131, 0.006430716614845072,
-      -0.02217013046626626, -0.0061528438090947615, 0.9997352788754479},
-     {443.941841005151, 0.0, 475.7912893295288, 0.0, 0.0, 443.941841005151,
-      272.30182562934027, 0.0, 0.0, 0.0, 1.0, 0.0},
-     {443.941841005151, 0.0, 475.7912893295288, -42.20145535906714, 0.0,
-      443.941841005151, 272.30182562934027, 0.0, 0.0, 0.0, 1.0, 0.0}},
-    {"mild lenses, toed in, own size, alpha 0.5",
-     {{1280, 720},
-      {652.5, 651.75, 641.25, 358.5},
-      {-0.052, 0.031, 0.0007, -0.0004, -0.0061, 0.012, 0.0021, -0.0009}},
-     {{1280, 720},
-      {649.25, 650.5, 636.75, 362.25},
-      {-0.047, 0.026, -0.0003, 0.0006, -0.0048, 0.009, 0.0, 0.0}},
-     {0.0123, -0.0347, 0.0061},
-     {-0.09503, 0.0012, -0.0021},
-     {0, 0},
-     0.5,
-     {0.9997488061688111, -0.01866291464067818, -0.012410486741139221,
-      0.018584449851300255, 0.9998067590793931, -0.006408020200098485,
-      0.012527680861266353, 0.006175768476483172, 0.99990245379035},
-     {0.999676262151829, -0.01262350325772873, 0.022091130701028836,
-      0.01248423827298086, 0.9999013899773131, 0.006430716614845072,
-      -0.02217013046626626, -0.0061528438090947615, 0.9997352788754479},
-     {621.8226368993827, 0.0, 632.734619140625, 0.0, 0.0, 621.8226368993827,
-      360.690486907959, 0.0, 0.0, 0.0, 1.0, 0.0},
-     {621.8226368993827, 0.0, 632.734619140625, -59.11094163359617, 0.0,
-      621.8226368993827, 360.690486907959, 0.0, 0.0, 0.0, 1.0, 0.0}},
-    {"strong barrel lenses, converging, to 640x480, alpha 0",
-     {{800, 600},
-      {420.0, 421.0, 401.0, 297.0},
-      {-0.28, 0.09, 0.0012, -0.0009, -0.01, 0.05, 0.0, 0.0}},
-     {{800, 600},
-      {418.5, 419.25, 396.5, 303.75},
-      {-0.26, 0.08, -0.0006, 0.0011, -0.008, 0.04, 0.0, 0.0}},
-     {0.02, 0.11, -0.015},
-     {-0.12, 0.004, 0.009},
-     {640, 480},
-     0.0,
-     {0.99919041629922, -0.018628261579352816, 0.03565809650448065,
-      0.018960912876812504, 0.9997795954164821, -0.009013565983181118,
-      -0.035482330231674096, 0.009682378808249669, 0.9993233989965131},
-     {0.9966488651850164, -0.033221628839500875, -0.07474866488887648,
-      0.03391965042199359, 0.9993918370204781, 0.008087855839697757,
-      0.07443451377330855, -0.010596200926956203, 0.9971696062783135},
-     {283.97960082016266, 0.0, 326.25732421875, 0.0, 0.0, 283.97960082016266,
-      245.94703063964843, 0.0, 0.0, 0.0, 1.0, 0.0},
-     {283.97960082016266, 0.0, 326.25732421875, -34.19213455091169, 0.0,
-      283.97960082016266, 245.94703063964843, 0.0, 0.0, 0.0, 1.0, 0.0}},
-    {"strong barrel lenses, converging, to 640x480, alpha 1",
-     {{800, 600},
-      {420.0, 421.0, 401.0, 297.0},
-      {-0.28, 0.09, 0.0012, -0.0009, -0.01, 0.05, 0.0, 0.0}},
-     {{800, 600},
-      {418.5, 419.25, 396.5, 303.75},
-      {-0.26, 0.08, -0.0006, 0.0011, -0.008, 0.04, 0.0, 0.0}},
-     {0.02, 0.11, -0.015},
-     {-0.12, 0.004, 0.009},
-     {640, 480},
-     1.0,
-     {0.99919041629922, -0.018628261579352816, 0.03565809650448065,
-      0.018960912876812504, 0.9997795954164821, -0.009013565983181118,
-      -0.035482330231674096, 0.009682378808249669, 0.9993233989965131},
-     {0.9966488651850164, -0.033221628839500875, -0.07474866488887648,
-      0.03391965042199359, 0.9993918370204781, 0.008087855839697757,
-      0.07443451377330855, -0.010596200926956203, 0.9971696062783135},
-     {146.02081799106335, 0.0, 326.25732421875, 0.0, 0.0, 146.02081799106335,
-      245.94703063964843, 0.0, 0.0, 0.0, 1.0, 0.0},
-     {146.02081799106335, 0.0, 326.25732421875, -17.581415853691613, 0.0,
-      146.02081799106335, 245.94703063964843, 0.0, 0.0, 0.0, 1.0, 0.0}},
-};
-
-// A row-major 3x3, as OpenCV prints one, in GLM's columns.
-Mat3d from_rows(const double* m) {
-  Mat3d out;
-  for (int r = 0; r < 3; ++r) {
-    for (int c = 0; c < 3; ++c) out[c][r] = m[r * 3 + c];
-  }
-  return out;
-}
-
+// A pinned pair's source (stereo_rectify_reference.hpp), as a driver
+// reports it.
 sensor::StereoInfo info_of(const CameraModel& left, const CameraModel& right,
                            const double* rvec, const double* tvec) {
   sensor::StereoInfo info;
@@ -257,55 +133,6 @@ std::unique_ptr<Rectifier> make(const sensor::StereoInfo& info,
     return nullptr;
   }
   return std::move(made).value();
-}
-
-// Bouguet's rectification is OpenCV's: R1 and R2 to round-off, the camera
-// (P1 and P2, one principal point) and the baseline (-P2's Tx / f).
-int test_opencv() {
-  double worst_r = 0, worst_f = 0, worst_c = 0, worst_b = 0;
-  for (const OpenCvCase& c : kOpenCvCases) {
-    const sensor::StereoInfo info = info_of(c.left, c.right, c.rvec, c.tvec);
-    const auto rectifier = make(
-        info, {c.size, static_cast<float>(c.alpha), Rectifier::Output::Luma8});
-    CHECK(rectifier != nullptr);
-    const sensor::StereoRig& rig = rectifier->rig();
-    for (int v = 0; v < 2; ++v) {
-      const Mat3d got = source_to_rect(rig, info.calibration, v);
-      const Mat3d want = from_rows(v == 0 ? c.r1 : c.r2);
-      for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-          worst_r = std::max(worst_r, std::fabs(got[i][j] - want[i][j]));
-        }
-      }
-    }
-    const camera::ImageSize size = c.size.width != 0 ? c.size : c.left.size;
-    CHECK(rig.camera.size.width == size.width &&
-          rig.camera.size.height == size.height);
-    const camera::RationalDistortion& d = rig.camera.distortion;
-    CHECK(d.k1 == 0 && d.k2 == 0 && d.p1 == 0 && d.p2 == 0 && d.k3 == 0 &&
-          d.k4 == 0 && d.k5 == 0 && d.k6 == 0);
-    CHECK(rig.rectified_to_left[3] == glm::dvec4(0, 0, 0, 1));
-    const camera::PinholeIntrinsics& k = rig.camera.intrinsics;
-    for (const double* p : {c.p1, c.p2}) {
-      worst_f =
-          std::max({worst_f, std::fabs(k.fx - p[0]), std::fabs(k.fy - p[5])});
-      worst_c =
-          std::max({worst_c, std::fabs(k.cx - p[2]), std::fabs(k.cy - p[6])});
-    }
-    worst_b = std::max(worst_b, std::fabs(rig.baseline + c.p2[3] / c.p2[0]));
-  }
-  std::printf(
-      "  OpenCV's stereoRectify, %zu pairs: rotations within %.2g, focal "
-      "length %.2g px, principal point %.2g px, baseline %.2g m\n",
-      sizeof(kOpenCvCases) / sizeof(kOpenCvCases[0]), worst_r, worst_f, worst_c,
-      worst_b);
-  // OpenCV undistorts the corners in float, so its principal point and,
-  // through alpha's scale, its focal length carry float's round-off.
-  CHECK(worst_r < 1e-12);
-  CHECK(worst_f < 1e-4);
-  CHECK(worst_c < 1e-4);
-  CHECK(worst_b < 1e-12);
-  return 0;
 }
 
 // --- A scene, imaged through each camera ------------------------------------
@@ -2292,7 +2119,6 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   g_allocator = &gpu.allocator;
   std::printf("sensor_stereo_rectifier on %s\n",
               gpu.physical.properties().deviceName);
-  if (test_opencv() != 0) return 1;
   if (test_rows_align() != 0) return 1;
   if (test_layouts() != 0) return 1;
   if (test_v210() != 0) return 1;

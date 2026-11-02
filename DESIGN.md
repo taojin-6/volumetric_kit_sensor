@@ -221,42 +221,19 @@ decision): unprojection and rescaling come with their first caller.
   through the core's `write_file`; version 1 is read for its poses.
 - **`camera/stereo_rectification.hpp`** — a stereo pair on the host, in
   `sensor`'s namespace as when it was the stereo tier's (the 2026-11-01
-  host rectification decision). `StereoCalibration` is the two cameras,
-  lenses included, and `left_to_right` (OpenCV's `R`, `T`);
-  `stereo_calibration(file, left, right)` makes one from two entries of a
-  calibration file, each camera a sensor of its own keyed by its id, posed
-  and with a colour model (a pair of cine cameras); its refusals are the
-  header's. `rectify_stereo(pair, size, alpha)` is OpenCV's `stereoRectify`
-  with `CALIB_ZERO_DISPARITY` (Bouguet's method), step for step in double:
-  the relative rotation split in half between the cameras, the baseline
-  then turned onto x, one focal length for both views (the cameras'
-  vertical ones, scaled to the rectified height), one principal point where
-  the corners, undistorted and turned, centre, and `alpha`'s scale between
-  the rectangle every view's pixels are valid in (0) and the one holding
-  every source pixel (1), from the border of a 9 x 9 grid; the undistortion
-  of corners and borders is OpenCV's own five fixed-point iterations
-  (`undistortPoints`' default). It checks its inputs itself (each camera,
-  one size, a rigid `left_to_right`, alpha, the size) and refuses a
-  vertical pair and one whose right camera is on the left one's -x side
-  (`TODO(sensor)`: vertical pairs). A pair that is rectified already -- no
-  rotation, no lens, one camera model, the right camera along +x alone,
-  each within 1e-9 -- is only resampled, with no rotation: its camera scaled
-  to the size by one factor `s`, so its pixels keep their shape (a learned
-  matcher assumes square ones), about the centres (`fx * s`,
-  `(w' - 1) / 2 + (cx - (w - 1) / 2) * s`). Alpha picks `s` between the
-  larger of `w' / w` and `h' / h` (0: the view filled, the picture cropped)
-  and the smaller (1: all of the picture, the view bordered); at the
-  picture's own aspect ratio both are the scale edge to edge. It returns a
-  `StereoRectification`: the `StereoRig` -- the views' camera (pinhole), the
-  baseline (metres, above 0) and `rectified_to_left` (OpenCV's `R1`
-  transposed) -- and `right_to_rectified`, OpenCV's `R2`, which is
-  `R1 * R^T`. `fold_radius2(lens)` is where a radial model stops carrying
-  rays outward (`r * radial(r^2)` stops growing, or its denominator reaches
-  0); past it the model turns back and would put rays the lens cannot image
-  inside the picture, mirrored. It is found on the derivative's sign --
-  with `s = r^2`, `N D + 2 s (N' D - N D')` or `D` no longer positive --
-  marched by the angle off the axis, 0.01 degrees a step to 89.99, then
-  bisected; float's largest for a lens that does not fold there.
+  host rectification decision): `StereoCalibration` (the two cameras,
+  lenses included, and `left_to_right`, OpenCV's `R`, `T`) and
+  `stereo_calibration(file, left, right)`, which makes one from two entries
+  of a calibration file (a pair of cine cameras, each a sensor of its own);
+  `rectify_stereo(pair, size, alpha)`, OpenCV's `stereoRectify` with
+  `CALIB_ZERO_DISPARITY` (Bouguet's method) step for step in double,
+  returning the `StereoRig` and OpenCV's `R2`; and `fold_radius2(lens)`,
+  where a radial model stops carrying rays outward. `StereoRectifier` uses
+  both, so a tool without a GPU checks a pair or a lens as the runtime
+  does. The method, what each function checks and what it refuses are the
+  header's. A pair rectified already is only resampled, its camera scaled
+  by one factor so its pixels keep their shape (a learned matcher assumes
+  square ones); a vertical pair is refused (`TODO(sensor)`).
 
 ### frame
 
@@ -752,9 +729,9 @@ consumer of depth never sees it: a depth source built on a stereo camera
 - **`stereo/stereo_sensor.hpp`** — `StereoInfo` (the pair, the camera
   tier's `StereoCalibration`: both cameras 0 x 0 for a source opened
   without a calibration, whose pictures a calibration is made from, which
-  the rectifier and so `StereoDepthSensor` refuse, and neither camera 0 x 0
-  for one opened with one, with no other flag; any third, colour camera
-  with `left_to_color`; what the
+  the rectifier and so `StereoDepthSensor` refuse, and neither camera with
+  a side 0 for one opened with one, with no other flag; any third, colour
+  camera with `left_to_color`; what the
   source is as `SensorInfo` has it: id, model, clock, rate, colour exposure,
   and `max_skew_ns`, its sync guarantee: the most a frame's pictures lie
   apart, frames past it counted failed and never handed out), `StereoFrame`
@@ -774,9 +751,8 @@ consumer of depth never sees it: a depth source built on a stereo camera
   (`TODO(sensor)`: remove once the family includes the camera header).
 - **The contract** every stereo source keeps is checked by one test helper
   (`tests/stereo_contract.hpp`): the calibration as the source was opened
-  (both cameras exactly 0 x 0 without one, neither camera with a side 0
-  with one), skew within the bound, sequences and times increasing, and the
-  counters' rule, on a test camera's pairs and on each driver's own unit
+  (`StereoInfo`'s rule, above), skew within the bound, sequences and times
+  increasing, and the counters' rule, on a test camera's pairs and on each driver's own unit
   (DeckLink's opened both ways, RealSense's factory calibration), not by a
   check of each driver's own.
 - **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` checks
