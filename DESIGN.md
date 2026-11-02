@@ -52,8 +52,9 @@ recon's examples assemble the rest.
   `sensor_interface` never links a vendor SDK. The HEVC and JPEG decoders are another target of
   their own (`video/`, on the GPU's hardware) and link no camera tier:
   `frame` and, on Apple, the Apple importer (`apple/`), which links
-  `frame` alone. The H.265 syntax they read on the host is a target of its
-  own as well, on the family core's base tier alone, in every build.
+  `frame` alone. The H.265 syntax they read on the host, and the key gate
+  beside it, are a target of their own as well, on the family core's base
+  tier alone, in every build.
   The GPU pre-processing, any picture's luma and the pictures' readback
   are a fourth (`prep/`, Vulkan and shaders), so `sensor_interface` itself
   stays free of all of them.
@@ -344,7 +345,8 @@ the picture with its depth, so everything after is MJPEG's path. A frame's
 colour camera is read off the profile of the mode streamed. The SDK hands
 over every colour frame, depth or not; a pair without depth is dropped
 after decoding. A gap in the frame index, or an empty frame, waits for the
-next key frame, where the decoder is reset; pictures come out in display
+next key frame, where the decoder is reset (`KeyGate`, given the frame index,
+0 unnumbered); pictures come out in display
 order, each settling its own pair. All of it is counted in `stats().lost`
 (the 2026-09-28 decision).
 **`video/`'s decoders** (every Apple build, and elsewhere
@@ -447,7 +449,9 @@ from `VK_QUEUE_FAMILY_EXTERNAL`, an image once handed over to CUDA in
 code on the family core's base tier, with no codec, GPU or FFmpeg (the
 2026-10-25 public-syntax decision). It is what VideoToolbox's path reads.
 `split_annex_b` finds an access unit's NAL units (`hevc::Nal`, borrowed,
-emulation prevention left in); `vps_id`, `parse_sps` and `parse_pps` read
+emulation prevention left in), and `first_slice_type` its first slice's
+type by start codes alone, allocating nothing and never failing (with
+`is_irap`, whether it is a key); `vps_id`, `parse_sps` and `parse_pps` read
 the parameter sets' ids and an SPS's size, conformance window, format,
 reorder depth and VUI colour (`ColorCodes`, `color_codes.hpp`: the H.273
 codes FFmpeg's frames are described from too), each SPS through its
@@ -459,6 +463,14 @@ never an exception. Every parser reads through `hevc::BitReader`:
 the RBSP's bits, MSB first past the emulation prevention bytes, as u(n),
 ue(v) and se(v), zeros past the end with `overrun()` set, and whether what
 is left is the trailing bits.
+**`video/`'s key gate** (`key_gate.hpp`, the same target) says which
+access units of a predicted stream to send after a loss. `KeyGate::admit`
+takes each unit's number (empty for an unnumbered one) and whether it is a
+key: it is `Skip` while it waits for a key, at the start, after a number
+other than one up from the last and after `lose()`; `Restart` for the key
+that ends a wait, which the caller sends after `HevcDecoder::reset()`; and
+`Take` otherwise. An unnumbered unit is never a gap, and the one after it
+is not checked.
 **`apple/`'s `PixelBufferImporter`** (`sensor_apple`, on every
 Apple build, iOS included, with no FFmpeg) hands an 8-bit NV12
 `CVPixelBuffer` on an IOSurface to Vulkan in place: each plane becomes a
@@ -1064,9 +1076,9 @@ pinned stb source, a private implementation dependency of `sensor_image_io`.
 
 `include/volumetric_kit/sensor/testing/` is the package's test support,
 for its own tests and a consumer's, header-only and with no test framework
-(the 2026-11-02 entry). `hevc_clip.hpp` splits a clip at its access unit
-delimiters and reads `VS_TEST_HEVC_BACKEND`, which makes a decoder test
-fail rather than skip. `nv12_picture.hpp` holds `HostNv12`, the family's
+(the 2026-11-02 colour codes and test support entry). `hevc_clip.hpp`
+splits a clip at its access unit delimiters and reads
+`VS_TEST_HEVC_BACKEND`, which makes a decoder test fail rather than skip. `nv12_picture.hpp` holds `HostNv12`, the family's
 test pattern and `device_picture`. The pattern's index band, luma rows 0
 to 15 and columns 0 to 255, is 16 squares of 16 x 16: a 255 and a 0
 reference, then bits 0 to 13 of the index, each square 255 or 0, so a

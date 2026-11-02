@@ -5,8 +5,9 @@
 // and on the committed clips (tools/make_hevc_fixtures.sh), with no codec and
 // no GPU, so it runs on every leg: the bit reader (the RBSP's bits past the
 // emulation prevention bytes, Exp-Golomb codes, reads past the end, the
-// trailing bits); the NAL units an access unit splits into; what each clip's
-// SPS says (size, crop, format, the VUI's colour, the reorder depth); the
+// trailing bits); the NAL units an access unit splits into, and its first
+// slice's type; what each clip's SPS says (size, crop, format, the VUI's
+// colour, the reorder depth); the
 // picture order counts of its slices; what is refused -- every truncated
 // SPS, a slice whose parameter sets were never given, a NAL unit of another
 // type, and noise -- without a read out of bounds; and a host allocation
@@ -19,6 +20,7 @@
 #include <cstdio>
 #include <initializer_list>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -223,6 +225,63 @@ int test_split() {
         Code::IoError);
   CHECK(hevc::split_annex_b(nullptr, 4, nals).domain() ==
         Code::InvalidArgument);
+  return 0;
+}
+
+// The first slice's type, by start codes alone: on every clip's every access
+// unit, the type of the first slice split_annex_b finds, and with is_irap the
+// key frames the Orbbec driver scanned for (the unlabelled patch clip's, the
+// camera's stand-in: 0 and 4). Then three- and four-byte start codes, the
+// units before the slice passed over, bytes before the first start code not
+// read, and nothing to find: no slice, no bytes, or a start code at the end.
+int test_first_slice_type() {
+  for (const char* name :
+       {"centred_full_256x144", "cropped_240x128", "fullrange_256x144",
+        "open_gop_256x144", "patches_256x144", "refused_256x144",
+        "testsrc2_128x64", "testsrc2_cropped_120x56", "testsrc2_full_128x64",
+        "testsrc2_main10_128x64", "unlabelled_256x144"}) {
+    const Units units = testing::access_units_of_file(clip(name).c_str());
+    const Read read = read_clip(name);
+    CHECK(read.ok && read.picture_types.size() == units.size());
+    for (std::size_t i = 0; i < units.size(); ++i) {
+      CHECK(hevc::first_slice_type(units[i].data(), units[i].size()) ==
+            read.picture_types[i]);
+    }
+  }
+  const Units units =
+      testing::access_units_of_file(clip("unlabelled_256x144").c_str());
+  CHECK(units.size() == 8);
+  for (std::size_t i = 0; i < units.size(); ++i) {
+    const std::optional<int> type =
+        hevc::first_slice_type(units[i].data(), units[i].size());
+    CHECK(type && (hevc::is_irap(*type) == (i % 4 == 0)));  // keyint 4
+  }
+
+  // An AUD, a VPS, then a CRA, after four-byte start codes.
+  const std::uint8_t cra[] = {0, 0, 0, 1, 0x46, 0x01, 0x50,
+                              0, 0, 0, 1, 0x40, 0x01, 0x0c,
+                              0, 0, 0, 1, 0x2a, 0x01};
+  CHECK(hevc::first_slice_type(cra, sizeof(cra)) == hevc::kCraNut);
+  const std::uint8_t trail[] = {0, 0, 1, 0x02, 0x01, 0xd0};  // three bytes
+  CHECK(hevc::first_slice_type(trail, sizeof(trail)) == 1);
+  // An IDR's header, then a TRAIL_R after the first start code.
+  const std::uint8_t before[] = {0x26, 0x01, 0, 0, 1, 0x02, 0x01};
+  CHECK(hevc::first_slice_type(before, sizeof(before)) == 1);
+  // A VPS of its header's first byte alone, then an IDR's.
+  const std::uint8_t cut_vps[] = {0, 0, 1, 0x40, 0, 0, 1, 0x26};
+  CHECK(hevc::first_slice_type(cut_vps, sizeof(cut_vps)) == hevc::kIdrWRadl);
+  const std::uint8_t no_slice[] = {0, 0, 0, 1,    0x46, 0x01, 0x50,
+                                   0, 0, 1, 0x40, 0x01, 0x0c};
+  CHECK(!hevc::first_slice_type(no_slice, sizeof(no_slice)));
+  const std::uint8_t none[] = {0, 0, 1};
+  CHECK(!hevc::first_slice_type(none, sizeof(none)));
+  const std::uint8_t cut[] = {0x26, 0x01, 0, 0, 0, 1};
+  CHECK(!hevc::first_slice_type(cut, sizeof(cut)));
+  const std::uint8_t no_start_code[] = {0x26, 0x01, 0xaf};
+  CHECK(!hevc::first_slice_type(no_start_code, sizeof(no_start_code)));
+  CHECK(!hevc::first_slice_type(cra, 0));
+  CHECK(!hevc::first_slice_type(nullptr, 0));
+  CHECK(!hevc::first_slice_type(nullptr, 8));
   return 0;
 }
 
@@ -467,6 +526,7 @@ int main() {
   if (test_exp_golomb() != 0) return 1;
   if (test_trailing_bits() != 0) return 1;
   if (test_split() != 0) return 1;
+  if (test_first_slice_type() != 0) return 1;
   if (test_parameter_sets() != 0) return 1;
   if (test_picture_order() != 0) return 1;
   if (test_malformed() != 0) return 1;

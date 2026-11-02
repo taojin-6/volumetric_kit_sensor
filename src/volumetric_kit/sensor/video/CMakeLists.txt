@@ -7,15 +7,17 @@ set(_vs_sensor_video_generated_inc
     "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 
 # --- sensor_video_syntax: H.265 syntax, read on the host ---------------
-# An Annex B access unit's NAL units, the parameter sets and the start of a
-# slice header (hevc_syntax.hpp), with the H.273 colour codes an SPS declares
-# (color_codes.hpp). Pure host code on the family core's base tier, with no
-# codec, no GPU and no FFmpeg, so it builds on every platform, where the
-# decoders below do not. VideoToolbox's HEVC path reads its streams with it.
+# An Annex B access unit's NAL units and its first slice's type, the parameter
+# sets and the start of a slice header (hevc_syntax.hpp), with the H.273 colour
+# codes an SPS declares (color_codes.hpp), and the gate that says which units
+# can be decoded after a loss (key_gate.hpp). Pure host code on the family
+# core's base tier, with no codec, no GPU and no FFmpeg, so it builds on every
+# platform, where the decoders below do not. VideoToolbox's HEVC path reads its
+# streams with it.
 add_library(sensor_video_syntax)
 add_library(volumetric_kit::sensor_video_syntax ALIAS sensor_video_syntax)
 
-target_sources(sensor_video_syntax PRIVATE hevc_syntax.cpp)
+target_sources(sensor_video_syntax PRIVATE hevc_syntax.cpp key_gate.cpp)
 
 generate_export_header(
   sensor_video_syntax

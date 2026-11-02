@@ -465,6 +465,13 @@ target_compile_definitions(
 vs_target_warnings(sensor_video_hevc_syntax_test)
 add_test(NAME sensor_video_hevc_syntax COMMAND sensor_video_hevc_syntax_test)
 
+# The key gate (key_gate.hpp), in the same target: host code on every leg.
+add_executable(sensor_video_key_gate_test sensor_video_key_gate_test.cpp)
+target_link_libraries(sensor_video_key_gate_test
+                      PRIVATE volumetric_kit::sensor_video_syntax)
+vs_target_warnings(sensor_video_key_gate_test)
+add_test(NAME sensor_video_key_gate COMMAND sensor_video_key_gate_test)
+
 # The video decoders (on Apple, and elsewhere with VS_WITH_FFMPEG). The FFmpeg
 # helper test maps error codes and a frame's colour fields, compiling ffmpeg.cpp
 # itself. The decoder tests decode the committed clips and JPEGs on this
@@ -802,7 +809,8 @@ if(VS_WITH_ORBBEC)
   target_link_libraries(
     sensor_orbbec_hevc_test
     PRIVATE volumetric_kit::sensor_orbbec volumetric_kit::sensor_video
-            volumetric_kit::sensor_prep volumetric_kit::core_test_policy)
+            volumetric_kit::sensor_video_syntax volumetric_kit::sensor_prep
+            volumetric_kit::core_test_policy)
   vs_link_orbbec_sdk(sensor_orbbec_hevc_test)
   target_include_directories(sensor_orbbec_hevc_test PRIVATE ${_vs_orbbec_src})
   target_compile_definitions(
