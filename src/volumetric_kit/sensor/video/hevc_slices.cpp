@@ -153,11 +153,14 @@ core::Result<int> SliceReader::Impl::slice_qp(
   return qp;
 }
 
-SliceReader::SliceReader() : impl_(std::make_unique<Impl>()) {}
+// The state is made by the first read, inside its handler, so making a
+// reader allocates nothing and cannot throw.
+SliceReader::SliceReader() = default;
 SliceReader::~SliceReader() = default;
 
 core::Result<SliceReader::Picture> SliceReader::read(const std::uint8_t* data,
                                                      std::size_t size) try {
+  if (impl_ == nullptr) impl_ = std::make_unique<Impl>();
   Impl& m = *impl_;
   VKC_TRY(hevc::split_annex_b(data, size, m.nals).with_context("SliceReader"));
   Picture picture;
@@ -202,7 +205,8 @@ core::Result<SliceReader::Picture> SliceReader::read(const std::uint8_t* data,
 
 const std::optional<SliceReader::Sequence>& SliceReader::sequence()
     const noexcept {
-  return impl_->sequence;
+  static const std::optional<Sequence> kNone;
+  return impl_ != nullptr ? impl_->sequence : kNone;
 }
 
 }  // namespace volumetric_kit::sensor::testing
