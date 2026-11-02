@@ -39,10 +39,10 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_prep` | `prep/` | `GpuFramePrep`, `LumaPass` (any picture's 8-bit luma and its half, on the GPU), `PictureReadback` | interface |
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
 | `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
-| `sensor_video_syntax` | `video/` | H.265 syntax read on the host, every build | core base |
+| `sensor_video_syntax` | `video/` | H.265 syntax read on the host and `KeyGate` (which units decode after a loss), every build | core base |
 | `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, CUDA interop | frame |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, every Apple build | frame |
-| `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video |
+| `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video, video syntax |
 | `sensor_realsense` | `realsense/` | `RealSenseSensor`, `RealSenseStereo` | interface, stereo |
 | `sensor_ffs` | `ffs/` | `FfsStereo` (Fast-FoundationStereo on TensorRT), `StereoDepthSensor` (any stereo camera as an `IRgbdSensor`); NVIDIA only | stereo; video, privately |
 | `sensor_decklink` | `decklink/` | `DecklinkStereo` (two SDI inputs of a DeckLink card as one stereo camera); Linux x86-64 | stereo |
@@ -335,7 +335,8 @@ they are off by default: NVDEC through FFmpeg ≥ 6.1, found through
 pkg-config, and nvJPEG, with the CUDA 13 toolkit's headers
 (`cmake/vs_cuda.cmake`). `VS_WITH_FFMPEG` on Apple fails the configure. The
 H.265 syntax the Apple decoder reads (`volumetric_kit::sensor_video_syntax`,
-`video/hevc_syntax.hpp`) is host code, in every build.
+`video/hevc_syntax.hpp`) and the key gate (`video/key_gate.hpp`) are host
+code, in every build.
 
 ```sh
 sudo apt install pkg-config libavcodec-dev libavutil-dev
@@ -348,7 +349,7 @@ VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
 
 ## Versions
 
-The version is `project()`'s (0.21.0), carried by the umbrella as
+The version is `project()`'s (0.22.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

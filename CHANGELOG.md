@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-11-02
+
+### Added
+
+- **`KeyGate`** (`video/key_gate.hpp`, `volumetric_kit::sensor_video_syntax`,
+  every build): which access units of a predicted H.265 stream to send after
+  a loss. `admit(seq, key)` is `Skip` while it waits for a key (at the
+  start, after a number other than one up from the last, and after
+  `lose()`), `Restart` for the key that ends a wait (reset the decoder, then
+  send it), and `Take` otherwise; an empty `seq` is an unnumbered unit,
+  never a gap. `waiting()` says whether it waits.
+- **`hevc::first_slice_type(data, size)`** (`video/hevc_syntax.hpp`): the
+  nal_unit_type of an access unit's first slice segment, found by start
+  codes alone, with no allocation and no failure; empty if there is none.
+  With `is_irap`, whether the unit is a key.
+  DECISIONS.md, the 2026-11-02 key gate entry.
+
+### Changed
+
+- The Orbbec driver's H.265 colour decoder uses them: its internal gate and
+  `is_key_frame` go, its behaviour unchanged, and
+  `sensor_orbbec` links `sensor_video_syntax` privately. Their unit cases
+  move to `sensor_video_key_gate` and `sensor_video_hevc_syntax`.
+
 ## [0.21.0] - 2026-11-01
 
 ### Added

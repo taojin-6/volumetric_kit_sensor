@@ -5,7 +5,10 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <utility>
+
+#include "volumetric_kit/sensor/video/hevc_syntax.hpp"
 
 namespace volumetric_kit::sensor::orbbec {
 
@@ -26,16 +29,6 @@ constexpr std::uint32_t kQueueSeconds = 2;
 constexpr std::int64_t kMaxPictureDelay = 32;
 
 }  // namespace
-
-bool is_key_frame(const std::uint8_t* data, std::size_t size) noexcept {
-  for (std::size_t i = 0; i + 3 < size; ++i) {
-    if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1) continue;
-    const int type = (data[i + 3] >> 1) & 0x3f;
-    if (type < 32) return type >= 16 && type <= 23;  // the first slice
-    i += 2;
-  }
-  return false;
-}
 
 HevcColorDecoder::HevcColorDecoder(const Options& options, Sink sink)
     : options_(options),
@@ -72,7 +65,7 @@ HevcColorDecoder::~HevcColorDecoder() { stop(); }
 
 void HevcColorDecoder::decoder_error(core::Status why) {
   if (why.domain() == core::Status::Code::IoError) {
-    gate_.resync();
+    gate_.lose();
     return;
   }
   // The pairs in flight are lost with the stream, and the worker counts
@@ -100,7 +93,7 @@ void HevcColorDecoder::stop() noexcept {
 void HevcColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair,
                               bool after_gap) {
   // A pair dropped before it, or one that threw, leaves the stream broken.
-  if (after_gap) gate_.resync();
+  if (after_gap) gate_.lose();
   // Decoded even without its depth, which only drops it after: the frames
   // after it are predicted from it.
   const auto color = pair->getColorFrame();
@@ -116,14 +109,17 @@ void HevcColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair,
   // on the wire.
   if (data == nullptr || size == 0) {
     worker_.lose();
-    gate_.resync();
+    gate_.lose();
     return;
   }
-  switch (gate_.admit(index, is_key_frame(data, size))) {
-    case ColorStreamGate::Admission::Drop:
+  const std::optional<int> type = hevc::first_slice_type(data, size);
+  const std::optional<std::uint64_t> seq =
+      index != 0 ? std::optional<std::uint64_t>(index) : std::nullopt;
+  switch (gate_.admit(seq, type && hevc::is_irap(*type))) {
+    case KeyGate::Admission::Skip:
       worker_.lose();
       return;
-    case ColorStreamGate::Admission::Restart:
+    case KeyGate::Admission::Restart:
       // What the decoder still holds belongs to pairs from before the loss,
       // and a CRA's leading pictures refer to frames it never had: reset, so
       // it drops the one and skips the other.
@@ -135,7 +131,7 @@ void HevcColorDecoder::decode(const std::shared_ptr<ob::FrameSet>& pair,
         return;
       }
       break;
-    case ColorStreamGate::Admission::Decode:
+    case KeyGate::Admission::Take:
       break;
   }
 

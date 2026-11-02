@@ -4,8 +4,9 @@
 #pragma once
 
 /// @file video/hevc_syntax.hpp
-/// @brief H.265 syntax read on the host: an Annex B access unit's NAL units,
-///        the parameter sets, and the start of a slice header.
+/// @brief H.265 syntax read on the host: an Annex B access unit's NAL units
+///        and its first slice's type, the parameter sets, and the start of a
+///        slice header.
 ///
 /// What @ref HevcDecoder reads itself on Apple, where it hands VideoToolbox
 /// the slices: the parameter sets' ids and what they say about the pictures
@@ -20,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "volumetric_kit/core/base/result.hpp"
@@ -87,6 +89,21 @@ struct Nal {
 VS_VIDEO_SYNTAX_API core::Status split_annex_b(const std::uint8_t* data,
                                                std::size_t size,
                                                std::vector<Nal>& out);
+
+/// @brief The nal_unit_type of the first slice segment in Annex B bytes,
+///        found by start codes alone: no allocation, no parse, no failure.
+///        Parameter sets, SEI and delimiters before it are passed over.
+///
+/// The first unit after a start code (`00 00 01`) whose type is below 32 is
+/// the slice; its header is not checked further, so bytes
+/// @ref split_annex_b refuses may still have a type here. With
+/// @ref is_irap it says whether an access unit is a key.
+/// @param data The bytes; null has no slice.
+/// @param size The bytes at @p data.
+/// @return The type, 0 to 31; empty if no slice segment follows a start
+///         code.
+VS_VIDEO_SYNTAX_API std::optional<int> first_slice_type(
+    const std::uint8_t* data, std::size_t size) noexcept;
 
 /// @brief Reads a NAL unit's payload as H.265's descriptors read it (7.2):
 ///        its bits most significant first, from the byte after the two-byte
