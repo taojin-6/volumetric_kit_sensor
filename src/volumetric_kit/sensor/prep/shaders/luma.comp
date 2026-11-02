@@ -1,0 +1,37 @@
+#version 450
+
+// LumaPass's first kernel (luma_pass.cpp): a picture's 8-bit luma from its
+// planes in a buffer, four pixels a word, the first in the low byte, rows
+// packed. Each sample comes through color_planes.glsl's luma_at, the unpack
+// frame prep and the stereo rectifier share: an 8-bit layout's code as it is
+// (luma alone, a 4:2:0 picture's luma plane bound as luma alone, YUYV's every
+// second byte), V210's 10-bit code as code / 4, rounded here once, half up.
+// pc is the colour pass's (undistort_color.glsl); pc.cam carries the
+// picture's size alone.
+
+#extension GL_GOOGLE_include_directive : require
+#include "undistort_color.glsl"
+#include "color_planes.glsl"
+
+layout(set = 0, binding = 1, scalar) writeonly buffer Full { uint full[]; };
+
+// The luma code at (x, y), 0 to 255: an 8-bit code exactly, and V210's
+// (code + 2) / 4, which past 1019 is 255.
+uint luma_code(uint x, uint y) {
+  return min(uint(luma_at(x, y) + 0.5), 255u);
+}
+
+void main() {
+  uint w = pc.cam.width;
+  uint pixels = w * pc.cam.height;
+  uint first = gl_GlobalInvocationID.x * 4u;
+  if (first >= pixels) {
+    return;
+  }
+  uint word = 0u;
+  for (uint k = 0u; k < 4u && first + k < pixels; ++k) {
+    uint p = first + k;
+    word |= luma_code(p % w, p / w) << (8u * k);
+  }
+  full[gl_GlobalInvocationID.x] = word;
+}

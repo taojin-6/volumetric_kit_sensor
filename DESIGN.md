@@ -54,9 +54,9 @@ recon's examples assemble the rest.
   `frame` and, on Apple, the Apple importer (`apple/`), which links
   `frame` alone. The H.265 syntax they read on the host is a target of its
   own as well, on the family core's base tier alone, in every build.
-  The GPU pre-processing and the pictures' readback are a fourth
-  (`prep/`, Vulkan and shaders), so `sensor_interface` itself stays free
-  of all of them.
+  The GPU pre-processing, any picture's luma and the pictures' readback
+  are a fourth (`prep/`, Vulkan and shaders), so `sensor_interface` itself
+  stays free of all of them.
 - **`array`** — several sensors read as one (`SensorArray`, `RigSets`),
   on the GPU pass.
 - **`stereo`** — calibrated stereo pairs: what a stereo camera driver
@@ -697,8 +697,39 @@ checked by the rules `GpuFramePrep` applies to one (`yuv_planes.hpp`), with
 `TRANSFER_SRC` where the pass needs a buffer's storage usage, or images'
 `SAMPLED` usage and views. It reads 4:2:0 and luma alone (its view has no
 chroma, whichever planes are asked): a YUYV picture, whose luma is no plane
-of its own, is refused, a V210 one is `Unsupported` (not read yet), and a
-frame whose picture is on the host has no view.
+of its own, is refused, a V210 one is `Unsupported` (`LumaPass` makes its
+8-bit luma, which this reads), and a frame whose picture is on the host has
+no view. A list read takes pictures in any number, a view each; a buffer
+several of them share (a `DeviceLuma`'s full and half) is taken over once,
+so they must name one writer.
+**`prep/`'s `LumaPass`** makes each picture of a list into its 8-bit luma
+and its half on the device, for a detector that searches the half and
+refines in the full picture, whatever the camera: one batch and one submit
+for the list (the 2026-11-01 luma decision). Planes in a buffer or on the
+host go through `bind_planes` as the colour pass binds them, a 4:2:0
+picture narrowed to its luma plane first so its chroma is neither bound nor
+staged, and the first kernel (`luma.comp`) reads each sample through
+`color_planes.glsl`'s `luma_at`, the one unpack, writing four pixels a word:
+an 8-bit layout's code as it is, V210's code / 4 rounded half up once,
+`(code + 2) / 4`, at most 255. Host planes are copied into one persistent
+slot, as frame prep stages them; NV12's luma image is copied from its
+corner (`CommandBatch::copy`), with no kernel. The second kernel
+(`luma_half.comp`), after every first one, makes each half pixel the rounded
+mean of a 2x2 block of the full luma, `(a + b + c + d + 2) / 4`, its centre
+at full pixel `2u + 0.5`. Both outputs are `YuvLayout::Luma` pictures, rows
+packed, in one device buffer, the half at the binding alignment after the
+full; the buffers are a pool, each run taking the smallest free one that
+holds a picture, else replacing a free one too small, else adding one, and
+a buffer is free once no copy of its lease (`DeviceLuma::owner`, either
+picture's `device`) is left, as frame prep's outputs are. They are
+EXCLUSIVE to the pass's family, or CONCURRENT across the families `create`
+is given (the device's and a renderer's), and say `kQueueFamilyIgnored`.
+Inputs are taken over from their writers, each buffer and image once
+however many pictures name it, so those pictures must name one writer (the
+pass's own family and `kQueueFamilyIgnored` both mean nothing to transfer),
+and their `queue_family` is updated after the wait. A failed
+submit lets go of the outputs and inputs it used, and the pass refuses
+every later run.
 An Orbbec frame holds its SDK pair and the SDK
 context, with the models and the depth-to-colour extrinsic from the factory
 calibration (the extrinsic's rotation made one: the Femto Mega's is not, the
@@ -1042,7 +1073,8 @@ landed; the stack continues:
    the SDK's global timestamps (2026-10-07), their skew measured flat over a
    20-minute `fuse_orbbec` run; sessions of hours are still to measure.
 3. **Luma readback** has landed in `prep` (`PictureReadback`),
-   wherever the decoder left the picture, for calib's detector.
+   wherever the decoder left the picture, for calib's detector, and any
+   layout's 8-bit luma and half on the GPU before it (`LumaPass`).
 4. **Later: mixed arrays** of fixed sensors and tracked ones (iPhones):
    nearest-frame members, registration of a tracked sensor's world, a network
    sensor with an ios sender, and clock offsets.

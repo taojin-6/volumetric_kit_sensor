@@ -3,12 +3,14 @@
 
 #include "volumetric_kit/sensor/prep/picture_readback.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <new>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "../sharing_families.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "yuv_planes.hpp"
@@ -63,10 +65,11 @@ core::Result<Plan> plan(const YuvImage& picture, PictureReadback::Planes planes,
     return refuse("reads 4:2:0 pictures and luma alone, and this one is YUYV");
   }
   if (picture.layout == YuvLayout::V210) {
-    // TODO(sensor): V210's luma unpacked to bytes on the GPU, for calib's
-    // DeckLink pairs.
-    return core::Status::unsupported(std::string(kWho) +
-                                     ": does not read V210 pictures yet");
+    // Its 10-bit samples are no bytes to copy: LumaPass rounds its luma to
+    // 8 bits on the GPU, and this reads that.
+    return core::Status::unsupported(
+        std::string(kWho) +
+        ": does not read V210 pictures; read LumaPass's 8-bit luma of one");
   }
   if (in_buffer && !as_images) {
     if (!picture.device->valid()) {
@@ -159,18 +162,59 @@ core::Result<PictureView> PictureReadback::read(YuvImage& picture,
   }
 }
 
+core::Result<std::vector<PictureView>> PictureReadback::read(
+    const std::vector<YuvImage*>& pictures, Planes planes,
+    core::StageMetrics* metrics) {
+  try {
+    for (std::size_t i = 0; i < pictures.size(); ++i) {
+      if (pictures[i] == nullptr) {
+        return refuse(("picture " + std::to_string(i) + " is null").c_str());
+      }
+    }
+    std::vector<std::optional<PictureView>> views(pictures.size());
+    VKC_TRY(read_pictures(pictures.data(), pictures.size(), planes,
+                          views.data(), metrics));
+    std::vector<PictureView> out;
+    out.reserve(views.size());
+    for (const std::optional<PictureView>& view : views) out.push_back(*view);
+    return out;
+  } catch (const std::bad_alloc&) {
+    return core::Status::out_of_memory("PictureReadback: out of host memory");
+  }
+}
+
 core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
                                             std::size_t count, Planes planes,
                                             std::optional<PictureView>* views,
                                             core::StageMetrics* metrics) {
-  // Every picture checked and placed before anything is recorded.
+  // Every picture checked and placed before anything is recorded. A buffer
+  // several pictures share -- a LumaPass output's full and half luma -- is
+  // taken over once, by its first picture, so they must name one writer.
   std::vector<Plan> plans(count);
+  std::vector<bool> takes_over(count, false);
+  std::vector<std::pair<VkBuffer, std::uint32_t>> buffers;
   VkDeviceSize staged = 0;
   std::uint32_t copies = 0;
   for (std::size_t i = 0; i < count; ++i) {
     if (pictures[i] == nullptr) continue;
-    VKC_ASSIGN(plans[i], plan(*pictures[i], planes, staged));
+    const YuvImage& picture = *pictures[i];
+    VKC_ASSIGN(plans[i], plan(picture, planes, staged));
     copies += static_cast<std::uint32_t>(plans[i].count);
+    if (picture.device == nullptr) continue;
+    const VkBuffer handle = picture.device->handle();
+    const std::uint32_t from = detail::transfer_family(
+        *picture.device, picture.queue_family, device_.queue_family());
+    const auto seen = std::find_if(
+        buffers.begin(), buffers.end(),
+        [handle](const auto& buffer) { return buffer.first == handle; });
+    if (seen == buffers.end()) {
+      buffers.emplace_back(handle, from);
+      takes_over[i] = true;
+    } else if (seen->second != from) {
+      return refuse(
+          "pictures in one buffer name two writers' queue families, and it "
+          "is taken over once");
+    }
   }
   if (copies == 0) return {};
 
@@ -184,7 +228,9 @@ core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
     if (pictures[i] == nullptr) continue;
     const YuvImage& picture = *pictures[i];
     if (picture.device != nullptr) {
-      VKC_TRY(batch.acquire(*picture.device, picture.queue_family));
+      if (takes_over[i]) {
+        VKC_TRY(batch.acquire(*picture.device, picture.queue_family));
+      }
     } else {
       for (const std::shared_ptr<const core::Image>& plane : picture.image) {
         VKC_TRY(batch.acquire(*plane, picture.queue_family, plane->layout()));

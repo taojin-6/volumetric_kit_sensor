@@ -389,7 +389,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   a buffer through the one unpack they share (`color_planes.glsl`), each
   sample as code / 4 on the 8-bit layouts' scale, and round to 8 bits once,
   in their outputs. Limited range only; `PictureReadback` refuses them
-  (`Unsupported`) until it reads them.
+  (`Unsupported`) until it reads them. *Amended the same day (the luma
+  entry):* `LumaPass` rounds their luma to 8 bits on the GPU, and
+  `PictureReadback` reads that; it still refuses V210 itself.
 
 - [**2026-11-01**](#2026-11-01--a-stereo-frame-states-its-skew-and-its-sources-bound-the-right-picture-is-let-go-once-rectified-and-a-pair-comes-from-two-calibration-entries) —
   A stereo frame states its skew, the right picture's time less the left's
@@ -430,6 +432,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   checks a pair or a lens the way the runtime sees it. `StereoInfo`'s
   calibration both cameras 0 x 0 is a source opened without one, for every
   source, and the contract helper checks it for every driver; no flag.
+- [**2026-11-01**](#2026-11-01--any-pictures-8-bit-luma-and-its-half-are-made-on-the-gpu-by-lumapass-every-layout-a-driver-hands-out-one-batch-a-list-the-outputs-pooled-picturereadback-reads-a-list-amends-the-v210-entry-above) —
+  `LumaPass` makes each picture of a list into its 8-bit luma and its half
+  on the GPU, one submit a list, from any layout a driver hands out: V210's
+  Y rounded once, `(code + 2) / 4`, the 8-bit layouts' copied, the half the
+  rounded 2x2 mean. The outputs are pooled device buffers, leased like frame
+  prep's, CONCURRENT across the families the caller names.
+  `PictureReadback` reads a list in one submit.
 
 ## Decision record
 
@@ -5507,6 +5516,9 @@ the rectifier's outputs are the 8-bit layouts' code, unchanged.
 `ColorParams` gains one word, `v210`: 124 bytes of the 128 Vulkan
 guarantees. `PictureReadback` refuses V210 with `Unsupported`:
 `TODO(sensor)`, its luma unpacked on the GPU, for calib's DeckLink pairs.
+*Amended the same day (the luma entry):* `LumaPass` unpacks it, through
+`luma_at`, and the `TODO(sensor)` goes; `PictureReadback` still refuses
+V210 itself.
 
 **Why.** The owner's DeckLink design (2026-11-01): the card captures v210,
 the path measured with no lost frame, and nothing rounds 10 bits to 8
@@ -5897,3 +5909,115 @@ change gave the same rigs, to the bit, and the same view bytes (FNV-1a)
 for nine pairs, both outputs, on the Mac. The review's round changed tests
 and documents only; the Mac's two suites were run again on it, the lab's
 was not. No camera was opened.
+
+### 2026-11-01 — Any picture's 8-bit luma and its half are made on the GPU by `LumaPass`: every layout a driver hands out, one batch a list, the outputs pooled; `PictureReadback` reads a list (amends the V210 entry above).
+
+**The rule.** `LumaPass::run(pictures)` (`prep/luma_pass.hpp`) makes each
+picture of a list into a `DeviceLuma`, its 8-bit luma (`full`) and its half,
+in one batch, one submit and its wait. Planes in a buffer or on the host are
+read through `bind_planes` and `color_planes.glsl`'s `luma_at`, the unpack
+frame prep and the rectifier share; NV12's luma image is copied. V210's Y is
+rounded once, `(code + 2) / 4`, at most 255, and the 8-bit layouts' Y is
+copied; the coded range is kept. The half is `(a + b + c + d + 2) / 4` of
+each 2x2 block of the full luma, its centre at full pixel `2u + 0.5`, an odd
+last column or row in no block, so a picture under 2x2 is refused. Both are
+`YuvLayout::Luma` pictures, rows packed, in one device buffer of a pool, each
+leased as frame prep's outputs are, and CONCURRENT across the queue families
+`LumaPass::create` is given. `PictureReadback::read(pictures, planes)` reads a
+list in one submit, a view each, and takes a buffer several pictures share
+over once, so it refuses such pictures naming two writers; V210 stays
+`Unsupported` there, and its `TODO(sensor)` goes. How it works is DESIGN.md's
+(`prep`).
+
+**Why** (calib's camera-agnostic calibration, 2026-11-01; the owner
+approved this pass):
+- **One path for every camera.** calib sees only grey pictures and camera
+  ids. A DeckLink pair's V210 holds no luma bytes a readback can hand a
+  detector, and the Femtos' NV12 images, a RealSense's luma and a UVC
+  camera's YUYV go through the same call, so calib names no layout.
+- **The half on the GPU.** Live detection searches the half and refines each
+  corner in the full luma; calib halves on the CPU today (`cv::resize`
+  `INTER_AREA`), per-pixel work the device does instead. The half is made
+  from the full luma, so the two a detector reads agree.
+- **Two kernels.** The half's kernel reads the full luma after every
+  picture's first kernel, so the full keeps packed rows (stride = width), as
+  a detector takes them; one kernel writing both would need padded rows.
+  The cost is below.
+- **Rounded once, the range kept.** As frame prep and the rectifier round
+  V210: code / 4, half up. A detector needs no range expansion; the outputs
+  say their range (`full_range`, limited for V210).
+- **Pooled and leased.** calib keeps a set's device luma for its live view's
+  grey tile past the next set, so an output is reused only once no copy of
+  its lease is left: the smallest free buffer that holds a picture, else a
+  free one replaced, else one more.
+- **The caller names the families.** A `core::Device` knows its own family
+  only, so the renderer's is passed in, as `GpuFramePrepConfig` and
+  `PixelBufferImporter` take theirs (the `DeviceFrame` contract: CONCURRENT
+  with the families a producer is given).
+- **A `std::vector<YuvImage*>`, not `std::span`.** The package is C++17, and
+  `GpuFramePrep` takes its frames as a vector too.
+
+**Tests.** `sensor_luma_pass` (every Vulkan leg): 66 pictures of the 11 forms
+(V210, NV12, I420, YUYV and luma alone, in a buffer and on the host, and
+NV12 images), at odd offsets and strides, at 37x21, 64x48, 2x2, 3x5, 3840x3
+and 3842x3 (YUYV and V210 one wider where odd), each luma and half bit for
+bit against a host reference (V210 packed by `tests/v210.hpp`); every 10-bit
+code 0..1023 at 3842 wide, 1020..1023 to 255; a list of all 11 forms and a
+side-by-side pair in one buffer in one submit, its list read equal to the
+single reads byte for byte, and an empty list submitting nothing; after
+warm-up 20 runs on the same three buffers with nothing allocated, staging
+included, then a larger picture alone replacing the smallest free buffer
+(the device bytes change by the new buffer's less the smallest's);
+outputs kept across the next run and a copied half alone still
+holding theirs, others taken meanwhile, and outputs read after the pass is
+gone; buffers and images from `kQueueFamilyExternal`, their ownership
+updated, and one image pair named as the pass's family and as
+`kQueueFamilyIgnored` taken as one writer; on two families, outputs
+CONCURRENT and read on the renderer's
+family, and an EXCLUSIVE picture the renderer's family released taken over;
+every refusal naming the picture, the list refused whole with nothing
+submitted, allocated or measured; `create`'s refusals; the stage row.
+`sensor_picture_readback`: a list of four pictures, two in one buffer, in
+one submit, equal to the single reads, the shared buffer taken over from
+outside Vulkan with one barrier; a null picture, two writers for one
+buffer and V210 refused, the list whole. Planted bugs, each failing its
+test: in `sensor_luma_pass`, the half sampled at full pixel `2u` instead of
+the 2x2 mean about `2u + 0.5`, V210's three samples read from a word's high
+bits first, V210's code / 4 truncated rather than rounded, the pool adding a
+buffer rather than replacing a free one too small, and images' writers
+compared as named rather than as transferred; in `sensor_picture_readback`,
+a shared buffer taken over once a picture.
+
+**Cost** of `run()` on a DeckLink pair's pictures, two 3840x2160 V210 in
+buffers, Release, no validation layer: p50 / p95 over 300 runs after 50
+warm-up runs, the device span from the stage row's timestamps; each machine
+ran two such jobs, and a range spans the two.
+
+| | device span | host span | `PictureReadback` of both lumas and halves, host |
+|---|---|---|---|
+| RTX 5090 (shared with other jobs, 97-100% use) | 0.052 / 0.054-0.056 ms | 2.36 / 3.43-3.58 ms | 3.23-3.25 / 4.96-5.40 ms |
+| M5 Max (MoltenVK, load average 3.3 from other jobs) | 0.197-0.208 / 0.329-0.366 ms | 0.36-0.37 / 0.54 ms | 0.20 / 0.24-0.39 ms |
+
+On the shared 5090 the host span is the submit and its wait on the busy
+GPU, not the pass.
+
+**Hand check, not a test** (lab RTX 5090, Release, validation layer on, the
+GPU idle): the live DeckLink cameras, 2160p30 V210, through `run()` for 300
+pairs, 0 failed. At five pairs both V210 pictures were read back raw and
+unpacked on the host, word by word, apart from the shaders; each full luma
+equals the host's `(code + 2) / 4` byte for byte, and each half the host's
+2x2 mean of it, left and right. The last pair's outputs were looked at,
+whole and at 1:1: the scene as the cameras see it, thin wires clean, no
+column out of place. The pass's device span on the live pairs: p50
+0.038 ms, p95 0.043 ms. No validation error.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer: the whole suite passes, 45 tests, the two
+families crossing there; an
+AddressSanitizer and UBSan build of `sensor_luma_pass` and
+`sensor_picture_readback` runs clean (no leak check on macOS). The lab's RTX
+5090, Release, with the DeckLink driver (no CUDA or FFmpeg), under the
+validation layer: the whole suite passes, 40 tests; the core's shared test
+device takes two queues of one family there, so the cross-family case
+skips. recon's suite was not
+run: `frame` is unchanged.
