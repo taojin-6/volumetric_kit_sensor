@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-11-02
+
+### Added
+
+- **A depth confidence plane** (`RgbdFrame::depth_confidence`,
+  `RgbdFrame::min_confidence`): beside host depth, one byte a sample in the
+  sensor's own levels (ARKit's 0 low, 1 medium, 2 high), and the floor below
+  which `GpuFramePrep` drops a sample on the GPU, per raw sample, before the
+  depth offset, the mix, the colour-view test and the outlier filter, so a
+  dropped sample is a hole. Level 0 is never integrated: a driver writes it
+  on the samples it invalidates (a phone's driver, on the pixels its person
+  segmentation marks), and every floor of 1 or more drops it. The plane is
+  copied into the pass's slot after the depth only when the floor is above
+  0; a frame without a plane, or with a floor of 0, is prepared bit for bit
+  as before and copies no more. `prepare` refuses a plane beside device
+  depth and a floor without a plane (`InvalidArgument`). DECISIONS.md, the
+  2026-11-02 confidence plane entry.
+- `sensor_gpu_frame_prep_confidence`: the gate at every floor, per raw
+  sample, the slot, sets and the refusals.
+
+### Changed
+
+- The depth pass's push constants grow from 72 to 80 bytes
+  (`confidence_first`, `min_confidence`); no binding is added.
+
 ## [0.23.0] - 2026-11-02
 
 ### Added

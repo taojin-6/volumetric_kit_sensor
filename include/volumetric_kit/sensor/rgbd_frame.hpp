@@ -121,6 +121,23 @@ struct RgbdFrame {
   /// Or the same samples on the device, where a GPU stage left them; set
   /// this or @ref depth, not both.
   DeviceDepth depth_device{};
+  /// Beside host @ref depth: the sensor's confidence in each sample, one byte
+  /// a sample in @ref depth's order, in the sensor's own levels (ARKit's:
+  /// 0 low, 1 medium, 2 high). Level 0 is never integrated: a driver that
+  /// invalidates a sample writes 0 there, as a phone's driver does on the
+  /// pixels its person segmentation marks, so a moving person is not fused,
+  /// and every floor of 1 or more drops it. Null, the default, for none.
+  /// Held by @ref pixels. Only with host depth: `GpuFramePrep` refuses a
+  /// plane beside @ref depth_device. It reads the plane only while
+  /// @ref min_confidence is above 0.
+  const std::uint8_t* depth_confidence = nullptr;
+  /// Samples whose @ref depth_confidence level is below this are no return
+  /// (0): `GpuFramePrep` drops them on the GPU, per raw sample, before it
+  /// mixes, offsets or filters the depth, as holes the sensor left. 0, the
+  /// default, keeps every sample, level 0 included, so a frame with a plane
+  /// sets at least 1 (a phone's depth: 2, high only). Above 0 only with a
+  /// plane.
+  std::uint8_t min_confidence = 0;
   float metres_per_unit = 0.001f;    ///< What one depth unit is, in metres.
   camera::CameraModel depth_camera;  ///< The depth camera, lens included.
   /// Nearer samples are dropped (metres). Set it: the pass needs
@@ -174,9 +191,9 @@ struct RgbdFrame {
   /// polled.
   std::uint64_t arrival_ns = 0;
 
-  /// What @ref depth, `color.host`, @ref color_packed and
-  /// @ref color_bitstream point into, held for as long as the frame is; null
-  /// when they need no owner.
+  /// What @ref depth, @ref depth_confidence, `color.host`, @ref color_packed
+  /// and @ref color_bitstream point into, held for as long as the frame is;
+  /// null when they need no owner.
   std::shared_ptr<const void> pixels;
 
   /// @return `true` if this frame carries depth, on the host or the device.

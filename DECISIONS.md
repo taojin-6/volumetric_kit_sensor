@@ -75,7 +75,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   an edge or a hole; and a frame with colour keeps only what both its
   cameras see, depth and colour each cropped to the other's field of view,
   no longer an option (depth's an option from 2026-09-29; the same-view
-  entry).
+  entry). *Amended 2026-11-02:* host depth may carry a confidence plane,
+  each sample below the frame's floor dropped before anything reads it (the
+  confidence plane entry).
 - [**2026-09-28**](#2026-09-28--a-decoded-colour-frame-never-leaves-the-gpu-the-platforms-hardware-decoder-for-h265-and-mjpeg-alike-hands-its-picture-to-vulkan-in-place-and-gpuframeprep-takes-i420-or-nv12-from-the-host-or-the-device) —
   A decoded colour frame never leaves the GPU: the platform's hardware
   decoder, for H.265 and MJPEG alike, hands its picture to Vulkan in place,
@@ -454,6 +456,15 @@ entries relevant to your task; later amendments supersede earlier rules.
   `testing/`; the test pattern's index band is read by square means after
   lossy coding. The Metal device under a Vulkan device is found in one
   place.
+- [**2026-11-02**](#2026-11-02--host-depth-may-carry-a-confidence-plane-which-frame-prep-gates-on-the-gpu-per-raw-sample-before-anything-else-reads-it-level-0-is-never-integrated-and-a-frame-without-a-plane-is-prepared-bit-for-bit-as-before-amends-the-2026-09-28-gpu-pre-processing-entry) —
+  Host depth may carry a confidence plane (`RgbdFrame::depth_confidence`, a
+  byte a sample in the sensor's levels) and a floor (`min_confidence`):
+  `GpuFramePrep` drops each raw sample below the floor on the GPU, before
+  the depth offset, the mix, the colour-view test and the outlier filter, as
+  a hole the sensor left. Level 0 is never integrated: a driver writes it on
+  the samples it invalidates, as a phone's driver does on person pixels, and
+  every floor of 1 or more drops it. No plane, or a floor of 0, is
+  bit-identical to before; a plane beside device depth is refused.
 
 ## Decision record
 
@@ -6133,3 +6144,66 @@ among the clips `first_slice_type` is checked on. Planted bugs, each failing its
 `sensor_video_hevc`), the band's bits read one square off, the padding
 written as 0 rather than 0xEE, and a four-byte start code split as three
 (`sensor_testing_support`).
+
+### 2026-11-02 — Host depth may carry a confidence plane, which frame prep gates on the GPU per raw sample before anything else reads it; level 0 is never integrated, and a frame without a plane is prepared bit for bit as before (amends the 2026-09-28 GPU pre-processing entry).
+
+**The rule.** `RgbdFrame` gains `depth_confidence`, beside host `depth`: one
+byte a sample, in the depth's order, in the sensor's own levels (ARKit's 0
+low, 1 medium, 2 high), held by `pixels`; and `min_confidence`, the floor.
+With a floor above 0, `GpuFramePrep` copies the plane into the pass's slot
+at the word after the depth, inside the depth's binding, which grows to
+cover it; host colour goes after both. The depth pass reads each raw
+pixel's level first (`metres_at`), and a level below the floor is no return
+(0) before the depth offset, so the 2x2 mix skips it, the colour-view test
+never sees it and the outlier filter counts it as none, exactly as a sample
+the sensor returned as 0. `DepthParams` gains `confidence_first` (the
+plane's first byte in the binding) and `min_confidence`, 72 to 80 bytes of
+push constants; there is no new binding, and `DeviceFrame` gains nothing.
+`prepare` refuses a plane beside device depth, at any floor, and a floor
+above 0 without a plane (`InvalidArgument`), before anything is recorded.
+
+**Level 0 is never integrated.** The owner (2026-11-02): "when handling
+scene dynamics, we also need to provide zero out the confidence mask to
+invalidated person is not intergrated". A driver that invalidates a sample
+writes level 0 there, as the phone's driver does on the pixels its person
+segmentation marks, and every floor of 1 or more drops it, whatever the
+depth holds. A floor of 0 reads no plane, so a frame with a plane sets one
+of at least 1; phone depth sets 2, high only.
+
+**Why this form.**
+- **The wire is raw.** The stream's depth record is u16 millimetres plus
+  the u8 plane, as ARKit hands them over (owner, 2026-11-02: "yeah u16 mm,
+  and u8 confidence is good"), so the receiver hands both planes to prep as
+  they arrived and the gate, like the units, stays on the GPU.
+- **Per raw sample, first.** A low-confidence sample is a hole the sensor
+  left, not a value to blend: gated after the mix, a block holding it and
+  its kept neighbours would still be mixed (they lie within the mix's 4 cm),
+  and the filter would count it.
+- **Nothing for the rig.** A Femto or stereo frame has no plane: its slot,
+  binding and copy are as before, and the one uniform branch is never taken,
+  so its depth is bit-identical.
+- **Host only.** The plane arrives from the wire beside host depth; no GPU
+  stage writes one, so device depth with a plane is refused rather than
+  given a second binding.
+
+**Tests.** `sensor_gpu_frame_prep_confidence`, on every GPU leg: through a
+pinhole, a sample kept exactly where its level reaches the floor and 0
+elsewhere, at ARKit's levels and floors and at every floor from 1 to 255
+over levels 0 to 255, a level-0 sample kept at none; through a lens, a gated
+frame bit for bit the same frame with its gated samples zeroed on the host,
+with the filter off, and on beside a depth offset and colour; a frame without
+a plane, with one all at the floor, and with one at levels 0 and 1 and a
+floor of 0 alike, bit for bit; the slot's colour after the plane at depth
+and plane sizes that end part-way through a word; gated and ungated frames
+in one set, recorded or prepared, each as alone; and the refusals, alone or
+in a set, with nothing recorded, submitted or timed. The other prep suites
+are unchanged.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer (and synchronization validation for the new
+test): the whole suite passes, 49 tests. Planted bugs, each failing the new
+test: the gate on the mixed value, by the nearest raw pixel's level (7,255
+of 19,200 pixels off through the lens); `<=` for `<` (the floor's own level
+dropped: 1,008 off at floor 1); and host colour placed after the depth
+alone, over the plane (the slot case: 1,033 depth pixels off at 63 x 47,
+while the colour itself still matches).
