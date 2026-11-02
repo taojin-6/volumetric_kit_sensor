@@ -16,7 +16,7 @@
 // here, and pairs kept past the next on the rectifier's new views. The spread
 // gate runs on a model whose disparity_spread is a sixteenth of the right
 // view, so the pixels it drops are known exactly, on a rig of the network's
-// size and on a smaller one.
+// size and on a smaller one, and beside the near gate.
 //
 // Where CUDA does not reach the device's GPU, or the device exports no
 // memory, the test skips; VS_TEST_HEVC_BACKEND, which CI sets on the NVIDIA
@@ -906,15 +906,17 @@ struct Gated {
 // `max_spread`, and check every sample: no return where the spread is above
 // a gate, else the disparity's depth. On a rig smaller than the network, the
 // spread is read where the network has the view's pixel, as the disparity
-// is: anywhere else is another pixel's spread.
+// is: anywhere else is another pixel's spread. With `max_disparity` above 0
+// the near gate runs too, raising the depth below which is no return.
 int run_gated(Fixture& t, std::uint32_t w, std::uint32_t h, float max_spread,
-              Gated* gated) {
+              Gated* gated, float max_disparity = 0.0f) {
   // A rectifier of its own: the first matcher to read a view maps it.
   auto rectifier = rectifier_for(t, pair_info(w, h), Output::Luma8);
   CHECK(rectifier != nullptr);
   sensor::FfsStereo::Options o =
       options_for(kSpreadModel, t.scratch / "spread");
   o.max_disparity_spread = max_spread;
+  o.max_disparity = max_disparity;
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
   const std::shared_ptr<Pictures> p = spread_pair(w, h);
@@ -926,12 +928,19 @@ int run_gated(Fixture& t, std::uint32_t w, std::uint32_t h, float max_spread,
   auto got = read_depth(t.gpu, *frame);
   CHECK(got.ok());
 
+  sensor::FfsStereo::Options expected = o;
+  if (max_disparity > 0.0f) {
+    expected.min_depth =
+        std::max(o.min_depth,
+                 static_cast<float>(1.05 * kFocal * kBaseline / max_disparity));
+  }
+  CHECK(std::abs(frame->min_depth - expected.min_depth) < 1e-6);
   std::vector<std::optional<std::uint16_t>> want(std::size_t{w} * h);
   for (std::size_t i = 0; i < want.size(); ++i) {
     const double d =
         static_cast<double>(p->left[i]) - static_cast<double>(p->right[i]);
     want[i] = expected_depth(d, static_cast<std::uint32_t>(i % w),
-                             kFocal * kBaseline, o, 1e-4);
+                             kFocal * kBaseline, expected, 1e-4);
     const bool returns = want[i] && *want[i] != 0;
     if (max_spread > 0.0f && p->right[i] / 16.0 > max_spread) {
       gated->dropped += returns;
@@ -942,10 +951,10 @@ int run_gated(Fixture& t, std::uint32_t w, std::uint32_t h, float max_spread,
   }
   const Compared c = compare(*got, want);
   std::printf(
-      "    %u x %u, max_disparity_spread %g: %d samples, %d returns, %d off; "
-      "%d returns dropped\n",
-      w, h, static_cast<double>(max_spread), c.compared, c.returns,
-      c.mismatches, gated->dropped);
+      "    %u x %u, max_disparity_spread %g, max_disparity %g: %d samples, "
+      "%d returns, %d off; %d returns dropped\n",
+      w, h, static_cast<double>(max_spread), static_cast<double>(max_disparity),
+      c.compared, c.returns, c.mismatches, gated->dropped);
   CHECK(c.mismatches == 0);
   CHECK(c.compared > static_cast<int>(w * h) * 9 / 10);
   return 0;
@@ -970,9 +979,16 @@ int spread_gate(Fixture& t) {
   // the view's, so a spread read at the view's index gates other pixels.
   CHECK(run_gated(t, 60, 30, 2.53125f, &padded) == 0);
   CHECK(padded.dropped > 200 && padded.kept > 200);
+  // Between, with the near gate at max_disparity 30 (0.14 m, past
+  // min_depth's 0.105 m): a pixel either gate drops is no return, and the
+  // frame's min_depth is the near gate's.
+  Gated both;
+  CHECK(run_gated(t, 64, 32, 2.53125f, &both, 30.0f) == 0);
+  CHECK(both.dropped > 100 && both.kept > 100);
+  CHECK(both.dropped < between.dropped && both.kept < between.kept);
   std::puts(
-      "  off, between two spreads and above all, and between on a padded "
-      "rig: each sample right");
+      "  off, between two spreads and above all, between on a padded rig, "
+      "and between with the near gate: each sample right");
 
   auto rectifier = rectifier_for(t, pair_info(64, 32), Output::Luma8);
   CHECK(rectifier != nullptr);
