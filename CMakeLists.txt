@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(
   volumetric_kit_sensor
-  VERSION 0.23.0
+  VERSION 0.24.0
   DESCRIPTION
     "Cameras, capture and the device-frame contract for the volumetric_kit family"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_sensor"
@@ -172,5 +172,10 @@ if(VS_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
   # opens a mic.
   if(VS_WITH_PORTAUDIO)
     add_subdirectory(tools/mic_check)
+  endif()
+  # The VideoToolbox-coded clip's maker, built with the tests and never run by
+  # them: its output is committed (tools/make_hevc_fixtures.sh).
+  if(APPLE)
+    add_subdirectory(tools/vt_pattern_clip)
   endif()
 endif()

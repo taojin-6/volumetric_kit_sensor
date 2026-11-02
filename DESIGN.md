@@ -49,12 +49,13 @@ recon's examples assemble the rest.
   *and* test it (the 2026-08-02 decision). The ones that do, Orbbec,
   RealSense and DeckLink, are targets of their own (`orbbec/`, `realsense/`,
   `decklink/`), so
-  `sensor_interface` never links a vendor SDK. The HEVC and JPEG decoders are another target of
+  `sensor_interface` never links a vendor SDK. The HEVC and JPEG decoders and the HEVC encoder are another target of
   their own (`video/`, on the GPU's hardware) and link no camera tier:
   `frame` and, on Apple, the Apple importer (`apple/`), which links
-  `frame` alone. The H.265 syntax they read on the host, and the key gate
+  `frame` and the syntax tier. The H.265 syntax they read on the host, and the key gate
   beside it, are a target of their own as well, on the family core's base
-  tier alone, in every build.
+  tier alone, in every build. The encoder rules any runner checks are a
+  static target on `video` (`sensor_video_testing`).
   The GPU pre-processing, any picture's luma and the pictures' readback
   are a fourth (`prep/`, Vulkan and shaders), so `sensor_interface` itself
   stays free of all of them.
@@ -93,7 +94,8 @@ recon's examples assemble the rest.
 - Macros: `VS_` (`VS_PREP_API`, `VS_WITH_CUDA`); GLSL functions `vs_`.
 - CMake targets `volumetric_kit::sensor_<tier>`: `sensor_camera`,
   `sensor_frame`, `sensor_interface`, `sensor_prep`, `sensor_array`,
-  `sensor_stereo`, `sensor_video`, `sensor_video_syntax`, `sensor_apple`,
+  `sensor_stereo`, `sensor_video`, `sensor_video_syntax`,
+  `sensor_video_testing`, `sensor_apple`,
   `sensor_orbbec`, `sensor_realsense`, `sensor_ffs`, `sensor_microphone` and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
   `sensor`, which is why the interface's is `sensor_interface`). `io` and
   `audio` are the exceptions to `sensor_<tier>` and `<tier>/export.hpp`:
@@ -471,6 +473,34 @@ other than one up from the last and after `lose()`; `Restart` for the key
 that ends a wait, which the caller sends after `HevcDecoder::reset()`; and
 `Take` otherwise. An unnumbered unit is never a gap, and the one after it
 is not checked.
+**`video/`'s HEVC encoder** (`hevc_encoder.hpp`, `sensor_video`; the
+2026-11-02 encoder decision) is the decoder's twin: `HevcEncoder::create`
+opens one hardware session in one configuration (low latency, P-pictures
+only, no reordering, every NAL unit in temporal layer 0, a slice QP for
+P-pictures and one for IDRs fixed for the session, keys only when asked,
+the VUI from `Options::color` normalized and checked against one code set),
+or says what is missing (`Unsupported`); a build with no encoder (Linux,
+until NVENC) refuses there. On Apple the way in is
+`send_pixel_buffer(encoder, pixels, key, pts)` (`hevc_encoder_apple.hpp`):
+an NV12 IOSurface buffer of the session's size and range, its tags agreeing
+with the session's colour, coded as it is. A send returns at once; a coding
+thread of the encoder's own codes each picture, since VideoToolbox's
+low-latency mode codes inside `VTCompressionSessionEncodeFrame`; and
+`receive` hands back each Annex B access unit in the order sent, its buffer
+swapped with the caller's, at most `kInFlight` (2) pictures in flight. The
+first picture is a key, and so is the next after a failure (`key_owed`): a
+dropped picture keeps the session, any other failure loses it, a failed
+picture fails those already sent behind it, and the next send opens a lost
+session again. `inject` drives a drop or a loss through the backend's own
+path, for tests. The rules and the thread are every backend's
+(`hevc_encoder.cpp`); the session is the backend's, one definition a build
+(`hevc_encode_session.hpp`; VideoToolbox's `vt_hevc_encode.cpp`). Its
+colour goes to VideoToolbox as Core Video names each code; VideoToolbox
+codes QP 1 to 51 (0 as 1, so 0 is refused there) and writes the stream's
+chroma siting from the buffer's tag, which the encoder adds to a buffer
+that lacks it. `facts().settings` is the configuration as the session
+reports it, one line, which the rules pin. `video_backend()`
+(`backend.hpp`) names the build's backend.
 **`apple/`'s `PixelBufferImporter`** (`sensor_apple`, on every
 Apple build, iOS included, with no FFmpeg) hands an 8-bit NV12
 `CVPixelBuffer` on an IOSurface to Vulkan in place: each plane becomes a
@@ -493,7 +523,14 @@ from `kQueueFamilyExternal`. It sets a `YuvImage`'s planes and leaves the
 matrix, range and chroma siting to its caller, who alone knows how the
 samples are coded (a stream's unlabelled colour, say). An iOS camera's
 pictures, such as ARKit's `capturedImage`, can come through it with no
-conversion on the host.
+conversion on the host. **`color_codes_of`** (`core_video_color.hpp`,
+the same target) reads what a buffer's tags state as H.273 codes, through
+Core Video's own mapping and the six chroma-location strings (internal
+`core_video_tags.hpp`, which the encoder shares); a tag Core Video maps to
+no code is refused. An IOSurface buffer keeps a tag as a code, and Core
+Video gives some back as another string (matrix 11 and 12 as primaries'
+names, matrix 15 not at all, on macOS 27): what it reads is what Core Video
+keeps.
 **`realsense/`** (`VS_WITH_REALSENSE`, librealsense 2.59.1 or later, found
 through its own CMake package) is a RealSense D400 (the D455):
 **`RealSenseSensor`**, one free-running camera (the 2026-10-29 RealSense
@@ -1078,15 +1115,27 @@ pinned stb source, a private implementation dependency of `sensor_image_io`.
 for its own tests and a consumer's, header-only and with no test framework
 (the 2026-11-02 colour codes and test support entry). `hevc_clip.hpp`
 splits a clip at its access unit delimiters and reads
-`VS_TEST_HEVC_BACKEND`, which makes a decoder test fail rather than skip. `nv12_picture.hpp` holds `HostNv12`, the family's
-test pattern and `device_picture`. The pattern's index band, luma rows 0
+`VS_TEST_HEVC_BACKEND` and `VS_TEST_HEVC_ENCODER`, which make a decoder or
+encoder test fail rather than skip. `nv12_pattern.hpp` (the standard
+library alone) holds `HostNv12`, the family's test pattern and
+`pattern_index`, its reader. The pattern's index band, luma rows 0
 to 15 and columns 0 to 255, is 16 squares of 16 x 16: a 255 and a 0
 reference, then bits 0 to 13 of the index, each square 255 or 0, so a
 reader recovers the index from square means after lossy coding; elsewhere
 the planes are smooth triangle waves that move with the index.
-`device_picture` writes a picture into R8 and R8G8 plane images in
-`GENERAL` through the core's `write_image`, padded past the planes where a
-test asks, as VideoToolbox's images can be.
+`nv12_picture.hpp`'s `device_picture` writes a picture into R8 and R8G8
+plane images in `GENERAL` through the core's `write_image`, padded past the
+planes where a test asks, as VideoToolbox's images can be; on Apple
+`nv12_pixel_buffer.hpp`'s `pixel_buffer` makes it an IOSurface
+`CVPixelBuffer`, tagged, as a camera's. `hevc_slices.hpp`'s `SliceReader`
+(in `sensor_video_syntax`, test use only) reads each picture's first slice
+type and QP and each SPS's profile and sub-layers, through the parsers'
+own walks (internal `hevc_syntax_detail.hpp`); no decode path calls it.
+`hevc_conformance.hpp`'s `hevc_encoder_breach` (`sensor_video_testing`,
+static, built wherever `sensor_video` is, with no core test support) runs
+the encoder rules C1 to C13 on one case through the public calls and names
+the first one broken; sensor's encoder test runs it on the public sizes and
+every code in the set, and an app's device test can run it as it is.
 
 ## Next work
 

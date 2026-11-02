@@ -42,6 +42,15 @@
 #       window 8 short at the right and the bottom (only the SPS differs).
 #   tests/data/hevc/testsrc2_main10_128x64.h265  Main 10, which the device
 #       path refuses.
+#
+# One clip is not FFmpeg's: VideoToolbox's own encoder, as HevcEncoder runs
+# it, coded tests/data/hevc/vt_pattern_1920x1440.h265 from IOSurface pixel
+# buffers on a Mac (the test pattern, pictures 0 to 11, BT.601 full range,
+# QP 30, keys at 0 and 6), so the decoders are checked on what an Apple
+# device sends. Made by the tool built with the tests, not by this script:
+#   build/tools/vt_pattern_clip/vt_pattern_clip \
+#       tests/data/hevc/vt_pattern_1920x1440.h265
+# Its MD5 is printed last with the others.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -123,7 +132,8 @@ ffmpeg -hide_banner -loglevel error -y \
   -bsf:v hevc_metadata=crop_right=8:crop_bottom=8 -f hevc \
   "$root/tests/data/hevc/testsrc2_cropped_120x56.h265"
 for clip in patches_256x144 cropped_240x128 centred_full_256x144 \
-  testsrc2_128x64 testsrc2_full_128x64 testsrc2_cropped_120x56; do
+  testsrc2_128x64 testsrc2_full_128x64 testsrc2_cropped_120x56 \
+  vt_pattern_1920x1440; do
   printf '%s ' "$clip"
   ffmpeg -hide_banner -loglevel error \
     -i "$root/tests/data/hevc/$clip.h265" -fps_mode passthrough -f md5 -

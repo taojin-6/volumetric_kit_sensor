@@ -6,7 +6,7 @@
 /// @file testing/hevc_clip.hpp
 /// @brief Test support for H.265 clips, with no test framework, codec or
 ///        GPU: a clip's access units, and whether a run promises a hardware
-///        decoder. Header-only, on the standard library alone.
+///        decoder or encoder. Header-only, on the standard library alone.
 ///
 /// The clips sensor commits (`tests/data/hevc`, made by
 /// `tools/make_hevc_fixtures.sh`) open every access unit with a delimiter,
@@ -74,6 +74,15 @@ inline std::vector<std::vector<std::uint8_t>> access_units_of_file(
 ///         device path then fails rather than skips.
 inline bool hevc_decoder_promised() noexcept {
   const char* promise = std::getenv("VS_TEST_HEVC_BACKEND");
+  return promise != nullptr && *promise != '\0';
+}
+
+/// @return Whether this run promises a hardware HEVC encoder:
+///         `VS_TEST_HEVC_ENCODER` set and not empty, as CI sets it on every
+///         leg that has one (`videotoolbox`). A test whose encoder opens no
+///         hardware path then fails rather than skips.
+inline bool hevc_encoder_promised() noexcept {
+  const char* promise = std::getenv("VS_TEST_HEVC_ENCODER");
   return promise != nullptr && *promise != '\0';
 }
 

@@ -65,7 +65,8 @@ jobs:
       # `cuda` (VS_WITH_CUDA=ON, the toolkit installed per job: NVDEC and
       # nvJPEG; 24.04's FFmpeg 6.1 is the floor). `hevc_backend` names the
       # hardware each must decode on, so their tests fail rather than skip
-      # without it. 26.04 builds without them.
+      # without it. 26.04 builds without them. The HEVC encoder is
+      # VideoToolbox's alone so far: `hevc_encoder` promises it on the Mac.
       #
       # `ffs` builds sensor_ffs (VS_WITH_FFS, TensorRT from the CUDA
       # repository, installed per job) on 24.04, the CUDA leg; its tests fail
@@ -113,6 +114,7 @@ jobs:
             realsense_sdk: true
             portaudio: true
             hevc_backend: videotoolbox
+            hevc_encoder: videotoolbox
     uses: ./.github/workflows/_build.yml
     with:
       os: ${{ matrix.os }}
@@ -127,6 +129,7 @@ jobs:
       decklink: ${{ matrix.decklink || false }}
       portaudio: ${{ matrix.portaudio || false }}
       hevc_backend: ${{ matrix.hevc_backend || '' }}
+      hevc_encoder: ${{ matrix.hevc_encoder || '' }}
       sync_validation: ${{ matrix.sync_validation || false }}
 
   camera-only:

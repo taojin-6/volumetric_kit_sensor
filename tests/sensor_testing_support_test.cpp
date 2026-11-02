@@ -4,9 +4,10 @@
 // The package's test support (include/volumetric_kit/sensor/testing/): a
 // clip's access units at the delimiters, from three- and four-byte start
 // codes, bytes before the first left out, and a committed clip's from its
-// file; the decoder promise as VS_TEST_HEVC_BACKEND sets it; the test
-// pattern's planes, its 0 and 255, its index band read back by square means
-// for indices across its span, and a different picture at each index; and,
+// file; the decoder and encoder promises as VS_TEST_HEVC_BACKEND and
+// VS_TEST_HEVC_ENCODER set them; the test pattern's planes, its 0 and 255,
+// its index band read back by pattern_index for indices across its span, and
+// a different picture at each index; and,
 // on the GPU, its device picture's two plane images, their usage, layout and
 // size, each plane at their corner with 0xEE past it, and the refusals. The
 // host parts run without a device.
@@ -85,27 +86,24 @@ int test_promise() {
   return 0;
 }
 
-// The index the band of @p p names, read as its documentation says: each
-// square's mean over its middle 8 x 8 against the references' midpoint; -1
-// for references that do not differ.
-long read_index(const testing::HostNv12& p) {
-  const auto mean = [&p](std::uint32_t square) {
-    unsigned sum = 0;
-    for (std::uint32_t y = 4; y < 12; ++y) {
-      for (std::uint32_t x = 4; x < 12; ++x) {
-        sum += p.luma[std::size_t{y} * p.width +
-                      square * testing::kIndexSquare + x];
-      }
-    }
-    return sum / 64.0;
-  };
-  const double white = mean(0), black = mean(1);
-  if (white - black < 64) return -1;
-  long index = 0;
-  for (std::uint32_t b = 0; b < testing::kIndexBits; ++b) {
-    if (mean(2 + b) > (white + black) / 2) index |= 1L << b;
+int test_encoder_promise() {
+  namespace test = vkc::test;
+  {
+    const test::ScopedEnv none("VS_TEST_HEVC_ENCODER", nullptr);
+    CHECK(!testing::hevc_encoder_promised());
   }
-  return index;
+  {
+    const test::ScopedEnv empty("VS_TEST_HEVC_ENCODER", "");
+    CHECK(!testing::hevc_encoder_promised());
+  }
+  const test::ScopedEnv promised("VS_TEST_HEVC_ENCODER", "videotoolbox");
+  CHECK(testing::hevc_encoder_promised());
+  return 0;
+}
+
+// The index the band of @p p names (testing::pattern_index).
+long read_index(const testing::HostNv12& p) {
+  return testing::pattern_index(p.luma.data(), p.width);
 }
 
 // The planes' sizes at even, odd and single-pixel sizes; 0 and 255 in each
@@ -134,12 +132,23 @@ int test_pattern() {
   for (const std::uint32_t i : {0u, 1u, 5u, 12345u, 16383u, 16384u, 70000u}) {
     const testing::HostNv12 p = testing::test_pattern(256, 144, i);
     CHECK(read_index(p) == static_cast<long>(i % 16384));
+    // Read with a stride past the width, as from a device picture's rows.
+    Bytes strided(std::size_t{300} * 16);
+    for (std::uint32_t y = 0; y < 16; ++y) {
+      std::copy_n(p.luma.data() + std::size_t{y} * 256, 256,
+                  strided.data() + std::size_t{y} * 300);
+    }
+    CHECK(testing::pattern_index(strided.data(), 300) ==
+          static_cast<long>(i % 16384));
     for (std::uint32_t y = 0; y < 8; ++y) {
       for (std::uint32_t x = 0; x < 256; ++x) {  // 128 pairs, 2 bytes each
         CHECK(p.chroma[std::size_t{y} * 256 + x] == 128);
       }
     }
   }
+  // A flat picture is not the pattern.
+  const Bytes grey(std::size_t{256} * 16, 128);
+  CHECK(testing::pattern_index(grey.data(), 256) == -1);
   const testing::HostNv12 a = testing::test_pattern(256, 144, 7);
   const testing::HostNv12 b = testing::test_pattern(256, 144, 8);
   const testing::HostNv12 again = testing::test_pattern(256, 144, 7);
@@ -238,7 +247,8 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 }  // namespace
 
 int main() {
-  if (test_split() != 0 || test_promise() != 0 || test_pattern() != 0) {
+  if (test_split() != 0 || test_promise() != 0 || test_encoder_promise() != 0 ||
+      test_pattern() != 0) {
     return 1;
   }
   return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);

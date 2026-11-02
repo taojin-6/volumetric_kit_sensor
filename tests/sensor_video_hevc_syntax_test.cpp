@@ -10,11 +10,14 @@
 // colour, the reorder depth); the
 // picture order counts of its slices; what is refused -- every truncated
 // SPS, a slice whose parameter sets were never given, a NAL unit of another
-// type, and noise -- without a read out of bounds; and a host allocation
-// failure in each call, returned as OutOfMemory.
+// type, and noise -- without a read out of bounds; a host allocation
+// failure in each call, returned as OutOfMemory; and the test-only slice
+// reader (testing/hevc_slices.hpp), each clip's slice types and QPs as
+// FFmpeg reads them.
 
 #include "volumetric_kit/sensor/video/hevc_syntax.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -28,6 +31,7 @@
 #include "volumetric_kit/core/testing/test_allocation_failure.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/sensor/testing/hevc_clip.hpp"
+#include "volumetric_kit/sensor/testing/hevc_slices.hpp"
 
 namespace hevc = volumetric_kit::sensor::hevc;
 namespace testing = volumetric_kit::sensor::testing;
@@ -239,7 +243,8 @@ int test_first_slice_type() {
        {"centred_full_256x144", "cropped_240x128", "fullrange_256x144",
         "open_gop_256x144", "patches_256x144", "refused_256x144",
         "testsrc2_128x64", "testsrc2_cropped_120x56", "testsrc2_full_128x64",
-        "testsrc2_main10_128x64", "unlabelled_256x144"}) {
+        "testsrc2_main10_128x64", "unlabelled_256x144",
+        "vt_pattern_1920x1440"}) {
     const Units units = testing::access_units_of_file(clip(name).c_str());
     const Read read = read_clip(name);
     CHECK(read.ok && read.picture_types.size() == units.size());
@@ -519,9 +524,122 @@ int test_allocation_failure() {
   return 0;
 }
 
+// The slice reader (testing/hevc_slices.hpp) on every committed clip: each
+// access unit's first slice type, nal_unit_type and QP, as FFmpeg's
+// trace_headers bitstream filter reads them (init_qp_minus26 0, each
+// slice_qp_delta), and each clip's profile and sub-layers; then its
+// refusals and a host allocation failure.
+int test_slice_reader() {
+  struct Clip {
+    const char* name;
+    int profile;
+    // nal_unit_type, slice_type, SliceQpY of each access unit, in order.
+    std::vector<std::array<int, 3>> units;
+    int sub_layers = 1;
+  };
+  const std::array<int, 3> i30{20, 2, 30}, p30{1, 1, 30};
+  const std::array<int, 3> i1{20, 2, 1}, p4{1, 1, 4};
+  const std::array<int, 3> i17{20, 2, 17}, p20{1, 1, 20};
+  const std::vector<std::array<int, 3>> patches{i1, p4, p4, p4, i1, p4, p4, p4};
+  const std::vector<std::array<int, 3>> testsrc2{
+      i17, p20, {1, 0, 21}, {0, 0, 22}, p20, {1, 0, 21}, {0, 0, 22}, p20};
+  const std::vector<std::array<int, 3>> open_gop{
+      i1,        p4, {1, 0, 5}, {0, 0, 6}, {21, 2, 1}, {9, 0, 5},
+      {8, 0, 6}, p4, {1, 0, 5}, {0, 0, 6}, {21, 2, 1}, {9, 0, 5},
+      {8, 0, 6}, p4, {1, 0, 5}, {0, 0, 6}};
+  const std::vector<Clip> clips = {
+      {"patches_256x144", 1, patches},
+      {"cropped_240x128", 1, patches},
+      {"unlabelled_256x144", 1, patches},
+      {"fullrange_256x144", 1, patches},
+      {"centred_full_256x144", 1, {i17, p20, p20, p20, i17, p20, p20, p20}},
+      {"open_gop_256x144", 1, open_gop},
+      // B-frames, then two pictures of 4:0:0 grey (RExt, profile 4).
+      {"refused_256x144",
+       4,
+       {i1,
+        p4,
+        {1, 0, 5},
+        {0, 0, 6},
+        {0, 0, 6},
+        p4,
+        {1, 0, 5},
+        {0, 0, 6},
+        i1,
+        p4}},
+      {"testsrc2_128x64", 1, testsrc2},
+      {"testsrc2_full_128x64", 1, testsrc2},
+      {"testsrc2_cropped_120x56", 1, testsrc2},
+      {"testsrc2_main10_128x64", 2, testsrc2},
+      // VideoToolbox's: QP 30, keys at 0 and 6, two sub-layers declared
+      // though every unit is in layer 0.
+      {"vt_pattern_1920x1440",
+       1,
+       {i30, p30, p30, p30, p30, p30, i30, p30, p30, p30, p30, p30},
+       2},
+  };
+  for (const Clip& c : clips) {
+    const Units units = testing::access_units_of_file(clip(c.name).c_str());
+    CHECK(units.size() == c.units.size());
+    testing::SliceReader reader;
+    CHECK(!reader.sequence().has_value());
+    for (std::size_t i = 0; i < units.size(); ++i) {
+      const auto p = reader.read(units[i].data(), units[i].size());
+      if (!p.ok()) {
+        std::fprintf(stderr, "%s unit %zu: %s\n", c.name, i,
+                     p.status().message().c_str());
+      }
+      CHECK(p.ok());
+      const std::array<int, 3> got{p->nal_type, p->slice_type, p->slice_qp};
+      if (got != c.units[i]) {
+        std::fprintf(stderr, "%s unit %zu: type %d, slice %d, QP %d\n", c.name,
+                     i, got[0], got[1], got[2]);
+      }
+      CHECK(got == c.units[i]);
+      CHECK(p->max_temporal_id == 0);
+    }
+    CHECK(reader.sequence().has_value());
+    CHECK(reader.sequence()->profile_idc == c.profile);
+    CHECK(reader.sequence()->max_sub_layers == c.sub_layers);
+  }
+
+  // The refusals: no data, no slice, a slice whose parameter sets were
+  // never read, and its first unit not starting a picture.
+  testing::SliceReader reader;
+  CHECK(reader.read(nullptr, 4).status().domain() == Code::InvalidArgument);
+  const Units units =
+      testing::access_units_of_file(clip("patches_256x144").c_str());
+  std::vector<hevc::Nal> nals;
+  CHECK(hevc::split_annex_b(units[0].data(), units[0].size(), nals).ok());
+  const std::uint8_t* slice = nullptr;
+  for (const hevc::Nal& nal : nals) {
+    if (nal.type < 32) slice = nal.data;
+  }
+  CHECK(slice != nullptr);
+  const auto at = static_cast<std::size_t>(slice - units[0].data());
+  const std::vector<std::uint8_t> sets(units[0].begin(),
+                                       units[0].begin() + (at - 3));
+  CHECK(reader.read(sets.data(), sets.size()).status().domain() ==
+        Code::IoError);
+  testing::SliceReader fresh;
+  CHECK(fresh.read(units[1].data(), units[1].size()).status().domain() ==
+        Code::IoError);
+  std::vector<std::uint8_t> later(units[0]);
+  later[at + 2] &= 0x7f;  // first_slice_segment_in_pic_flag
+  testing::SliceReader again;
+  CHECK(again.read(later.data(), later.size()).status().domain() ==
+        Code::IoError);
+  CHECK(contains_allocation_failure([&] {
+    testing::SliceReader grown;
+    return grown.read(units[0].data(), units[0].size()).status();
+  }));
+  return 0;
+}
+
 }  // namespace
 
 int main() {
+  if (test_slice_reader() != 0) return 1;
   if (test_bits() != 0) return 1;
   if (test_exp_golomb() != 0) return 1;
   if (test_trailing_bits() != 0) return 1;
