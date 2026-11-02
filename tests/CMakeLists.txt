@@ -42,6 +42,21 @@ vs_target_warnings(sensor_camera_array_calibration_test)
 add_test(NAME sensor_camera_array_calibration
          COMMAND sensor_camera_array_calibration_test)
 
+# The camera tier's stereo pair: a pair from two entries of a calibration file
+# (stereo_calibration), its rectification on the host (rectify_stereo: rows
+# aligned within 1e-9 px, R2 the right camera's own, OpenCV's numbers as
+# tools/stereo_rectify_reference.py pinned them, a pair rectified already
+# resampled, the refusals) and a lens's fold (fold_radius2: k1's turn, k4's
+# pole, lenses that never fold, a 2024 fit that folds at 74.8 degrees).
+# Host-only, so camera-only builds run it too.
+add_executable(sensor_camera_stereo_rectification_test
+               camera_stereo_rectification_test.cpp)
+target_link_libraries(sensor_camera_stereo_rectification_test
+                      PRIVATE volumetric_kit::sensor_camera)
+vs_target_warnings(sensor_camera_stereo_rectification_test)
+add_test(NAME sensor_camera_stereo_rectification
+         COMMAND sensor_camera_stereo_rectification_test)
+
 # The frame prep's same-K depth crop against a folding lens: a forward scan of
 # distort_rational that finds a strong barrel lens's fold, run on a stand-in for
 # a Femto Mega's NFOV depth lens (not an SDK report). It needs sensor_camera
@@ -100,8 +115,8 @@ if(VS_CAMERA_ONLY)
 endif()
 
 # The package's own pieces: the version CMake wires through, the GLM aliases,
-# and what it asks of a device -- scalar block layout, and the decoders'
-# extensions as optional, which recon's list leaves to this one.
+# and what it asks of a device -- scalar block layout, and the decoders' and the
+# capture card's extensions as optional, which recon's list leaves to this one.
 add_executable(sensor_smoke_test smoke_test.cpp)
 target_link_libraries(sensor_smoke_test PRIVATE volumetric_kit::sensor_camera
                                                 volumetric_kit::sensor_frame)
@@ -172,10 +187,24 @@ if(UNIX)
            COMMAND sensor_gpu_frame_prep_submit_test)
 endif()
 
+# Any picture's 8-bit luma and half on the GPU (sensor_prep's LumaPass): every
+# layout from a buffer, the host and NV12 images, bit for bit against a host
+# reference (V210 through tests/v210.hpp), odd edges, 3840 and 3842 wide, a
+# mixed list in one submit, the pooled outputs reused and held, the families and
+# the refusals. VS_TEST_LUMA_TIMING=<runs> times a DeckLink pair by hand. Skips
+# with no device.
+add_executable(sensor_luma_pass_test sensor_luma_pass_test.cpp)
+target_link_libraries(
+  sensor_luma_pass_test PRIVATE volumetric_kit::sensor_prep
+                                volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_luma_pass_test)
+add_test(NAME sensor_luma_pass COMMAND sensor_luma_pass_test)
+
 # A set's pictures read back to the host (sensor_prep's PictureReadback) on
 # synthetic NV12 images and NV12 and I420 buffers: exact bytes at odd sizes,
-# offsets and strides, every queue family a buffer comes from, the host memory
-# grown and reused, the refusals and the stage row. Skips with no device.
+# offsets and strides, every queue family a buffer comes from, a list read, the
+# host memory grown and reused, the refusals and the stage row. Skips with no
+# device.
 add_executable(sensor_picture_readback_test sensor_picture_readback_test.cpp)
 target_link_libraries(
   sensor_picture_readback_test PRIVATE volumetric_kit::sensor_prep
@@ -284,18 +313,30 @@ target_link_libraries(
 vs_target_warnings(sensor_array_process_test)
 add_test(NAME sensor_array_process COMMAND sensor_array_process_test)
 
-# The stereo tier's rectifier (sensor_stereo) on synthetic calibrated pairs: its
-# rectification against OpenCV's numbers (pinned by
-# tools/stereo_rectify_reference.py), rows aligned and the host reference of the
-# remap on a scene an independent renderer images, every layout from the host
-# and the device, a pair rectified already, the depth view, the views' lease and
-# export, the refusals, and the pass's time. Skips without a device.
+# The stereo tier's rectifier (sensor_stereo) on synthetic calibrated pairs:
+# rows aligned and the host reference of the remap on a scene an independent
+# renderer images, every layout from the host and the device, a pair rectified
+# already, the depth view, the views' lease and export, the area prefilter where
+# a view shrinks its picture, the refusals, and the pass's time. Skips without a
+# device.
 add_executable(sensor_stereo_rectifier_test sensor_stereo_rectifier_test.cpp)
 target_link_libraries(
   sensor_stereo_rectifier_test PRIVATE volumetric_kit::sensor_stereo
                                        volumetric_kit::core_test_policy)
 vs_target_warnings(sensor_stereo_rectifier_test)
 add_test(NAME sensor_stereo_rectifier COMMAND sensor_stereo_rectifier_test)
+
+# The stereo tier's own pieces: the contract every stereo source keeps
+# (stereo_contract.hpp: the calibration as the source was opened, the sync
+# rules), and the rectifier taking a pair from two calibration entries, its rig
+# rectify_stereo's bit for bit. Host checks first; the rectifier's skips without
+# a device.
+add_executable(sensor_stereo_sensor_test sensor_stereo_sensor_test.cpp)
+target_link_libraries(
+  sensor_stereo_sensor_test PRIVATE volumetric_kit::sensor_stereo
+                                    volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_stereo_sensor_test)
+add_test(NAME sensor_stereo_sensor COMMAND sensor_stereo_sensor_test)
 
 # RGB-D sensor defaults, frame-return helpers, copied-frame ownership and stable
 # enum names. Host-only.
@@ -479,10 +520,10 @@ if(APPLE OR VS_WITH_FFMPEG)
     # FFS (sensor_ffs) on the test models in data/ffs
     # (tools/ffs/make_test_onnx.py), FFS's inputs and outputs with a disparity
     # and spread worked out by hand: FfsStereo's depth units, no returns
-    # (coverage and the spread gate among them), padding, both view layouts, the
-    # plan cache, kept pairs' views, the depth read in place by GpuFramePrep and
-    # the refusals; and StereoDepthSensor on a test camera, as any IRgbdSensor,
-    # in a SensorArray. They skip as the interop test does.
+    # (coverage, the near gate and the spread gate among them), padding, both
+    # view layouts, the plan cache, kept pairs' views, the depth read in place
+    # by GpuFramePrep and the refusals; and StereoDepthSensor on a test camera,
+    # as any IRgbdSensor, in a SensorArray. They skip as the interop test does.
     foreach(_vs_ffs_test stereo depth_sensor)
       add_executable(sensor_ffs_${_vs_ffs_test}_test
                      sensor_ffs_${_vs_ffs_test}_test.cpp)
@@ -519,6 +560,40 @@ if(APPLE OR VS_WITH_FFMPEG)
     add_test(NAME sensor_video_vt_jpeg_error
              COMMAND sensor_video_vt_jpeg_error_test)
   endif()
+endif()
+
+# The DeckLink driver's SDK-free units (sensor_decklink_units), with no card, on
+# every leg: the connectors and modes, the option refusals, the pairing and its
+# clock map, the counts and the sync contract (stereo_contract.hpp), and the
+# skew report's numbers, on the host; then the page pool, the device pictures
+# and the driver over a capture that writes pages as the card would, on the
+# device, which skips where the device lacks VK_EXT_external_memory_host.
+foreach(_vs_decklink_test pairing upload)
+  add_executable(sensor_decklink_${_vs_decklink_test}_test
+                 sensor_decklink_${_vs_decklink_test}_test.cpp)
+  target_link_libraries(
+    sensor_decklink_${_vs_decklink_test}_test
+    PRIVATE volumetric_kit::sensor_decklink_units
+            volumetric_kit::core_test_policy)
+  vs_target_warnings(sensor_decklink_${_vs_decklink_test}_test)
+  add_test(NAME sensor_decklink_${_vs_decklink_test}
+           COMMAND sensor_decklink_${_vs_decklink_test}_test)
+endforeach()
+
+# The DeckLink SDK prerequisite (VS_WITH_DECKLINK only), with no card opened:
+# the driver's codes are the SDK's, Desktop Video's library loads (or open is
+# NotFound naming it), and DecklinkStereo::open's refusals before any card.
+if(VS_WITH_DECKLINK)
+  add_executable(sensor_decklink_sdk_smoke_test decklink_sdk_smoke_test.cpp)
+  target_link_libraries(
+    sensor_decklink_sdk_smoke_test
+    PRIVATE volumetric_kit::sensor_decklink sensor_decklink_capture
+            volumetric_kit::core_test_policy)
+  target_include_directories(sensor_decklink_sdk_smoke_test SYSTEM
+                             PRIVATE "${VS_DECKLINK_INCLUDE_DIR}")
+  vs_target_warnings(sensor_decklink_sdk_smoke_test)
+  add_test(NAME sensor_decklink_sdk_smoke
+           COMMAND sensor_decklink_sdk_smoke_test)
 endif()
 
 # The worker each Orbbec colour decoder decodes on (decode_worker.hpp), driven
@@ -726,12 +801,13 @@ target_link_libraries(
 vs_target_warnings(sensor_io_image_test)
 add_test(NAME sensor_io_image COMMAND sensor_io_image_test)
 
-# The tests whose code runs threads -- the Orbbec decode workers and the audio
-# capture's queue -- which CI builds and runs again under ThreadSanitizer
-# (.github/workflows/_build.yml): one target to build them.
+# The tests whose code runs threads -- the Orbbec decode workers, the audio
+# capture's queue and the DeckLink driver's upload -- which CI builds and runs
+# again under ThreadSanitizer (.github/workflows/_build.yml): one target to
+# build them.
 add_custom_target(sensor_tsan_tests)
 add_dependencies(sensor_tsan_tests sensor_orbbec_decode_worker_test
-                 sensor_audio_capture_test)
+                 sensor_audio_capture_test sensor_decklink_upload_test)
 if(VS_WITH_ORBBEC)
   add_dependencies(sensor_tsan_tests sensor_orbbec_jpeg_test
                    sensor_orbbec_hevc_test sensor_orbbec_open_sensors_test)
@@ -793,11 +869,13 @@ add_test(NAME sensor_subproject_glsl
                  --target vs_glsl_consumer)
 set_tests_properties(sensor_subproject_glsl PROPERTIES FIXTURES_REQUIRED
                                                        vs_subproject_defaults)
+# A subproject builds neither the tests nor the DeckLink driver, so its floor is
+# the base one, not the 0.38.0 the driver's units need.
 _vs_add_subproject_test(sensor_subproject_old_core old_core -DVS_CORE_FIRST=ON
                         -DVKC_WITH_VULKAN=ON -DVS_CONSUMER_CORE_VERSION=0.0.1)
 _vs_expect_message(
   sensor_subproject_old_core
-  "volumetric_kit_sensor needs volumetric_kit_core ${VS_CORE_MIN_VERSION} or newer, but the core at .+ is 0.0.1: pin v${VS_CORE_MIN_VERSION} or newer"
+  "volumetric_kit_sensor needs volumetric_kit_core ${VS_CORE_BASE_MIN_VERSION} or newer, but the core at .+ is 0.0.1: pin v${VS_CORE_BASE_MIN_VERSION} or newer"
 )
 _vs_add_subproject_test(sensor_subproject_core_without_vulkan no_vulkan
                         -DVS_CORE_FIRST=ON -DVKC_WITH_VULKAN=OFF)
@@ -814,6 +892,26 @@ if(APPLE)
     sensor_subproject_apple_ffmpeg
     "on Apple the video decoders use VideoToolbox directly and need no FFmpeg. Configure this build with -DVS_WITH_FFMPEG=OFF."
   )
+endif()
+
+# VS_WITH_DECKLINK refused with the fix: on Linux x86-64 without the SDK
+# (cmake/vs_decklink.cmake), and anywhere else; a build with the driver has the
+# SDK, so the test is not added there.
+if(NOT VS_WITH_DECKLINK)
+  _vs_add_subproject_test(sensor_subproject_decklink_no_sdk decklink_no_sdk
+                          -DVS_WITH_DECKLINK=ON -DDeckLinkSDK_ROOT=)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES
+                                            "^(x86_64|AMD64)$")
+    _vs_expect_message(
+      sensor_subproject_decklink_no_sdk
+      "VS_WITH_DECKLINK is ON but no DeckLink SDK was found at DeckLinkSDK_ROOT=\"\": download the Desktop Video SDK"
+    )
+  else()
+    _vs_expect_message(
+      sensor_subproject_decklink_no_sdk
+      "VS_WITH_DECKLINK is ON, but the DeckLink driver builds on Linux x86-64 only."
+    )
+  endif()
 endif()
 
 # Start the slowest test first under `ctest --parallel`: without a COST, CTest

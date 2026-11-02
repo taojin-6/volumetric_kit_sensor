@@ -25,6 +25,7 @@
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
+#include "volumetric_kit/sensor/camera/stereo_rectification.hpp"
 #include "volumetric_kit/sensor/rgbd_sensor.hpp"
 #include "volumetric_kit/sensor/stereo/export.hpp"
 #include "volumetric_kit/sensor/stereo/stereo_sensor.hpp"
@@ -32,30 +33,16 @@
 
 namespace volumetric_kit::sensor {
 
-/// @brief The rectified pair: both views are @ref camera, the right one
-///        @ref baseline metres along the left one's +x.
-///
-/// A point at depth `z` in the rectified left camera shows in the right view
-/// `camera.intrinsics.fx * baseline / z` pixels to the left, on the same row:
-/// what a matcher's disparity turns back into depth.
-struct StereoRig {
-  /// Both views' camera: pinhole (no lens), at the rectified size.
-  camera::CameraModel camera;
-  double baseline = 0.0;  ///< Metres; above 0.
-  /// The rectified left camera's frame to the source left camera's: a
-  /// rotation, so depth from the pair is posed through it.
-  camera::Mat4d rectified_to_left = camera::Mat4d(1.0);
-};
-
 /// @brief Both views of one frame, rectified on the GPU.
 ///
 /// Each view is `rig.camera.size` pixels of @ref
 /// StereoRectifier::Options::output, rows packed: `Luma8` a byte a pixel, four
 /// to a word, the first in the low byte; `Rgba8` a word a pixel, `R | G << 8 |
 /// B << 16 | coverage << 24`, R'G'B' as the source pictures encoded it. A pixel
-/// whose ray misses its source picture, or passes its lens's fold (where the
-/// lens model stops carrying rays outward and turns back), is 0, coverage
-/// included. The pass has finished when the pair is handed out.
+/// whose ray misses its source picture, or passes its lens's fold (@ref
+/// fold_radius2: where the lens model stops carrying rays outward and turns
+/// back), is 0, coverage included. The pass has finished when the pair is
+/// handed out.
 ///
 /// The buffers are device-local storage buffers, the rectifier's own, one a
 /// view, leased to the pair. **Use each pair in turn -- rectify, read, drop
@@ -90,40 +77,41 @@ struct RectifiedPair {
   /// @ref kQueueFamilyIgnored.
   std::uint32_t queue_family = kQueueFamilyIgnored;
   StereoRig rig;  ///< The views' camera and baseline.
-  /// The frame they came from: colour and times pass through, and its
-  /// pictures stay held. A picture in a buffer the pass took over -- the left
-  /// and right ones, and a colour picture in one of their buffers -- reads
-  /// @ref kQueueFamilyIgnored here, so a later stage reads this frame, not
-  /// the one passed to @ref StereoRectifier::rectify.
+  /// The frame they came from: colour and times pass through, and its left
+  /// and colour pictures stay held. The right picture, read, is let go: it has
+  /// no planes here, and `right_pixels` is null. A picture in a buffer the
+  /// pass took over -- the left one, and a colour picture in the left or
+  /// right one's buffer -- reads @ref kQueueFamilyIgnored here, so a later
+  /// stage reads this frame, not the one passed to
+  /// @ref StereoRectifier::rectify.
   StereoFrame source;
 };
 
 /// @brief Undistorts and rectifies a calibrated stereo pair on the GPU,
 ///        resampled to one size.
 ///
-/// The rectification is computed once, at @ref create, on the host:
-/// Bouguet's method, as OpenCV's `stereoRectify` computes it with
-/// `CALIB_ZERO_DISPARITY` -- the relative rotation split between the two
-/// cameras, then the baseline turned onto +x; one pinhole camera for both
-/// views, its focal length the two cameras' vertical one scaled to the
-/// rectified height, and @ref Options::alpha choosing between only valid
-/// pixels and every source pixel. A pair that is rectified already -- no
-/// rotation between the cameras, no lens, one camera model, the right camera
-/// along +x alone, as a RealSense's infrared pair -- is only resampled: its
-/// camera scaled to the size by one factor, so its pixels keep their shape,
-/// about the centres; alpha chooses between filling the view, the picture
-/// cropped (0), and fitting the whole picture, the view bordered (1), which
-/// differ only where the size changes the aspect ratio.
+/// The rectification is computed once, at @ref create, on the host: @ref
+/// rectify_stereo's, Bouguet's method as OpenCV's `stereoRectify` computes
+/// it, @ref Options::alpha choosing between only valid pixels and every
+/// source pixel. A pair that is rectified already, as a RealSense's infrared
+/// pair, is only resampled, its pixels keeping their shape.
 ///
 /// Each frame is one compute pass a view: each rectified pixel's ray turned
 /// into the source camera, through its lens, and the source picture sampled
 /// there bilinearly and converted as `GpuFramePrep` converts colour (the
-/// same shader code). The pictures come in any layout the package reads --
-/// luma alone, YUYV, NV12, I420 -- on the host, copied into one persistent
-/// slot (`core::HostRing`) as `GpuFramePrep` stages host planes, or in a
-/// buffer on the device, taken over from `YuvImage::queue_family`, once a
-/// buffer. Nothing is allocated a frame while each pair is dropped before the
-/// next is rectified (@ref RectifiedPair).
+/// same shader code). Where the view shrinks the picture -- the pixel's
+/// footprint in it, from where the points half a pixel either side of it
+/// land, longer than 1.5 source pixels on a side -- the pixel is the mean of
+/// 5 x 5 bilinear samples spread over that footprint, converted once: a 4K
+/// picture shrunk 4.5:1 does not alias, and a lens that shrinks less at its
+/// edge than at its centre is averaged over less there. A smaller shrink,
+/// such as a D455's 1.33:1, takes one sample. The pictures come in any
+/// layout the package reads --
+/// luma alone, YUYV, V210, NV12, I420 -- on the host, copied into one
+/// persistent slot (`core::HostRing`) as `GpuFramePrep` stages host planes,
+/// or in a buffer on the device, taken over from `YuvImage::queue_family`,
+/// once a buffer. Nothing is allocated a frame while each pair is dropped
+/// before the next is rectified (@ref RectifiedPair).
 ///
 /// @code
 /// VKC_ASSIGN(auto rectifier,
@@ -163,15 +151,13 @@ class VS_STEREO_API StereoRectifier final {
   ///                   object and its pairs).
   /// @param info       The pair's calibration, and any colour camera.
   /// @param options    The rectified size, alpha and output.
-  /// @return The rectifier; `Status::Code::InvalidArgument` for a camera
-  ///         that `camera::check_camera_model` refuses or that is past
-  ///         float's range, cameras of different sizes, a `left_to_right` or
-  ///         `left_to_color` that is not rigid, cameras at one place, a pair
-  ///         whose right camera is not along the left one's +x after the
-  ///         rotation is split (a vertical pair, or the two swapped), an
-  ///         alpha outside [0, 1], a size with one side 0, a view past a
-  ///         single dispatch or a storage binding, or a rectification that
-  ///         comes out degenerate; or a device that lacks what the package's
+  /// @return The rectifier; `Status::Code::InvalidArgument` for a source
+  ///         with no calibration (@ref StereoInfo::calibration), a camera,
+  ///         the colour one included, that `camera::check_camera_model`
+  ///         refuses or that is past float's range, a `left_to_color` that
+  ///         is not rigid, a pair, size or alpha that @ref rectify_stereo
+  ///         refuses (its reason named), or a view past a single dispatch or
+  ///         a storage binding; or a device that lacks what the package's
   ///         kernels need, or a pipeline or buffer failure.
   static core::Result<std::unique_ptr<StereoRectifier>> create(
       const core::Device& device, core::Allocator& allocator,
@@ -212,7 +198,8 @@ class VS_STEREO_API StereoRectifier final {
   ///         planes, planes as images (a buffer or the host only), a picture
   ///         that `GpuFramePrep` would refuse as a frame's colour (its size
   ///         not its camera's, an unknown layout or chroma location, a bad
-  ///         matrix, YUYV of odd width, strides, offsets, overlap or a buffer
+  ///         matrix, YUYV or V210 of odd width, V210 in full range,
+  ///         strides, offsets, overlap or a buffer
   ///         it cannot bind), a `queue_family` the device lacks, or pictures
   ///         in one buffer that name different writers' queue families;
   ///         `Status::Code::OutOfMemory` for a host allocation failure; or a

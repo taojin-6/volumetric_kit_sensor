@@ -5,10 +5,11 @@
 // NV12 plane images larger than their picture, and NV12, I420 and luma-alone
 // planes in buffers at odd sizes, offsets and strides, read back byte for
 // byte (luma alone with no chroma either way), luma
-// alone or every plane, one picture or a set; buffers taken over from the
-// readback's own family, a CONCURRENT buffer's other family and from outside
-// Vulkan, and images from outside Vulkan; the host memory grown and reused;
-// views that outlive their pictures; every refusal; and the stage row. Skips
+// alone or every plane, one picture, a set or a list; buffers taken over from
+// the readback's own family, a CONCURRENT buffer's other family and from
+// outside Vulkan, a buffer two pictures share once, and images from outside
+// Vulkan; the host memory grown and reused; views that outlive their
+// pictures; every refusal, V210's naming LumaPass; and the stage row. Skips
 // without a device.
 
 #include <cstddef>
@@ -300,6 +301,114 @@ int test_set(const vkc::test::Gpu& gpu) {
   return 0;
 }
 
+// A list: each picture's view exact, its bytes its single read's, in one
+// submit; two pictures in one buffer taken over once, from outside Vulkan
+// with one barrier; empty for an empty
+// list; a null picture, two writers named for one buffer, and V210 refused,
+// the list whole.
+int test_list(const vkc::test::Gpu& gpu) {
+  const auto readback = readback_on(gpu);
+  CHECK(readback != nullptr);
+  const Packed a = pattern(37, 21, 11), b = pattern(64, 48, 12),
+               c = pattern(33, 17, 13);
+  YuvImage pictures[4] = {as_images(gpu, a),
+                          in_buffer(gpu, b, YuvLayout::I420),
+                          in_buffer(gpu, c, YuvLayout::Luma),
+                          {}};
+  // The fourth: the third's buffer from its second row, as a pass's two
+  // outputs share one.
+  pictures[3] = pictures[2];
+  pictures[3].offset[0] += pictures[3].stride[0];
+  pictures[3].height -= 1;
+  const Packed c_lower = [&c] {
+    Packed p = c;
+    p.h -= 1;
+    p.y.erase(p.y.begin(), p.y.begin() + c.w);
+    return p;
+  }();
+  for (int i = 0; i < 3; ++i) CHECK(made(pictures[i]));
+  std::vector<YuvImage*> list = {&pictures[0], &pictures[1], &pictures[2],
+                                 &pictures[3]};
+  const Packed* want[4] = {&a, &b, &c, &c_lower};
+  for (const Planes planes : {Planes::Luma, Planes::All}) {
+    const std::uint64_t submits = gpu.device.counters().submits;
+    auto views = readback->read(list, planes);
+    CHECK(views.ok() && views->size() == 4);
+    CHECK(gpu.device.counters().submits == submits + 1);
+    for (int i = 0; i < 4; ++i) {
+      CHECK(check_view((*views)[i], *want[i], pictures[i].layout, planes) == 0);
+    }
+    // Copied out before the single reads reuse the memory.
+    std::vector<std::vector<std::uint8_t>> rows(4);
+    for (int i = 0; i < 4; ++i) {
+      const PictureView& v = (*views)[i];
+      for (std::uint32_t r = 0; r < v.height; ++r) {
+        rows[i].insert(rows[i].end(), v.luma + r * v.stride,
+                       v.luma + r * v.stride + v.width);
+      }
+    }
+    for (int i = 0; i < 4; ++i) {
+      auto single = readback->read(pictures[i], planes);
+      CHECK(single.ok());
+      std::vector<std::uint8_t> one;
+      for (std::uint32_t r = 0; r < single->height; ++r) {
+        one.insert(one.end(), single->luma + r * single->stride,
+                   single->luma + r * single->stride + single->width);
+      }
+      CHECK(one == rows[i]);
+    }
+  }
+  // The shared buffer written outside Vulkan, named so by both pictures in
+  // it: taken over once, one barrier more than the same list read with
+  // nothing to transfer; both then name the readback's family.
+  {
+    pictures[2].queue_family = sensor::kQueueFamilyExternal;
+    pictures[3].queue_family = sensor::kQueueFamilyExternal;
+    const std::uint64_t start = gpu.device.counters().barriers;
+    CHECK(readback->read(list, Planes::Luma).ok());
+    const std::uint64_t taken = gpu.device.counters().barriers - start;
+    CHECK(pictures[2].queue_family == gpu.device.queue_family() &&
+          pictures[3].queue_family == gpu.device.queue_family());
+    const std::uint64_t again = gpu.device.counters().barriers;
+    CHECK(readback->read(list, Planes::Luma).ok());
+    CHECK(taken == gpu.device.counters().barriers - again + 1);
+  }
+  auto none = readback->read(std::vector<YuvImage*>{}, Planes::Luma);
+  CHECK(none.ok() && none->empty());
+
+  const auto refused = [&](std::vector<YuvImage*> pictures_in,
+                           vkc::Status::Code code, const char* why) {
+    vkc::StageMetrics metrics;
+    const std::uint64_t submits = gpu.device.counters().submits;
+    const vkc::Status status =
+        readback->read(pictures_in, Planes::Luma, &metrics).status();
+    const bool ok = status.domain() == code &&
+                    status.message().find(why) != std::string::npos &&
+                    gpu.device.counters().submits == submits &&
+                    metrics.rows().empty();
+    if (!ok) std::fprintf(stderr, "%s\n", status.message().c_str());
+    return ok;
+  };
+  CHECK(refused({&pictures[1], nullptr}, vkc::Status::Code::InvalidArgument,
+                "picture 1 is null"));
+  YuvImage other_writer = pictures[2];
+  other_writer.queue_family = sensor::kQueueFamilyExternal;
+  CHECK(refused({&pictures[2], &other_writer},
+                vkc::Status::Code::InvalidArgument, "two writers"));
+  YuvImage v210 = pictures[2];
+  v210.layout = YuvLayout::V210;
+  v210.width = 36;
+  v210.height = 1;
+  v210.offset[0] = 0;
+  v210.stride[0] = 96;
+  CHECK(refused({&pictures[1], &v210}, vkc::Status::Code::Unsupported,
+                "LumaPass"));
+  std::printf(
+      "  list: four pictures, two in one buffer taken over once, one submit; "
+      "the single reads' bytes\n");
+  return 0;
+}
+
 // Planes in a buffer the readback's own family wrote, named as ignored or as
 // that family; a CONCURRENT buffer another family wrote; and one an API
 // outside Vulkan wrote: the same bytes. Plane images likewise, except that
@@ -528,6 +637,23 @@ int test_refusals(vkc::test::GpuContext& gpu) {
   bad = buffer;
   bad.layout = YuvLayout::Yuyv;
   CHECK(refused(bad, "YUYV"));
+  // A V210 picture, not read yet: Unsupported, alone or in a set.
+  {
+    YuvImage v210 = buffer;
+    v210.layout = YuvLayout::V210;
+    v210.width = 36;
+    v210.offset[0] = 0;
+    v210.stride[0] = 96;  // six groups
+    v210.height = 1;
+    const vkc::Status status = readback->read(v210, Planes::Luma).status();
+    CHECK(status.domain() == vkc::Status::Code::Unsupported &&
+          status.message().find("V210") != std::string::npos);
+    std::vector<std::optional<sensor::RgbdFrame>> set(2);
+    set[0].emplace().color = buffer;
+    set[1].emplace().color = v210;
+    CHECK(readback->read(set, Planes::All).status().domain() ==
+          vkc::Status::Code::Unsupported);
+  }
   YuvImage host;
   const std::uint8_t byte = 0;
   host.host = &byte;
@@ -640,6 +766,7 @@ int test_metrics(const vkc::test::Gpu& gpu) {
 int gpu_main(vkc::test::GpuContext& gpu) {
   CHECK(test_layouts(gpu) == 0);
   CHECK(test_set(gpu) == 0);
+  CHECK(test_list(gpu) == 0);
   CHECK(test_families(gpu) == 0);
   CHECK(test_read_then_prepare() == 0);
   CHECK(test_memory(gpu) == 0);

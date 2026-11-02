@@ -66,6 +66,15 @@ on:
         required: false
         type: boolean
         default: false
+      decklink:
+        description: >-
+          Build with VS_WITH_DECKLINK=ON, on the DeckLink SDK headers the core
+          keeps (checked out below), so this leg builds sensor_decklink and
+          decklink_skew_report and runs the SDK smoke test, which checks the
+          refusal where Desktop Video is missing, as on every runner.
+        required: false
+        type: boolean
+        default: false
       hevc_backend:
         description: >-
           The hardware this leg promises the decoders run on (cuda,
@@ -145,6 +154,32 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # The DeckLink SDK's headers, for VS_WITH_DECKLINK: no job can download
+      # the SDK, so the core keeps a copy (its tools/ci/decklink-sdk-16.0).
+      # Checked out at the core pin in third_party/CMakeLists.txt and held to
+      # its SHA256SUMS.
+      - name: DeckLink SDK headers
+        if: inputs.decklink
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: taojin-6/volumetric_kit_core
+          ref: 19720798ef25d76c6fa570052a0cc6a32883e3c5
+          path: _decklink_sdk
+          persist-credentials: false
+          sparse-checkout: tools/ci/decklink-sdk-16.0
+
+      - name: DeckLink SDK root
+        if: inputs.decklink
+        run: |
+          sdk="${GITHUB_WORKSPACE}/_decklink_sdk/tools/ci/decklink-sdk-16.0"
+          pin=$(git -C _decklink_sdk rev-parse HEAD)
+          grep -q "GIT_TAG ${pin})" third_party/CMakeLists.txt || {
+            echo "::error::the DeckLink SDK checkout (${pin}) is not at the core pin in third_party/CMakeLists.txt"
+            exit 1
+          }
+          (cd "${sdk}" && sha256sum --quiet --strict -c SHA256SUMS)
+          echo "DeckLinkSDK_ROOT=${sdk}" >> "${GITHUB_ENV}"
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -385,6 +420,7 @@ jobs:
                 -DVS_WITH_FFMPEG=${{ inputs.ffmpeg && 'ON' || 'OFF' }} \
                 -DVS_WITH_CUDA=${{ inputs.cuda && 'ON' || 'OFF' }} \
                 -DVS_WITH_FFS=${{ inputs.ffs && 'ON' || 'OFF' }} \
+                -DVS_WITH_DECKLINK=${{ inputs.decklink && 'ON' || 'OFF' }} \
                 -DVS_WITH_PORTAUDIO=${{ inputs.portaudio && 'ON' || 'OFF' }}; then
               ok=1
               break
@@ -421,7 +457,8 @@ jobs:
         run: ctest --test-dir build --output-on-failure --no-tests=error
 
       # The tests whose code runs threads again under ThreadSanitizer: the
-      # Orbbec decode workers and the audio capture's queue, whose races the
+      # Orbbec decode workers, the audio capture's queue and the DeckLink
+      # driver's upload thread, whose races the
       # sanitizer job, on address and undefined only and with no Orbbec SDK,
       # never sees. In a tree of their own that reuses the sources
       # FetchContent fetched for build/, built for those tests alone
@@ -453,7 +490,7 @@ jobs:
             --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}" \
             --target sensor_tsan_tests
           ctest --test-dir build-tsan --output-on-failure --no-tests=error \
-            -R '^(sensor_orbbec_(decode_worker|jpeg|hevc|open_sensors)|sensor_audio_capture)$'
+            -R '^(sensor_orbbec_(decode_worker|jpeg|hevc|open_sensors)|sensor_audio_capture|sensor_decklink_upload)$'
 
       # sensor_apple and sensor_video, with the H.265 syntax they read
       # (sensor_video_syntax), promise an iOS build (DECISIONS.md, 2026-10-08

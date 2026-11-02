@@ -53,15 +53,16 @@ namespace volumetric_kit::sensor {
 /// Vulkan buffer of its own (`RgbdFrame::depth_device`, taken over from
 /// @ref kQueueFamilyExternal). A disparity that is not above 0, that points
 /// off the right view (`x - d < 0`), or whose depth is outside
-/// [@ref Options::min_depth, @ref Options::max_depth] is "no return" (0); so
-/// is one whose spread is above @ref Options::max_disparity_spread, when that
-/// is above 0; and, in `Rgba8` views, a pixel the rectifier did not see
-/// (coverage 0) in the left view, or matched to one in the right view. `Luma8`
-/// views carry no coverage: a border the rectifier leaves -- alpha above 0, or
-/// alpha 1 on a pair rectified already whose aspect the size changes -- is
-/// matched as black picture, so take `Rgba8` or alpha 0 there. The host only
-/// orders the work and waits for it, asleep; nothing is allocated a frame while
-/// no frame is kept past the next.
+/// [@ref Options::min_depth, @ref Options::max_depth], or nearer than the
+/// network's reach (@ref Options::max_disparity), is "no return" (0); so is
+/// one whose spread is above @ref Options::max_disparity_spread, when that is
+/// above 0; and, in `Rgba8` views, a pixel the rectifier did not see
+/// (coverage 0) in the left view, or matched to one in the right view.
+/// `Luma8` views carry no coverage: a border the rectifier leaves -- alpha
+/// above 0, or alpha 1 on a pair rectified already whose aspect the size
+/// changes -- is matched as black picture, so take `Rgba8` or alpha 0 there.
+/// The host only orders the work and waits for it, asleep; nothing is
+/// allocated a frame while no frame is kept past the next.
 ///
 /// Up to eight views stay mapped, the least recently read let go first, and
 /// a view read again after its mapping went is refused. A view the rectifier
@@ -107,6 +108,13 @@ class VS_FFS_API FfsStereo final {
     /// 1280 x 720, its projector off, measured 0.04 px. Finite and at least
     /// 0.
     float disparity_sigma = 0.0f;
+    /// The network's disparity search range, in pixels at the rig's size
+    /// (192 for the exported 23-36-37 checkpoint). A surface nearer than
+    /// `fx * baseline / max_disparity` comes back saturated, at or a little
+    /// past that depth, so depth below 1.05 times it is "no return", as is
+    /// depth below @ref min_depth; the frame's `min_depth` is the larger of
+    /// the two. 0, the default: no such gate. Finite and at least 0.
+    float max_disparity = 0.0f;
     /// Pixels whose disparity the network was still moving in its last
     /// refinement steps -- the range over its last four, in pixels at the
     /// rig's size -- by more than this are "no return" (0), as is a spread
@@ -130,10 +138,12 @@ class VS_FFS_API FfsStereo final {
   ///                   colour camera and where the depth camera sits from
   ///                   it), read here.
   /// @param options    The model, the plan cache, the depth range, the
-  ///                   disparity's noise and its spread gate.
+  ///                   disparity's noise, and the near and spread gates.
   /// @return The matcher; `Status::Code::InvalidArgument` for a depth range
-  ///         that is not `0 < min_depth < max_depth`, a `disparity_sigma`
-  ///         or `max_disparity_spread` that is not finite and at least 0,
+  ///         that is not `0 < min_depth < max_depth`, a `disparity_sigma`,
+  ///         `max_disparity` or `max_disparity_spread` that is not finite
+  ///         and at least 0, a near gate
+  ///         (`1.05 * fx * baseline / max_disparity`) not below `max_depth`,
   ///         no plan cache, a model that TensorRT cannot parse, or whose
   ///         inputs and outputs are not those above at the rig's size
   ///         rounded up to 32, or a `max_disparity_spread` above 0 for a
@@ -157,8 +167,10 @@ class VS_FFS_API FfsStereo final {
   ///
   /// The frame's depth is `RgbdFrame::depth_device`, in the rectified left
   /// camera (`depth_camera`, the rig's), its writer finished and its queue
-  /// family @ref kQueueFamilyExternal. Its colour is the pair's third
-  /// camera's picture, or else the left one's, and its colour camera and
+  /// family @ref kQueueFamilyExternal; its `min_depth` the larger of
+  /// @ref Options::min_depth and the near gate (@ref Options::max_disparity).
+  /// Its colour is the pair's third camera's picture, or else the left
+  /// one's, and its colour camera and
   /// `depth_to_color` the rectifier's `depth_info()`'s; its depth noise
   /// @ref DepthNoise::stereo of @ref Options::disparity_sigma and the rig's
   /// fx and baseline; its colour encoding, pose and times are the pair's; it

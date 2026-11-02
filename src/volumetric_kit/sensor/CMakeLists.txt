@@ -97,6 +97,11 @@ if(VS_WITH_FFS)
   add_subdirectory(ffs)
 endif()
 
+# The DeckLink stereo driver, on the stereo tier: its SDK-free units on every
+# build (EXCLUDE_FROM_ALL; the tests build them), the SDK's part with
+# VS_WITH_DECKLINK; see decklink/CMakeLists.txt.
+add_subdirectory(decklink)
+
 # The microphone driver, on the interface; see audio/CMakeLists.txt.
 if(VS_WITH_PORTAUDIO)
   add_subdirectory(audio)

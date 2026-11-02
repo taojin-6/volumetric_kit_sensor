@@ -103,9 +103,12 @@ void StereoDepthSensor::Impl::run() {
       }
       continue;
     }
-    // The pair goes with this scope, so the rectifier writes its views again.
+    // The camera's frame goes once rectified, so its right picture returns to
+    // the camera before FFS runs; the pair goes with this scope, so the
+    // rectifier writes its views again.
     core::Result<RgbdFrame> made = [&]() -> core::Result<RgbdFrame> {
-      VKC_ASSIGN(const RectifiedPair pair, rectifier->rectify(**polled));
+      VKC_ASSIGN(const RectifiedPair pair,
+                 rectifier->rectify(std::exchange(**polled, {})));
       return ffs->depth(pair);
     }();
     if (!made) {

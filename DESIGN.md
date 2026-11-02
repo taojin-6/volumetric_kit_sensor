@@ -23,9 +23,12 @@ recon's examples assemble the rest.
 
 - **`camera`** — the camera vocabulary the drivers and the interface
   share: the double-precision `CameraModel` (image size, intrinsics, OpenCV's
-  rational lens), the lens as a scalar template, rigid transforms, and the
-  sensor array's calibration file (`camera/array_calibration.hpp`). No
-  Vulkan (the 2026-10-06 decisions).
+  rational lens), the lens as a scalar template, rigid transforms, the
+  sensor array's calibration file (`camera/array_calibration.hpp`), and a
+  stereo pair, its rectification and a lens's fold, on the host
+  (`camera/stereo_rectification.hpp`). No Vulkan (the 2026-10-06
+  decisions), so a tool that solves or checks a calibration without a GPU
+  links it alone.
 
 - **`frame`** — the contract recon's fusion, texturing and sender read,
   header-only on the family core's Vulkan tier: `DeviceFrame` and
@@ -43,23 +46,28 @@ recon's examples assemble the rest.
   pinhole cameras and `ColorEncoding`, so it
   depends on **`camera` and `frame` alone** — it sits beside recon's fusion tiers,
   not on top of them — and bundles **no drivers**: one ships here only if this package can build
-  *and* test it (the 2026-08-02 decision). The ones that do, Orbbec and
-  RealSense, are targets of their own (`orbbec/`, `realsense/`), so
+  *and* test it (the 2026-08-02 decision). The ones that do, Orbbec,
+  RealSense and DeckLink, are targets of their own (`orbbec/`, `realsense/`,
+  `decklink/`), so
   `sensor_interface` never links a vendor SDK. The HEVC and JPEG decoders are another target of
   their own (`video/`, on the GPU's hardware) and link no camera tier:
   `frame` and, on Apple, the Apple importer (`apple/`), which links
   `frame` alone. The H.265 syntax they read on the host is a target of its
   own as well, on the family core's base tier alone, in every build.
-  The GPU pre-processing and the pictures' readback are a fourth
-  (`prep/`, Vulkan and shaders), so `sensor_interface` itself stays free
-  of all of them.
+  The GPU pre-processing, any picture's luma and the pictures' readback
+  are a fourth (`prep/`, Vulkan and shaders), so `sensor_interface` itself
+  stays free of all of them.
 - **`array`** — several sensors read as one (`SensorArray`, `RigSets`),
   on the GPU pass.
 - **`stereo`** — calibrated stereo pairs: what a stereo camera driver
   implements and hands out (`IStereoSensor`, `StereoFrame`), and
   `StereoRectifier`, the pair undistorted and rectified on the GPU for a
-  stereo matcher. On the interface; it links `prep` privately, whose colour
-  pass it shares.
+  stereo matcher, through the camera tier's rectification. On the
+  interface; it links `prep` privately, whose colour pass it shares.
+- **`decklink`** — two SDI inputs of a DeckLink card as one stereo camera
+  (`DecklinkStereo`, `VS_WITH_DECKLINK`, Linux x86-64). On `stereo`; its
+  SDK-free units are a static target of their own, built and tested on
+  every leg.
 - **`ffs`** — stereo depth on NVIDIA's GPUs (`VS_WITH_FFS`): `FfsStereo`,
   Fast-FoundationStereo on TensorRT with CUDA kernels either side, and
   `StereoDepthSensor`, a stereo camera as an `IRgbdSensor`. On `stereo`; it
@@ -211,6 +219,21 @@ decision): unprojection and rescaling come with their first caller.
   version 2 is refused.
   `format_` / `write_array_calibration` write it
   through the core's `write_file`; version 1 is read for its poses.
+- **`camera/stereo_rectification.hpp`** — a stereo pair on the host, in
+  `sensor`'s namespace as when it was the stereo tier's (the 2026-11-01
+  host rectification decision): `StereoCalibration` (the two cameras,
+  lenses included, and `left_to_right`, OpenCV's `R`, `T`) and
+  `stereo_calibration(file, left, right)`, which makes one from two entries
+  of a calibration file (a pair of cine cameras, each a sensor of its own);
+  `rectify_stereo(pair, size, alpha)`, OpenCV's `stereoRectify` with
+  `CALIB_ZERO_DISPARITY` (Bouguet's method) step for step in double,
+  returning the `StereoRig` and OpenCV's `R2`; and `fold_radius2(lens)`,
+  where a radial model stops carrying rays outward. `StereoRectifier` uses
+  both, so a tool without a GPU checks a pair or a lens as the runtime
+  does. The method, what each function checks and what it refuses are the
+  header's. A pair rectified already is only resampled, its camera scaled
+  by one factor so its pixels keep their shape (a learned matcher assumes
+  square ones); a vertical pair is refused (`TODO(sensor)`).
 
 ### frame
 
@@ -491,14 +514,17 @@ extrinsic from the left infrared camera to the right one (on the lab D455
 no rotation and 95.03 mm along x, so the rectifier only resamples), and
 the colour camera with its lens and `left_to_color`; and what the camera is,
 as `RealSenseSensor`'s `SensorInfo` has it (serial, name, the host's clock,
-rate, the colour exposure read back). Its time is the left infrared frame's
-global time. It holds the newest stereo frame (`IStereoSensor` has no queue
+rate, the colour exposure read back), and its bound, half a frame
+(`realsense::half_frame_ns`). Its time is the left infrared frame's global
+time, and its skew the right one's less it, 0 on a D455, whose pair is one
+exposure. It holds the newest stereo frame (`IStereoSensor` has no queue
 depth) and wakes a consumer through `set_frame_notify`. Both drivers run on
 one internal camera (`realsense/camera.hpp`): finding the camera, the modes,
 the projector, the colour exposure, the pipeline with global time on, the
 disconnect watch, the frame queue and the counters. A frameset is one moment
-(`realsense::together`) when it holds a frame of every mode opened, each
-within half a frame of the first; any other is counted failed.
+(`realsense::together`) when it holds a frame of every mode opened, every
+two within half a frame in the whole-nanosecond stamps the frames carry, so
+the stereo frames keep their bound exactly; any other is counted failed.
 **`IRgbdSensor`** (`rgbd_sensor.hpp`) is one sensor: its
 `SensorInfo` from when it opens (id, the cameras' factory models at the
 opened modes, `depth_to_color`, rig role, clock, pose source, rate, the
@@ -573,7 +599,8 @@ recon's `integrate` (and
 pixel the lens maps outside the picture, or outside the depth camera's
 view, is a 0 word), so nothing is
 uploaded and nothing registered. Y'CbCr colour comes as I420, NV12, YUYV
-(4:2:2, one plane) or luma alone (`YuvLayout::Luma`, a mono camera's,
+(4:2:2, one plane), V210 (SDI's 10-bit 4:2:2, one plane of words) or luma
+alone (`YuvLayout::Luma`, a mono camera's,
 which comes out grey: R, G and B the luma's code by its range, no chroma
 read): on the device (the 2026-10-06 device-only `GpuFramePrep`
 decision), planes in a buffer (`YuvImage::device`, with per-plane offsets
@@ -592,6 +619,12 @@ camera's SDK hands its planes over (`YuvImage::host`: a UVC camera's YUYV;
 the 2026-10-29 host-planes decision), copied into the pass's slot after the
 depth from the first plane's first byte and read there by the buffer entry;
 YUYV's luma is every second byte and its chroma every fourth, on every row.
+V210's six pixels are four words of three 10-bit samples, chroma on every
+row; `color_planes.glsl`'s `v210_at`, the one unpack prep and the rectifier
+share, finds each sample's word and bits and returns it as code / 4, on the
+8-bit layouts' scale, so their levels and conversion apply unchanged and the
+10 bits are rounded once, to the output's 8 (the 2026-11-01 V210 decision).
+V210 is limited range only, its offset and stride whole words.
 A dataset decoded on the host hands its colour over as packed R'G'B' words
 instead (`RgbdFrame::color_packed`, `io::load_color_packed`'s layout; the
 2026-10-07 packed-colour decision), copied the same way; the colour pass
@@ -665,8 +698,39 @@ checked by the rules `GpuFramePrep` applies to one (`yuv_planes.hpp`), with
 `TRANSFER_SRC` where the pass needs a buffer's storage usage, or images'
 `SAMPLED` usage and views. It reads 4:2:0 and luma alone (its view has no
 chroma, whichever planes are asked): a YUYV picture, whose luma is no plane
-of its own, is refused, and a frame whose picture is on the host has no
-view.
+of its own, is refused, a V210 one is `Unsupported` (`LumaPass` makes its
+8-bit luma, which this reads), and a frame whose picture is on the host has
+no view. A list read takes pictures in any number, a view each; a buffer
+several of them share (a `DeviceLuma`'s full and half) is taken over once,
+so they must name one writer.
+**`prep/`'s `LumaPass`** makes each picture of a list into its 8-bit luma
+and its half on the device, for a detector that searches the half and
+refines in the full picture, whatever the camera: one batch and one submit
+for the list (the 2026-11-01 luma decision). Planes in a buffer or on the
+host go through `bind_planes` as the colour pass binds them, a 4:2:0
+picture narrowed to its luma plane first so its chroma is neither bound nor
+staged, and the first kernel (`luma.comp`) reads each sample through
+`color_planes.glsl`'s `luma_at`, the one unpack, writing four pixels a word:
+an 8-bit layout's code as it is, V210's code / 4 rounded half up once,
+`(code + 2) / 4`, at most 255. Host planes are copied into one persistent
+slot, as frame prep stages them; NV12's luma image is copied from its
+corner (`CommandBatch::copy`), with no kernel. The second kernel
+(`luma_half.comp`), after every first one, makes each half pixel the rounded
+mean of a 2x2 block of the full luma, `(a + b + c + d + 2) / 4`, its centre
+at full pixel `2u + 0.5`. Both outputs are `YuvLayout::Luma` pictures, rows
+packed, in one device buffer, the half at the binding alignment after the
+full; the buffers are a pool, each run taking the smallest free one that
+holds a picture, else replacing a free one too small, else adding one, and
+a buffer is free once no copy of its lease (`DeviceLuma::owner`, either
+picture's `device`) is left, as frame prep's outputs are. They are
+EXCLUSIVE to the pass's family, or CONCURRENT across the families `create`
+is given (the device's and a renderer's), and say `kQueueFamilyIgnored`.
+Inputs are taken over from their writers, each buffer and image once
+however many pictures name it, so those pictures must name one writer (the
+pass's own family and `kQueueFamilyIgnored` both mean nothing to transfer),
+and their `queue_family` is updated after the wait. A failed
+submit lets go of the outputs and inputs it used, and the pass refuses
+every later run.
 An Orbbec frame holds its SDK pair and the SDK
 context, with the models and the depth-to-colour extrinsic from the factory
 calibration (the extrinsic's rotation made one: the Femto Mega's is not, the
@@ -694,41 +758,42 @@ stereo camera's driver presents it, and its rectification on the GPU. A
 consumer of depth never sees it: a depth source built on a stereo camera
 (rectification, then a matcher) is an `IRgbdSensor`.
 
-- **`stereo/stereo_sensor.hpp`** — `StereoCalibration` (the two cameras,
-  lenses included, and `left_to_right`, OpenCV's `R`, `T`), `StereoInfo`
-  (the pair and any third, colour camera with `left_to_color`, and what the
-  source is as `SensorInfo` has it: id, model, clock, rate, colour exposure),
-  `StereoFrame` (one picture from each camera as the source delivered it, in
-  any layout the GPU reads, on the host or in a device buffer; the colour to
-  fuse, a third camera's or none when the left is the colour; times as
-  `RgbdFrame`'s; `pixels` holding host planes), and `IStereoSensor`, polled
+- **`stereo/stereo_sensor.hpp`** — `StereoInfo` (the pair, the camera
+  tier's `StereoCalibration`: both cameras 0 x 0 for a source opened
+  without a calibration, whose pictures a calibration is made from, which
+  the rectifier and so `StereoDepthSensor` refuse, and neither camera with
+  a side 0 for one opened with one, with no other flag; any third, colour
+  camera with `left_to_color`; what the
+  source is as `SensorInfo` has it: id, model, clock, rate, colour exposure,
+  and `max_skew_ns`, its sync guarantee: the most a frame's pictures lie
+  apart, frames past it counted failed and never handed out), `StereoFrame`
+  (one picture from each camera as the source delivered it, in any layout
+  the GPU reads, on the host or in a device buffer; the colour to fuse, a
+  third camera's or none when the left is the colour; times as `RgbdFrame`'s,
+  the left picture's, and `skew_ns`, the right one's less it; `pixels`
+  holding host planes, and `right_pixels` the right picture's own owner
+  where it has one), and `IStereoSensor`, polled
   for the newest pair as `IRgbdSensor` is, waking a consumer through
   `set_frame_notify` where it can (`Unsupported`, the default, where it
   cannot), which a RealSense's infrared pair (`RealSenseStereo`), a
   Blackmagic pair or a ZED implements.
-- **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` computes
-  the rectification once, on the host, as OpenCV's `stereoRectify` does with
-  `CALIB_ZERO_DISPARITY` (Bouguet's method), step for step in double: the
-  relative rotation split in half between the cameras, the baseline then
-  turned onto x, one focal length for both views (the cameras' vertical
-  ones, scaled to the rectified height), one principal point where the
-  corners, undistorted and turned, centre, and `alpha`'s scale between the
-  rectangle every view's pixels are valid in (0) and the one holding every
-  source pixel (1), from the border of a 9 x 9 grid; the undistortion of
-  corners and borders is OpenCV's own five fixed-point iterations
-  (`undistortPoints`' default). It refuses a vertical pair and one whose
-  right camera is on the left one's -x side (`TODO(sensor)`: vertical
-  pairs). A pair that is rectified already -- no rotation, no lens, one
-  camera model, the right camera along +x alone, each within 1e-9 -- is only
-  resampled, with no rotation: its camera scaled to the size by one factor
-  `s`, so its pixels keep their shape (a learned matcher assumes square
-  ones), about the centres (`fx * s`, `(w' - 1) / 2 + (cx - (w - 1) / 2) * s`).
-  Alpha picks `s` between the larger of `w' / w` and `h' / h` (0: the view
-  filled, the picture cropped) and the smaller (1: all of the picture, the
-  view bordered); at the picture's own aspect ratio both are the scale edge
-  to edge. `rig()` is the views' camera (pinhole), the baseline (metres,
-  above 0) and `rectified_to_left` (OpenCV's `R1` transposed); the right
-  view's rotation is `R1 * R^T`. `depth_info()` is the `SensorInfo` a
+- **`stereo/stereo_calibration.hpp`** includes
+  `camera/stereo_rectification.hpp`, where `stereo_calibration` is now, and
+  `stereo/stereo_sensor.hpp`, so an include of its old path keeps compiling
+  (`TODO(sensor)`: remove once the family includes the camera header).
+- **The contract** every stereo source keeps is checked by one test helper
+  (`tests/stereo_contract.hpp`): the calibration as the source was opened
+  (`StereoInfo`'s rule, above), skew within the bound, sequences and times
+  increasing, and the counters' rule, on a test camera's pairs and on each driver's own unit
+  (DeckLink's opened both ways, RealSense's factory calibration), not by a
+  check of each driver's own.
+- **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` checks
+  the source (a calibration, each camera within float's range, a colour
+  camera and `left_to_color`), takes the rectification once from the camera
+  tier's `rectify_stereo`, which checks the rest and refuses with its own
+  reason under the rectifier's name, and builds its pass. `rig()` is that
+  rectification's `StereoRig`; the right view's rotation is its
+  `right_to_rectified`. `depth_info()` is the `SensorInfo` a
   matcher's depth is prepared with: depth in the rectified left camera,
   colour the third camera or the left one with its lens (its picture is the
   colour), and `depth_to_color = left_to_color * rectified_to_left`; the
@@ -745,22 +810,32 @@ consumer of depth never sees it: a depth source built on a stereo camera
   source camera as its `cam`, and checks and binds the planes through the
   same function (`prep/color_pass.hpp`, internal; exported for
   `sensor_stereo`), so the two passes read pictures alike, one home for the
-  lens and the sampling. `Luma8` writes Y' by the picture's range, full
+  lens and the sampling. Where the view shrinks the picture, a pixel is
+  prefiltered over its own footprint: the map's Jacobian there, from where
+  the points half a pixel either side of it land across and down; where
+  its longer side is over 1.5 source pixels, the pixel is the mean of 5 x 5
+  bilinear samples, each at the centre of one of 25 equal cells of that
+  parallelogram, Y'CbCr averaged and converted once
+  (`undistort_color.glsl`'s `ycbcr_sample` and `ycbcr_to_word`, which
+  `ycbcr_word` is). Else, and where a neighbour's ray is behind the camera
+  or past the fold, one sample, as before: a D455's 1.33:1 is unchanged.
+  `Luma8` writes Y' by the picture's range, full
   range, four pixels a word; `Rgba8` R'G'B' and the coverage byte, as
   `GpuFramePrep`'s colour. A ray behind the camera, past the source lens's
-  fold or out of the picture is 0. The fold is where the radial model stops
-  carrying rays outward (`r * radial(r^2)` stops growing, or its denominator
-  reaches 0); past it the model turns back and would put rays the lens
-  cannot image inside the picture, mirrored, which alpha above 0 reaches on
-  a strong lens. `create` finds it once a camera on the derivative's sign --
-  with `s = r^2`, `N D + 2 s (N' D - N D')` or `D` no longer positive --
-  marched by the angle off the axis, 0.01 degrees a step, then bisected,
-  and the pass compares one squared radius. Pictures in a buffer are bound
-  where they are, taken over from `YuvImage::queue_family` once a buffer: a
+  fold or out of the picture is 0: alpha above 0 reaches past the fold on a
+  strong lens, where the model would put rays back inside the picture,
+  mirrored. `create` takes each camera's fold once from the camera tier's
+  `fold_radius2`, and the pass compares one squared radius. Pictures in a
+  buffer are bound where they are, taken over from `YuvImage::queue_family`
+  once a buffer: a
   side-by-side frame's two pictures in one buffer, a colour picture beside
   them, must name the family that wrote it, as `GpuFramePrep`'s inputs must
   (`transfer_family`, `sharing_families.hpp`, which both call), and
-  `RectifiedPair::source` names the pass's family for each of them. Host planes are copied into one persistent
+  `RectifiedPair::source` names the pass's family for each of them. Once
+  read, the right picture is let go: `RectifiedPair::source` keeps no right
+  planes and no `right_pixels`, so a source's right buffer is free while a
+  matcher runs and a depth frame holds the left picture alone. Host planes
+  are copied into one persistent
   `HostRing` slot, left then right, as `GpuFramePrep` stages them; NV12
   plane images are refused (`TODO(sensor)`, when a stereo source decodes on
   the GPU).
@@ -786,6 +861,57 @@ consumer of depth never sees it: a depth source built on a stereo camera
   lost, since it writes every word. A submit or wait that fails leaves the
   rectifier refusing every later frame, as the device may still run the
   pass.
+
+### decklink
+
+`sensor_decklink` (`VS_WITH_DECKLINK`; the DeckLink SDK's headers, Desktop
+Video at run time) is `DecklinkStereo`, two inputs of a DeckLink 8K Pro as
+one `IStereoSensor`. Three targets keep the SDK to one file: the units
+(`sensor_decklink_units`, static, internal, `EXCLUDE_FROM_ALL`, on every
+leg), the capture (`sensor_decklink_capture`, static, internal:
+`capture.cpp` and the SDK's dispatch file, which loads
+`libDeckLinkAPI.so`), and the public class, which maps its options onto the
+units' driver and hands it the SDK's capture.
+
+- **Inputs.** Connectors are named as on the bracket and mapped to the
+  sub-devices of the profile "four sub-devices half-duplex" (`ports.hpp`);
+  `open` finds the first DeckLink 8K Pro, refuses another profile with the
+  fix, checks each input can capture the mode as v210
+  (`DoesSupportVideoMode`), and logs (`Info`) the SDK device each connector
+  opened, to check against the cabling. `start` enables both at the fixed mode with
+  format detection, waits for each to lock (no picture-less frames), then
+  starts them; a detected mode other than the one opened fails `start`, or
+  later `poll`, with the camera's own fix -- never a silent re-mode.
+- **Pages.** The card writes each picture through the SDK's capture
+  allocator (`EnableVideoInputWithAllocatorProvider`) into a `PagePool`'s
+  host pages, which the device imports (`core::create_imported_host_buffer`),
+  made on demand at the SDK's `bufferSize`, at most 8 an input, past which
+  the allocator answers `E_OUTOFMEMORY` and the SDK drops a frame. A
+  frame's pages are found again by the address the SDK hands back.
+- **Callbacks** (one SDK thread an input) stamp and pair and touch no
+  pixel (`pairing.hpp`): a frame's host time is its card time plus the two
+  clocks' offset sampled together in its own callback, so the card clock's
+  drift against the host's is tracked frame by frame; the newest unpaired
+  frame of each input is kept, and a frame pairs with the other's within
+  `max_skew_ns`, taking the left one's time; the left frames' sequence adds
+  whole periods, so a gap is a lost frame and a camera off nominal never
+  slips one.
+- **Upload** (`upload.hpp`, one thread): a pair's two pictures copied into
+  device buffers in one batch, its fence waited, then the SDK's frames
+  handed back -- never before, as the card may write those pages again; the
+  pair published, the newest winning. The device buffers (`DevicePictures`)
+  are each picture's own owner (`YuvImage::device`), back in the pool once
+  no frame holds them, so none is made after warm-up; past 24 a pair fails
+  rather than fill the device. A copy that fails keeps its pages from the
+  card for good and fails every later poll.
+- **Counts**, in left frames: received, every left frame; failed, one not
+  delivered in a pair (no partner, no signal, past the bound, no device
+  buffer free); dropped, a pair replaced before a poll. `stop` logs the
+  pools' high marks (`Info`).
+- **`decklink_skew_report`** times both inputs through the same capture,
+  on the SDK's own buffers (`skew_stats.hpp`): each input's frames, losses
+  and rate against the card clock, and the pairs' skew, right less left,
+  with its fit at the start and its drift a minute.
 
 ### stereo depth (FFS)
 
@@ -844,7 +970,9 @@ loads libcuda at run time) are private.
   4. the depth kernel: a thread a rig pixel, `z = fx * baseline / d` at
      `(x, y)` of the network's disparity; 0 where `d` is not above 0 (NaN
      included), `d > x` (the match is off the right view), `z` is outside
-     `[min_depth, max_depth]`, or, with `Options::max_disparity_spread`
+     `[min_depth, max_depth]` (`min_depth` raised to the near gate
+     `1.05 * fx * baseline / max_disparity` where that is farther,
+     `Options::max_disparity`), or, with `Options::max_disparity_spread`
      above 0, the spread at `(x, y)` is above it (NaN included: the network
      had not settled), and, for `Rgba8` views, where the left view's
      coverage byte at `(x, y)` or the right view's at `(rint(x - d), y)` is
@@ -875,8 +1003,9 @@ loads libcuda at run time) are private.
   and runs a thread from `start` to `stop`: it polls the camera and, when
   nothing is new, sleeps until the camera's `set_frame_notify` (set at
   `create`) wakes it, or 1 ms for a camera that notifies nothing; then
-  rectifies, runs FFS, and holds the frame (`set_queue_depth`, oldest let
-  go), then calls the frame notification. The camera's notification may
+  rectifies, letting the camera's frame go once rectified, runs FFS, and
+  holds the frame (`set_queue_depth`, oldest let go), then calls the frame
+  notification. The camera's notification may
   run on its own thread after the camera let it go, so it owns what it
   touches (a shared wake-up). The camera is called from one thread at a
   time: `start` and `stop` on the caller's, `poll` and `stats` on the
@@ -958,7 +1087,8 @@ landed; the stack continues:
    the SDK's global timestamps (2026-10-07), their skew measured flat over a
    20-minute `fuse_orbbec` run; sessions of hours are still to measure.
 3. **Luma readback** has landed in `prep` (`PictureReadback`),
-   wherever the decoder left the picture, for calib's detector.
+   wherever the decoder left the picture, for calib's detector, and any
+   layout's 8-bit luma and half on the GPU before it (`LumaPass`).
 4. **Later: mixed arrays** of fixed sensors and tracked ones (iPhones):
    nearest-frame members, registration of a tracked sensor's world, a network
    sensor with an ios sender, and clock offsets.

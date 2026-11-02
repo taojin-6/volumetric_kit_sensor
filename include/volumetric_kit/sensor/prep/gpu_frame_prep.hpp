@@ -166,8 +166,9 @@ struct GpuFramePrepConfig {
 /// foreground and a background depth into a point between them, nor a hole
 /// into a return.
 ///
-/// Colour comes as I420, NV12, YUYV or luma alone (`YuvLayout::Luma`, a mono
-/// camera's, which comes out grey), on the device as a decoder left it:
+/// Colour comes as I420, NV12, YUYV, V210 (SDI's 10-bit 4:2:2, read at 10
+/// bits and rounded to 8 once, here) or luma alone (`YuvLayout::Luma`, a
+/// mono camera's, which comes out grey), on the device as a decoder left it:
 /// planes in a buffer, as nvJPEG's pictures arrive, are read where they are,
 /// and NV12's planes as images, as VideoToolbox's and NVDEC's pictures
 /// arrive, are sampled where they are, with no copy, either after the pass
@@ -310,7 +311,8 @@ class VS_PREP_API GpuFramePrep {
   ///         camera or picture that is empty, not finite or disagrees with
   ///         its image, an unknown chroma location or colour layout, colour
   ///         both as packed words and as planes, colour planes in more than
-  ///         one of a buffer, the host and images, YUYV of odd width, a
+  ///         one of a buffer, the host and images, YUYV or V210 of odd
+  ///         width, V210 in full range or off 32-bit words, a
   ///         plane stride shorter than its rows, host planes whose bytes run
   ///         past 64 bits or span more than 4 GiB,
   ///         planes that overlap, lie outside their buffer or are in one

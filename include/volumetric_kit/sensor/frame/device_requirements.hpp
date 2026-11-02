@@ -33,21 +33,24 @@ namespace volumetric_kit::sensor {
 ///
 /// A compute queue with timeline semaphores (the core's defaults) and
 /// `scalarBlockLayout`, the buffer ABI the frame prep's kernels declare
-/// (`layout(scalar)`). Two extensions are optional and enabled where offered:
-/// `VK_KHR_external_memory_fd`, through which a hardware decoder's picture
-/// lands in the package's buffers without a host trip
-/// (`volumetric_kit/core/vulkan/external_memory.hpp`), and
+/// (`layout(scalar)`). Three extensions are optional and enabled where
+/// offered: `VK_KHR_external_memory_fd`, through which a hardware decoder's
+/// picture lands in the package's buffers without a host trip
+/// (`volumetric_kit/core/vulkan/external_memory.hpp`);
 /// `VK_EXT_metal_objects`, through which a VideoToolbox picture does on
-/// Apple. They are named here, not left to the device's creator, so a merged
-/// bootstrap that never hears of them does not silently send every decoded
-/// picture through the host.
+/// Apple; and `VK_EXT_external_memory_host`, through which a capture card's
+/// picture does (`DecklinkStereo`, which refuses a device without it). They
+/// are named here, not left to the device's creator, so a merged bootstrap
+/// that never hears of them does not silently send every picture through the
+/// host.
 ///
 /// @return The requirements; a caller may add to them before creating.
 inline core::DeviceRequirements device_requirements() {
   core::DeviceRequirements reqs;
   reqs.scalar_block_layout = true;
   reqs.optional_extensions = {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-                              "VK_EXT_metal_objects"};
+                              "VK_EXT_metal_objects",
+                              VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
   return reqs;
 }
 

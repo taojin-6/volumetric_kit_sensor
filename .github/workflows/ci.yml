@@ -71,6 +71,9 @@ jobs:
       # repository, installed per job) on 24.04, the CUDA leg; its tests fail
       # rather than skip there for the same promise. The Mac has no CUDA.
       #
+      # `decklink` builds the DeckLink driver's SDK part (VS_WITH_DECKLINK) on
+      # 24.04 (_build.yml).
+      #
       # `portaudio` builds the microphone driver (VS_WITH_PORTAUDIO) on every
       # leg, 24.04's PortAudio 19.6 the oldest; the sanitizer job builds
       # without it.
@@ -90,6 +93,7 @@ jobs:
             ffmpeg: true
             cuda: true
             ffs: true
+            decklink: true
             hevc_backend: cuda
             portaudio: true
             sync_validation: true
@@ -120,6 +124,7 @@ jobs:
       ffmpeg: ${{ matrix.ffmpeg || false }}
       cuda: ${{ matrix.cuda || false }}
       ffs: ${{ matrix.ffs || false }}
+      decklink: ${{ matrix.decklink || false }}
       portaudio: ${{ matrix.portaudio || false }}
       hevc_backend: ${{ matrix.hevc_backend || '' }}
       sync_validation: ${{ matrix.sync_validation || false }}
