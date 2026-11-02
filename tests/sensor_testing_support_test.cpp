@@ -5,7 +5,7 @@
 // clip's access units at the delimiters, from three- and four-byte start
 // codes, bytes before the first left out, and a committed clip's from its
 // file; the decoder promise as VS_TEST_HEVC_BACKEND sets it; the test
-// pattern's planes, its 0 and 255, its index band read back by cell means
+// pattern's planes, its 0 and 255, its index band read back by square means
 // for indices across its span, and a different picture at each index; and,
 // on the GPU, its device picture's two plane images, their usage, layout and
 // size, each plane at their corner with 0xEE past it, and the refusals. The
@@ -86,15 +86,15 @@ int test_promise() {
 }
 
 // The index the band of @p p names, read as its documentation says: each
-// cell's mean over its middle 8 x 8 against the references' midpoint; -1
+// square's mean over its middle 8 x 8 against the references' midpoint; -1
 // for references that do not differ.
 long read_index(const testing::HostNv12& p) {
-  const auto mean = [&p](std::uint32_t cell) {
+  const auto mean = [&p](std::uint32_t square) {
     unsigned sum = 0;
     for (std::uint32_t y = 4; y < 12; ++y) {
       for (std::uint32_t x = 4; x < 12; ++x) {
-        sum +=
-            p.luma[std::size_t{y} * p.width + cell * testing::kIndexCell + x];
+        sum += p.luma[std::size_t{y} * p.width +
+                      square * testing::kIndexSquare + x];
       }
     }
     return sum / 64.0;
@@ -146,7 +146,7 @@ int test_pattern() {
   CHECK(a.luma != b.luma && a.chroma != b.chroma);
   CHECK(a.luma == again.luma && a.chroma == again.chroma);
   // Below the band the picture moves with the index too.
-  const std::size_t below = std::size_t{testing::kIndexCell} * 256;
+  const std::size_t below = std::size_t{testing::kIndexSquare} * 256;
   CHECK(!std::equal(a.luma.begin() + static_cast<std::ptrdiff_t>(below),
                     a.luma.end(),
                     b.luma.begin() + static_cast<std::ptrdiff_t>(below)));
@@ -155,8 +155,9 @@ int test_pattern() {
 
 // The whole of @p image, rows packed, read back; empty on a failure.
 Bytes whole(const vkc::test::Gpu& gpu, const vkc::Image& image,
-            std::uint32_t texel) {
-  const std::size_t bytes = std::size_t{image.width()} * image.height() * texel;
+            std::uint32_t bytes_per_column) {
+  const std::size_t bytes =
+      std::size_t{image.width()} * image.height() * bytes_per_column;
   auto buffer = vkc::device_storage_buffer(gpu.allocator, (bytes + 3) / 4 * 4);
   if (!buffer) return {};
   Bytes out(bytes);
@@ -172,8 +173,9 @@ Bytes whole(const vkc::test::Gpu& gpu, const vkc::Image& image,
 // Each plane's image: its format and usage, a view, GENERAL, pad wider and
 // taller than the plane, the plane at its corner and 0xEE past it.
 int check_plane(const vkc::test::Gpu& gpu, const vkc::Image& image,
-                VkFormat format, std::uint32_t texel, const Bytes& plane,
-                std::uint32_t columns, std::uint32_t rows, std::uint32_t pad) {
+                VkFormat format, std::uint32_t bytes_per_column,
+                const Bytes& plane, std::uint32_t columns, std::uint32_t rows,
+                std::uint32_t pad) {
   CHECK(image.format() == format && image.view() != VK_NULL_HANDLE);
   const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT |
                                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -181,14 +183,15 @@ int check_plane(const vkc::test::Gpu& gpu, const vkc::Image& image,
   CHECK((image.usage() & usage) == usage);
   CHECK(image.layout() == VK_IMAGE_LAYOUT_GENERAL);
   CHECK(image.width() == columns + pad && image.height() == rows + pad);
-  const Bytes texels = whole(gpu, image, texel);
-  CHECK(!texels.empty());
-  const std::size_t row = std::size_t{image.width()} * texel;
+  const Bytes image_bytes = whole(gpu, image, bytes_per_column);
+  CHECK(!image_bytes.empty());
+  const std::size_t row = std::size_t{image.width()} * bytes_per_column;
   for (std::uint32_t y = 0; y < image.height(); ++y) {
     for (std::size_t x = 0; x < row; ++x) {
-      const std::uint8_t got = texels[y * row + x];
-      const bool inside = y < rows && x < std::size_t{columns} * texel;
-      CHECK(got == (inside ? plane[y * columns * texel + x] : 0xEE));
+      const std::uint8_t got = image_bytes[y * row + x];
+      const bool inside =
+          y < rows && x < std::size_t{columns} * bytes_per_column;
+      CHECK(got == (inside ? plane[y * columns * bytes_per_column + x] : 0xEE));
     }
   }
   return 0;

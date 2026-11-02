@@ -443,7 +443,7 @@ entries relevant to your task; later amendments supersede earlier rules.
   What H.273 colour codes mean is public (`video/frame_color.hpp`), so
   code that holds codes resolves them as the decoders do. The family's NV12
   test picture and clip helpers are header-only test support under
-  `testing/`; the test pattern's index band is read by cell means after
+  `testing/`; the test pattern's index band is read by square means after
   lossy coding. The Metal device under a Vulkan device is found in one
   place.
 
@@ -6055,8 +6055,8 @@ internal `metal_device.mm`.
   the include directory every sensor target carries.
 - **A pattern a coded stream keeps.** Tests that code and decode the
   picture, or carry it across a link, need to know which picture arrived.
-  The index band is cells of whole 16 x 16 coding blocks, each 255 or 0,
-  beside a 255 and a 0 reference: a cell's mean away from its edges lands
+  The index band is squares of whole 16 x 16 coding blocks, each 255 or 0,
+  beside a 255 and a 0 reference: a square's mean away from its edges lands
   on the right side of the references' midpoint after lossy coding and
   after a change of range. Fourteen bits fit the band in 256 columns, the
   fixtures' width. Elsewhere the planes are smooth and move with the
@@ -6076,6 +6076,6 @@ Orbbec driver: the whole suite passes, 55 tests. The new clip
 (`centred_full_256x144.h265`) decodes on VideoToolbox to libavcodec's MD5,
 full range, BT.709 and centred. Planted bugs, each failing its test: code
 1 resolved to `TopLeft` (`sensor_video_frame_color` and
-`sensor_video_hevc`), the band's bits read one cell off, the padding
+`sensor_video_hevc`), the band's bits read one square off, the padding
 written as 0 rather than 0xEE, and a four-byte start code split as three
 (`sensor_testing_support`).

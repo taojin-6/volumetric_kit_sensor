@@ -153,7 +153,7 @@ std::shared_ptr<const vkc::Buffer> on_device(
 
 // A `w` x `h` picture of `layout` at `where`, its codes from `seed`: planes
 // after a lead, at odd offsets and strides (V210's on words), padding junk;
-// NV12 images 3 texels wider and taller than the picture
+// NV12 images 3 columns wider and 3 rows taller than the picture
 // (testing/nv12_picture.hpp). Its range
 // alternates with the seed (V210's is limited). `image.width` is 0 if it
 // cannot be made.

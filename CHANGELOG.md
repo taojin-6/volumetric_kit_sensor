@@ -23,8 +23,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     hardware decoder.
   - `testing/nv12_picture.hpp`: `HostNv12`; `test_pattern(width, height,
     index)`, the family's NV12 test picture, whose index band names
-    `index % 16384` in 16 x 16 cells beside a 255 and a 0 reference
-    (`kIndexCell`, `kIndexBits`); and `device_picture(device, allocator,
+    `index % 16384` in 16 x 16 squares beside a 255 and a 0 reference
+    (`kIndexSquare`, `kIndexBits`); and `device_picture(device, allocator,
     picture, pad)`, the picture as R8 and R8G8 plane images in `GENERAL`,
     as a hardware decoder hands one out, written through the core's
     `core_test_policy`.
@@ -43,7 +43,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The package's tests are on the test support: `tests/hevc_fixture.hpp` is
   gone, `decoder_test.hpp`'s promise is `hevc_decoder_promised()`, and the
   frame prep, readback and luma tests make their NV12 plane images with
-  `device_picture` (the readback and luma tests' 3 texels wider and 3 rows
+  `device_picture` (the readback and luma tests' 3 columns wider and 3 rows
   taller, where they were 3 and 2).
   The frame colour test calls the public resolvers and still runs on every
   leg, with or without the decoders.

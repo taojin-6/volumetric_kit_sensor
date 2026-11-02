@@ -1068,13 +1068,13 @@ for its own tests and a consumer's, header-only and with no test framework
 delimiters and reads `VS_TEST_HEVC_BACKEND`, which makes a decoder test
 fail rather than skip. `nv12_picture.hpp` holds `HostNv12`, the family's
 test pattern and `device_picture`. The pattern's index band, luma rows 0
-to 15 and columns 0 to 255, is 16 cells of 16 x 16: a 255 and a 0
-reference, then bits 0 to 13 of the index, each cell 255 or 0, so a reader
-recovers the index from cell means after lossy coding; elsewhere the
-planes are smooth triangle waves that move with the index. `device_picture`
-writes a picture into R8 and R8G8 plane images in `GENERAL` through the
-core's `write_image`, padded past the planes where a test asks, as
-VideoToolbox's images can be.
+to 15 and columns 0 to 255, is 16 squares of 16 x 16: a 255 and a 0
+reference, then bits 0 to 13 of the index, each square 255 or 0, so a
+reader recovers the index from square means after lossy coding; elsewhere
+the planes are smooth triangle waves that move with the index.
+`device_picture` writes a picture into R8 and R8G8 plane images in
+`GENERAL` through the core's `write_image`, padded past the planes where a
+test asks, as VideoToolbox's images can be.
 
 ## Next work
 

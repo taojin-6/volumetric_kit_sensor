@@ -55,9 +55,9 @@ struct HostNv12 {
   std::vector<std::uint8_t> chroma;
 };
 
-/// @brief The side of one cell of @ref test_pattern's index band, in luma
-///        pixels: 16, a coding block's, so each cell is whole blocks.
-inline constexpr std::uint32_t kIndexCell = 16;
+/// @brief The side of one square of @ref test_pattern's index band, in luma
+///        pixels: 16, a coding block's, so each square is whole blocks.
+inline constexpr std::uint32_t kIndexSquare = 16;
 /// @brief The bits of the index @ref test_pattern's band holds: 14, so it
 ///        names `index % 16384`.
 inline constexpr std::uint32_t kIndexBits = 14;
@@ -67,11 +67,12 @@ inline constexpr std::uint32_t kIndexBits = 14;
 ///         is at least 32 wide, and, in a picture at least 256 x 16, a
 ///         different picture at each index below 16384.
 ///
-/// - **The index band**, luma rows 0 to 15 and columns 0 to 255, is 16 cells
-///   of @ref kIndexCell x @ref kIndexCell, left to right. Cell 0 is 255 and
-///   cell 1 is 0, the references. Cell 2 + b is 255 where bit b of @p index
+/// - **The index band**, luma rows 0 to 15 and columns 0 to 255, is 16
+///   squares of @ref kIndexSquare x @ref kIndexSquare, left to right. Square
+///   0 is 255 and square 1 is 0, the references. Square 2 + b is 255 where
+///   bit b of @p index
 ///   is set and 0 where it is not, for b from 0 to @ref kIndexBits - 1, so
-///   the band names `index % 16384`. A reader takes each cell's mean away
+///   the band names `index % 16384`. A reader takes each square's mean away
 ///   from its edges and compares it with the references' midpoint, which
 ///   holds after lossy coding and a change of range. The band's chroma
 ///   (chroma rows 0 to 7, pairs 0 to 127) is 128, neutral. A picture under
@@ -88,7 +89,7 @@ inline HostNv12 test_pattern(std::uint32_t width, std::uint32_t height,
     const std::uint64_t r = v % (2 * top);
     return static_cast<std::uint8_t>(r <= top ? r : 2 * top - r);
   };
-  constexpr std::uint32_t kBandWidth = kIndexCell * (2 + kIndexBits);
+  constexpr std::uint32_t kBandWidth = kIndexSquare * (2 + kIndexBits);
   const std::uint64_t i = index;
   HostNv12 p;
   p.width = width;
@@ -97,9 +98,10 @@ inline HostNv12 test_pattern(std::uint32_t width, std::uint32_t height,
   for (std::uint32_t y = 0; y < height; ++y) {
     for (std::uint32_t x = 0; x < width; ++x) {
       std::uint8_t v = tri(x + 2 * std::uint64_t{y} + 3 * i, 255);
-      if (y < kIndexCell && x < kBandWidth) {
-        const std::uint32_t cell = x / kIndexCell;
-        const bool set = cell == 0 || (cell >= 2 && ((i >> (cell - 2)) & 1));
+      if (y < kIndexSquare && x < kBandWidth) {
+        const std::uint32_t square = x / kIndexSquare;
+        const bool set =
+            square == 0 || (square >= 2 && ((i >> (square - 2)) & 1));
         v = set ? 255 : 0;
       }
       p.luma[std::size_t{y} * width + x] = v;
@@ -111,7 +113,7 @@ inline HostNv12 test_pattern(std::uint32_t width, std::uint32_t height,
   for (std::uint32_t y = 0; y < rows; ++y) {
     for (std::uint32_t x = 0; x < pairs; ++x) {
       std::uint8_t* pair = &p.chroma[(std::size_t{y} * pairs + x) * 2];
-      if (y < kIndexCell / 2 && x < kBandWidth / 2) {
+      if (y < kIndexSquare / 2 && x < kBandWidth / 2) {
         pair[0] = pair[1] = 128;
         continue;
       }
@@ -129,7 +131,7 @@ inline HostNv12 test_pattern(std::uint32_t width, std::uint32_t height,
 ///         `GENERAL`, each with a view and `SAMPLED` and `TRANSFER_SRC`
 ///         usage, and `TRANSFER_DST`, which writing them takes; exclusive
 ///         to the device's queue family, and written and waited on. Each
-///         image is @p pad texels wider and @p pad rows taller than its
+///         image is @p pad columns wider and @p pad rows taller than its
 ///         plane, as VideoToolbox's can be: the plane at its corner, 0xEE
 ///         past it. The colour fields are `YuvImage`'s defaults: set the
 ///         matrix's weights, the range and the siting the test means.
@@ -150,7 +152,7 @@ inline core::Result<YuvImage> device_picture(const core::Device& device,
   }
   struct Plane {
     const std::vector<std::uint8_t>* bytes;
-    std::uint32_t columns, rows, texel;
+    std::uint32_t columns, rows, bytes_per_column;
     VkFormat format;
   };
   const Plane planes[2] = {
@@ -163,12 +165,15 @@ inline core::Result<YuvImage> device_picture(const core::Device& device,
   for (std::size_t k = 0; k < 2; ++k) {
     const Plane& plane = planes[k];
     const std::uint32_t columns = plane.columns + pad;
-    const std::size_t row_bytes = std::size_t{plane.columns} * plane.texel;
-    std::vector<std::uint8_t> texels(
-        std::size_t{columns} * (plane.rows + pad) * plane.texel, 0xEE);
+    const std::size_t row_bytes =
+        std::size_t{plane.columns} * plane.bytes_per_column;
+    std::vector<std::uint8_t> filled(
+        std::size_t{columns} * (plane.rows + pad) * plane.bytes_per_column,
+        0xEE);
     for (std::uint32_t r = 0; r < plane.rows; ++r) {
-      std::copy_n(plane.bytes->data() + r * row_bytes, row_bytes,
-                  texels.data() + std::size_t{r} * columns * plane.texel);
+      std::copy_n(
+          plane.bytes->data() + r * row_bytes, row_bytes,
+          filled.data() + std::size_t{r} * columns * plane.bytes_per_column);
     }
     core::ImageDesc desc;
     desc.extent = {columns, plane.rows + pad};
@@ -176,8 +181,8 @@ inline core::Result<YuvImage> device_picture(const core::Device& device,
     desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                  VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     VKC_ASSIGN(core::Image image, allocator.create_image(desc));
-    VKC_TRY(core::test::write_image(device, allocator, image, texels.data(),
-                                    texels.size(), VK_IMAGE_LAYOUT_GENERAL));
+    VKC_TRY(core::test::write_image(device, allocator, image, filled.data(),
+                                    filled.size(), VK_IMAGE_LAYOUT_GENERAL));
     yuv.image[k] = std::make_shared<const core::Image>(std::move(image));
   }
   return yuv;
