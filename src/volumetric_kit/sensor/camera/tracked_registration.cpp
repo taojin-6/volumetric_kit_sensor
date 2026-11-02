@@ -42,8 +42,8 @@ int hex_value(char c) {
 core::Result<std::array<std::uint8_t, 16>> session_of(const std::string& hex) {
   std::array<std::uint8_t, 16> session{};
   if (hex.size() != 2 * session.size()) {
-    return bad("\"session\" has " + std::to_string(hex.size()) +
-               " digits; a session is 32 hex digits");
+    return bad("\"session\" is " + std::to_string(hex.size()) +
+               " bytes long; a session is 32 hex digits");
   }
   for (std::size_t i = 0; i < session.size(); ++i) {
     const int high = hex_value(hex[2 * i]);
@@ -83,16 +83,8 @@ core::Status check(const TrackedRegistration& r) {
                   [](std::uint8_t b) { return b == 0; })) {
     return bad("\"session\" is all zero, which names no session");
   }
-  const std::string& world_sensor = r.world.sensor;
-  if (r.world.apriltag) {
-    if (!world_sensor.empty()) {
-      return bad("world: names both sensor " + world_sensor +
-                 " and an AprilTag; it is one or the other");
-    }
-    VKC_TRY(detail::check_apriltag(*r.world.apriltag));
-  } else if (world_sensor.empty()) {
-    return bad("world: names neither a sensor nor an AprilTag");
-  } else if (!detail::is_utf8(world_sensor)) {
+  VKC_TRY(detail::check_world_kind(r.world, /*allow_none=*/false));
+  if (!r.world.apriltag && !detail::is_utf8(r.world.sensor)) {
     return bad("world: \"sensor\" is not UTF-8");
   }
   const core::Status rigid = check_rigid(r.tracking_to_world);

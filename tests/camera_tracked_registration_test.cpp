@@ -281,11 +281,16 @@ int test_refusals() {
 
   // The session and its epoch.
   CHECK(refused(with("session", std::string(32, '0')), bad, "all zero"));
-  CHECK(refused(with("session", std::string(31, '1')), bad, "has 31 digits"));
-  CHECK(refused(with("session", std::string(33, '1')), bad, "has 33 digits"));
+  CHECK(
+      refused(with("session", std::string(31, '1')), bad, "is 31 bytes long"));
+  CHECK(
+      refused(with("session", std::string(33, '1')), bad, "is 33 bytes long"));
+  // A digit that is not hex, in a byte's low digit and in its high one.
   CHECK(refused(with("session", "000102030405060708090a0b0c0d0e0g"), bad,
                 "not hex"));
   CHECK(refused(with("session", "0x0102030405060708090a0b0c0d0e0f"), bad,
+                "not hex"));
+  CHECK(refused(with("session", "g00102030405060708090a0b0c0d0e0f"), bad,
                 "not hex"));
   CHECK(refused(without("session"), bad, "missing string \"session\""));
   CHECK(refused(with("world_epoch", 65536), bad, "past 65535"));
@@ -396,8 +401,10 @@ int test_files() {
   // CreateNew refuses the file now there, and leaves it.
   cam::TrackedRegistration other = golden();
   other.world_epoch = 4;
-  CHECK(
-      !cam::write_tracked_registration(path, other, vkc::WriteMode::CreateNew));
+  const vkc::Status exists =
+      cam::write_tracked_registration(path, other, vkc::WriteMode::CreateNew);
+  CHECK(exists.domain() == Code::InvalidArgument &&
+        exists.message().find(path) != std::string::npos);
   CHECK(vkc::test::read_bytes(path) == bytes);
   // A refused registration touches nothing, even under Replace.
   CHECK(cam::write_tracked_registration(path, cam::TrackedRegistration{},
@@ -405,8 +412,10 @@ int test_files() {
             .domain() == Code::InvalidArgument);
   CHECK(vkc::test::read_bytes(path) == bytes);
   const std::string untouched = (scratch.path / "refused.json").string();
-  CHECK(!cam::write_tracked_registration(untouched, cam::TrackedRegistration{},
-                                         vkc::WriteMode::CreateNew));
+  CHECK(says(
+      cam::write_tracked_registration(untouched, cam::TrackedRegistration{},
+                                      vkc::WriteMode::CreateNew),
+      Code::InvalidArgument, "\"sensor\" is empty"));
   CHECK(!fs::exists(untouched));
   // Replace replaces it, and leaves nothing else beside it.
   CHECK(cam::write_tracked_registration(path, other, vkc::WriteMode::Replace));

@@ -28,6 +28,9 @@
 /// - `tracking_to_world` has the array file's `depth_to_color` form
 ///   (camera/array_calibration.hpp): `x_world = R(rvec) x_tracking + tvec`
 ///   (radians, metres).
+/// - `cam_to_tracking` is in this package's camera convention (+Z forward,
+///   +Y down); ARKit's poses go through `cv_from_gl_camera`
+///   (camera_conventions.hpp) first.
 /// - `session` is the id of the capture session the poses came in (a
 ///   `.vrst` session's), as 32 hex digits, byte 0 first, written lowercase
 ///   and read in either case. `world_epoch` counts the device's world

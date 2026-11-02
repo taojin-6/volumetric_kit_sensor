@@ -27,8 +27,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The array calibration file's world block, its transforms, and the JSON
   numbers, objects and text under them are read and written in one internal
   place (`camera/calibration_json.{hpp,cpp}`), which the registration
-  shares. The file reads, refuses and writes as before, every message the
-  same.
+  shares, and so is the check that a world is one sensor or one tag. The
+  file reads, refuses and writes as before, every message the same.
 
 ## [0.23.0] - 2026-11-02
 

@@ -24,7 +24,7 @@ using nlohmann::json;
 
 // The JSON both of the tier's files read and write (calibration_json.hpp).
 using detail::bad;
-using detail::check_apriltag;
+using detail::check_world_kind;
 using detail::is_utf8;
 using detail::number;
 using detail::object_at;
@@ -287,16 +287,11 @@ core::Status check_color_controls(const ColorControls& controls) {
   return {};
 }
 
+// The world's kind, then a sensor world's place: in the array, at the origin.
 core::Status check_world(const ArrayCalibration& array) {
+  VKC_TRY(check_world_kind(array.world, /*allow_none=*/true));
   const std::string& id = array.world.sensor;
-  if (array.world.apriltag) {
-    if (!id.empty()) {
-      return bad("world: names both sensor " + id +
-                 " and an AprilTag; it is one or the other");
-    }
-    return check_apriltag(*array.world.apriltag);
-  }
-  if (id.empty()) return {};
+  if (array.world.apriltag || id.empty()) return {};
   const SensorCalibration* sensor = find_sensor(array, id);
   if (sensor == nullptr) {
     return bad("world: sensor " + id + " is not in the array");

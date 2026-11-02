@@ -54,9 +54,11 @@ core::Result<WorldFrame> world_frame(const Json& block);
 
 // --- checking ----------------------------------------------------------------
 
-// A tag's family non-empty UTF-8, its id 0 or more, its size finite and
-// above 0. A tag is not in the array, so nothing else of it is checked.
-core::Status check_apriltag(const AprilTagWorld& tag);
+// A world is one tag or one sensor, never both, and neither only where
+// `allow_none`. A tag's family is non-empty UTF-8, its id 0 or more, its size
+// finite and above 0; a tag is not in the array, so nothing else of it is
+// checked. What a named sensor must be is each file's own check.
+core::Status check_world_kind(const WorldFrame& world, bool allow_none);
 
 // --- writing -----------------------------------------------------------------
 

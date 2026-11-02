@@ -133,13 +133,23 @@ core::Result<WorldFrame> world_frame(const Json& block) {
 
 // --- checking ----------------------------------------------------------------
 
-core::Status check_apriltag(const AprilTagWorld& tag) {
-  const std::string where = "world: apriltag ";
-  if (tag.family.empty()) return bad(where + "\"family\" is empty");
-  if (!is_utf8(tag.family)) return bad(where + "\"family\" is not UTF-8");
-  if (tag.id < 0) return bad(where + "\"id\" is negative");
-  if (!std::isfinite(tag.size_m) || !(tag.size_m > 0.0)) {
-    return bad(where + "\"size_m\" is not a finite length above 0");
+core::Status check_world_kind(const WorldFrame& world, bool allow_none) {
+  if (const auto& tag = world.apriltag) {
+    if (!world.sensor.empty()) {
+      return bad("world: names both sensor " + world.sensor +
+                 " and an AprilTag; it is one or the other");
+    }
+    const std::string where = "world: apriltag ";
+    if (tag->family.empty()) return bad(where + "\"family\" is empty");
+    if (!is_utf8(tag->family)) return bad(where + "\"family\" is not UTF-8");
+    if (tag->id < 0) return bad(where + "\"id\" is negative");
+    if (!std::isfinite(tag->size_m) || !(tag->size_m > 0.0)) {
+      return bad(where + "\"size_m\" is not a finite length above 0");
+    }
+    return {};
+  }
+  if (world.sensor.empty() && !allow_none) {
+    return bad("world: names neither a sensor nor an AprilTag");
   }
   return {};
 }

@@ -6152,7 +6152,9 @@ world block: one sensor or one tag, never neither or both), the rigid
 `tracking_to_world` in the array file's `depth_to_color` form, and the
 tag fit as its solver states it: the RMS reprojection error, the stills it
 used (at least 1) and the tag's mean edge as they placed it. A frame
-posed `cam_to_tracking` sits at `tracking_to_world * cam_to_tracking`. The
+posed `cam_to_tracking`, in this package's camera convention (+Z forward,
++Y down; ARKit's poses through `cv_from_gl_camera` first), sits at
+`tracking_to_world * cam_to_tracking`. The
 session is written as 32 hex digits, byte 0 first, lowercase, and read in
 either case; an all-zero session, which a session uses for none, is
 refused. It is read, checked and written as the array file is: the same
@@ -6160,8 +6162,10 @@ validate, parse, read, format and write, numbers that read back to the
 same double, unknown keys ignored, a later version refused. The array
 file's world block, transforms, and the JSON numbers, objects and text
 under them move out of `array_calibration.cpp` into the internal
-`calibration_json.{hpp,cpp}`, which both files call; its refusals name no
-file, and each file's public functions prefix theirs with its name.
+`calibration_json.{hpp,cpp}`, which both files call, with the check that
+a world is one sensor or one tag (`check_world_kind`; only the array file
+allows neither); its refusals name no file, and each file's public
+functions prefix theirs with its name.
 
 **Why.**
 - **A file of its own.** The array file holds an array's calibration,
@@ -6193,10 +6197,15 @@ one with its first caller.
 
 **Validation.** Apple M5 Max, Release with warnings as errors: the whole
 suite passes (49 tests), and the camera-only build's 8, its consumer
-including the new header. The array file's suite is unchanged, and its
-refusal messages are byte for byte those of `main`'s build. Planted bugs,
-each failing `sensor_camera_tracked_registration`: the writer writing
+including the new header. The array file's refusal messages are byte for
+byte those of `main`'s build, and its suite now requires each to start
+with the file's name. Planted bugs, each failing
+`sensor_camera_tracked_registration`: the writer writing
 `world_to_tracking` (the golden writer's direction), the session's digits
-read nibble-swapped and its bytes reversed (the golden session), and an
-all-zero session accepted (its refusal); and a tag's negative id accepted
-in the shared check, which fails both files' suites.
+read nibble-swapped and its bytes reversed (the golden session), an
+all-zero session accepted (its refusal), a byte's high digit read without
+its hex check (a non-hex high digit's refusal), and a world of neither
+kind accepted (its refusal). The shared world check accepting a tag's
+negative id fails both files' suites, and accepting both kinds fails each
+suite for its own file. The array file's parse refusals without its name
+fail `sensor_camera_array_calibration`.
