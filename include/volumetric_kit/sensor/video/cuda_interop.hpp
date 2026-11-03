@@ -93,7 +93,12 @@ class VS_VIDEO_API CudaStream {
 ///
 /// CUDA writes, Vulkan reads: once the CUDA work that writes the buffer has
 /// finished (its stream or an event synchronized), a Vulkan reader acquires
-/// the buffer from `VK_QUEUE_FAMILY_EXTERNAL` before it reads.
+/// the buffer from `VK_QUEUE_FAMILY_EXTERNAL` before it reads. Or, with no
+/// host wait, CUDA signals a timeline it imported
+/// (`core::create_exported_timeline`) on the stream after the writes, and the
+/// reader's batch, which acquires as before, waits for that value on the
+/// device (`CommandBatch::submit_async`): how the decoders hand their
+/// pictures over (`YuvImage::ready`).
 ///
 /// @code
 /// VKC_ASSIGN(core::ExportedBuffer exported,

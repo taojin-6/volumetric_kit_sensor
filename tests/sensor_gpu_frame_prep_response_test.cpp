@@ -216,7 +216,7 @@ int test_layouts(vkc::test::GpuContext& gpu, const Picture& p,
     CHECK(layout.packed != nullptr || overshoots > pixels / 50);
     CHECK(changed > pixels / 2 && (!held || beyond > pixels / 2));
   }
-  CHECK(layouts == 6);
+  CHECK(layouts == 8);
   return 0;
 }
 
@@ -292,7 +292,7 @@ int test_create_refusals(vkc::test::GpuContext& gpu) {
 int gpu_main(vkc::test::GpuContext& gpu) {
   auto picture =
       prep_layouts::make_picture(gpu.device, gpu.allocator, kWidth, kHeight);
-  CHECK(picture->layouts.size() == 7);
+  CHECK(picture->layouts.size() == 9);
   if (test_layouts(gpu, *picture, response(), true) != 0) return 1;
   if (test_layouts(gpu, *picture, steep(), false) != 0) return 1;
   if (test_identity(gpu, *picture) != 0) return 1;

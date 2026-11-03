@@ -33,18 +33,21 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 
 | Target | Headers | What | Links |
 | --- | --- | --- | --- |
-| `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file; no Vulkan | core base, GLM |
+| `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file and a tracked sensor's registration into it; a stereo pair (`stereo_calibration`), its rectification (`rectify_stereo`) and a lens's fold (`fold_radius2`) on the host; no Vulkan | core base, GLM |
 | `sensor_frame` | `frame/` | `DeviceFrame`, the pinhole cameras, `DepthNoise`, `ColorEncoding` and the sRGB curve, `pinhole.glsl`, `srgb.glsl`, `device_requirements()`; header-only | core Vulkan |
 | `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions; `IAudioSensor`, `AudioChunk` | camera, frame |
-| `sensor_prep` | `prep/` | `GpuFramePrep`, `PictureReadback` | interface |
+| `sensor_prep` | `prep/` | `GpuFramePrep`, `LumaPass` (any picture's 8-bit luma and its half, on the GPU), `PictureReadback` | interface |
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
 | `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
-| `sensor_video_syntax` | `video/` | H.265 syntax read on the host, every build | core base |
-| `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, CUDA interop | frame |
-| `sensor_apple` | `apple/` | `PixelBufferImporter`, every Apple build | frame |
-| `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video |
+| `sensor_video_syntax` | `video/` | H.265 syntax read on the host and `KeyGate` (which units decode after a loss), every build | core base |
+| `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, `HevcEncoder` (VideoToolbox: a device target or, on Apple, `send_pixel_buffer`), `video_backend()`, what H.273 colour codes mean (`frame_color.hpp`), CUDA interop | frame, video_syntax |
+| `sensor_video_testing` | `testing/hevc_conformance.hpp`, `testing/nv12_writer.hpp` | `hevc_encoder_breach`, the encoder rules for any runner, and `Nv12Writer`, a test picture written into a target by a kernel; static | video |
+| `sensor_wire` | `wire/` | An RGB-D sensor's frames as bytes for a recording or a live link (`rgbd_wire.hpp`): the sensor once, each frame's depth and colour halves, read back in place; every build, iOS included | interface, video_syntax |
+| `sensor_apple` | `apple/` | `PixelBufferImporter`, `color_codes_of`, every Apple build | frame, video_syntax |
+| `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video, video_syntax |
 | `sensor_realsense` | `realsense/` | `RealSenseSensor`, `RealSenseStereo` | interface, stereo |
 | `sensor_ffs` | `ffs/` | `FfsStereo` (Fast-FoundationStereo on TensorRT), `StereoDepthSensor` (any stereo camera as an `IRgbdSensor`); NVIDIA only | stereo; video, privately |
+| `sensor_decklink` | `decklink/` | `DecklinkStereo` (two SDI inputs of a DeckLink card as one stereo camera); Linux x86-64 | stereo |
 | `sensor_microphone` | `audio/` | `Microphone` (an OS audio input through PortAudio) | interface |
 | `sensor_image_io` | `io/` | image files | core base |
 
@@ -52,7 +55,8 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 
 Requires CMake ≥ 3.21, a C++17 compiler and the Vulkan toolchain (MoltenVK
 on Apple). The package fetches the core pinned by commit and checks it is
-0.29.0 or newer.
+0.41.0 or newer (a picture's ready value names its `TimelineSemaphore`), or
+0.29.0 or newer for a camera-only build (`VS_CAMERA_ONLY`).
 
 ```sh
 sensor_root="$(git rev-parse --show-toplevel)"
@@ -72,6 +76,7 @@ ctest --test-dir "$sensor_root/build" --output-on-failure
 | `VS_WITH_CUDA` | OFF | NVIDIA's hardware for the decoders |
 | `VS_WITH_FFS` | OFF | `sensor_ffs`: stereo depth by FFS; needs `VS_WITH_CUDA` and TensorRT ≥ 11 |
 | `VS_WITH_PORTAUDIO` | OFF | `sensor_microphone` and `mic_check`; needs PortAudio |
+| `VS_WITH_DECKLINK` | OFF | `sensor_decklink` and `decklink_skew_report`; needs the DeckLink SDK's headers (`DeckLinkSDK_ROOT`), Linux x86-64 |
 | `VS_SANITIZE` | empty | sanitizers, e.g. `address;undefined` |
 
 The GPU tests follow the core's test policy (its README, "Build and test"):
@@ -201,7 +206,19 @@ no option and no SDK. A stereo camera's driver implements `IStereoSensor`
 (`stereo/stereo_sensor.hpp`); `StereoRectifier`
 (`stereo/stereo_rectifier.hpp`) undistorts and rectifies its pairs on the
 GPU into a row-aligned pinhole pair, `Luma8` or `Rgba8`, at the size a
-matcher takes:
+matcher takes. Two cameras with an entry each in a calibration file make
+a pair through `stereo_calibration(file, left_id, right_id)`, a driver's
+`StereoInfo::calibration`. That function, the rectification the rectifier
+computes (`rectify_stereo`) and a lens's fold (`fold_radius2`) are the
+camera tier's (`camera/stereo_rectification.hpp`), so a tool that checks a
+pair's rows or a lens without a GPU links `sensor_camera` alone:
+
+```cpp
+VKC_ASSIGN(const sensor::StereoCalibration pair,
+           sensor::stereo_calibration(file, "bm-1", "bm-2"));
+VKC_ASSIGN(const sensor::StereoRectification rect,
+           sensor::rectify_stereo(pair, {960, 544}, 0.0));  // R1, R2, the rig
+```
 
 ```cpp
 VKC_ASSIGN(auto rectifier,
@@ -211,8 +228,9 @@ VKC_ASSIGN(auto rectifier,
 VKC_ASSIGN(sensor::RectifiedPair pair, rectifier->rectify(frame));
 ```
 
-`tools/stereo_rectify_reference.py` regenerates the OpenCV numbers its test
-pins (OpenCV in a virtual environment; the build never needs it).
+`tools/stereo_rectify_reference.py` regenerates the OpenCV numbers
+`rectify_stereo`'s test pins (OpenCV in a virtual environment; the build
+never needs it).
 
 ## Stereo depth (FFS)
 
@@ -265,7 +283,52 @@ inputs and output (`tests/data/ffs`, made by `tools/ffs/make_test_onnx.py`),
 and skip where CUDA does not reach the GPU unless `VS_TEST_HEVC_BACKEND`
 is set.
 
-## Video decoders
+## DeckLink stereo driver
+
+`DecklinkStereo` (`decklink/decklink_stereo.hpp`,
+`volumetric_kit::sensor_decklink`) is two SDI inputs of a DeckLink 8K Pro
+as one `IStereoSensor`: each camera's 10-bit V210 picture, which the card
+writes into host pages the GPU imports and one GPU copy moves into a device
+buffer, paired with the other camera's by the card's frame times and
+carrying the measured skew. It needs the DeckLink SDK's headers, unpacked
+once and never fetched (`cmake/vs_decklink.cmake`), and Desktop Video to
+capture, which it loads at run time; the device must enable
+`VK_EXT_external_memory_host` (`device_requirements()` asks for it). The
+card's profile is "four sub-devices half-duplex", one input a connector.
+
+```sh
+cmake -S "$sensor_root" -B "$sensor_root/build" -DCMAKE_BUILD_TYPE=Release \
+    -DVS_WITH_DECKLINK=ON -DDeckLinkSDK_ROOT=<the SDK's Linux directory>
+```
+
+```cpp
+sensor::DecklinkStereo::Options options;
+options.left = {"bm-1", "SDI 2"};   // the camera's name, its connector
+options.right = {"bm-2", "SDI 1"};
+VKC_ASSIGN(options.calibration, sensor::stereo_calibration(file, "bm-1", "bm-2"));
+VKC_ASSIGN(sensor::DecklinkStereo camera,
+           sensor::DecklinkStereo::open(options, device, allocator));
+VKC_TRY(camera.start());  // then as any IStereoSensor, StereoDepthSensor's too
+```
+
+Without a calibration it still captures the raw pairs a calibration is
+made from; `StereoRectifier` refuses it then. The cameras' settings (30 fps,
+shutter, white balance, auto exposure off) are the camera's own, over its
+USB PTP or its menu. `decklink_skew_report` times the two inputs by hand,
+through the driver's capture: each input's frames, losses and rate against
+the card clock, and the pairs' skew, right less left, with its drift.
+
+```sh
+"$sensor_root/build/tools/decklink_skew_report/decklink_skew_report" \
+    --left "SDI 2" --right "SDI 1" --seconds 60
+```
+
+The driver's SDK-free parts (pairing, clock map, upload, skew numbers) are
+built and tested on every leg, and its SDK part on the 24.04 leg, against
+the SDK's headers the core keeps
+(`tools/ci/decklink-sdk-16.0`, at the core pin).
+
+## Video coders
 
 The HEVC and JPEG decoders (`volumetric_kit::sensor_video`) decode on the
 GPU's hardware and hand their pictures out on the device only. Every Apple
@@ -273,22 +336,86 @@ build has them, on VideoToolbox with no FFmpeg; their pictures reach Vulkan
 through `PixelBufferImporter` (`volumetric_kit::sensor_apple`). On Linux
 they are off by default: NVDEC through FFmpeg ≥ 6.1, found through
 pkg-config, and nvJPEG, with the CUDA 13 toolkit's headers
-(`cmake/vs_cuda.cmake`). `VS_WITH_FFMPEG` on Apple fails the configure. The
+(`cmake/vs_cuda.cmake`). NVIDIA's pictures come out before CUDA's copy into
+them has run, with the timeline value CUDA sets once it has
+(`YuvImage::ready`): the package's readers wait for it on the device, and a
+caller that records `GpuFramePrep` into its own batch passes
+`ready_points(frame)`, or a set's `ready_points(set.frames)`, among the
+batch's `submit_async` waits; a reader of its own gathers them with
+`add_ready_point` (`frame/ready_points.hpp`).
+`VS_WITH_FFMPEG` on Apple fails the configure. The
 H.265 syntax the Apple decoder reads (`volumetric_kit::sensor_video_syntax`,
-`video/hevc_syntax.hpp`) is host code, in every build.
+`video/hevc_syntax.hpp`) and the key gate (`video/key_gate.hpp`) are host
+code, in every build.
+
+The HEVC encoder (`video/hevc_encoder.hpp`, the same target) codes on
+VideoToolbox in every Apple build, iOS included: a target it hands out on
+the device, which the caller's kernel writes in its own batch and sends
+with the timeline value that batch sets, or a camera's `CVPixelBuffer`
+sent as it is (`video/hevc_encoder_apple.hpp`). Its `create` refuses on
+Linux until NVENC lands. `video/backend.hpp` names the build's backend.
+
+```cpp
+#include "volumetric_kit/sensor/video/hevc_encoder.hpp"
+#include "volumetric_kit/sensor/video/hevc_encoder_apple.hpp"
+
+sensor::HevcEncoder::Options o;
+o.width = 1920;
+o.height = 1440;
+o.qp = 22;
+o.color = {6, 1, 6, true, 0};  // BT.601, full range: the buffers' '420f'
+o.device = &device;  // made with sensor::hevc_encoder_device_requirements()
+o.allocator = &allocator;
+VKC_ASSIGN(sensor::HevcEncoder encoder, sensor::HevcEncoder::create(o));
+core::CommandBatch batch(device, allocator);
+VKC_ASSIGN(const sensor::YuvImage target, encoder.target(batch));
+VKC_TRY(record_picture(batch, target));  // the caller's kernel: R8, R8G8 stores
+VKC_ASSIGN(core::PendingBatch writing, batch.submit_async({}, {{&timeline, n}}));
+VKC_TRY(encoder.send(encoder.key_owed(), pts, {&timeline, n}));  // returns at once
+// or, a camera's buffer as it is:
+// VKC_TRY(sensor::send_pixel_buffer(encoder, pixels, encoder.key_owed(), pts));
+sensor::HevcEncoder::CodedPicture coded;
+VKC_ASSIGN(const bool got, encoder.receive(coded));  // waits for it
+```
 
 ```sh
 sudo apt install pkg-config libavcodec-dev libavutil-dev
 cmake -S "$sensor_root" -B "$sensor_root/build" \
     -DCMAKE_BUILD_TYPE=Release -DVS_WITH_FFMPEG=ON -DVS_WITH_CUDA=ON
 # fail, rather than skip, where the decoders find no device path
-# (videotoolbox on a Mac):
+# (videotoolbox on a Mac), and on a Mac the encoder too:
 VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
+VS_TEST_HEVC_BACKEND=videotoolbox VS_TEST_HEVC_ENCODER=videotoolbox \
+    ctest --test-dir "$sensor_root/build" -R video
 ```
+
+## Test support
+
+Header-only and framework-free, for this package's tests and a consumer's:
+`testing/hevc_clip.hpp` splits a clip into its access units and says
+whether the run promises a hardware decoder or encoder
+(`VS_TEST_HEVC_BACKEND`, `VS_TEST_HEVC_ENCODER`);
+`testing/nv12_pattern.hpp` makes the family's NV12 test picture, whose
+index band `pattern_index` recovers after coding;
+`testing/nv12_picture.hpp` hands it out on the device as a hardware decoder
+would, writing through the core's `core_test_policy`, which the test
+links; and on Apple `testing/nv12_pixel_buffer.hpp` makes it a tagged
+IOSurface `CVPixelBuffer`. `testing/rgbd_pattern.hpp` makes test depth
+that carries the same index band, with a confidence plane, and reads the
+index back, on the standard library alone. `testing/rgbd_contract.hpp`
+checks the frames and counters an `IRgbdSensor` handed out against the
+frame contract (`rgbd_sensor.hpp`): `rgbd_breach` over a vector, or
+`RgbdContract` one frame at a time for a run of any length.
+`testing/hevc_slices.hpp` (`sensor_video_syntax`) reads a coded stream's
+slice types and QPs. The encoder rules (`testing/hevc_conformance.hpp`,
+`volumetric_kit::sensor_video_testing`) run on any device whose build has
+`sensor_video`: `hevc_encoder_breach` returns the first rule broken, on
+pixel buffers or on targets, which `testing/nv12_writer.hpp`'s
+`Nv12Writer` writes with a compute kernel in the caller's batch.
 
 ## Versions
 
-The version is `project()`'s (0.15.0), carried by the umbrella as
+The version is `project()`'s (0.37.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

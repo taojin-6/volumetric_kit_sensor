@@ -51,6 +51,10 @@ constexpr std::uint32_t kNetMultiple = 32;
 // stays until let go here, and keeps its memory (the import holds the
 // descriptor's reference), so CUDA never reads freed memory.
 constexpr std::size_t kMaxViews = 8;
+// The near gate's margin past the network's reach, fx * baseline /
+// max_disparity: a nearer surface comes back saturated, at or a little past
+// that depth (Options::max_disparity).
+constexpr double kNearMargin = 1.05;
 
 core::Status refuse(const std::string& why) {
   return core::Status::invalid_argument(std::string(kWho) + ": " + why);
@@ -302,6 +306,8 @@ struct FfsStereo::Impl {
   SensorInfo depth_info;
   Options options;
   DepthNoise depth_noise;  // every frame's, from the options and the rig
+  // Nearer depth is no return: min_depth, or the near gate where farther.
+  float min_depth = 0.0f;
   float metres_per_unit = 0.0f;
   std::uint32_t net_width = 0, net_height = 0;
 
@@ -374,6 +380,10 @@ core::Result<std::unique_ptr<FfsStereo>> FfsStereo::create(
     return refuse(
         "disparity_sigma must be finite and at least 0 (0: unknown noise)");
   }
+  if (!(std::isfinite(options.max_disparity) &&
+        options.max_disparity >= 0.0f)) {
+    return refuse("max_disparity must be finite and at least 0 (0: no gate)");
+  }
   if (options.plan_cache.empty()) {
     return refuse("no plan_cache: the plan takes minutes to build");
   }
@@ -392,6 +402,17 @@ core::Result<std::unique_ptr<FfsStereo>> FfsStereo::create(
   impl->depth_noise =
       DepthNoise::stereo(options.disparity_sigma,
                          impl->rig.camera.intrinsics.fx, impl->rig.baseline);
+  impl->min_depth = options.min_depth;
+  if (options.max_disparity > 0.0f) {
+    const double gate = kNearMargin * impl->rig.camera.intrinsics.fx *
+                        impl->rig.baseline / options.max_disparity;
+    if (!(gate < options.max_depth)) {
+      return refuse("the near gate, 1.05 * fx * baseline / max_disparity = " +
+                    std::to_string(gate) + " m, is not below max_depth (" +
+                    std::to_string(options.max_depth) + " m)");
+    }
+    impl->min_depth = std::max(impl->min_depth, static_cast<float>(gate));
+  }
   impl->metres_per_unit = std::max(1e-4f, options.max_depth / 65535.0f);
   const camera::ImageSize size = impl->rig.camera.size;
   impl->net_width = round_up(size.width, kNetMultiple);
@@ -660,7 +681,7 @@ core::Result<RgbdFrame> FfsStereo::Impl::depth(const RectifiedPair& pair,
   out.net_width = net_width;
   out.focal_baseline =
       static_cast<float>(rig.camera.intrinsics.fx * rig.baseline);
-  out.min_depth = options.min_depth;
+  out.min_depth = min_depth;
   out.max_depth = options.max_depth;
   out.units_per_metre = 1.0f / metres_per_unit;
   out.coverage = !in.luma;
@@ -718,7 +739,7 @@ core::Result<RgbdFrame> FfsStereo::Impl::depth(const RectifiedPair& pair,
   frame.depth_device.queue_family = kQueueFamilyExternal;
   frame.metres_per_unit = metres_per_unit;
   frame.depth_camera = rig.camera;
-  frame.min_depth = options.min_depth;
+  frame.min_depth = min_depth;
   frame.max_depth = options.max_depth;
   frame.depth_noise = depth_noise;
   const StereoFrame& source = pair.source;

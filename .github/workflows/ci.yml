@@ -65,11 +65,15 @@ jobs:
       # `cuda` (VS_WITH_CUDA=ON, the toolkit installed per job: NVDEC and
       # nvJPEG; 24.04's FFmpeg 6.1 is the floor). `hevc_backend` names the
       # hardware each must decode on, so their tests fail rather than skip
-      # without it. 26.04 builds without them.
+      # without it. 26.04 builds without them. The HEVC encoder is
+      # VideoToolbox's alone so far: `hevc_encoder` promises it on the Mac.
       #
       # `ffs` builds sensor_ffs (VS_WITH_FFS, TensorRT from the CUDA
       # repository, installed per job) on 24.04, the CUDA leg; its tests fail
       # rather than skip there for the same promise. The Mac has no CUDA.
+      #
+      # `decklink` builds the DeckLink driver's SDK part (VS_WITH_DECKLINK) on
+      # 24.04 (_build.yml).
       #
       # `portaudio` builds the microphone driver (VS_WITH_PORTAUDIO) on every
       # leg, 24.04's PortAudio 19.6 the oldest; the sanitizer job builds
@@ -90,6 +94,7 @@ jobs:
             ffmpeg: true
             cuda: true
             ffs: true
+            decklink: true
             hevc_backend: cuda
             portaudio: true
             sync_validation: true
@@ -109,6 +114,7 @@ jobs:
             realsense_sdk: true
             portaudio: true
             hevc_backend: videotoolbox
+            hevc_encoder: videotoolbox
     uses: ./.github/workflows/_build.yml
     with:
       os: ${{ matrix.os }}
@@ -120,8 +126,10 @@ jobs:
       ffmpeg: ${{ matrix.ffmpeg || false }}
       cuda: ${{ matrix.cuda || false }}
       ffs: ${{ matrix.ffs || false }}
+      decklink: ${{ matrix.decklink || false }}
       portaudio: ${{ matrix.portaudio || false }}
       hevc_backend: ${{ matrix.hevc_backend || '' }}
+      hevc_encoder: ${{ matrix.hevc_encoder || '' }}
       sync_validation: ${{ matrix.sync_validation || false }}
 
   camera-only:

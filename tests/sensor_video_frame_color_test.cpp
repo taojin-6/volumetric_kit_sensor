@@ -2,15 +2,17 @@
 // Copyright (c) 2026 Tao Jin
 
 // The colour a stream declares, from H.273 codes set by hand, no codec and no
-// GPU: the matrix and encoding the codes resolve to, the weights and range a
-// picture is described with, the chroma siting, and the unlabelled colour
-// standing in for codes that declare no matrix.
+// GPU: the matrix, encoding and chroma siting the codes resolve to (the public
+// video/frame_color.hpp), and the weights, range and siting a decoder's
+// picture is described with (the internal describe_color), with the
+// unlabelled colour standing in for codes that declare no matrix.
 
 #include <cstdio>
 #include <optional>
 
 #include "frame_color.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
+#include "volumetric_kit/sensor/video/frame_color.hpp"
 #include "yuv_reference.hpp"
 
 namespace sensor = volumetric_kit::sensor;
@@ -48,15 +50,16 @@ sensor::DecodedPicture described(
 }
 
 int test_resolve_matrix() {
-  CHECK(video::resolve_matrix(kBt709, 144) == VideoColorMatrix::Bt709);
-  CHECK(video::resolve_matrix(kSmpte170m, 2160) == VideoColorMatrix::Bt601);
-  CHECK(video::resolve_matrix(kBt470bg, 720) == VideoColorMatrix::Bt601);
-  CHECK(video::resolve_matrix(kBt2020, 720) == VideoColorMatrix::Bt2020);
-  CHECK(video::resolve_matrix(kUnspecified, 576) == VideoColorMatrix::Bt601);
-  CHECK(video::resolve_matrix(kUnspecified, 720) == VideoColorMatrix::Bt709);
-  CHECK(video::resolve_matrix(kSmpte240m, 1080) == VideoColorMatrix::Smpte240m);
-  CHECK(video::resolve_matrix(kFcc, 480) == VideoColorMatrix::Fcc);
-  CHECK(video::resolve_matrix(kRgb, 720) == VideoColorMatrix::Bt709);
+  CHECK(sensor::resolve_matrix(kBt709, 144) == VideoColorMatrix::Bt709);
+  CHECK(sensor::resolve_matrix(kSmpte170m, 2160) == VideoColorMatrix::Bt601);
+  CHECK(sensor::resolve_matrix(kBt470bg, 720) == VideoColorMatrix::Bt601);
+  CHECK(sensor::resolve_matrix(kBt2020, 720) == VideoColorMatrix::Bt2020);
+  CHECK(sensor::resolve_matrix(kUnspecified, 576) == VideoColorMatrix::Bt601);
+  CHECK(sensor::resolve_matrix(kUnspecified, 720) == VideoColorMatrix::Bt709);
+  CHECK(sensor::resolve_matrix(kSmpte240m, 1080) ==
+        VideoColorMatrix::Smpte240m);
+  CHECK(sensor::resolve_matrix(kFcc, 480) == VideoColorMatrix::Fcc);
+  CHECK(sensor::resolve_matrix(kRgb, 720) == VideoColorMatrix::Bt709);
   return 0;
 }
 
@@ -67,21 +70,21 @@ int test_resolve_encoding() {
                      Transfer t, Primaries p) {
     return e.has_value() && e->transfer == t && e->primaries == p;
   };
-  CHECK(is(video::resolve_encoding(kBt709, kBt709), Transfer::Bt709,
+  CHECK(is(sensor::resolve_encoding(kBt709, kBt709), Transfer::Bt709,
            Primaries::Bt709));
-  CHECK(is(video::resolve_encoding(kUnspecified, kUnspecified), Transfer::Bt709,
-           Primaries::Bt709));
-  CHECK(is(video::resolve_encoding(kSrgb, kDisplayP3), Transfer::Srgb,
+  CHECK(is(sensor::resolve_encoding(kUnspecified, kUnspecified),
+           Transfer::Bt709, Primaries::Bt709));
+  CHECK(is(sensor::resolve_encoding(kSrgb, kDisplayP3), Transfer::Srgb,
            Primaries::DisplayP3));
-  CHECK(is(video::resolve_encoding(kPq, kBt2020), Transfer::Bt2020Pq,
+  CHECK(is(sensor::resolve_encoding(kPq, kBt2020), Transfer::Bt2020Pq,
            Primaries::Bt2020));
-  CHECK(is(video::resolve_encoding(kBt2020Ten, kBt2020), Transfer::Bt709,
+  CHECK(is(sensor::resolve_encoding(kBt2020Ten, kBt2020), Transfer::Bt709,
            Primaries::Bt2020));
-  CHECK(is(video::resolve_encoding(kLinear, kBt709), Transfer::Linear,
+  CHECK(is(sensor::resolve_encoding(kLinear, kBt709), Transfer::Linear,
            Primaries::Bt709));
   // Nothing true to declare: HLG, and BT.601's own primaries.
-  CHECK(!video::resolve_encoding(kHlg, kBt2020));
-  CHECK(!video::resolve_encoding(kSmpte170m, kSmpte170m));
+  CHECK(!sensor::resolve_encoding(kHlg, kBt2020));
+  CHECK(!sensor::resolve_encoding(kSmpte170m, kSmpte170m));
 
   sensor::ColorCodes codes;
   codes.transfer = kPq;
@@ -134,7 +137,8 @@ int test_unlabelled_color() {
   return 0;
 }
 
-// Every chroma siting H.273 names, and Left for a code it does not.
+// Every chroma siting H.273 names, and Left for a code it does not, resolved
+// and described.
 int test_chroma_locations() {
   const struct {
     int code;
@@ -148,9 +152,11 @@ int test_chroma_locations() {
   sensor::ColorCodes codes;
   CHECK(described(codes, 720).yuv.chroma_location == ChromaLocation::Left);
   for (const auto& c : cases) {
+    CHECK(sensor::resolve_chroma_location(c.code) == c.want);
     codes.chroma_location = c.code;
     CHECK(described(codes, 720).yuv.chroma_location == c.want);
   }
+  CHECK(sensor::resolve_chroma_location(-1) == ChromaLocation::Left);
   return 0;
 }
 

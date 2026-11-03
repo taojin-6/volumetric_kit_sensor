@@ -4,9 +4,12 @@
 // The HEVC decoder on committed clips (tools/make_hevc_fixtures.sh), decoded
 // on this machine's hardware onto the device, as NV12's two plane images, and
 // read back: the pattern the clip was made from, libavcodec's pictures to the
-// bit, the colour an unlabelled stream takes, a reset mid-stream and after
+// bit, VideoToolbox's encoder's clip (tools/vt_pattern_clip) to the bit and
+// its pattern's index, the colour an unlabelled stream takes, a reset
+// mid-stream and after
 // the end, a display window off the coded picture's corner, a held picture
-// never reused, frame prep from the images as from the same samples in a
+// never reused, many pictures held at once, each with its ready value on
+// NVDEC, frame prep from the images as from the same samples in a
 // buffer, a stream the hardware refuses, the decoders create refuses, the
 // images shared across queue families, NVDEC's decoders sharing the GPU's
 // primary CUDA context, NVDEC's pictures changing size within one decoder,
@@ -32,7 +35,6 @@
 
 #include "decoder_test.hpp"
 #include "device_picture_readback.hpp"
-#include "hevc_fixture.hpp"
 #include "md5.hpp"
 #include "volumetric_kit/core/testing/buffer_readback.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
@@ -45,7 +47,10 @@
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/testing/hevc_clip.hpp"
+#include "volumetric_kit/sensor/testing/nv12_pattern.hpp"
 #include "volumetric_kit/sensor/video/hevc_decoder.hpp"
+#include "volumetric_kit/sensor/video/hevc_syntax.hpp"
 #include "yuv_reference.hpp"
 
 #if !defined(__APPLE__)
@@ -67,9 +72,14 @@ constexpr const char* kCropped = VS_HEVC_DATA "/cropped_240x128.h265";
 constexpr const char* kRefused = VS_HEVC_DATA "/refused_256x144.h265";
 constexpr const char* kUnlabelled = VS_HEVC_DATA "/unlabelled_256x144.h265";
 constexpr const char* kFullRange = VS_HEVC_DATA "/fullrange_256x144.h265";
-// libavcodec's MD5s of the patch clip and, on NVDEC, the cropped one
-// (tools/make_hevc_fixtures.sh prints them).
+constexpr const char* kCentred = VS_HEVC_DATA "/centred_full_256x144.h265";
+constexpr const char* kVtPattern = VS_HEVC_DATA "/vt_pattern_1920x1440.h265";
+// libavcodec's MD5 of the VideoToolbox-coded clip (make_hevc_fixtures.sh).
+constexpr const char* kVtPatternMd5 = "aa967b47ea3a5eada78eff124e0e63ea";
+// libavcodec's MD5s of the patch clip, the centred one and, on NVDEC, the
+// cropped one (tools/make_hevc_fixtures.sh prints them).
 constexpr const char* kPatchesMd5 = "63171f05c92c231ab96a389291ba67fe";
+constexpr const char* kCentredMd5 = "3161783e1645be3879bf88d6092768ca";
 #if !defined(__APPLE__)
 constexpr const char* kCroppedMd5 = "9f217594cf6e432f9aa4021534446fbe";
 #endif
@@ -157,7 +167,8 @@ Decoded decode(
   options.unlabelled_color = unlabelled;
   auto decoder = HevcDecoder::create(options);
   if (!decoder) return {{}, decoder.status()};
-  return decode_clip(decoder.value(), vs_test::hevc_access_units(clip), gpu);
+  return decode_clip(decoder.value(),
+                     sensor::testing::access_units_of_file(clip), gpu);
 }
 
 // On the device as NV12's two plane images, R8 and R8G8: VideoToolbox's, or
@@ -281,8 +292,8 @@ int test_unlabelled_color(const Gpu& gpu) {
 // reset(): the pictures held for display are dropped, a stream ended with
 // size 0 takes data again, and the next key frame decodes as the first.
 int test_reset(const Gpu& gpu) {
-  const AccessUnits b_frames = vs_test::hevc_access_units(kRefused);
-  const AccessUnits patches = vs_test::hevc_access_units(kPatches);
+  const AccessUnits b_frames = sensor::testing::access_units_of_file(kRefused);
+  const AccessUnits patches = sensor::testing::access_units_of_file(kPatches);
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
   int out = 0;
@@ -316,13 +327,13 @@ int test_reset(const Gpu& gpu) {
 int test_cropped(const Gpu& gpu) {
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
-  const Decoded cropped =
-      decode_clip(decoder.value(), vs_test::hevc_access_units(kCropped), gpu);
+  const Decoded cropped = decode_clip(
+      decoder.value(), sensor::testing::access_units_of_file(kCropped), gpu);
 #if defined(__APPLE__)
   CHECK(cropped.pictures.empty());
   CHECK(cropped.status.domain() == vkc::Status::Code::Unsupported);
   CHECK(decoder->reset().ok());
-  const AccessUnits units = vs_test::hevc_access_units(kCropped);
+  const AccessUnits units = sensor::testing::access_units_of_file(kCropped);
   CHECK(decoder->send(units[0].data(), units[0].size(), 0).domain() ==
         vkc::Status::Code::Unsupported);
 #else
@@ -364,8 +375,8 @@ int test_cropped(const Gpu& gpu) {
 // Check recovery both with and without reset, and with the rest of the access
 // unit still present. No rejected bytes may latch a permanent refusal.
 int test_malformed_cropped_sps(const Gpu& gpu) {
-  const AccessUnits cropped = vs_test::hevc_access_units(kCropped);
-  const AccessUnits patches = vs_test::hevc_access_units(kPatches);
+  const AccessUnits cropped = sensor::testing::access_units_of_file(kCropped);
+  const AccessUnits patches = sensor::testing::access_units_of_file(kPatches);
   CHECK(!cropped.empty());
   const auto& unit = cropped[0];
   std::size_t sps = 0;
@@ -453,8 +464,9 @@ int test_md5() {
 // Each clip's pictures, in display order, read back from where the hardware
 // left them, are libavcodec's to the bit (the MD5s
 // tools/make_hevc_fixtures.sh prints): the patch clip, and its full-range
-// copy, whose samples are the same, on either path. On NVDEC the cropped
-// clip too, its display window 16 in from the left and the top. On
+// copy, whose samples are the same, on either path, and testsrc2 at full
+// range with its chroma sited at the centre, as it declares. On NVDEC the
+// cropped clip too, its display window 16 in from the left and the top. On
 // VideoToolbox testsrc2 with B-frames, under NVDEC's smallest picture: with
 // no colour description the clip is video range, labelled full range it is
 // full range, each written at its own range; the cropped one is its display
@@ -467,11 +479,14 @@ int test_reference_md5(const Gpu& gpu) {
     std::uint32_t height;
     sensor::VideoColorMatrix matrix;  // BT.601 unlabelled, by the height
     bool full_range;
+    sensor::ChromaLocation chroma = sensor::ChromaLocation::Left;
   } clips[] = {
       {kPatches, kPatchesMd5, kWidth, kHeight, sensor::VideoColorMatrix::Bt709,
        false},
       {kFullRange, kPatchesMd5, kWidth, kHeight,
        sensor::VideoColorMatrix::Bt709, true},
+      {kCentred, kCentredMd5, kWidth, kHeight, sensor::VideoColorMatrix::Bt709,
+       true, sensor::ChromaLocation::Center},
 #if defined(__APPLE__)
       {kTestsrc2, kTestsrc2Md5, 128, 64, sensor::VideoColorMatrix::Bt601,
        false},
@@ -489,8 +504,54 @@ int test_reference_md5(const Gpu& gpu) {
     if (check_md5(decoded, c.clip, c.width, c.height, c.md5) != 0) return 1;
     for (const Picture& p : decoded.pictures) {
       CHECK(yuv_reference::coded_in(p.meta.yuv, c.matrix, c.full_range));
+      CHECK(p.meta.yuv.chroma_location == c.chroma);
     }
   }
+  return 0;
+}
+
+// The clip VideoToolbox's encoder coded (tools/vt_pattern_clip), as a
+// camera's pictures are sent: on NVDEC and VideoToolbox alike its 12
+// pictures decode to libavcodec's MD5, 1920x1440, BT.601 full range, sited
+// left, primaries no ColorEncoding names (SMPTE 170M), and each picture's
+// index band names its picture; its keys are units 0 and 6.
+int test_vt_clip(const Gpu& gpu) {
+  constexpr std::uint32_t kW = 1920;
+  constexpr std::uint32_t kH = 1440;
+  const auto units = sensor::testing::access_units_of_file(kVtPattern);
+  CHECK(units.size() == 12);
+  for (std::size_t i = 0; i < units.size(); ++i) {
+    const auto type =
+        sensor::hevc::first_slice_type(units[i].data(), units[i].size());
+    CHECK(type.has_value() &&
+          sensor::hevc::is_idr(*type) == (i == 0 || i == 6));
+  }
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
+  CHECK(decoder.ok());
+  const Decoded decoded = decode_clip(*decoder, units, gpu);
+  if (!decoded.status.ok()) {
+    std::fprintf(stderr, "%s\n", decoded.status.message().c_str());
+  }
+  CHECK(decoded.status.ok() && decoded.pictures.size() == 12);
+  vs_test::Md5 sum;
+  for (std::size_t i = 0; i < decoded.pictures.size(); ++i) {
+    const Picture& p = decoded.pictures[i];
+    if (check_on_device(p.meta) != 0) return 1;
+    CHECK(p.meta.yuv.width == kW && p.meta.yuv.height == kH);
+    CHECK(p.meta.pts == pts_of(static_cast<int>(i)));
+    CHECK(yuv_reference::coded_in(p.meta.yuv, sensor::VideoColorMatrix::Bt601,
+                                  true));
+    CHECK(p.meta.yuv.chroma_location == sensor::ChromaLocation::Left);
+    CHECK(!p.meta.encoding.has_value());
+    CHECK(sensor::testing::pattern_index(p.planes[0].data(), kW) ==
+          static_cast<long>(i));
+    for (const std::vector<std::uint8_t>& plane : p.planes) {
+      sum.update(plane.data(), plane.size());
+    }
+  }
+  const std::string got = sum.hex();
+  if (got != kVtPatternMd5) std::fprintf(stderr, "MD5 %s\n", got.c_str());
+  CHECK(got == kVtPatternMd5);
   return 0;
 }
 
@@ -502,8 +563,8 @@ int test_reference_md5(const Gpu& gpu) {
 // keep their samples, and a set let go before a picture of the other size is
 // never handed out with it, larger or smaller.
 int test_size_change(const Gpu& gpu) {
-  const AccessUnits small = vs_test::hevc_access_units(kCropped);
-  const AccessUnits large = vs_test::hevc_access_units(kPatches);
+  const AccessUnits small = sensor::testing::access_units_of_file(kCropped);
+  const AccessUnits large = sensor::testing::access_units_of_file(kPatches);
   constexpr std::uint32_t kSmallWidth = kWidth - 16;
   constexpr std::uint32_t kSmallHeight = kHeight - 16;
   auto decoder = HevcDecoder::create(decoder_options(gpu));
@@ -555,7 +616,7 @@ int test_held_pictures(const Gpu& gpu) {
 #if !defined(__APPLE__)
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
-  const AccessUnits units = vs_test::hevc_access_units(kPatches);
+  const AccessUnits units = sensor::testing::access_units_of_file(kPatches);
   std::vector<VkImage> luma;
   for (std::size_t i = 0; i <= units.size(); ++i) {
     const bool end = i == units.size();
@@ -574,6 +635,69 @@ int test_held_pictures(const Gpu& gpu) {
   CHECK(std::count(luma.begin(), luma.end(), luma[0]) ==
         static_cast<std::ptrdiff_t>(luma.size()));
 #endif
+  return 0;
+}
+
+// Many pictures held at once -- 72, the patch clip 9 times, more than NVDEC
+// has decode surfaces -- all come out, each its own frame's pattern once read
+// back: the decoder lets go of FFmpeg's frame once a picture's copy is done,
+// never when its holder lets go of the picture. On NVDEC each picture
+// carries a ready value above the last, reached once it is read;
+// VideoToolbox's carry none.
+int test_many_held_pictures(const Gpu& gpu) {
+  constexpr int kRepeats = 9;
+  const AccessUnits clip = sensor::testing::access_units_of_file(kPatches);
+  AccessUnits units;
+  for (int r = 0; r < kRepeats; ++r) {
+    units.insert(units.end(), clip.begin(), clip.end());
+  }
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
+  CHECK(decoder.ok());
+  std::vector<sensor::DecodedPicture> held;
+  for (std::size_t i = 0; i <= units.size(); ++i) {
+    const bool end = i == units.size();
+    const vkc::Status sent =
+        decoder->send(end ? nullptr : units[i].data(),
+                      end ? 0 : units[i].size(), pts_of(static_cast<int>(i)));
+    if (!sent.ok()) {
+      std::fprintf(stderr, "access unit %zu: %s\n", i, sent.message().c_str());
+    }
+    CHECK(sent.ok());
+    for (;;) {
+      auto picture = decoder->receive();
+      if (!picture.ok()) {
+        std::fprintf(stderr, "picture %zu: %s\n", held.size(),
+                     picture.status().message().c_str());
+      }
+      CHECK(picture.ok());
+      if (!picture.value()) break;
+      held.push_back(std::move(*picture.value()));
+    }
+  }
+  CHECK(held.size() == units.size());
+#if !defined(__APPLE__)
+  std::uint64_t last = 0;
+#endif
+  for (std::size_t i = 0; i < held.size(); ++i) {
+    sensor::YuvImage& yuv = held[i].yuv;
+    CHECK(held[i].pts == pts_of(static_cast<int>(i)));
+#if defined(__APPLE__)
+    CHECK(yuv.ready == nullptr);
+#else
+    CHECK(yuv.ready != nullptr && yuv.ready_value > last);
+    last = yuv.ready_value;
+#endif
+    std::vector<std::uint8_t> planes[3];
+    vs_test::read_device_picture(yuv, gpu.device, gpu.allocator, planes);
+    CHECK(planes[0].size() == static_cast<std::size_t>(kWidth * kHeight));
+    const std::size_t y = 36 * kWidth + 16;  // patch (0, 0)'s centre
+    const int f = static_cast<int>(i % kFrames);
+    CHECK(std::abs(planes[0][y] - patch_y(patch(0, 0, f))) <= 2);
+#if !defined(__APPLE__)
+    const vkc::Result<std::uint64_t> counter = yuv.ready->value();
+    CHECK(counter.ok() && *counter >= yuv.ready_value);
+#endif
+  }
   return 0;
 }
 
@@ -612,7 +736,7 @@ int test_frame_prep(const Gpu& gpu) {
   };
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
-  const AccessUnits units = vs_test::hevc_access_units(kPatches);
+  const AccessUnits units = sensor::testing::access_units_of_file(kPatches);
   int prepared = 0;
   for (std::size_t i = 0; i <= units.size(); ++i) {
     const bool end = i == units.size();
@@ -685,8 +809,8 @@ int test_queue_families(const Gpu& gpu) {
   options.queue_family_count = 2;
   auto decoder = HevcDecoder::create(options);
   CHECK(decoder.ok());
-  const Decoded decoded =
-      decode_clip(decoder.value(), vs_test::hevc_access_units(kPatches), gpu);
+  const Decoded decoded = decode_clip(
+      decoder.value(), sensor::testing::access_units_of_file(kPatches), gpu);
   if (check_clip_shape(decoded) != 0) return 1;
   for (const Picture& p : decoded.pictures) {
     CHECK(p.meta.yuv.image[0]->sharing_mode() == VK_SHARING_MODE_CONCURRENT);
@@ -730,7 +854,7 @@ int test_parameter_change(const Gpu& gpu) {
   };
   AccessUnits units;
   for (const auto& part : parts) {
-    const AccessUnits more = vs_test::hevc_access_units(part.clip);
+    const AccessUnits more = sensor::testing::access_units_of_file(part.clip);
     CHECK(more.size() == static_cast<std::size_t>(kFrames));
     units.insert(units.end(), more.begin(), more.end());
   }
@@ -768,7 +892,8 @@ int test_parameter_change(const Gpu& gpu) {
 
 // Main 10 is refused before any picture comes out, and stays refused.
 int test_main10(const Gpu& gpu) {
-  const AccessUnits units = vs_test::hevc_access_units(kTestsrc2Main10);
+  const AccessUnits units =
+      sensor::testing::access_units_of_file(kTestsrc2Main10);
   CHECK(units.size() == static_cast<std::size_t>(kFrames));
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
@@ -787,7 +912,7 @@ int test_main10(const Gpu& gpu) {
 // key frame, as the clip was made. A decoder that starts at frame 2 reports
 // it too.
 int test_skipped_access_unit(const Gpu& gpu) {
-  const AccessUnits units = vs_test::hevc_access_units(kPatches);
+  const AccessUnits units = sensor::testing::access_units_of_file(kPatches);
   for (const int first : {0, 2}) {
     auto decoder = HevcDecoder::create(decoder_options(gpu));
     CHECK(decoder.ok());
@@ -837,7 +962,7 @@ int test_skipped_access_unit(const Gpu& gpu) {
 // display order, each a distinct pts sent before it; then the refusal, which
 // stands after a reset.
 int test_refused(const Gpu& gpu) {
-  const AccessUnits units = vs_test::hevc_access_units(kRefused);
+  const AccessUnits units = sensor::testing::access_units_of_file(kRefused);
   CHECK(units.size() == static_cast<std::size_t>(kFrames + 2));
   auto decoder = HevcDecoder::create(decoder_options(gpu));
   CHECK(decoder.ok());
@@ -863,7 +988,8 @@ int test_refused(const Gpu& gpu) {
 }
 
 // No device, a device the hardware path cannot reach, and on NVDEC no
-// allocator: each Unsupported.
+// allocator or a device that exports memory and not semaphores (the timeline
+// its pictures' ready values are on): each Unsupported.
 int test_create_refusals(const Gpu& gpu) {
   CHECK(HevcDecoder::create({}).status().domain() ==
         vkc::Status::Code::Unsupported);
@@ -878,6 +1004,15 @@ int test_create_refusals(const Gpu& gpu) {
   options.allocator = nullptr;
   CHECK(HevcDecoder::create(options).status().domain() ==
         vkc::Status::Code::Unsupported);
+  vkc::Result<vkc::Device> memory_only = vs_test::memory_only_device(gpu);
+  CHECK(memory_only.ok() && memory_only->exports_memory() &&
+        !memory_only->exports_semaphores());
+  options = decoder_options(gpu);
+  options.device = &memory_only.value();
+  const vkc::Status refused = HevcDecoder::create(options).status();
+  CHECK(refused.domain() == vkc::Status::Code::Unsupported);
+  CHECK(refused.message().find("VK_KHR_external_semaphore_fd") !=
+        std::string::npos);
 #endif
   return 0;
 }
@@ -927,7 +1062,7 @@ int test_primary_context(const Gpu& gpu) {
     auto b = HevcDecoder::create(decoder_options(gpu));
     CHECK(a.ok() && b.ok());
     CHECK(active_primary_contexts() == 1);
-    const AccessUnits units = vs_test::hevc_access_units(kPatches);
+    const AccessUnits units = sensor::testing::access_units_of_file(kPatches);
     CHECK(check_clip_shape(decode_clip(a.value(), units, gpu)) == 0);
     CHECK(check_clip_shape(decode_clip(b.value(), units, gpu)) == 0);
   }
@@ -973,7 +1108,7 @@ int test_moves(const Gpu& gpu) {
   HevcDecoder* alias = &c;
   c = std::move(*alias);  // self-move
   return check_clip_shape(
-      decode_clip(c, vs_test::hevc_access_units(kPatches), gpu));
+      decode_clip(c, sensor::testing::access_units_of_file(kPatches), gpu));
 }
 
 int gpu_main(Gpu& gpu) {
@@ -990,10 +1125,12 @@ int gpu_main(Gpu& gpu) {
   if (test_reset(gpu) != 0) return 1;
   if (test_cropped(gpu) != 0) return 1;
   if (test_reference_md5(gpu) != 0) return 1;
+  if (test_vt_clip(gpu) != 0) return 1;
 #if !defined(__APPLE__)
   if (test_size_change(gpu) != 0) return 1;
 #endif
   if (test_held_pictures(gpu) != 0) return 1;
+  if (test_many_held_pictures(gpu) != 0) return 1;
   if (test_frame_prep(gpu) != 0) return 1;
 #if defined(__APPLE__)
   if (test_malformed_cropped_sps(gpu) != 0) return 1;
@@ -1020,7 +1157,7 @@ int main() {
   // it was on.
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   if (test_md5() != 0) return 1;
-  if (vs_test::hevc_access_units(kPatches).size() !=
+  if (sensor::testing::access_units_of_file(kPatches).size() !=
       static_cast<std::size_t>(kFrames)) {
     std::fprintf(stderr, "FAIL: cannot split %s into %d access units\n",
                  kPatches, kFrames);

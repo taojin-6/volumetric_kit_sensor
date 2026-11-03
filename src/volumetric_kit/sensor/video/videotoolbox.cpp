@@ -22,14 +22,13 @@ void on_picture(void*, void* frame, OSStatus status, VTDecodeInfoFlags,
   }
 }
 
-// A dictionary to fill, released with its values.
-CfPtr<CFMutableDictionaryRef> dictionary() {
+}  // namespace
+
+CfPtr<CFMutableDictionaryRef> cf_dictionary() {
   return CfPtr<CFMutableDictionaryRef>(CFDictionaryCreateMutable(
       kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
       &kCFTypeDictionaryValueCallBacks));
 }
-
-}  // namespace
 
 core::Status vt_error(const char* who, const std::string& what, OSStatus error,
                       bool decoding) {
@@ -48,6 +47,8 @@ core::Status vt_error(const char* who, const std::string& what, OSStatus error,
       return core::Status::io_error(message);
     case kVTVideoDecoderUnsupportedDataFormatErr:
     case kVTCouldNotFindVideoDecoderErr:
+    case kVTCouldNotFindVideoEncoderErr:
+    case kVTVideoEncoderNotAvailableNowErr:
       return core::Status::unsupported(message);
     case kVTAllocationFailedErr:
     case kCMFormatDescriptionError_AllocationFailed:
@@ -62,20 +63,20 @@ core::Status vt_error(const char* who, const std::string& what, OSStatus error,
 core::Result<SessionPtr> open_session(CMVideoFormatDescriptionRef format,
                                       bool full_range, const char* who,
                                       const std::string& what) {
-  const auto out = dictionary();
+  const auto out = cf_dictionary();
   const std::int32_t pixel =
       full_range ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
                  : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
   const CfPtr<CFNumberRef> number(
       CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &pixel));
-  const auto surface = dictionary();
+  const auto surface = cf_dictionary();
   CFDictionarySetValue(out.get(), kCVPixelBufferPixelFormatTypeKey,
                        number.get());
   CFDictionarySetValue(out.get(), kCVPixelBufferIOSurfacePropertiesKey,
                        surface.get());
   CFDictionarySetValue(out.get(), kCVPixelBufferMetalCompatibilityKey,
                        kCFBooleanTrue);
-  const auto spec = dictionary();
+  const auto spec = cf_dictionary();
   CFDictionarySetValue(
       spec.get(),
       kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,

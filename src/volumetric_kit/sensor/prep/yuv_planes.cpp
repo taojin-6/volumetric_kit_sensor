@@ -7,6 +7,7 @@
 #include <string>
 
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 
 namespace volumetric_kit::sensor::detail {
@@ -100,7 +101,7 @@ core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
                   "images, one of them");
   }
   if (static_cast<unsigned>(image.layout) >
-      static_cast<unsigned>(YuvLayout::Luma)) {
+      static_cast<unsigned>(YuvLayout::V210)) {
     return refuse(who, "unknown colour layout");
   }
   if (as_images) VKC_TRY(check_images(image, who, read));
@@ -112,6 +113,14 @@ core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
     out.count = 1;
     out.rows[0] = image.height;
     out.row_bytes[0] = 2 * std::uint64_t{image.width};
+  } else if (image.layout == YuvLayout::V210) {
+    if (image.width % 2 != 0) {
+      return refuse(who, "V210 pairs pixels, so its width must be even");
+    }
+    // Six pixels in 16 bytes, a partial group's words whole.
+    out.count = 1;
+    out.rows[0] = image.height;
+    out.row_bytes[0] = (std::uint64_t{image.width} + 5) / 6 * 16;
   } else if (image.layout == YuvLayout::Luma) {
     out.count = 1;
     out.rows[0] = image.height;
@@ -132,6 +141,13 @@ core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
     if (image.stride[p] < out.row_bytes[p]) {
       return refuse(who, "a colour plane's stride is shorter than its rows");
     }
+  }
+  // Its samples are read a word at a time, so every row starts on one.
+  if (image.layout == YuvLayout::V210 &&
+      (image.offset[0] % 4 != 0 || image.stride[0] % 4 != 0)) {
+    return refuse(who,
+                  "V210's rows are 32-bit words, so its offset and stride "
+                  "must be multiples of 4");
   }
   // A host plane's bytes are the caller's to vouch for; only their count
   // must fit the 64 bits it is reckoned in.
@@ -158,6 +174,19 @@ core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
     }
   }
   return out;
+}
+
+core::Status check_ready(const YuvImage& image, const core::Device& device,
+                         const char* who) {
+  if (image.ready == nullptr) return {};
+  if (!image.ready->valid()) {
+    return refuse(who, "the picture's ready timeline is an empty semaphore");
+  }
+  if (image.ready->device() != device.handle()) {
+    return refuse(who,
+                  "the picture's ready timeline was made on another device");
+  }
+  return {};
 }
 
 }  // namespace volumetric_kit::sensor::detail

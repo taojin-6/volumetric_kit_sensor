@@ -50,7 +50,7 @@ std::string md5_of(const std::vector<T>& v) {
 int gpu_main(vkc::test::GpuContext& gpu) {
   auto picture =
       prep_layouts::make_picture(gpu.device, gpu.allocator, kWidth, kHeight);
-  CHECK(picture->layouts.size() == 7);
+  CHECK(picture->layouts.size() == 9);
   auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
   CHECK(prep.ok());
   const camera::CameraModel cam = lensed();

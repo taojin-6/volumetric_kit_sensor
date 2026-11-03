@@ -119,14 +119,16 @@ bool same(const camera::CameraModel& a, const camera::CameraModel& b) {
          p.k5 == q.k5 && p.k6 == q.k6;
 }
 
-// Whether `json` is refused in `code`'s domain, for `reason` when one is given:
-// a document refused for another reason does not count.
+// Whether `json` is refused in `code`'s domain, the message naming the file,
+// for `reason` when one is given: a document refused for another reason does
+// not count.
 bool refused(const std::string& json, Code code = Code::InvalidArgument,
              const std::string& reason = "") {
   const auto r = camera::parse_array_calibration(json);
   if (r.ok()) return false;
   std::printf("  refused as expected: %s\n", r.status().message().c_str());
   return r.status().domain() == code &&
+         r.status().message().rfind("array calibration: ", 0) == 0 &&
          r.status().message().find(reason) != std::string::npos;
 }
 
@@ -867,7 +869,8 @@ int test_color_controls() {
 // read from a version-4 file beside the controls it was fitted at, refused in
 // a version-2 or -3 file, without controls and when fitted_at is not them;
 // written only when it is not the identity, and only then as version 4, so a
-// calibration without one keeps its version-2 or -3 bytes.
+// calibration without one keeps its version-2 or -3 bytes; read back exactly
+// beside either world.
 int test_color_response() {
   // F, held beyond r_max; the identity is F = 1 at any radius.
   camera::ColorResponse r;
@@ -1072,6 +1075,16 @@ int test_color_response() {
           nlohmann::json({{"exposure", 2000}, {"gain", 240}}));
   }
   CHECK(responses == 2);
+  // Beside a tag world, the other world block, they come back exactly too.
+  camera::ArrayCalibration tagged = all;
+  tagged.world.sensor.clear();
+  tagged.world.apriltag = camera::AprilTagWorld{"tag36h11", 7, 0.15};
+  const auto tag_text = camera::format_array_calibration(tagged);
+  CHECK(tag_text.ok());
+  const auto tag_back = camera::parse_array_calibration(tag_text.value());
+  CHECK(tag_back.ok() &&
+        nlohmann::json::parse(tag_text.value()).at("version") == 4);
+  if (check_same(tagged, tag_back.value()) != 0) return 1;
   // Back to the identity: the version-3 bytes again.
   all.sensors[0].color_response = {};
   all.sensors[1].color_response = {};
@@ -1131,7 +1144,8 @@ int test_files() {
   const auto refused_file = camera::read_array_calibration(bad);
   CHECK(!refused_file.ok() &&
         refused_file.status().domain() == Code::InvalidArgument &&
-        refused_file.status().message().rfind(bad + ": ", 0) == 0);
+        refused_file.status().message().rfind(bad + ": array calibration: ",
+                                              0) == 0);
   const std::string later = (scratch.path / "later.json").string();
   CHECK(vkc::write_file(later,
                         R"({"format": "volumetric_kit.array_calibration",
@@ -1139,7 +1153,8 @@ int test_files() {
                         vkc::WriteMode::CreateNew));
   const auto later_file = camera::read_array_calibration(later);
   CHECK(!later_file.ok() && later_file.status().domain() == Code::Unsupported &&
-        later_file.status().message().rfind(later + ": ", 0) == 0);
+        later_file.status().message().rfind(later + ": array calibration: ",
+                                            0) == 0);
   return 0;
 }
 

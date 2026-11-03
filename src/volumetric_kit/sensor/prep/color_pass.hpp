@@ -49,8 +49,10 @@ struct ColorParams {
   std::uint32_t y_step;            // bytes between luma samples
   std::uint32_t chroma_full_rows;  // 4:2:2: chroma on every row
   std::uint32_t luma_only;         // Luma: no chroma, so grey
+  std::uint32_t v210;              // V210: 10-bit samples, three a word
 };
-static_assert(sizeof(ColorParams) == 120, "ColorParams layout drift");
+// Vulkan's guaranteed push-constant range is 128 bytes.
+static_assert(sizeof(ColorParams) == 124, "ColorParams layout drift");
 static_assert(offsetof(ColorParams, chroma_x) == 96,
               "ColorParams layout drift");
 static_assert(offsetof(ColorParams, packed_rgb) == 104,
@@ -59,6 +61,7 @@ static_assert(offsetof(ColorParams, chroma_full_rows) == 112,
               "ColorParams layout drift");
 static_assert(offsetof(ColorParams, luma_only) == 116,
               "ColorParams layout drift");
+static_assert(offsetof(ColorParams, v210) == 120, "ColorParams layout drift");
 
 // The model as the shaders read it: narrowed to float once, here.
 inline LensParams lens_params(const camera::CameraModel& c) noexcept {
@@ -90,16 +93,17 @@ struct PlaneBinding {
   VkDeviceSize y_step = 1, c_step = 1;
   bool chroma_full_rows = false;  // 4:2:2 chroma on every row
   bool luma_only = false;         // Luma: no chroma
+  bool v210 = false;              // V210's packed 10-bit samples
   VkDeviceSize bind_offset = 0, bind_bytes = 0;
   VkDeviceSize copy_bytes = 0;  // host bytes the slot takes
 };
 
 // `image`, the picture a camera of `size` took, checked as the colour pass
 // reads it -- its size the camera's, a known chroma location and a matrix of
-// positive weights summing below 1 (luma alone has neither), a buffer it can
-// bind, its planes as check_yuv_planes takes them for sampling, every byte
-// within 4 GiB and a storage binding's range -- and bound. Refusals read
-// "<who>: ..." and name the picture as "the <what> ...".
+// positive weights summing below 1 (luma alone has neither), V210 in limited
+// range, a buffer it can bind, its planes as check_yuv_planes takes them for
+// sampling, every byte within 4 GiB and a storage binding's range -- and
+// bound. Refusals read "<who>: ..." and name the picture as "the <what> ...".
 VS_PREP_API core::Result<PlaneBinding> bind_planes(
     const YuvImage& image, const camera::ImageSize& size, const char* who,
     const char* what, VkDeviceSize max_range, VkDeviceSize offset_alignment);
@@ -127,7 +131,8 @@ inline ColorParams color_params(const LensParams& cam, const YuvImage& image,
                      packed_rgb ? 1u : 0u,
                      u32(binding.y_step),
                      binding.chroma_full_rows ? 1u : 0u,
-                     binding.luma_only ? 1u : 0u};
+                     binding.luma_only ? 1u : 0u,
+                     binding.v210 ? 1u : 0u};
 }
 
 }  // namespace volumetric_kit::sensor::detail

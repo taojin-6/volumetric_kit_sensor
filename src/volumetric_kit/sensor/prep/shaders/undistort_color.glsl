@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Tao Jin
 
 // The colour pass's body, which its two entries share: undistort_color.comp
-// reads the picture from a buffer (4:2:0, YUYV's 4:2:2 or luma alone,
-// color_planes.glsl), undistort_color_images.comp from NV12's two plane
+// reads the picture from a buffer (4:2:0, YUYV's or V210's 4:2:2 or luma
+// alone, color_planes.glsl), undistort_color_images.comp from NV12's two plane
 // images where they are. One thread per pixel of the pinhole image: find
 // where the lens puts it in the captured picture, sample luma and chroma
 // there bilinearly, each at its own siting, and convert by the picture's
@@ -15,9 +15,10 @@
 // colour response (responded_word) unless it is the identity, when they write
 // ycbcr_word's words, today's. The stereo rectifier's kernel
 // (stereo/shaders/rectify.comp) samples and converts through the same
-// functions, from a buffer, where its own rays put each pixel, and calls
-// ycbcr_word alone: its words are prepared again downstream, which applies the
-// response once.
+// functions, from a buffer, where its own rays put each pixel, and averages
+// the samples before converting where its view shrinks the picture. It calls
+// ycbcr_word and ycbcr_to_word alone: its words are prepared again
+// downstream, which applies the response once.
 
 #ifndef VS_PREP_UNDISTORT_COLOR_GLSL
 #define VS_PREP_UNDISTORT_COLOR_GLSL
@@ -48,10 +49,12 @@ layout(push_constant, scalar) uniform Params {
   uint y_step;            // bytes between luma samples
   uint chroma_full_rows;  // 4:2:2: chroma on every row, halved across only
   uint luma_only;         // luma alone: no chroma is read, and it is grey
+  uint v210;              // V210: 10-bit samples, three a word
 } pc;
 
 // Each entry's: the codes, 0 to 255, of the picture's luma and of its chroma
-// (Cb, Cr) at sample (x, y), counted from the picture's corner.
+// (Cb, Cr) at sample (x, y), counted from the picture's corner; a 10-bit
+// code is read as code / 4, on the same scale.
 float luma_at(uint x, uint y);
 vec2 chroma_at(uint x, uint y);
 
@@ -106,13 +109,12 @@ uint word(vec3 rgb) {
   return code(rgb.r) | (code(rgb.g) << 8) | (code(rgb.b) << 16) | 0xFF000000u;
 }
 
-// The picture's Y'CbCr at `s`, converted to R'G'B', which the matrix can take
-// past [0, 1]; luma alone is grey.
-vec3 ycbcr_rgb(vec2 s) {
+// The picture's Y', Cb and Cr codes at `s`, each sampled bilinearly at its
+// own siting; luma alone reads no chroma, and its Cb and Cr are 0.
+vec3 ycbcr_sample(vec2 s) {
   float y = luma_sample(s);
-  float luma = luma_level(y);
   if (pc.luma_only != 0u) {
-    return vec3(luma);
+    return vec3(y, 0.0, 0.0);
   }
   uint w = pc.cam.width;
   uint h = pc.cam.height;
@@ -131,7 +133,18 @@ vec3 ycbcr_rgb(vec2 s) {
   bilinear_taps(cw, ch, c, lo, hi, f);
   vec2 cbcr = bilinear(chroma_at(lo.x, lo.y), chroma_at(hi.x, lo.y),
                        chroma_at(lo.x, hi.y), chroma_at(hi.x, hi.y), f);
+  return vec3(y, cbcr);
+}
 
+// Y', Cb and Cr codes (ycbcr_sample's, or an average of them) converted by
+// the picture's matrix and range to R'G'B', which the matrix can take past
+// [0, 1]; luma alone is grey.
+vec3 ycbcr_to_rgb(vec3 ycc) {
+  float luma = luma_level(ycc.x);
+  if (pc.luma_only != 0u) {
+    return vec3(luma);
+  }
+  vec2 cbcr = ycc.yz;
   float pb;
   float pr;
   if (pc.full_range != 0u) {
@@ -148,9 +161,16 @@ vec3 ycbcr_rgb(vec2 s) {
   return vec3(r, g, b);
 }
 
+// ycbcr_to_rgb's R'G'B' as a word with full coverage; luma alone is grey.
+uint ycbcr_to_word(vec3 ycc) { return word(ycbcr_to_rgb(ycc)); }
+
 // The picture's Y'CbCr at `s`, converted, as an R'G'B' word with full
 // coverage; luma alone is grey.
-uint ycbcr_word(vec2 s) { return word(ycbcr_rgb(s)); }
+uint ycbcr_word(vec2 s) { return ycbcr_to_word(ycbcr_sample(s)); }
+
+// The picture's Y'CbCr at `s` as R'G'B', unclamped: ycbcr_word's before it
+// is coded.
+vec3 ycbcr_rgb(vec2 s) { return ycbcr_to_rgb(ycbcr_sample(s)); }
 
 // R'G'B' `rgb` at pinhole pixel `pixel`, times the camera's colour response
 // in linear light (camera::ColorResponse), as a word: clamped to [0, 1], since

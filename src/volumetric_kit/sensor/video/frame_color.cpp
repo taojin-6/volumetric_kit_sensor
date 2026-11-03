@@ -3,7 +3,10 @@
 
 #include "frame_color.hpp"
 
-namespace volumetric_kit::sensor::video {
+#include <initializer_list>
+#include <string>
+
+namespace volumetric_kit::sensor {
 namespace {
 
 // The H.273 code points named here.
@@ -18,19 +21,26 @@ constexpr int kMatrixBt2020Cl = 10;
 constexpr int kTransferBt709 = 1;
 constexpr int kTransferUnspecified = 2;
 constexpr int kTransferSmpte170m = 6;
+constexpr int kTransferSmpte240m = 7;
 constexpr int kTransferLinear = 8;
 constexpr int kTransferSrgb = 13;  // IEC 61966-2-1
 constexpr int kTransferBt2020Ten = 14;
 constexpr int kTransferBt2020Twelve = 15;
-constexpr int kTransferPq = 16;  // SMPTE ST 2084
+constexpr int kTransferPq = 16;        // SMPTE ST 2084
+constexpr int kTransferSmpte428 = 17;  // SMPTE ST 428-1
+constexpr int kTransferHlg = 18;       // ARIB STD-B67
 constexpr int kPrimariesBt709 = 1;
 constexpr int kPrimariesUnspecified = 2;
+constexpr int kPrimariesBt470bg = 5;
+constexpr int kPrimariesSmpte170m = 6;
 constexpr int kPrimariesBt2020 = 9;
+constexpr int kPrimariesDciP3 = 11;      // SMPTE RP 431-2
 constexpr int kPrimariesDisplayP3 = 12;  // SMPTE EG 432-1
+constexpr int kPrimariesP22 = 22;        // EBU Tech 3213-E
 
 }  // namespace
 
-VideoColorMatrix resolve_matrix(int matrix, int height) noexcept {
+VideoColorMatrix resolve_matrix(int matrix, std::uint32_t height) noexcept {
   switch (matrix) {
     case kMatrixBt709:
       return VideoColorMatrix::Bt709;
@@ -90,6 +100,25 @@ std::optional<ColorEncoding> resolve_encoding(int transfer,
   return encoding;
 }
 
+ChromaLocation resolve_chroma_location(int code) noexcept {
+  switch (code) {
+    case 1:
+      return ChromaLocation::Center;
+    case 2:
+      return ChromaLocation::TopLeft;
+    case 3:
+      return ChromaLocation::Top;
+    case 4:
+      return ChromaLocation::BottomLeft;
+    case 5:
+      return ChromaLocation::Bottom;
+    default:
+      return ChromaLocation::Left;
+  }
+}
+
+namespace video {
+
 void describe_color(
     const ColorCodes& codes,
     const std::optional<VideoColorDescription>& unlabelled_color,
@@ -102,33 +131,56 @@ void describe_color(
     matrix = unlabelled_color->matrix;
     yuv.full_range = unlabelled_color->full_range;
   } else {
-    matrix = resolve_matrix(codes.matrix, static_cast<int>(yuv.height));
+    matrix = resolve_matrix(codes.matrix, yuv.height);
     yuv.full_range = codes.full_range;
   }
   const YcbcrWeights weights = ycbcr_weights(matrix);
   yuv.kr = weights.kr;
   yuv.kb = weights.kb;
   picture.encoding = resolve_encoding(codes.transfer, codes.primaries);
-  switch (codes.chroma_location) {
-    case 1:
-      yuv.chroma_location = ChromaLocation::Center;
-      break;
-    case 2:
-      yuv.chroma_location = ChromaLocation::TopLeft;
-      break;
-    case 3:
-      yuv.chroma_location = ChromaLocation::Top;
-      break;
-    case 4:
-      yuv.chroma_location = ChromaLocation::BottomLeft;
-      break;
-    case 5:
-      yuv.chroma_location = ChromaLocation::Bottom;
-      break;
-    default:
-      yuv.chroma_location = ChromaLocation::Left;
-      break;
-  }
+  yuv.chroma_location = resolve_chroma_location(codes.chroma_location);
 }
 
-}  // namespace volumetric_kit::sensor::video
+ColorCodes normalize_codes(const ColorCodes& codes) noexcept {
+  ColorCodes out = codes;
+  if (out.matrix == kMatrixBt470bg) out.matrix = kMatrixSmpte170m;
+  if (out.transfer == kTransferSmpte170m ||
+      out.transfer == kTransferBt2020Ten ||
+      out.transfer == kTransferBt2020Twelve) {
+    out.transfer = kTransferBt709;
+  }
+  return out;
+}
+
+std::string outside_code_set(const ColorCodes& normalized, bool writes_siting) {
+  const auto in = [](int code, std::initializer_list<int> set) {
+    for (const int c : set) {
+      if (c == code) return true;
+    }
+    return false;
+  };
+  if (!in(normalized.matrix, {kMatrixBt709, kMatrixSmpte170m, kMatrixSmpte240m,
+                              kMatrixBt2020Ncl})) {
+    return "matrix " + std::to_string(normalized.matrix);
+  }
+  if (!in(normalized.transfer,
+          {kTransferBt709, kTransferUnspecified, kTransferSmpte240m,
+           kTransferLinear, kTransferSrgb, kTransferPq, kTransferSmpte428,
+           kTransferHlg})) {
+    return "transfer " + std::to_string(normalized.transfer);
+  }
+  if (!in(normalized.primaries,
+          {kPrimariesBt709, kPrimariesUnspecified, kPrimariesBt470bg,
+           kPrimariesSmpte170m, kPrimariesBt2020, kPrimariesDciP3,
+           kPrimariesDisplayP3, kPrimariesP22})) {
+    return "primaries " + std::to_string(normalized.primaries);
+  }
+  const int siting = normalized.chroma_location;
+  if (siting < 0 || siting > 5 || (siting != 0 && !writes_siting)) {
+    return "chroma siting " + std::to_string(siting);
+  }
+  return {};
+}
+
+}  // namespace video
+}  // namespace volumetric_kit::sensor

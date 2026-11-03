@@ -1,0 +1,49 @@
+#version 450
+
+// testing::Nv12Writer's kernel (nv12_writer.cpp): an 8-bit NV12 picture's
+// codes, luma rows then chroma rows packed in a buffer (Nv12Writer::upload),
+// stored into its two plane images, as a producer's kernel writes an
+// encoder's target: the luma as r8, the chroma as rg8, Cb in red, both from
+// the images' corner. Invocation i stores luma bytes 4i to 4i + 3, wherever
+// their rows break, and chroma pairs 2i and 2i + 1, so a dispatch covers the
+// luma's words. A code c is stored as c / 255, which r8 and rg8 hold as c.
+
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 256) in;
+
+// The picture's size, and where its chroma starts in the buffer (bytes).
+layout(push_constant, scalar) uniform Params {
+  uint width;
+  uint height;
+  uint chroma_at;
+} pc;
+
+layout(set = 0, binding = 0, scalar) readonly buffer Planes { uint words[]; };
+layout(set = 0, binding = 1, r8) uniform writeonly image2D luma;
+layout(set = 0, binding = 2, rg8) uniform writeonly image2D chroma;
+
+float code_at(uint i) {
+  return float((words[i >> 2] >> ((i & 3u) * 8u)) & 0xFFu) / 255.0;
+}
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint pixels = pc.width * pc.height;
+  for (uint k = 0u; k < 4u; ++k) {
+    uint p = 4u * i + k;
+    if (p < pixels) {
+      imageStore(luma, ivec2(p % pc.width, p / pc.width), vec4(code_at(p)));
+    }
+  }
+  uint cw = (pc.width + 1u) / 2u;
+  uint pairs = cw * ((pc.height + 1u) / 2u);
+  for (uint k = 0u; k < 2u; ++k) {
+    uint q = 2u * i + k;
+    if (q < pairs) {
+      uint at = pc.chroma_at + 2u * q;
+      imageStore(chroma, ivec2(q % cw, q / cw),
+                 vec4(code_at(at), code_at(at + 1u), 0.0, 0.0));
+    }
+  }
+}

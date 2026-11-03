@@ -34,8 +34,13 @@ namespace volumetric_kit::sensor {
 /// arrived on in 64 is let go, and the pictures still holding it keep it.
 ///
 /// The images hold the pixel buffer, so its producer does not reuse the
-/// surface while anything reads them. Its writer must have finished, as for
-/// any @ref YuvImage: the GPU pass waits on nothing.
+/// surface while anything reads them. Its writer must have finished: the
+/// images carry no `YuvImage::ready` for a reader to wait on.
+///
+/// An importer made for @ref Access::Write hands out images a compute shader
+/// writes in place as well, such as an encoder's pool pictures, which
+/// `HevcEncoder::target` hands out this way: the surface the encoder then
+/// reads holds what the shader stored, with no copy.
 ///
 /// The images are shared across the queue families @ref create is given, as
 /// when a renderer on another family draws the pictures (MoltenVK hands a
@@ -56,6 +61,16 @@ namespace volumetric_kit::sensor {
 /// @warning Not thread-safe: use from one thread.
 class VS_APPLE_API PixelBufferImporter {
  public:
+  /// @brief What the imported images are for.
+  enum class Access : std::uint8_t {
+    /// `SAMPLED` and `TRANSFER_SRC` usage: a decoder's or a camera's
+    /// pictures, which the device reads.
+    Read,
+    /// Also `STORAGE` and `TRANSFER_DST`, the Metal textures written as well
+    /// as read: an encoder's pictures, which the device writes in place.
+    Write,
+  };
+
   /// @param device The device the images are made on. Borrowed: it must
   ///        outlive the importer and every picture imported.
   /// @param who Names the importer's user in errors.
@@ -68,16 +83,19 @@ class VS_APPLE_API PixelBufferImporter {
   ///        include @p device's own family, on which the importer readies the
   ///        images. Read during the call only.
   /// @param queue_family_count The entries in @p queue_families.
+  /// @param access What the images are for: @ref Access::Read, or
+  ///        @ref Access::Write for images the device writes too.
   /// @return The importer; `Status::Code::InvalidArgument` for a count with
   ///         no families, more than `BufferDesc::kMaxQueueFamilies` distinct,
   ///         one @p device does not have, or none that is @p device's own;
   ///         or `Status::Code::Unsupported` where @p device imports no Metal
   ///         textures (`Device::imports_metal_textures`) or names no Metal
-  ///         device.
+  ///         device, or, for @ref Access::Write, has no R8 or R8G8 storage
+  ///         images (`VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT`).
   static core::Result<PixelBufferImporter> create(
       const core::Device& device, std::string who = "PixelBufferImporter",
       const std::uint32_t* queue_families = nullptr,
-      std::uint32_t queue_family_count = 0);
+      std::uint32_t queue_family_count = 0, Access access = Access::Read);
 
   PixelBufferImporter(PixelBufferImporter&& other) noexcept;
   PixelBufferImporter& operator=(PixelBufferImporter&& other) noexcept;
@@ -93,6 +111,9 @@ class VS_APPLE_API PixelBufferImporter {
   /// @param out Given its planes: NV12, `image[0]` and `image[1]` in
   ///        `GENERAL` with views and `SAMPLED` and `TRANSFER_SRC` usage, so
   ///        `GpuFramePrep` samples them and `PictureReadback` copies them,
+  ///        and for @ref Access::Write `STORAGE` and `TRANSFER_DST` too, so
+  ///        a compute shader stores into them (as `r8` and `rg8` images) and
+  ///        a copy writes them;
   ///        @p width x @p height, no @ref YuvImage::device. Its
   ///        matrix, range and chroma siting are left as they are, for the
   ///        caller to set: the pixel buffer's format need not say how its

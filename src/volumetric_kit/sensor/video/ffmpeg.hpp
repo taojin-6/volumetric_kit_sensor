@@ -18,8 +18,8 @@ extern "C" {
 #include <memory>
 #include <string>
 
-#include "frame_color.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/sensor/video/color_codes.hpp"
 
 namespace volumetric_kit::sensor::video {
 

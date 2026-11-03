@@ -3,9 +3,12 @@
 
 # --- sensor_camera: the family's camera vocabulary ---------------------------
 # The camera model (image size, intrinsics, OpenCV's rational lens), the lens as
-# a scalar template, rigid transforms, and the sensor array's calibration file
-# (the 2026-10-06 decisions); and the package's version, which a camera-only
-# build has too.
+# a scalar template, rigid transforms, the sensor array's calibration file (the
+# 2026-10-06 decisions) and a tracked sensor's registration into it, which share
+# their JSON (calibration_json); a stereo pair, from two entries of that file,
+# its rectification and a lens's fold, on the host (the 2026-11-01 host
+# rectification decision); and the package's version, which a camera-only build
+# has too.
 #
 # It links volumetric_kit_core's base tier and GLM and nothing else -- no Vulkan
 # and no other sensor tier -- so a driver can report its factory calibration in
@@ -23,8 +26,16 @@ add_library(sensor_camera)
 add_library(volumetric_kit::sensor_camera ALIAS sensor_camera)
 
 target_sources(
-  sensor_camera PRIVATE array_calibration.cpp camera_model.cpp
-                        color_response.cpp geometry.cpp version.cpp)
+  sensor_camera
+  PRIVATE array_calibration.cpp
+          calibration_json.cpp
+          camera_model.cpp
+          color_response.cpp
+          geometry.cpp
+          stereo_calibration.cpp
+          stereo_rectification.cpp
+          tracked_registration.cpp
+          version.cpp)
 
 generate_export_header(
   sensor_camera

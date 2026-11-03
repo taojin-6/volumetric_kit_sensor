@@ -4,9 +4,10 @@
 # --- sensor_stereo: calibrated stereo pairs, rectified on the GPU ------------
 # What a stereo camera driver implements (IStereoSensor) and hands out
 # (StereoFrame), and the StereoRectifier: the pair undistorted and rectified by
-# a compute pass a view, for a stereo matcher. No SDK; Vulkan on every platform.
-# The rectifier samples and converts through the colour pass's own shader code
-# and checks (prep's color_pass.hpp), so it links sensor_prep, privately: its
+# a compute pass a view, for a stereo matcher, through the camera tier's
+# rectification (rectify_stereo) and fold. No SDK; Vulkan on every platform. The
+# rectifier samples and converts through the colour pass's own shader code and
+# checks (prep's color_pass.hpp), so it links sensor_prep, privately: its
 # headers need only the interface and the core's Vulkan tier.
 include(GenerateExportHeader)
 
