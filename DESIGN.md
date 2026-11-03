@@ -1314,10 +1314,7 @@ on every leg so its test, `sensor_color_fit`, runs there. The `color_fit`
 tool opens the rig with H.265 colour, the rig's live codec; it builds with
 `VS_WITH_ORBBEC`, and no test runs it. The fit takes any array of two or
 more sensors of one `SensorInfo::model`, each with colour and depth; only
-the tool's open is Orbbec's. It reads the prepared frames alone, where
-depth below its frame's confidence floor is already a hole (frame prep's
-gate), which no sample's window may hold: low-confidence depth feeds no
-sample.
+the tool's open is Orbbec's. It reads the prepared frames alone.
 
 Every per-pixel step is a kernel (`tools/color_fit/shaders/`, over the
 exported `pinhole.glsl` and `srgb.glsl`). `add(set)`, one submit: each
@@ -1325,7 +1322,10 @@ camera's words decoded to linear light and blurred at sigma 2 and 8, weighted
 by coverage (`blur.comp`); each ordered pair sampled from A's depth pixels and
 gated, counted, then kept by a hashed ratio to `Options::samples` (1 M) over
 `Options::sets` sets, each pair's samples a run of their own, with both
-pixels' radii in a per-camera histogram (`sample.comp`). `solve`: r_max is
+pixels' radii in a per-camera histogram (`sample.comp`). Depth below a
+frame's confidence floor reaches the fit as a hole (frame prep's gate), and
+no sample's 5x5 window may hold one, so low-confidence depth feeds no
+sample. `solve`: r_max is
 each camera's 99th-percentile sample radius; the Huber IRLS normal equations,
 the residuals of each hold-out half and the gauge's moments are summed per
 ordered pair (`normal_equations.comp`, chunks, then a compensated reduce per

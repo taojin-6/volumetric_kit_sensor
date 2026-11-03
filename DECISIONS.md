@@ -5845,14 +5845,11 @@ F uncapped in the white count (4% of a camera off), and r_max at its
 bin's lower edge.
 
 **Validation.** Release with warnings as errors, under the validation
-layer: the whole suite passes on the M5 Max (default options, 44 tests)
-and on an RTX 5090 (the CI NVIDIA leg's options, `VS_WITH_ORBBEC` and the
-tool included, sync validation too, 60 tests). Merged onto 0.36.0
-(0.37.0): the whole suite passes on the M5 Max (59 tests), the tool builds
-there with `VS_WITH_ORBBEC`, and the fit's numbers above are unchanged.
-With the lens inverted once for every picture, `sensor_color_fit` takes
-1.0 s there in Release and 16.6 s in Debug under ASan and UBSan (was 4.3
-and 31.3 s), validation on. No camera was opened.
+layer: the whole suite passes on the Apple M5 Max (macOS 27.2, default
+options, 59 tests) and on an RTX 4090 (the CI NVIDIA leg's options,
+`VS_WITH_ORBBEC` and the tool included, sync validation too, 77 tests).
+`sensor_color_fit` takes about 1 s on the M5 Max in Release and 17 s in
+Debug under ASan and UBSan, validation on. No camera was opened.
 
 ### 2026-11-01 — V210 pictures, SDI's 10-bit 4:2:2: frame prep and the stereo rectifier read them at 10 bits through the one unpack they share, as code / 4, and round to 8 bits once; `PictureReadback` refuses them for now (amends the 2026-10-29 host-planes entry).
 
