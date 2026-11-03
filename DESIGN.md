@@ -907,11 +907,14 @@ words' samples) and the 8-bit code: clamped to [0, 1], decoded through
 with an identity flag the host derives from them, at which the entries
 write `ycbcr_word`'s words, today's, byte for byte. The stereo rectifier
 calls `ycbcr_word` and, where it averages a footprint, `ycbcr_to_word`
-alone, and `LumaPass` reads luma alone; neither binds the overlap buffer,
-so a correction is applied once, downstream. A luma-only picture on a pass
-with a response is refused: gains would tint grey. The response is the
-pass's, as the depth offset is: `RgbdFrame`, the frame contract and
-`sensor_wire` carry a frame as its driver handed it out, and
+alone, and `LumaPass` reads luma alone; neither binds the overlap buffer.
+The rectifier's views feed a stereo matcher and `LumaPass`'s a detector,
+with no response; an FFS frame's colour is its colour camera's own
+picture (`StereoRectifier::depth_info`), which gets it once, here. A
+luma-only picture on a pass with a response is refused: gains would tint
+grey. The response is the pass's, as the depth offset is: `RgbdFrame`,
+the frame contract and `sensor_wire` carry a frame as its driver handed
+it out, and
 `stereo_calibration` a pair's lenses and poses, so none carries one; the
 receiver's `SensorArray` sets it from its calibration.
 **`prep/`'s `PictureReadback`** copies a set's colour pictures to the

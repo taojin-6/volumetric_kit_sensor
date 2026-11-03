@@ -5627,10 +5627,9 @@ colour is multiplied by so a rig's cameras agree on a surface they share:
   it has no samples.
 - **The identity** (gains 1, `a = b = 0`) is today's words: the host derives
   a flag from the values, and the entries then call the unchanged
-  `ycbcr_word`, so it is data, not a switch. The stereo rectifier calls
-  `ycbcr_word` and, over a footprint it averages, `ycbcr_to_word` alone,
-  and `LumaPass` reads luma alone; the rectifier's words are prepared again
-  downstream, which applies a response once. A luma-only picture on a pass
+  `ycbcr_word`, so it is data, not a switch. The stereo rectifier's and
+  `LumaPass`'s views get none, and an FFS frame's colour gets it once
+  (DESIGN.md, frame prep's `color_response`). A luma-only picture on a pass
   with a response is refused: RGB gains would tint grey.
 - **Parameters.** At the end of the overlap buffer both colour entries
   already upload for each frame (+28 B: three gains, a, b, `r_max` and the
@@ -5684,8 +5683,6 @@ sRGB levels after a sigma-8 blur, held out by world position:
   `fitted_at`, and a refit only after a relock or an intrinsics change: the
   response is the lens's and the unit's, not the pose's. a and b are weakly
   identified apart (one unit's b to ±0.51), so a report compares F(r).
-- **Limit.** An FFS sensor's colour is the rectified view, whose r is off
-  the lens's axis by the rectifying rotation.
 
 **Cost.** Frame prep's device time for a 4K colour picture through a lens
 and a 640x576 depth frame, depth outliers on, Release, validation off,
@@ -5718,24 +5715,21 @@ prints every layout's words as MD5s, to compare two builds. Mutants, each
 failing the response test unless named: F uncapped (worst 31 codes), the
 response on unclamped R'G'B' (worst 32), r at the lens's source position
 instead of the pinhole pixel (worst 12), r through the depth camera's
-intrinsics (worst 9), the rig's response applied in the rectifier too
-(`sensor_stereo_rectifier`); and, merged onto 0.33.0, the response skipped
-on V210 (worst 32), applied over the footprints the rectifier averages
-(`sensor_stereo_rectifier`, worst 53), and a file with a response written
-as version 3 (`sensor_camera_array_calibration`).
+intrinsics (worst 9), the response skipped on V210 (worst 32), the rig's
+response applied in the rectifier too and over the footprints it averages
+(`sensor_stereo_rectifier`, the latter worst 53), and a file with a
+response written as version 3 (`sensor_camera_array_calibration`).
 
 **Validation.** Release with warnings as errors, under the validation
 layer: the whole suite passes on the Apple M5 Max (macOS 27.2, default
-options, 43 tests) and on an RTX 5090 (the CI NVIDIA leg's options, sync
-validation too, 59 tests). At the identity, 0.13.0's output and this
-version's are equal byte for byte on both machines: prep's colour words
-and depth in all seven layouts, for one lens shared by both cameras and
-for a depth camera with its own lens and offset, and the stereo
-rectifier's Rgba8 and Luma8 views, left and right, for its five input
-forms. Merged onto 0.33.0 (0.36.0): the whole suite passes on the M5 Max
-(58 tests), and at the identity the words of all nine layouts, V210's
-included, equal byte for byte those of 0.33.0's `ycbcr_to_word` put back
-in its place. No camera was opened.
+options, 58 tests) and on an RTX 5090 (the CI NVIDIA leg's options, sync
+validation too, 76 tests). At the identity the output equals 0.33.0's
+byte for byte on the RTX 5090: prep's colour words and depth in all nine
+layouts, V210's included, for one lens shared by both cameras and for a
+depth camera with its own lens and offset; every view the stereo
+rectifier's test reads, its area prefilter included; and both outputs of
+every `LumaPass` check. On the M5 Max the nine layouts' words equal those
+of 0.33.0's `ycbcr_to_word` put back in its place. No camera was opened.
 
 ### 2026-11-01 — V210 pictures, SDI's 10-bit 4:2:2: frame prep and the stereo rectifier read them at 10 bits through the one unpack they share, as code / 4, and round to 8 bits once; `PictureReadback` refuses them for now (amends the 2026-10-29 host-planes entry).
 
