@@ -7101,8 +7101,8 @@ same API, rules and coding thread as VideoToolbox.
   until the new one is handed out, so a target taken while one picture
   codes and one target is held needs a third. Handing out the oldest free
   one makes a target given up the last to come back.
-- **Every QP set.** With `init_qpI` or `init_qpB` unset, FFmpeg chooses the
-  IDR's QP itself; the session's QPs are the caller's.
+- **Every QP set.** A QP left unset is FFmpeg's to choose, and the
+  session's QPs are the caller's.
 - **Strips by rows, not by GPU.** FFmpeg reports no engine count, and 3
   strips equal `auto` on a GPU of 2 engines, so the rule needs no GPU name.
 - **No version floor below 4096 rows.** FFmpeg 6.1 (24.04's) keeps every
@@ -7123,7 +7123,7 @@ encoder test on a quiet GPU, the 4096-row picture refused as the option is
 missing. The lab RTX 5090 (FFmpeg 8): the full suite under the validation
 layer, the encoder test under synchronization validation too, the 4096-row
 picture coded in strips. The M5 Max (VideoToolbox): the full suite, 55
-tests. Planted bugs, each failing its test: `init_qpI` not set where no key
-QP is given and `init_qpB` not set (C5), `forced-idr` not set (C2), strips
+tests. Planted bugs, each failing its test: an unset `init_qpI` and an
+unset `init_qpB` (C5), `forced-idr` not set (C2), strips
 from 4094 rows (the strips case), the oldest-free hand-out dropped (C9), and
 a target described at another stride than NVENC reads (the quality case).
