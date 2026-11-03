@@ -67,6 +67,16 @@ struct HevcEncoderCase {
   /// The main stream's pictures, at least 4: a key, P-pictures, and a key
   /// asked at the middle one.
   std::uint32_t pictures = 30;
+  /// The rules a case runs.
+  enum class Rules : std::uint8_t {
+    All,     ///< Every rule below.
+    Stream,  ///< Those a session's options change: the main stream and its
+             ///< decode (C2-C6, C10) and the buffers (C11), as a sweep over
+             ///< colour codes, QPs or sizes needs. C1, C7-C9, C12, C13 and
+             ///< C13b, the session's own behaviour, are left to a case that
+             ///< runs All.
+  };
+  Rules rules = Rules::All;
 };
 
 /// @brief Run the encoder rules on @p c with this build's backend:
@@ -105,10 +115,11 @@ struct HevcEncoderCase {
 ///          thread and received on another, whose finite waits sleep while
 ///          nothing is in flight;
 ///        - C13b (targets) the coding thread waits for each target's
-///          writer: a batch that writes the target only after a value a
-///          helper thread sets 1 s later; send returns before the writer's
-///          value is reached, and the access unit comes back only after the
-///          helper set its value.
+///          writer: a batch that writes the target only after a value the
+///          run holds; send returns before the writer's value is reached,
+///          nothing comes back while the value is held (ten times one
+///          picture's whole path as the run measures it, at least 20 ms),
+///          and the access unit comes back once the run sets the value.
 ///
 ///        What each rule checks holds whatever the timing: a loaded machine
 ///        changes which path a picture takes, not whether the rule holds.

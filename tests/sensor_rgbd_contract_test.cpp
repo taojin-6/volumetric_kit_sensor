@@ -261,12 +261,16 @@ int test_rules() {
 }
 
 // The counter and order rules on their own, as the stereo contract calls
-// them: a time of 0 counts there.
+// them: a time of 0 is none, either side, and the sequence still counts.
 int test_rules_alone() {
   CHECK(testing::order_breach(1, 10, 2, 11).empty());
   CHECK(testing::order_breach(5, 10, 5, 11) == "sequence 5 after 5");
   CHECK(testing::order_breach(5, 10, 6, 10) == "time 10 ns after 10");
-  CHECK(testing::order_breach(5, 0, 6, 0) == "time 0 ns after 0");
+  CHECK(testing::order_breach(5, 10, 6, 9) == "time 9 ns after 10");
+  CHECK(testing::order_breach(5, 0, 6, 0).empty());
+  CHECK(testing::order_breach(5, 10, 6, 0).empty());
+  CHECK(testing::order_breach(5, 0, 6, 9).empty());
+  CHECK(testing::order_breach(5, 0, 5, 0) == "sequence 5 after 5");
   CHECK(testing::sequence_breach(1, 2).empty());
   CHECK(testing::sequence_breach(5, 4) == "sequence 4 after 5");
   sensor::SensorStats s;

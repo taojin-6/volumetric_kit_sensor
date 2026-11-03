@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.31.0] - 2026-11-03
+## [0.34.0] - 2026-11-03
 
 ### Added
 
@@ -22,6 +22,60 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   entry.
 - `sensor_video_hevc` reads the VideoToolbox-coded pattern clip's index on
   the GPU too, on NVDEC and on VideoToolbox.
+
+## [0.33.0] - 2026-11-03
+
+### Added
+
+- **`HevcEncoderCase::rules`** (`testing/hevc_conformance.hpp`): `All`, the
+  default, runs every rule as before; `Stream` runs only those a session's
+  options change (C2-C6, C10, C11), for a sweep over colour codes, QPs or
+  sizes. A caller that sets no `rules`, as the iOS self-test, is unchanged.
+
+### Changed
+
+- **The encoder tests are fast.** `sensor_video_hevc_encoder` runs its rules
+  on 256x144 pictures (and 258x146, a 4n+2 width), 6 pictures a case, and its
+  colour-code sweep on the stream's rules alone: 3.0 s in Release (was
+  25.6 s) and 16.2 s under ThreadSanitizer (was 163-178 s) on an M5 Max.
+  Full-size coding stays in the benchmarks and the iOS self-test.
+- **C13b holds its writer's value instead of waiting 1 s.** It holds ten times
+  one picture's whole path, as the run measures it (at least 20 ms); nothing
+  may come back while the value is held, and the access unit comes back once
+  the run sets it. A watchdog sets the value 5 s past the hold, so a coding
+  thread that never waits fails the rule rather than hanging the run.
+
+## [0.32.0] - 2026-11-03
+
+### Changed
+
+- **`order_breach`** (`testing/rgbd_contract.hpp`) takes a time of 0 as
+  none: the sequence is still checked, the time only where both are
+  non-zero. `RgbdContract` calls it with the last non-zero time, as
+  before, and its answers are unchanged.
+- **The stereo contract** (`tests/stereo_contract.hpp`) takes a time of 0
+  as none too: a pair's sequence is still checked, and its time, where it
+  has one, on the last one reported. DECISIONS.md, the 2026-11-02 frame
+  contract entry, amended.
+
+## [0.31.0] - 2026-11-03
+
+### Fixed
+
+- **A GPU fault leaves no reader waiting for good.** `HevcDecoder` (NVDEC)
+  returns every error from `send` or `receive` but `InvalidArgument` once
+  each ready value it handed out is set, from the host where a failed
+  stream dropped CUDA's signal; with three pictures kept, `receive`'s host
+  wait for the oldest asks the stream between 10 ms slices, so a failed one
+  returns CUDA's error, settled, and one that runs dry with the value unset
+  a Backend error, rather than waiting for good. Each slice that blocks
+  counts as one of the device's `host_waits`. DECISIONS.md, the 2026-11-03
+  fault entry.
+- `sensor_video_handover`'s CUDA table drops ready values' signals and
+  reports a faulted stream, as a GPU fault leaves them. Under a validation
+  layer older than 1.4.341, which reports a host signal after a read of an
+  exported timeline (VUID-VkSemaphoreSignalInfo-value-03259), those tests
+  run in a second, unvalidated run.
 
 ## [0.30.0] - 2026-11-02
 
