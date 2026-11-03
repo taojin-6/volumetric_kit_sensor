@@ -50,7 +50,8 @@ namespace volumetric_kit::sensor {
 /// Vulkan buffer of its own (`RgbdFrame::depth_device`, taken over from
 /// @ref kQueueFamilyExternal). A disparity that is not above 0, that points
 /// off the right view (`x - d < 0`), or whose depth is outside
-/// [@ref Options::min_depth, @ref Options::max_depth] is "no return" (0); so
+/// [@ref Options::min_depth, @ref Options::max_depth], or nearer than the
+/// network's reach (@ref Options::max_disparity), is "no return" (0); so
 /// is, in `Rgba8` views, a pixel the rectifier did not see (coverage 0) in
 /// the left view, or matched to one in the right view. `Luma8` views carry
 /// no coverage: a border the rectifier leaves -- alpha above 0, or alpha 1 on
@@ -103,6 +104,13 @@ class VS_FFS_API FfsStereo final {
     /// 1280 x 720, its projector off, measured 0.04 px. Finite and at least
     /// 0.
     float disparity_sigma = 0.0f;
+    /// The network's disparity search range, in pixels at the rig's size
+    /// (192 for the exported 23-36-37 checkpoint). A surface nearer than
+    /// `fx * baseline / max_disparity` comes back saturated, at or a little
+    /// past that depth, so depth below 1.05 times it is "no return", as is
+    /// depth below @ref min_depth; the frame's `min_depth` is the larger of
+    /// the two. 0, the default: no such gate. Finite and at least 0.
+    float max_disparity = 0.0f;
   };
 
   /// @brief Build or load the plan for @p rectifier's views.
@@ -119,8 +127,10 @@ class VS_FFS_API FfsStereo final {
   ///                   disparity's noise.
   /// @return The matcher; `Status::Code::InvalidArgument` for a depth range
   ///         that is not `0 < min_depth < max_depth`, a `disparity_sigma`
-  ///         that is not finite and at least 0, no plan cache, a model
-  ///         that TensorRT cannot parse, or whose inputs and output are not
+  ///         or `max_disparity` that is not finite and at least 0, a near
+  ///         gate (`1.05 * fx * baseline / max_disparity`) not below
+  ///         `max_depth`, no plan cache, a model that TensorRT cannot
+  ///         parse, or whose inputs and output are not
   ///         those above at the rig's size rounded up to 32;
   ///         `Status::Code::NotFound` for no model file;
   ///         `Status::Code::IoError` for a plan cache that cannot be made,
@@ -141,8 +151,10 @@ class VS_FFS_API FfsStereo final {
   ///
   /// The frame's depth is `RgbdFrame::depth_device`, in the rectified left
   /// camera (`depth_camera`, the rig's), its writer finished and its queue
-  /// family @ref kQueueFamilyExternal. Its colour is the pair's third
-  /// camera's picture, or else the left one's, and its colour camera and
+  /// family @ref kQueueFamilyExternal; its `min_depth` the larger of
+  /// @ref Options::min_depth and the near gate (@ref Options::max_disparity).
+  /// Its colour is the pair's third camera's picture, or else the left
+  /// one's, and its colour camera and
   /// `depth_to_color` the rectifier's `depth_info()`'s; its depth noise
   /// @ref DepthNoise::stereo of @ref Options::disparity_sigma and the rig's
   /// fx and baseline; its colour encoding, pose and times are the pair's; it

@@ -34,6 +34,7 @@ namespace volumetric_kit::sensor::video {
   X(cuStreamCreate)                          \
   X(cuStreamDestroy)                         \
   X(cuStreamSynchronize)                     \
+  X(cuStreamQuery)                           \
   X(cuEventCreate)                           \
   X(cuEventDestroy)                          \
   X(cuEventRecord)                           \
@@ -44,6 +45,9 @@ namespace volumetric_kit::sensor::video {
   X(cuMipmappedArrayGetLevel)                \
   X(cuMipmappedArrayDestroy)                 \
   X(cuDestroyExternalMemory)                 \
+  X(cuImportExternalSemaphore)               \
+  X(cuSignalExternalSemaphoresAsync)         \
+  X(cuDestroyExternalSemaphore)              \
   X(cuMemFree)                               \
   X(cuMemcpy2DAsync)
 

@@ -50,12 +50,13 @@ target_compile_features(sensor_orbbec PUBLIC cxx_std_17)
 
 # PUBLIC sensor_interface: the sensor *is* an IRgbdSensor, and its header hands
 # out the sensor tier's frame. PRIVATE sensor_video, which decodes the cameras'
-# colour: no decoder type reaches the public header. The SDK privately (see
+# colour, and sensor_video_syntax, whose key gate says which H.265 frames it
+# decodes: no decoder type reaches the public header. The SDK privately (see
 # above), compiled with the exceptions it throws (vs_link_orbbec_sdk).
 target_link_libraries(
   sensor_orbbec
   PUBLIC sensor_interface
-  PRIVATE sensor_video)
+  PRIVATE sensor_video sensor_video_syntax)
 vs_link_orbbec_sdk(sensor_orbbec)
 
 target_include_directories(

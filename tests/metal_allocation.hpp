@@ -5,8 +5,8 @@
 
 // What the Metal device under a MoltenVK device has allocated
 // (`MTLDevice.currentAllocatedSize`), for tests of what Vulkan objects cost
-// there (Apple only). The device is read off the exported texture of a 1x1
-// probe image, as PixelBufferImporter::create reads it.
+// there (Apple only). The device is sensor_apple's metal_device, which
+// PixelBufferImporter::create reads too.
 
 #include <CoreVideo/CoreVideo.h>
 

@@ -7,10 +7,12 @@
 #include <utility>
 
 #if VS_VIDEO_WITH_CUDA
+#include <array>
 #include <climits>
 #include <cstring>
 
 #include "cuda_pictures.hpp"
+#include "cuda_timeline.hpp"
 #include "ffmpeg.hpp"
 #include "frame_color.hpp"
 extern "C" {
@@ -35,6 +37,10 @@ core::Status unsupported(const std::string& why) {
 constexpr AVHWDeviceType kDeviceType = AV_HWDEVICE_TYPE_CUDA;
 constexpr AVPixelFormat kDeviceFormat = AV_PIX_FMT_CUDA;
 constexpr const char* kPath = "NVDEC";
+// Frames handed out whose copy may still be queued: each keeps FFmpeg's
+// frame, which the copy reads, until its picture's ready value is reached, so
+// CUDA runs at most this many pictures behind the decoder.
+constexpr std::size_t kKeptFrames = 3;
 
 // FFmpeg's device context's free: the context and stream it was given.
 void release_cuda_session(AVHWDeviceContext* device) {
@@ -59,6 +65,24 @@ bool has_device_path(const AVCodec* codec) {
 
 #if VS_VIDEO_WITH_CUDA
 struct HevcDecoder::Impl {
+  // A frame handed out, held until its copy is done.
+  struct Kept {
+    video::FramePtr frame;    // its references moved in; empty when unused
+    std::uint64_t value = 0;  // its picture's YuvImage::ready_value
+  };
+
+  Impl() = default;
+  Impl(const Impl&) = delete;
+  Impl& operator=(const Impl&) = delete;
+  // The stream's queued copies done first: they read the kept frames and
+  // write the pictures' images, which go after.
+  ~Impl() {
+    if (timeline != nullptr) timeline->settle();
+    for (Kept& k : kept) {
+      if (k.frame != nullptr) av_frame_unref(k.frame.get());
+    }
+  }
+
   std::optional<VideoColorDescription> unlabelled_color;  // as in Options
   bool ended = false;
   std::string refusal;  // why the hardware gave up on the stream, if it did
@@ -66,11 +90,38 @@ struct HevcDecoder::Impl {
   video::CodecContextPtr codec;
   video::PacketPtr packet;
   video::FramePtr decoded;
+  // After the device, whose CUDA context and stream it uses, so it goes
+  // first; the pictures' ring, which marks its copies on it, goes before it.
+  std::unique_ptr<video::CudaTimeline> timeline;
   std::unique_ptr<video::CudaPlanePictures> pictures;
+  // The frames handed out whose copy may still be queued, oldest first, from
+  // kept[first]: released once the timeline reaches their value, never by
+  // the pictures' holders, so held pictures hold none of FFmpeg's frames.
+  // Their shells are made at create, so a picture allocates none.
+  std::array<Kept, kKeptFrames> kept;
+  std::size_t first = 0;
+  std::size_t kept_count = 0;
 
-  // @p frame handed over on the device; Unsupported for one the device path
-  // cannot take.
+  // @p frame handed over on the device, its copy queued; Unsupported for one
+  // the device path cannot take.
   core::Result<DecodedPicture> picture(const AVFrame& frame);
+
+  // An error send or receive returns once the stream has finished or failed
+  // and every ready value handed out is set: a stream that failed drops the
+  // signals queued on it, which readers would otherwise wait for for good.
+  core::Status failed(core::Status status) {
+    timeline->settle();
+    return status;
+  }
+
+  // Let go of the kept frames whose copy is done, oldest first.
+  void release_copied() noexcept {
+    while (kept_count > 0 && timeline->reached(kept[first].value)) {
+      av_frame_unref(kept[first].frame.get());
+      first = (first + 1) % kept.size();
+      --kept_count;
+    }
+  }
 
   // FFmpeg's get_format, asked at each new SPS, and again without the
   // hardware format if the hardware fails to start: the hardware format, or
@@ -96,9 +147,10 @@ struct HevcDecoder::Impl {
   }
 };
 
-// Copied device to device into two plane images Vulkan samples. FFmpeg has
-// taken the right and bottom crop off a hardware picture's size, and left the
-// left and top to whoever reads it.
+// Copied device to device into two plane images Vulkan samples, the copy
+// queued with the ready value after it. FFmpeg has taken the right and bottom
+// crop off a hardware picture's size, and left the left and top to whoever
+// reads it.
 core::Result<DecodedPicture> HevcDecoder::Impl::picture(const AVFrame& frame) {
   const auto* frames = frame.hw_frames_ctx != nullptr
                            ? reinterpret_cast<const AVHWFramesContext*>(
@@ -159,8 +211,13 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   impl->codec.reset(avcodec_alloc_context3(codec));
   impl->packet.reset(av_packet_alloc());
   impl->decoded.reset(av_frame_alloc());
+  bool shells = true;
+  for (Impl::Kept& k : impl->kept) {
+    k.frame.reset(av_frame_alloc());
+    shells = shells && k.frame != nullptr;
+  }
   if (impl->codec == nullptr || impl->packet == nullptr ||
-      impl->decoded == nullptr) {
+      impl->decoded == nullptr || !shells) {
     return video::ffmpeg_alloc_error(kWho, "opening the decoder");
   }
 
@@ -184,11 +241,16 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
     return unsupported(std::string(kPath) +
                        ": no device opens: " + video::ffmpeg_message(err));
   }
-  VKC_ASSIGN(
-      impl->pictures,
-      video::CudaPlanePictures::create(
-          *options.device, *options.allocator, cuda_context, hw_cuda->stream,
-          options.queue_families, options.queue_family_count, kWho));
+  // The pictures' ready values, which CUDA sets on the decoder's stream after
+  // each copy.
+  VKC_ASSIGN(impl->timeline,
+             video::CudaTimeline::create(*options.device, cuda_context,
+                                         hw_cuda->stream, kWho));
+  VKC_ASSIGN(impl->pictures,
+             video::CudaPlanePictures::create(
+                 *options.device, *options.allocator, cuda_context,
+                 hw_cuda->stream, *impl->timeline, options.queue_families,
+                 options.queue_family_count, kWho));
 
   AVCodecContext* context = impl->codec.get();
   context->hw_device_ctx = av_buffer_ref(hw);
@@ -199,6 +261,10 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   context->get_format = &Impl::pick_format;
   // Parameter-only packets are parsed by send(), before it returns. Hardware
   // decoding needs no frame threads holding those packets for a later call.
+  // FFmpeg copies NVDEC's output into a pool frame: without that copy
+  // (AV_HWACCEL_FLAG_UNSAFE_OUTPUT) NVDEC keeps an output surface per decode
+  // surface, the stream's DPB + 5, about 100 MB more a 4K decoder
+  // (DECISIONS.md, the 2026-11-02 hand-over entry).
   context->thread_count = 1;
   err = avcodec_open2(context, codec, nullptr);
   if (err < 0) return video::ffmpeg_error(kWho, "opening the decoder", err);
@@ -222,35 +288,44 @@ core::Status HevcDecoder::send(const std::uint8_t* data, std::size_t size,
     return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
 #if VS_VIDEO_WITH_CUDA
-  if (!impl_->refusal.empty()) return core::Status::unsupported(impl_->refusal);
-  if (impl_->ended) {
+  Impl& d = *impl_;
+  if (!d.refusal.empty()) {
+    return d.failed(core::Status::unsupported(d.refusal));
+  }
+  if (d.ended) {
     return core::Status::invalid_argument(
         std::string(kWho) + ": data sent after the end of the stream");
   }
-  AVCodecContext* context = impl_->codec.get();
+  AVCodecContext* context = d.codec.get();
   if (size == 0) {
-    impl_->ended = true;
+    d.ended = true;
     const int err = avcodec_send_packet(context, nullptr);
-    if (err < 0) return video::ffmpeg_error(kWho, "ending the stream", err);
+    if (err < 0) {
+      return d.failed(video::ffmpeg_error(kWho, "ending the stream", err));
+    }
     return {};
   }
   if (data == nullptr || size > static_cast<std::size_t>(INT_MAX)) {
     return core::Status::invalid_argument(
         std::string(kWho) + ": an access unit needs data and under 2 GiB");
   }
-  AVPacket* packet = impl_->packet.get();
+  AVPacket* packet = d.packet.get();
   av_packet_unref(packet);
   int err = av_new_packet(packet, static_cast<int>(size));
-  if (err < 0) return video::ffmpeg_error(kWho, "allocating a packet", err);
+  if (err < 0) {
+    return d.failed(video::ffmpeg_error(kWho, "allocating a packet", err));
+  }
   std::memcpy(packet->data, data, size);
   packet->pts = pts;
   err = avcodec_send_packet(context, packet);
-  if (!impl_->refusal.empty()) return core::Status::unsupported(impl_->refusal);
+  if (!d.refusal.empty()) {
+    return d.failed(core::Status::unsupported(d.refusal));
+  }
   if (err == AVERROR(EAGAIN)) {
     return core::Status::invalid_argument(
         std::string(kWho) + ": take the pictures waiting before sending more");
   }
-  if (err < 0) return video::ffmpeg_error(kWho, "decoding", err);
+  if (err < 0) return d.failed(video::ffmpeg_error(kWho, "decoding", err));
   return {};
 #else
   return impl_->vt->send(data, size, pts);
@@ -262,29 +337,52 @@ core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
     return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
 #if VS_VIDEO_WITH_CUDA
-  AVFrame* decoded = impl_->decoded.get();
+  Impl& d = *impl_;
+  // Frames whose copy is done go back to FFmpeg; with every shell held, CUDA
+  // is that many pictures behind, and the oldest is waited for on the host,
+  // before FFmpeg says whether a picture follows: a wait that may precede no
+  // picture, harmless while CUDA keeps up with the stream's rate.
+  d.release_copied();
+  if (d.kept_count == d.kept.size()) {
+    if (core::Status waited = d.timeline->wait(d.kept[d.first].value);
+        !waited.ok()) {
+      return d.failed(std::move(waited));
+    }
+    d.release_copied();
+  }
+  AVFrame* decoded = d.decoded.get();
   av_frame_unref(decoded);
-  const int err = avcodec_receive_frame(impl_->codec.get(), decoded);
+  const int err = avcodec_receive_frame(d.codec.get(), decoded);
   if (err < 0) {
     // Pictures decoded before a refusal still come out; then the refusal.
-    if (!impl_->refusal.empty())
-      return core::Status::unsupported(impl_->refusal);
+    if (!d.refusal.empty()) {
+      return d.failed(core::Status::unsupported(d.refusal));
+    }
     if (err == AVERROR(EAGAIN) || err == AVERROR_EOF) {
       return std::optional<DecodedPicture>();
     }
-    return video::ffmpeg_error(kWho, "decoding", err);
+    return d.failed(video::ffmpeg_error(kWho, "decoding", err));
   }
-  core::Result<DecodedPicture> picture = impl_->picture(*decoded);
+  core::Result<DecodedPicture> picture = d.picture(*decoded);
   if (!picture) {
+    // A copy may be queued from the frame: the stream finishes or fails
+    // first, and any ready value handed out is set, before it goes.
+    d.timeline->settle();
+    av_frame_unref(decoded);
     // A picture the device path cannot take: the next ones would be the same.
     if (picture.status().domain() == core::Status::Code::Unsupported) {
-      impl_->refusal = picture.status().message();
+      d.refusal = picture.status().message();
     }
     return picture.status();
   }
   picture.value().pts = decoded->pts != AV_NOPTS_VALUE
                             ? decoded->pts
                             : decoded->best_effort_timestamp;
+  // Kept until the copy from it is done.
+  Impl::Kept& k = d.kept[(d.first + d.kept_count) % d.kept.size()];
+  av_frame_move_ref(k.frame.get(), decoded);
+  k.value = picture.value().yuv.ready_value;
+  ++d.kept_count;
   return std::optional<DecodedPicture>(std::move(picture).value());
 #else
   return impl_->vt->receive();

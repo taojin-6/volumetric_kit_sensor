@@ -5,10 +5,10 @@
 
 // The queue families a picture's plane images are shared with, checked as
 // both of their makers check them: Apple's PixelBufferImporter and NVDEC's
-// plane images (sensor/video/cuda_pictures.cpp); and the family a buffer is
-// taken over from, as GpuFramePrep and the StereoRectifier take their device
-// inputs over, once a buffer. Header-only, and internal to the targets whose
-// sources include it.
+// plane images (sensor/video/cuda_pictures.cpp); and the family a buffer or
+// image is taken over from, as GpuFramePrep, the StereoRectifier and the
+// LumaPass take their device inputs over, once each. Header-only, and
+// internal to the targets whose sources include it.
 
 #include <algorithm>
 #include <cstdint>
@@ -25,20 +25,26 @@
 
 namespace volumetric_kit::sensor::detail {
 
-// The family `buffer`, named as written on `family`, is taken over from, as
-// CommandBatch::acquire decides: kQueueFamilyIgnored where nothing is
-// transferred -- written on `own`, the pass's family, or a CONCURRENT buffer
-// another Vulkan family wrote. References to one buffer name one writer when
-// this is the same for each, since the buffer is taken over once.
-inline std::uint32_t transfer_family(const core::Buffer& buffer,
+// The family a buffer or image shared as `sharing`, named as written on
+// `family`, is taken over from, as CommandBatch::acquire decides for either:
+// kQueueFamilyIgnored where nothing is transferred -- written on `own`, the
+// pass's family, or CONCURRENT and written by another Vulkan family.
+// References to one buffer or image name one writer when this is the same
+// for each, since it is taken over once.
+inline std::uint32_t transfer_family(VkSharingMode sharing,
                                      std::uint32_t family,
                                      std::uint32_t own) noexcept {
   if (family == own) return kQueueFamilyIgnored;
-  if (family != kQueueFamilyExternal &&
-      buffer.sharing_mode() == VK_SHARING_MODE_CONCURRENT) {
+  if (family != kQueueFamilyExternal && sharing == VK_SHARING_MODE_CONCURRENT) {
     return kQueueFamilyIgnored;
   }
   return family;
+}
+
+inline std::uint32_t transfer_family(const core::Buffer& buffer,
+                                     std::uint32_t family,
+                                     std::uint32_t own) noexcept {
+  return transfer_family(buffer.sharing_mode(), family, own);
 }
 
 // A transfer_family for a message.

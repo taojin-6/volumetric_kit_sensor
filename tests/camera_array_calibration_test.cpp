@@ -119,14 +119,16 @@ bool same(const camera::CameraModel& a, const camera::CameraModel& b) {
          p.k5 == q.k5 && p.k6 == q.k6;
 }
 
-// Whether `json` is refused in `code`'s domain, for `reason` when one is given:
-// a document refused for another reason does not count.
+// Whether `json` is refused in `code`'s domain, the message naming the file,
+// for `reason` when one is given: a document refused for another reason does
+// not count.
 bool refused(const std::string& json, Code code = Code::InvalidArgument,
              const std::string& reason = "") {
   const auto r = camera::parse_array_calibration(json);
   if (r.ok()) return false;
   std::printf("  refused as expected: %s\n", r.status().message().c_str());
   return r.status().domain() == code &&
+         r.status().message().rfind("array calibration: ", 0) == 0 &&
          r.status().message().find(reason) != std::string::npos;
 }
 
@@ -1131,7 +1133,8 @@ int test_files() {
   const auto refused_file = camera::read_array_calibration(bad);
   CHECK(!refused_file.ok() &&
         refused_file.status().domain() == Code::InvalidArgument &&
-        refused_file.status().message().rfind(bad + ": ", 0) == 0);
+        refused_file.status().message().rfind(bad + ": array calibration: ",
+                                              0) == 0);
   const std::string later = (scratch.path / "later.json").string();
   CHECK(vkc::write_file(later,
                         R"({"format": "volumetric_kit.array_calibration",
@@ -1139,7 +1142,8 @@ int test_files() {
                         vkc::WriteMode::CreateNew));
   const auto later_file = camera::read_array_calibration(later);
   CHECK(!later_file.ok() && later_file.status().domain() == Code::Unsupported &&
-        later_file.status().message().rfind(later + ": ", 0) == 0);
+        later_file.status().message().rfind(later + ": array calibration: ",
+                                            0) == 0);
   return 0;
 }
 

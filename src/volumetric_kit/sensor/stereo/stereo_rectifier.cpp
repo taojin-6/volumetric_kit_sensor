@@ -5,15 +5,16 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <limits>
 #include <new>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "../prep/color_pass.hpp"
+#include "../prep/yuv_planes.hpp"
 #include "../sharing_families.hpp"
 #include "rectify_comp.spv.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
@@ -24,6 +25,7 @@
 #include "volumetric_kit/core/vulkan/host_ring.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
 
 namespace volumetric_kit::sensor {
 namespace {
@@ -31,8 +33,6 @@ namespace {
 using camera::CameraModel;
 using camera::Mat3d;
 using camera::Mat4d;
-using camera::Vec2d;
-using camera::Vec3d;
 
 constexpr const char* kWho = "StereoRectifier";
 
@@ -62,274 +62,9 @@ VkDeviceSize round_up(VkDeviceSize bytes, VkDeviceSize alignment) noexcept {
   return (bytes + alignment - 1) / alignment * alignment;
 }
 
-// ---------------------------------------------------------------------------
-// The rectification, on the host: OpenCV's stereoRectify (calib3d's
-// stereo_geom.cpp, CALIB_ZERO_DISPARITY), step for step, in double.
-
-// OpenCV's undistortPoints for one pixel of `c`, with its default criteria:
-// normalized, five fixed-point iterations of the lens's inverse, then through
-// `rr` (P's 3x3 times R) as a homography when given.
-Vec2d undistort_point(const CameraModel& c, Vec2d pixel, const Mat3d* rr) {
-  const camera::PinholeIntrinsics& k = c.intrinsics;
-  const camera::RationalDistortion& d = c.distortion;
-  const double x0 = (pixel.x - k.cx) / k.fx;
-  const double y0 = (pixel.y - k.cy) / k.fy;
-  double x = x0;
-  double y = y0;
-  for (int j = 0; j < 5; ++j) {
-    const double r2 = x * x + y * y;
-    const double icdist = (1 + ((d.k6 * r2 + d.k5) * r2 + d.k4) * r2) /
-                          (1 + ((d.k3 * r2 + d.k2) * r2 + d.k1) * r2);
-    if (icdist < 0) {  // OpenCV's regression_14583: past the lens's fold
-      x = x0;
-      y = y0;
-      break;
-    }
-    const double dx = 2 * d.p1 * x * y + d.p2 * (r2 + 2 * x * x);
-    const double dy = d.p1 * (r2 + 2 * y * y) + 2 * d.p2 * x * y;
-    x = (x0 - dx) * icdist;
-    y = (y0 - dy) * icdist;
-  }
-  if (rr == nullptr) return Vec2d(x, y);
-  const Vec3d h = *rr * Vec3d(x, y, 1.0);
-  return Vec2d(h.x / h.z, h.y / h.z);
-}
-
-// A rectangle, OpenCV's Rect_<double>.
-struct Rect {
-  double x = 0, y = 0, width = 0, height = 0;
-};
-
-// OpenCV's getUndistortRectangles: the border of a 9 x 9 grid over the image,
-// undistorted and taken through `r` and `p` (a pinhole of focal length `f`
-// and principal point `cc`), and the rectangles inside and around it.
-void undistort_rectangles(const CameraModel& c, const Mat3d& r, double f,
-                          Vec2d cc, Rect* inner, Rect* outer) {
-  constexpr int kN = 9;
-  Mat3d p(0.0);
-  p[0][0] = f;
-  p[1][1] = f;
-  p[2][0] = cc.x;
-  p[2][1] = cc.y;
-  p[2][2] = 1.0;
-  const Mat3d rr = p * r;
-  const double step_x = (c.size.width - 1) / static_cast<double>(kN - 1);
-  const double step_y = (c.size.height - 1) / static_cast<double>(kN - 1);
-  double ix0 = -std::numeric_limits<float>::max();
-  double ix1 = std::numeric_limits<float>::max();
-  double iy0 = -std::numeric_limits<float>::max();
-  double iy1 = std::numeric_limits<float>::max();
-  double ox0 = std::numeric_limits<float>::max();
-  double ox1 = -std::numeric_limits<float>::max();
-  double oy0 = std::numeric_limits<float>::max();
-  double oy1 = -std::numeric_limits<float>::max();
-  for (int y = 0; y < kN; ++y) {
-    for (int x = 0; x < kN; ++x) {
-      if (x != 0 && x != kN - 1 && y != 0 && y != kN - 1) continue;
-      const Vec2d q = undistort_point(c, Vec2d(x * step_x, y * step_y), &rr);
-      ox0 = std::min(ox0, q.x);
-      ox1 = std::max(ox1, q.x);
-      oy0 = std::min(oy0, q.y);
-      oy1 = std::max(oy1, q.y);
-      if (x == 0) ix0 = std::max(ix0, q.x);
-      if (x == kN - 1) ix1 = std::min(ix1, q.x);
-      if (y == 0) iy0 = std::max(iy0, q.y);
-      if (y == kN - 1) iy1 = std::min(iy1, q.y);
-    }
-  }
-  *inner = Rect{ix0, iy0, ix1 - ix0, iy1 - iy0};
-  *outer = Rect{ox0, oy0, ox1 - ox0, oy1 - oy0};
-}
-
-Mat4d rotation4(const Mat3d& r) {
-  Mat4d m(r);
-  m[3][3] = 1.0;
-  return m;
-}
-
-// The rectification: the rig, and each view's rotation from its source camera
-// into the rectified one (OpenCV's R1 and R2).
-struct Rectification {
-  StereoRig rig;
-  Mat3d source_to_rect[2] = {Mat3d(1.0), Mat3d(1.0)};
-};
-
-// Whether the pair is rectified already: no rotation, no lens, one camera
-// model, the right camera along +x alone, each within round-off.
-bool already_rectified(const StereoCalibration& c) {
-  constexpr double kEps = 1e-9;
-  const Mat3d r(c.left_to_right);
-  for (int i = 0; i < 3; ++i) {
-    for (int j = 0; j < 3; ++j) {
-      if (std::fabs(r[i][j] - (i == j ? 1.0 : 0.0)) > kEps) return false;
-    }
-  }
-  const auto no_lens = [](const camera::RationalDistortion& d) {
-    return d.k1 == 0 && d.k2 == 0 && d.p1 == 0 && d.p2 == 0 && d.k3 == 0 &&
-           d.k4 == 0 && d.k5 == 0 && d.k6 == 0;
-  };
-  const camera::PinholeIntrinsics& a = c.left.intrinsics;
-  const camera::PinholeIntrinsics& b = c.right.intrinsics;
-  const Vec3d t(c.left_to_right[3]);
-  return no_lens(c.left.distortion) && no_lens(c.right.distortion) &&
-         std::fabs(a.fx - b.fx) <= kEps && std::fabs(a.fy - b.fy) <= kEps &&
-         std::fabs(a.cx - b.cx) <= kEps && std::fabs(a.cy - b.cy) <= kEps &&
-         std::fabs(t.y) <= kEps && std::fabs(t.z) <= kEps && t.x < 0;
-}
-
-core::Result<Rectification> rectify_pair(const StereoCalibration& c,
-                                         camera::ImageSize size, double alpha) {
-  const camera::ImageSize image = c.left.size;
-  if (size.width == 0) size = image;
-  const double nx = image.width;
-  const double ny = image.height;
-  Rectification out;
-  out.rig.camera.size = size;
-
-  if (already_rectified(c)) {
-    // Resampled only: the camera scaled by one factor, so its pixels keep
-    // their shape, about the centres of the picture and the view (pixel
-    // centres at integers, so an image spans [-0.5, w - 0.5]). Alpha picks
-    // the factor as for any pair: 0 fills the view, cropping the picture's
-    // longer side; 1 fits the whole picture, bordering the view's.
-    const double sx = size.width / nx;
-    const double sy = size.height / ny;
-    const double s = std::max(sx, sy) * (1 - alpha) + std::min(sx, sy) * alpha;
-    const camera::PinholeIntrinsics& k = c.left.intrinsics;
-    out.rig.camera.intrinsics = {
-        k.fx * s, k.fy * s, (size.width - 1) / 2.0 + (k.cx - (nx - 1) / 2) * s,
-        (size.height - 1) / 2.0 + (k.cy - (ny - 1) / 2) * s};
-    out.rig.baseline = -c.left_to_right[3][0];
-    return out;
-  }
-
-  // The relative rotation split in half: each camera turned half-way.
-  const Mat3d r(c.left_to_right);
-  const Vec3d translation(c.left_to_right[3]);
-  const Mat3d r_r = camera::rotation_from_rodrigues(
-      -0.5 * camera::rodrigues_from_rotation(r));
-  Vec3d t = r_r * translation;
-  const int idx = std::fabs(t.x) > std::fabs(t.y) ? 0 : 1;
-  const double cc = t[idx];
-  const double nt = glm::length(t);
-  if (!(nt > 0.0)) return refuse("the two cameras are at one place");
-  if (idx != 0) {
-    // TODO(sensor): a vertical pair, which OpenCV rectifies along y.
-    return refuse(
-        "the pair is vertical: the right camera must be along the "
-        "left one's x axis");
-  }
-  if (cc > 0) {
-    return refuse("the right camera is on the left one's -x side: swap them");
-  }
-  // Then the baseline turned onto -x of the right camera's offset, about the
-  // axis that takes it there.
-  Vec3d uu(0.0);
-  uu[idx] = cc > 0 ? 1 : -1;
-  Vec3d ww = glm::cross(t, uu);
-  const double nw = glm::length(ww);
-  if (nw > 0.0) ww *= std::acos(std::fabs(cc) / nt) / nw;
-  const Mat3d w_r = camera::rotation_from_rodrigues(ww);
-  const Mat3d r1 = w_r * glm::transpose(r_r);
-  const Mat3d r2 = w_r * r_r;
-  t = r2 * translation;
-
-  // One focal length for both views: the vertical ones, scaled to the
-  // rectified height.
-  const double ratio_y = static_cast<double>(size.height) / ny / 2;
-  double fc = (c.left.intrinsics.fy + c.right.intrinsics.fy) * ratio_y;
-  // Each principal point: where the image's corners, undistorted and turned,
-  // centre.
-  Vec2d cc_new[2];
-  for (int k = 0; k < 2; ++k) {
-    const CameraModel& cam = k == 0 ? c.left : c.right;
-    const Mat3d& rk = k == 0 ? r1 : r2;
-    Vec2d sum(0.0);
-    for (int i = 0; i < 4; ++i) {
-      const Vec2d corner((i % 2) * (nx - 1), (i < 2 ? 0 : 1) * (ny - 1));
-      const Vec2d n = undistort_point(cam, corner, nullptr);
-      const Vec3d q = rk * Vec3d(n.x, n.y, 1.0);
-      sum += Vec2d(fc * q.x / q.z, fc * q.y / q.z);
-    }
-    cc_new[k] = Vec2d((nx - 1) / 2, (ny - 1) / 2) - sum / 4.0;
-  }
-  // CALIB_ZERO_DISPARITY: one principal point for both.
-  const Vec2d c0 = (cc_new[0] + cc_new[1]) * 0.5;
-
-  // The scale alpha chooses: s0 shows only pixels both views see, s1 every
-  // source pixel.
-  Rect inner[2], outer[2];
-  undistort_rectangles(c.left, r1, fc, c0, &inner[0], &outer[0]);
-  undistort_rectangles(c.right, r2, fc, c0, &inner[1], &outer[1]);
-  const double cx = size.width * c0.x / nx;
-  const double cy = size.height * c0.y / ny;
-  const double w1 = size.width - 1.0;
-  const double h1 = size.height - 1.0;
-  double s0 = -std::numeric_limits<double>::max();
-  double s1 = std::numeric_limits<double>::max();
-  for (int k = 0; k < 2; ++k) {
-    const Rect& i = inner[k];
-    const Rect& o = outer[k];
-    s0 = std::max({s0, cx / (c0.x - i.x), cy / (c0.y - i.y),
-                   (w1 - cx) / (i.x + i.width - c0.x),
-                   (h1 - cy) / (i.y + i.height - c0.y)});
-    s1 = std::min({s1, cx / (c0.x - o.x), cy / (c0.y - o.y),
-                   (w1 - cx) / (o.x + o.width - c0.x),
-                   (h1 - cy) / (o.y + o.height - c0.y)});
-  }
-  const double s = s0 * (1 - alpha) + s1 * alpha;
-  fc *= s;
-  if (!(std::isfinite(fc) && fc > 0 && std::isfinite(cx) &&
-        std::isfinite(cy))) {
-    return refuse(
-        "the rectification is degenerate: the lenses fold or the "
-        "cameras look too far apart");
-  }
-  out.rig.camera.intrinsics = {fc, fc, cx, cy};
-  out.rig.baseline = -t.x;
-  out.rig.rectified_to_left = rotation4(glm::transpose(r1));
-  out.source_to_rect[0] = r1;
-  out.source_to_rect[1] = r2;
-  return out;
-}
-
-// The lens's fold: the normalized radius, squared, past which `d`'s radial
-// model stops carrying rays outward -- r * radial(r^2) stops growing, or its
-// denominator reaches 0 -- and turns back, so that rays the lens cannot image
-// would land inside the picture again; float's largest for a lens that never
-// folds. With s = r^2, numerator N and denominator D, d/dr [r N / D] has the
-// sign of g(s) = N D + 2 s (N' D - N D'), so the fold is the first s > 0 where
-// g or D stops being positive: marched out by the angle off the axis
-// (s = tan^2), 0.01 degrees a step to 89.99, then bisected.
-float fold_radius2(const camera::RationalDistortion& d) {
-  const auto folds = [&d](double angle) {
-    const double t = std::tan(angle);
-    const double s = t * t;
-    const double n = 1 + s * (d.k1 + s * (d.k2 + s * d.k3));
-    const double dn = 1 + s * (d.k4 + s * (d.k5 + s * d.k6));
-    const double n1 = d.k1 + s * (2 * d.k2 + 3 * s * d.k3);
-    const double d1 = d.k4 + s * (2 * d.k5 + 3 * s * d.k6);
-    return !(dn > 0 && n * dn + 2 * s * (n1 * dn - n * d1) > 0);
-  };
-  constexpr int kSteps = 9000;
-  const double step = std::acos(0.0) / kSteps;
-  for (int i = 1; i < kSteps; ++i) {
-    if (!folds(i * step)) continue;
-    double lo = (i - 1) * step;
-    double hi = i * step;
-    for (int k = 0; k < 60; ++k) {
-      const double mid = 0.5 * (lo + hi);
-      (folds(mid) ? hi : lo) = mid;
-    }
-    const double t = std::tan(lo);
-    return static_cast<float>(
-        std::min<double>(t * t, std::numeric_limits<float>::max()));
-  }
-  return std::numeric_limits<float>::max();
-}
-
 // The kernel's view of one rectification: the rectified ray into the source
-// camera (the transpose of `source_to_rect`), and the source lens's fold.
+// camera (the transpose of `source_to_rect`, OpenCV's R1 or R2), and the
+// source lens's fold.
 ViewParams view_params(const Mat3d& source_to_rect, const CameraModel& source,
                        const CameraModel& rect, bool luma_out) {
   ViewParams v{};
@@ -376,7 +111,7 @@ struct StereoRectifier::Impl {
   core::Allocator* allocator = nullptr;
   StereoInfo info;
   Options options;
-  Rectification rectification;
+  StereoRectification rectification;
   SensorInfo depth_info;
 
   std::uint32_t max_workgroup_count_x = 0;
@@ -424,22 +159,18 @@ core::Result<std::unique_ptr<StereoRectifier>> StereoRectifier::create(
     const StereoInfo& info, const Options& options) try {
   VKC_TRY(check_device_requirements(device, "StereoRectifier::create"));
   const StereoCalibration& calibration = info.calibration;
+  const auto none = [](const camera::ImageSize& size) {
+    return size.width == 0 && size.height == 0;
+  };
+  if (none(calibration.left.size) && none(calibration.right.size)) {
+    return refuse(
+        "the stereo source has no calibration (StereoInfo::calibration is "
+        "empty): open it with the pair's calibration");
+  }
   VKC_TRY(detail::check_camera(kWho, "left", calibration.left));
   VKC_TRY(detail::check_camera(kWho, "right", calibration.right));
-  if (calibration.left.size.width != calibration.right.size.width ||
-      calibration.left.size.height != calibration.right.size.height) {
-    return refuse("the two cameras' sizes differ");
-  }
-  VKC_TRY(check_pose("left_to_right", calibration.left_to_right));
   if (info.color) VKC_TRY(detail::check_camera(kWho, "colour", *info.color));
   VKC_TRY(check_pose("left_to_color", info.left_to_color));
-  if (!(std::isfinite(options.alpha) && options.alpha >= 0.0f &&
-        options.alpha <= 1.0f)) {
-    return refuse("alpha must be in [0, 1]");
-  }
-  if ((options.size.width == 0) != (options.size.height == 0)) {
-    return refuse("the rectified size has one side 0");
-  }
   if (static_cast<unsigned>(options.output) >
       static_cast<unsigned>(Output::Rgba8)) {
     return refuse("unknown output");
@@ -450,8 +181,14 @@ core::Result<std::unique_ptr<StereoRectifier>> StereoRectifier::create(
   impl->allocator = &allocator;
   impl->info = info;
   impl->options = options;
-  VKC_ASSIGN(impl->rectification,
-             rectify_pair(calibration, options.size, options.alpha));
+  // The pair's sizes, left_to_right, alpha and size are rectify_stereo's to
+  // check.
+  {
+    core::Result<StereoRectification> made =
+        rectify_stereo(calibration, options.size, options.alpha);
+    if (!made) return std::move(made).status().with_context(kWho);
+    impl->rectification = std::move(made).value();
+  }
   const StereoRig& rig = impl->rectification.rig;
   VKC_TRY(detail::check_camera(kWho, "rectified", rig.camera));
 
@@ -511,11 +248,16 @@ core::Result<std::unique_ptr<StereoRectifier>> StereoRectifier::create(
                          core::debug_object_handle(impl->views.handle()),
                          "sensor.stereo_views");
   {
+    // Each view's rotation from its source camera: R1, which
+    // rectified_to_left is the transpose of, and R2.
+    const Mat3d source_to_rect[2] = {
+        glm::transpose(Mat3d(rig.rectified_to_left)),
+        impl->rectification.right_to_rectified};
     core::CommandBatch batch(device, allocator);
     for (int v = 0; v < 2; ++v) {
       const ViewParams params = view_params(
-          impl->rectification.source_to_rect[v],
-          v == 0 ? calibration.left : calibration.right, rig.camera, luma);
+          source_to_rect[v], v == 0 ? calibration.left : calibration.right,
+          rig.camera, luma);
       VKC_TRY(batch.upload(impl->views, v * stride, &params, sizeof(params)));
     }
     VKC_TRY(batch.submit());
@@ -607,6 +349,7 @@ core::Result<Picture> check_picture(const core::Device& device,
           std::to_string(family) + ", which the device does not have");
     }
   }
+  VKC_TRY(detail::check_ready(image, device, kWho));
   return out;
 }
 
@@ -766,7 +509,11 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
     }
   }
 
-  core::Result<core::PendingBatch> pending = batch.submit_async({}, {});
+  // The values of the views' writers that did not wait for their work
+  // (YuvImage::ready), which the batch waits for on the device.
+  std::vector<core::TimelinePoint> ready;
+  for (const YuvImage* image : images) add_ready_point(*image, ready);
+  core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
   const core::Status ran = pending.ok() ? pending->wait() : pending.status();
   if (!ran.ok()) {
     // The pass may still run: the frame's device planes are let go rather
@@ -790,10 +537,13 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
   pair.queue_family = exported ? kQueueFamilyExternal : kQueueFamilyIgnored;
   pair.rig = rectification.rig;
   pair.source = frame;
-  // Taken over by the pass's family: the left and right pictures, and a
-  // colour picture in one of their buffers.
-  for (YuvImage* image :
-       {&pair.source.left, &pair.source.right, &pair.source.color}) {
+  // The right picture is read: it goes, its own owner with it, so its buffer
+  // may return to the source while a matcher runs.
+  pair.source.right = {};
+  pair.source.right_pixels = nullptr;
+  // Taken over by the pass's family: the left picture, and a colour picture
+  // in its buffer or the right one's.
+  for (YuvImage* image : {&pair.source.left, &pair.source.color}) {
     if (image->device != nullptr && taken.find(*image->device) >= 0) {
       image->queue_family = kQueueFamilyIgnored;
     }

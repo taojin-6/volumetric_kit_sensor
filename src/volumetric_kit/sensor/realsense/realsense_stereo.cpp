@@ -64,6 +64,7 @@ struct RealSenseStereo::Impl {
     view.right = realsense::picture_of(right);
     view.color = realsense::picture_of(color);
     view.timestamp_ms = left.get_timestamp();
+    view.right_timestamp_ms = right.get_timestamp();
     view.sequence = left.get_frame_number();
     view.arrival_ns = arrived.arrival_ns;
     auto pixels =
@@ -110,10 +111,11 @@ core::Result<RealSenseStereo> RealSenseStereo::open(
 
   // The factory calibration, as the stereo tier reads it.
   StereoInfo& info = impl->info;
-  VKC_ASSIGN(info, realsense::stereo_info(
-                       left.get_intrinsics(), right.get_intrinsics(),
-                       left.get_extrinsics_to(right), color.get_intrinsics(),
-                       left.get_extrinsics_to(color), camera.who()));
+  VKC_ASSIGN(info,
+             realsense::stereo_info(
+                 left.get_intrinsics(), right.get_intrinsics(),
+                 left.get_extrinsics_to(right), color.get_intrinsics(),
+                 left.get_extrinsics_to(color), options.fps, camera.who()));
   impl->color_to_world = options.color_to_world;
 
   // The projector and the colour exposure: last, so a camera refused above
@@ -127,7 +129,6 @@ core::Result<RealSenseStereo> RealSenseStereo::open(
   info.id = about.serial;
   info.model = about.name;
   info.clock = ClockDomain::Host;
-  info.fps = options.fps;
   return RealSenseStereo(std::move(impl));
 } catch (const std::exception& e) {
   return realsense::sdk_failure(kWho, "opening the camera", e);

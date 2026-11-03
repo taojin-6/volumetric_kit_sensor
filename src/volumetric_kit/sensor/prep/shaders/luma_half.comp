@@ -1,0 +1,45 @@
+#version 450
+
+// LumaPass's second kernel (luma_pass.cpp): the full luma halved, four
+// pixels a word, the first in the low byte, rows packed. Half pixel (u, v)
+// is the mean of full pixels 2u and 2u + 1 of rows 2v and 2v + 1, rounded
+// half up, so its centre is full pixel (2u + 0.5, 2v + 0.5); an odd last
+// column or row of the full luma is in no block.
+
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 256) in;
+
+// The full luma's size.
+layout(push_constant, scalar) uniform Params {
+  uint width;
+  uint height;
+} pc;
+
+// The full luma, four pixels a word, rows packed (luma.comp's).
+layout(set = 0, binding = 0, scalar) readonly buffer Full { uint full[]; };
+layout(set = 0, binding = 1, scalar) writeonly buffer Halved { uint halved[]; };
+
+uint full_at(uint x, uint y) {
+  uint i = y * pc.width + x;
+  return (full[i >> 2] >> ((i & 3u) * 8u)) & 0xFFu;
+}
+
+void main() {
+  uint hw = pc.width / 2u;
+  uint pixels = hw * (pc.height / 2u);
+  uint first = gl_GlobalInvocationID.x * 4u;
+  if (first >= pixels) {
+    return;
+  }
+  uint word = 0u;
+  for (uint k = 0u; k < 4u && first + k < pixels; ++k) {
+    uint p = first + k;
+    uint x = 2u * (p % hw);
+    uint y = 2u * (p / hw);
+    uint sum = full_at(x, y) + full_at(x + 1u, y) + full_at(x, y + 1u) +
+               full_at(x + 1u, y + 1u);
+    word |= ((sum + 2u) >> 2u) << (8u * k);
+  }
+  halved[gl_GlobalInvocationID.x] = word;
+}

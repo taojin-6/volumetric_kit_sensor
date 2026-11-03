@@ -4,7 +4,8 @@
 // The package's own pieces: the version CMake wires through, its GLM aliases
 // (including vector_types.hpp proves they compile at their sizes), and what
 // it asks of a device -- scalarBlockLayout, and the decoders' two extensions
-// as optional, so a device without them still opens. Host only.
+// and the capture card's one as optional, so a device without them still
+// opens. Host only.
 
 #include <algorithm>
 #include <string>
@@ -41,7 +42,11 @@ int main() {
   CHECK(reqs.scalar_block_layout);
   CHECK(lists(reqs.optional_extensions,
               VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME));
+  CHECK(lists(reqs.optional_extensions,
+              VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME));
   CHECK(lists(reqs.optional_extensions, "VK_EXT_metal_objects"));
+  CHECK(lists(reqs.optional_extensions,
+              VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME));
   CHECK(reqs.extensions.empty());
 
   const sensor::Mat4f identity(1.0f);

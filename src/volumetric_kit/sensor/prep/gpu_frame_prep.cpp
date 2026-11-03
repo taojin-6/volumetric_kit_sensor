@@ -29,6 +29,8 @@
 #include "volumetric_kit/core/vulkan/shader.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
+#include "yuv_planes.hpp"
 
 namespace volumetric_kit::sensor {
 namespace {
@@ -49,11 +51,19 @@ struct DepthParams {
   std::uint32_t within_color;  // the frame has colour: mask by OverlapParams
   float depth_offset_m;        // subtracted from every return
   std::uint32_t raw_first;     // the image's first sample in the binding
+  // The confidence plane's first byte in the binding, and the floor below
+  // which a raw sample is no return; 0, 0 for a frame not gated.
+  std::uint32_t confidence_first;
+  std::uint32_t min_confidence;
 };
-static_assert(sizeof(DepthParams) == 72, "DepthParams layout drift");
+static_assert(sizeof(DepthParams) == 80, "DepthParams layout drift");
 static_assert(offsetof(DepthParams, depth_offset_m) == 64,
               "DepthParams layout drift");
 static_assert(offsetof(DepthParams, raw_first) == 68,
+              "DepthParams layout drift");
+static_assert(offsetof(DepthParams, confidence_first) == 72,
+              "DepthParams layout drift");
+static_assert(offsetof(DepthParams, min_confidence) == 76,
               "DepthParams layout drift");
 
 // The colour camera's response as the colour passes read it
@@ -130,13 +140,18 @@ VkDeviceSize round_up(VkDeviceSize bytes, VkDeviceSize alignment) noexcept {
 
 // A frame's depth half, checked: the range the kernel binds, where the image
 // starts in it, and the bytes it moves. Host samples are copied into the slot
-// from byte 0 and bound from there; samples in a buffer are read where they
-// are, bound from the first one rounded down to the alignment a binding's
-// offset needs.
+// from byte 0 and bound from there, a frame's confidence plane after them at
+// the next word; samples in a buffer are read where they are, bound from the
+// first one rounded down to the alignment a binding's offset needs.
 struct DepthLayout {
   std::uint32_t pixels = 0;
   bool on_device = false;
-  VkDeviceSize staged_bytes = 0;  // host samples the slot takes, to a word
+  // Gated by its confidence plane, which comes with a floor of 1 or more:
+  // the plane's first byte in the slot and the binding.
+  bool gated = false;
+  VkDeviceSize confidence_at = 0;
+  // Host samples, and any plane, the slot takes, to a word.
+  VkDeviceSize staged_bytes = 0;
   VkDeviceSize bind_offset = 0, bind_bytes = 0;
   std::uint32_t first = 0;     // the image's first sample in the binding
   VkDeviceSize out_bytes = 0;  // the metres
@@ -165,6 +180,25 @@ core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
     return core::Status::invalid_argument(
         "GpuFramePrep: the depth must be on the host or on the device, not "
         "both");
+  }
+  // The plane comes from the host, as the depth it sits beside, and a plane
+  // comes with a floor of 1 or more: at 0 the samples its producer
+  // invalidated (level 0) would be fused, and a floor with nothing to read it
+  // from would gate nothing.
+  if (frame.depth_confidence != nullptr && device.buffer != nullptr) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep: a confidence plane goes only beside host depth");
+  }
+  if (frame.depth_confidence != nullptr && frame.min_confidence == 0) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep: a depth_confidence plane needs a min_confidence of 1 "
+        "or more, or the samples it invalidates (level 0) are fused");
+  }
+  if (frame.min_confidence > 0 && frame.depth_confidence == nullptr) {
+    return core::Status::invalid_argument(
+        "GpuFramePrep: min_confidence is " +
+        std::to_string(frame.min_confidence) +
+        ", with no depth_confidence plane to read it from");
   }
   VKC_TRY(check_camera("depth", cam));
   if (!(finite(frame.metres_per_unit) && frame.metres_per_unit > 0.0f)) {
@@ -196,8 +230,14 @@ core::Result<DepthLayout> check_depth(const RgbdFrame& frame,
                                            out.out_bytes, max_range));
   const VkDeviceSize bytes = pixels * sizeof(std::uint16_t);
   if (device.buffer == nullptr) {
-    // Copied into the slot from byte 0, which the kernel reads in words.
+    // Copied into the slot from byte 0, which the kernel reads in words, and
+    // a gated frame's plane after it from the next word, a byte a sample.
     out.staged_bytes = out.bind_bytes = round_up4(bytes);
+    if (frame.depth_confidence != nullptr) {
+      out.gated = true;
+      out.confidence_at = out.staged_bytes;
+      out.staged_bytes = out.bind_bytes = round_up4(out.confidence_at + pixels);
+    }
     return out;
   }
   out.on_device = true;
@@ -487,8 +527,10 @@ struct GpuFramePrep::Layout {
   // in place.
   bool from_images = false;
   bool from_host = false;
-  // The slot holds host depth from byte 0, and host colour from this offset,
-  // at minStorageBufferOffsetAlignment; its bytes used, one word at least.
+  // The slot holds host depth from byte 0, a gated frame's plane after it
+  // (DepthLayout::confidence_at), and host colour from this offset, past
+  // both at minStorageBufferOffsetAlignment; its bytes used, one word at
+  // least.
   VkDeviceSize color_at = 0;
   VkDeviceSize slot_bytes = 0;
 };
@@ -543,6 +585,9 @@ core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
         std::to_string(frame.depth_device.queue_family) +
         ", which the device does not have");
   }
+  // A picture's ready value is one the batch can wait for: a timeline on
+  // this device.
+  VKC_TRY(detail::check_ready(frame.color, *device_, "GpuFramePrep"));
   if (frame.color.device != nullptr || layout.from_images) {
     const std::uint32_t family = frame.color.queue_family;
     const bool special =
@@ -597,10 +642,15 @@ core::Result<core::HostSlot> GpuFramePrep::stage(const RgbdFrame& frame,
     VKC_ASSIGN(inputs_, core::HostRing::create(*device_, *allocator_, desc));
   }
   VKC_ASSIGN(core::HostSlot slot, inputs_->claim(layout.slot_bytes));
-  // Host depth, then any host colour at its aligned offset.
+  // Host depth, then a gated frame's confidence plane, then any host colour
+  // at its aligned offset.
   if (!depth.on_device) {
     std::memcpy(slot.data(), frame.depth,
                 std::size_t{depth.pixels} * sizeof(std::uint16_t));
+  }
+  if (depth.gated) {
+    std::memcpy(slot.data() + depth.confidence_at, frame.depth_confidence,
+                std::size_t{depth.pixels});
   }
   if (layout.from_host) {
     const void* from = frame.color_packed != nullptr
@@ -681,8 +731,13 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
                                          depth.bind_bytes);
   depth_kernel_.set.write_storage_buffer(1, undistorted, 0, depth.out_bytes);
   const DepthParams depth_params{
-      lens_params(frame.depth_camera), frame.metres_per_unit,
-      frame.has_color() ? 1u : 0u, config_.depth_offset_m, depth.first};
+      lens_params(frame.depth_camera),
+      frame.metres_per_unit,
+      frame.has_color() ? 1u : 0u,
+      config_.depth_offset_m,
+      depth.first,
+      static_cast<std::uint32_t>(depth.confidence_at),
+      depth.gated ? std::uint32_t{frame.min_confidence} : 0u};
   VKC_TRY(batch.dispatch(depth_kernel_, &depth_params, sizeof(depth_params),
                          core::group_count(depth.pixels, kLocalSize),
                          max_workgroup_count_x_, stage));
@@ -989,10 +1044,16 @@ core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
       *first->device_, kSpansPerFrame * static_cast<std::uint32_t>(count)));
   // The row spans the wait too, and takes the batch's device half after it.
   core::GpuStageScope stage(metrics, first->gpu_timer_, "frame prep");
+  // The pictures' writers that did not wait for their work (NVDEC's, nvJPEG's
+  // copies) set these values, which the batch waits for on the device.
+  std::vector<core::TimelinePoint> ready;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) add_ready_point(frames[i]->color, ready);
+  }
   core::CommandBatch batch(*first->device_, *first->allocator_);
   VKC_TRY(record_frames(batch, preps, frames, layouts, acquires, out, count,
                         &stage));
-  core::Result<core::PendingBatch> pending = batch.submit_async({}, {});
+  core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
   const core::Status ran = pending.ok() ? pending->wait() : pending.status();
   if (!ran.ok()) {
     // A submit that loses the device may still be pending, as may a failed
@@ -1038,6 +1099,21 @@ core::Status GpuFramePrep::ensure_output(std::shared_ptr<Output>& output,
                            name);
   output = std::move(made);
   return {};
+}
+
+std::vector<core::TimelinePoint> ready_points(const RgbdFrame& frame) {
+  std::vector<core::TimelinePoint> points;
+  add_ready_point(frame.color, points);
+  return points;
+}
+
+std::vector<core::TimelinePoint> ready_points(
+    const std::vector<std::optional<RgbdFrame>>& frames) {
+  std::vector<core::TimelinePoint> points;
+  for (const std::optional<RgbdFrame>& frame : frames) {
+    if (frame) add_ready_point(frame->color, points);
+  }
+  return points;
 }
 
 }  // namespace volumetric_kit::sensor

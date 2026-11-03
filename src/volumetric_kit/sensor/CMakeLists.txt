@@ -81,6 +81,10 @@ endif()
 # Ahead of the Orbbec driver, which decodes its cameras' colour with them.
 add_subdirectory(video)
 
+# An RGB-D sensor's frames as bytes, on the interface and the H.265 syntax's
+# colour codes, every build; see wire/CMakeLists.txt.
+add_subdirectory(wire)
+
 # The Orbbec driver; see orbbec/CMakeLists.txt.
 if(VS_WITH_ORBBEC)
   add_subdirectory(orbbec)
@@ -96,6 +100,11 @@ endif()
 if(VS_WITH_FFS)
   add_subdirectory(ffs)
 endif()
+
+# The DeckLink stereo driver, on the stereo tier: its SDK-free units on every
+# build (EXCLUDE_FROM_ALL; the tests build them), the SDK's part with
+# VS_WITH_DECKLINK; see decklink/CMakeLists.txt.
+add_subdirectory(decklink)
 
 # The microphone driver, on the interface; see audio/CMakeLists.txt.
 if(VS_WITH_PORTAUDIO)

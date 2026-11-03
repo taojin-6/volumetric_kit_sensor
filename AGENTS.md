@@ -10,8 +10,9 @@ of it.
 and the rig's calibration file, the RGB-D sensor interface, GPU frame
 preparation, the sensor array, calibrated stereo pairs, their GPU
 rectification and stereo depth on NVIDIA (FFS), the hardware video
-decoders, Apple's pixel-buffer importer, the Orbbec and RealSense drivers,
-audio sources and a microphone driver, and image files. It hands consumers
+decoders, Apple's pixel-buffer importer, the Orbbec, RealSense and
+DeckLink drivers, audio sources and a microphone driver, and image files.
+It hands consumers
 posed, undistorted RGB-D frames on the device (`DeviceFrame`), and audio as
 PCM in host memory.
 
@@ -45,10 +46,13 @@ PCM in host memory.
 - A tier links only the tiers below it: `camera` the core's base tier and
   GLM; `frame` the core's Vulkan tier; the interface `camera` and `frame`;
   `prep` the interface; `array` the prep; `stereo` the interface and,
-  privately, the prep; `apple` `frame`; `video` `frame` (and, on Apple,
-  `apple`); `orbbec` the interface and `video`; `realsense` the interface
-  and `stereo`; `ffs` `stereo` and, privately, `video`; `audio` the
-  interface; `video_syntax` and `io` the base tier.
+  privately, the prep; `apple` `frame` and `video_syntax`; `video` `frame`
+  and `video_syntax` (and, on Apple, `apple`); `video_testing` `video`;
+  `orbbec` the interface, `video` and `video_syntax`;
+  `realsense` the interface and `stereo`; `ffs` `stereo` and, privately,
+  `video`; `decklink` `stereo` and, privately, its SDK-free units; `audio`
+  the interface; `wire` the interface and `video_syntax`; `video_syntax`
+  and `io` the base tier.
   Drivers, decoders and preparation stay targets of their own.
 - C++17, no compiler extensions. Namespace `volumetric_kit::sensor`, the
   camera vocabulary in `sensor::camera`; headers
@@ -68,7 +72,9 @@ PCM in host memory.
   Drivers declare the encoding they produce and convert nothing.
 - Full Doxygen on public classes and functions, as in `rgbd_sensor.hpp`.
   `@ref` only this package's names; write the core's in backticks.
-- No `friend` declarations; test through public APIs.
+- No `friend` declarations, but one for a platform's way into a pimpl
+  that keeps its types out of the shared header (`HevcEncoderAccess`);
+  test through public APIs.
 - Mark deferred work `TODO(sensor)`.
 - Keep first-party code warning-clean with `VS_WARNINGS_AS_ERRORS=ON`.
 - Every Vulkan, Metal, CUDA or SDK handle owner deletes copy, provides the
@@ -97,7 +103,8 @@ pre-commit run --all-files --show-diff-on-failure
   `fuse_orbbec`. Report such a check as run or not run, never as a test.
 - Tests are `main()`s on the core's test support; GPU tests run on its
   policy, and CI sets `VKC_TEST_VALIDATION=1`. `VS_TEST_HEVC_BACKEND` makes
-  the decoder tests fail rather than skip where no device path opens.
+  the decoder tests fail rather than skip where no device path opens, and
+  `VS_TEST_HEVC_ENCODER` the encoder tests where no hardware path opens.
 
 ## Keeping the guidance current
 

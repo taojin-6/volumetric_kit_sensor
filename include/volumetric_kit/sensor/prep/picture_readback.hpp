@@ -4,8 +4,8 @@
 #pragma once
 
 /// @file prep/picture_readback.hpp
-/// @brief A set's colour pictures copied from the device to the host, where
-///        the decoder left them: a detector's luma, or every plane.
+/// @brief Pictures copied from the device to the host, where the decoder or
+///        a pass left them: a detector's luma, or every plane.
 
 #include <cstddef>
 #include <cstdint>
@@ -67,7 +67,9 @@ struct PictureView {
 /// updated picture to subsequent stages, including `GpuFramePrep`; copies
 /// made before the read retain the old ownership metadata. Each read checks
 /// every picture before it records anything, records every copy into one
-/// `CommandBatch`, submits it and waits. The copies land in one host
+/// `CommandBatch`, submits it and waits; the batch waits on the device for
+/// each picture's `YuvImage::ready` value, NVDEC's and nvJPEG's, before it
+/// copies. The copies land in one host
 /// buffer the readback keeps (`MemoryUsage::Staging`, cached for reading),
 /// grown to the largest read and reused, so a steady stream of sets
 /// allocates nothing.
@@ -131,8 +133,9 @@ class VS_PREP_API PictureReadback {
 
   /// @brief Copy one picture's @p planes to the host: a decoder's
   ///        `DecodedPicture::yuv`, say.
-  /// @param[in,out] picture  On the device, its writer finished; its
-  ///                        ownership is updated on success, as above.
+  /// @param[in,out] picture  On the device, its writer finished or
+  ///                        `YuvImage::ready` set; its ownership is updated
+  ///                        on success, as above.
   /// @param planes   Luma alone, or every plane.
   /// @param metrics  As the other overload.
   /// @return The view, valid as the other overload's;
@@ -145,16 +148,40 @@ class VS_PREP_API PictureReadback {
   ///         outside their buffer, images that are not NV12's R8 and R8G8
   ///         planes at least the picture's size with `TRANSFER_SRC` usage,
   ///         in a layout a copy reads, a `queue_family` the device lacks, or
-  ///         `EXCLUSIVE` images from another of its families; or a buffer,
-  ///         submit or `Status::Code::OutOfMemory` failure.
+  ///         `EXCLUSIVE` images from another of its families;
+  ///         `Status::Code::Unsupported` for a V210 picture, whose 10-bit
+  ///         luma @ref LumaPass makes 8-bit first; or a buffer, submit or
+  ///         `Status::Code::OutOfMemory` failure.
   core::Result<PictureView> read(YuvImage& picture, Planes planes,
                                  core::StageMetrics* metrics = nullptr);
+
+  /// @brief Copy each picture's @p planes to the host in one read: every
+  ///        `DeviceLuma`'s full and half luma of a set, say.
+  ///
+  /// @code
+  /// VKC_ASSIGN(std::vector<PictureView> views,
+  ///            readback->read({&luma.full, &luma.half}, Planes::Luma));
+  /// @endcode
+  /// @param[in,out] pictures  Each non-null, as the one-picture overload
+  ///                         takes it; pictures may share a buffer. Each
+  ///                         picture's ownership is updated on success, as
+  ///                         above.
+  /// @param planes   Luma alone, or every plane.
+  /// @param metrics  As the other overloads.
+  /// @return One view per picture, in order, valid as the other overloads'
+  ///         (none for an empty list); `Status::Code::InvalidArgument` for a
+  ///         null picture; what the one-picture overload returns for a
+  ///         picture it refuses, the list refused whole; or a buffer, submit
+  ///         or `Status::Code::OutOfMemory` failure.
+  core::Result<std::vector<PictureView>> read(
+      const std::vector<YuvImage*>& pictures, Planes planes,
+      core::StageMetrics* metrics = nullptr);
 
  private:
   PictureReadback(const core::Device& device, core::Allocator& allocator,
                   core::GpuTimer timer);
 
-  // The one path both reads take: `pictures[i]` into `views[i]`, a null
+  // The one path every read takes: `pictures[i]` into `views[i]`, a null
   // picture skipped, for `count` pictures.
   core::Status read_pictures(YuvImage* const* pictures, std::size_t count,
                              Planes planes, std::optional<PictureView>* views,
