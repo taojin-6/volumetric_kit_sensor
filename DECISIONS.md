@@ -5694,7 +5694,8 @@ read and written byte for byte; refused in a version-2 or -3 file, without
 version-3 bytes; "knows versions 2, 3 and 4". `sensor_frame_srgb_gpu`: the
 exported curve against `color_space.hpp` on all 256 codes (decode within
 2e-6 relative, encode back to the code). `sensor_gpu_frame_prep_response`:
-every colour layout through a barrel lens, beside a depth camera with
+every colour layout, V210 from the host and a buffer among them, through a
+barrel lens, beside a depth camera with
 intrinsics of its own, against a host oracle within a code, on a picture
 that leaves [0, 1] at both ends, for two responses: one held beyond
 `r_max` over most pixels, and one whose F falls to 0.56 across the
@@ -5702,13 +5703,18 @@ picture; an identity response bit for bit the default pass; luma alone
 refused; `create`'s refusals. `sensor_array_process`: each sensor's
 response reaches its own pass (its frames bit for bit a lone pass's, and
 differing from an uncorrected pass's exactly where it is not the identity);
-`prep.color_response` refused. `sensor_gpu_frame_prep_identity` prints
-every layout's words as MD5s, to compare two builds. Mutants, each failing
-the response test unless named: F uncapped (worst 31 codes), the response
-on unclamped R'G'B' (worst 32), r at the lens's source position instead of
-the pinhole pixel (worst 12), r through the depth camera's intrinsics
-(worst 9), and the rig's response applied in the rectifier too
-(`sensor_stereo_rectifier`).
+`prep.color_response` refused. `sensor_camera_stereo_rectification`: a
+version-4 file gives the pair its lenses and poses give. A version-4 file
+reads back exactly beside either world. `sensor_gpu_frame_prep_identity`
+prints every layout's words as MD5s, to compare two builds. Mutants, each
+failing the response test unless named: F uncapped (worst 31 codes), the
+response on unclamped R'G'B' (worst 32), r at the lens's source position
+instead of the pinhole pixel (worst 12), r through the depth camera's
+intrinsics (worst 9), the rig's response applied in the rectifier too
+(`sensor_stereo_rectifier`); and, merged onto 0.33.0, the response skipped
+on V210 (worst 32), applied over the footprints the rectifier averages
+(`sensor_stereo_rectifier`, worst 53), and a file with a response written
+as version 3 (`sensor_camera_array_calibration`).
 
 **Validation.** Release with warnings as errors, under the validation
 layer: the whole suite passes on the Apple M5 Max (macOS 27.2, default
@@ -5718,7 +5724,10 @@ version's are equal byte for byte on both machines: prep's colour words
 and depth in all seven layouts, for one lens shared by both cameras and
 for a depth camera with its own lens and offset, and the stereo
 rectifier's Rgba8 and Luma8 views, left and right, for its five input
-forms. No camera was opened.
+forms. Merged onto 0.33.0 (0.36.0): the whole suite passes on the M5 Max
+(58 tests), and at the identity the words of all nine layouts, V210's
+included, equal byte for byte those of 0.33.0's `ycbcr_to_word` put back
+in its place. No camera was opened.
 
 ### 2026-11-01 — V210 pictures, SDI's 10-bit 4:2:2: frame prep and the stereo rectifier read them at 10 bits through the one unpack they share, as code / 4, and round to 8 bits once; `PictureReadback` refuses them for now (amends the 2026-10-29 host-planes entry).
 
