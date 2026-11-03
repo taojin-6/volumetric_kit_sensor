@@ -11,14 +11,14 @@
 # frame; sensor_orbbec on the interface and the decoders; sensor_realsense on
 # the interface and sensor_stereo; sensor_ffs on the stereo tier and, privately,
 # the video tier's CUDA; sensor_decklink on the stereo tier; sensor_microphone
-# on the interface.
+# on the interface; sensor_wire on the interface and sensor_video_syntax.
 add_subdirectory(volumetric_kit/sensor/camera)
 set(_vs_tiers sensor_camera)
 if(NOT VS_CAMERA_ONLY)
   add_subdirectory(volumetric_kit/sensor/frame)
   add_subdirectory(volumetric_kit/sensor/io)
   # The sensor interface, and the tiers above it (prep, array, stereo, apple,
-  # video, orbbec), which its directory adds.
+  # video, wire, orbbec), which its directory adds.
   add_subdirectory(volumetric_kit/sensor)
   list(
     APPEND
@@ -29,7 +29,8 @@ if(NOT VS_CAMERA_ONLY)
     sensor_prep
     sensor_array
     sensor_stereo
-    sensor_video_syntax)
+    sensor_video_syntax
+    sensor_wire)
   foreach(
     _vs_optional
     sensor_apple
