@@ -513,7 +513,8 @@ destructor before CUDA's import goes, a decoder settles: it synchronizes its
 stream, then sets the last value it handed out from the host if the counter
 is below it, so no batch waits for good on a signal a failed stream dropped.
 NVDEC's host wait for the oldest of three kept pictures asks the stream
-between 10 ms slices, so a failed one returns its error, settled (the
+between 10 ms slices, so a failed one, or one run dry short of the value,
+returns an error, settled (the
 2026-11-03 fault decision). VideoToolbox's pictures, a camera's and host planes carry none.
 **`video/`'s H.265 syntax** (`hevc_syntax.hpp`, target
 `sensor_video_syntax`) is public and builds on every platform: host

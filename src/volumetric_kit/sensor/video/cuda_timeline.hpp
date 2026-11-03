@@ -48,7 +48,10 @@ class CudaTimeline {
   bool reached(std::uint64_t value) const;
 
   // Wait on the host until the counter reaches @p value, or the stream fails
-  // (its error), after which it sets no more values: settle() then.
+  // (its error) or runs dry short of it (a Backend error), after which it
+  // sets no more values: settle() then. It waits in 10 ms slices, each that
+  // blocks counted as one of the device's host waits
+  // (`DeviceCounters::host_waits`); the time blocked counts once.
   core::Status wait(std::uint64_t value) const;
 
   // After a CUDA failure, and before the import goes: wait for the stream,

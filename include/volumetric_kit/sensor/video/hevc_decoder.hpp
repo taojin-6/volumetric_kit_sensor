@@ -115,7 +115,9 @@ class VS_VIDEO_API HevcDecoder {
   /// `Status::Code::InvalidArgument` from @ref send or receive returns once
   /// every value handed out is set, from the host where a failed GPU dropped
   /// CUDA's signal, so no reader waits for good; a picture whose copy failed
-  /// holds what it left.
+  /// holds what it left. Until that error, or the decoder's destruction, such
+  /// a value stays unset: a thread that waits for it before it calls the
+  /// decoder again (decoding and preparing on one thread) waits for good.
   /// @return The picture; empty when the decoder needs more input or has
   ///         drained; `Status::Code::Unsupported`, as from @ref send, once the
   ///         pictures decoded before a refusal are taken;

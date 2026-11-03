@@ -6990,7 +6990,10 @@ below it; it ran before only where a picture could not be handed over and
 in the destructors. With three pictures kept, `receive`'s host wait for the
 oldest waits in 10 ms slices and asks the stream between them
 (`cuStreamQuery`): a failed stream returns its error, settled, where the
-wait would never end. nvJPEG needs neither: its next decode synchronizes
+wait would never end; a stream found idle with the counter still short a
+slice later returns a Backend error, settled. Each slice that blocks counts
+as one of the device's `host_waits`; `blocked_ns` counts the wait's time
+once. nvJPEG needs neither: its next decode synchronizes
 the last one's event, settling on a failure, and a failed decode queues no
 signal.
 
@@ -7011,12 +7014,22 @@ picture 0's signal dropped, the refused clip's 4:0:0 grey sent after picture
 picture reads as unheld; so does a slice naming a picture parameter set
 never sent, `IoError`, where FFmpeg reports it (6.1; FFmpeg 8 skips the
 NAL unit, and those cases skip). With pictures 0 to 2's signals dropped and
-the stream reporting a fault, the next `receive` returns CUDA's error with
-the three values set (a watchdog sets them after 5 s, so a decoder that
-waits for good fails rather than hangs). The table cannot fail FFmpeg's own
-CUDA and NVDEC calls, made through its own libcuda handle, so a real
-fault's `AVERROR_EXTERNAL` is stood in for by those reaching the same
-returns. Planted bugs, each failing it (a shared RTX 4090, FFmpeg 6.1): the
+the stream reporting a fault, or running dry, the next `receive` returns a
+Backend error with the three values set (a watchdog sets them after 5 s, so
+a decoder that waits for good fails rather than hangs). The validation
+layer 1.3.275 (Ubuntu 24.04's) reports each settle's host signal after a
+read of the exported timeline as not below a signal still pending
+(VUID-VkSemaphoreSignalInfo-value-03259), though none is, as the core's
+`vulkan_external_memory_test` records; 1.4.341 reports nothing. Under an
+older layer those tests run after the rest, in a run of their own without
+validation. The table cannot fail FFmpeg's own CUDA and NVDEC calls, made
+through its own libcuda handle, so a real fault's `AVERROR_EXTERNAL` is
+stood in for by those reaching the same returns. A real fault, a kernel's
+store to address 16 (`CUDA_ERROR_ILLEGAL_ADDRESS`), was checked by hand in
+a process of its own, since it ends the primary context: one picture held,
+the next `send` returned FFmpeg's error with the value set; three held,
+`receive` returned CUDA's after 10 ms with the three set. Planted bugs,
+each failing it (a shared RTX 4090, FFmpeg 6.1): the
 settle left out of every error, of `send`'s and of `receive`'s decode
 error, and of `receive`'s refusal; the wait not sliced. The suite on that
 RTX 4090, on the lab RTX 5090 (FFmpeg 8, the validation layer, the handover

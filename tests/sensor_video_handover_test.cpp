@@ -18,7 +18,9 @@
 // so a decoder that waits on the host where it should not fails rather than
 // hangs. The table also drops ready values' signals and reports a faulted
 // stream, as a GPU fault leaves them: the error the decoder then returns comes
-// back with every value it handed out set, so no reader waits for good.
+// back with every value it handed out set, so no reader waits for good. Under
+// a validation layer older than 1.4.341 those tests run unvalidated, in a run
+// after the rest (old_layer_validates).
 //
 // Where no device path opens the test skips, or fails where
 // VS_TEST_HEVC_BACKEND promises one, as the decoder tests do; the JPEG part
@@ -735,12 +737,12 @@ int test_error_settles(const Gpu& gpu, sensor::GpuFramePrep& prep,
 }
 
 // Pictures 0 to 2's ready values dropped, and the stream then reporting a
-// fault: with three kept, the next receive's wait for picture 0 sees the
-// fault, sets every value handed out and returns CUDA's error. A watchdog
-// sets them after 5 s, so a decoder that waits for good fails rather than
-// hangs.
+// fault, or (not @p faulted) running dry with them unset: with three kept,
+// the next receive's wait for picture 0 sees it, sets every value handed out
+// and returns a Backend error. A watchdog sets them after 5 s, so a decoder
+// that waits for good fails rather than hangs.
 int test_wait_sees_fault(const Gpu& gpu, sensor::GpuFramePrep& prep,
-                         const Frames& frames, const Clip& clip) {
+                         const Frames& frames, const Clip& clip, bool faulted) {
   auto decoder = sensor::HevcDecoder::create(options_of(gpu));
   CHECK(decoder.ok());
   held().drops.store(3);
@@ -765,7 +767,7 @@ int test_wait_sees_fault(const Gpu& gpu, sensor::GpuFramePrep& prep,
             ->send(clip.units[sent].data(), clip.units[sent].size(),
                    static_cast<std::int64_t>(sent))
             .ok());
-  held().faulted.store(true);
+  held().faulted.store(faulted);
   const sensor::YuvImage last = got.back().yuv;
   Watchdog rescue(5000ms, [&last] {
     // The semaphore is not const: the decoder hands it out as such.
@@ -854,7 +856,25 @@ int test_jpeg(const Gpu& gpu, const Flag& flag) {
   return 0;
 }
 
-int gpu_main(Gpu& gpu) {
+// The validation layer 1.3.275 (Ubuntu 24.04's) records a value read from an
+// exported timeline as a signal still pending, and reports the next host
+// signal as not below it (VUID-VkSemaphoreSignalInfo-value-03259), though
+// nothing is pending; 1.4.341 reports nothing (the core's
+// vulkan_external_memory_test allows it there). The settle tests read a
+// value, then the decoder sets it from the host, and run_on_gpu counts every
+// error the layer reports: under an older layer they run in a run of their
+// own, without validation.
+bool old_layer_validates() {
+  constexpr std::uint32_t kClean = VK_MAKE_API_VERSION(0, 1, 4, 341);
+  const std::uint32_t layer = vkc::test::validation_layer_version();
+  return vkc::test::requested_validation() != vkc::test::Validation::Off &&
+         layer != 0 && layer < kClean;
+}
+
+// Which tests a run runs: all, all but the settle tests, or those alone.
+enum class Part { kAll, kUnsettled, kSettle };
+
+int run_part(Gpu& gpu, Part part) {
   sensor::HevcDecoder::Options options;
   options.device = &gpu.device;
   options.allocator = &gpu.allocator;
@@ -878,17 +898,24 @@ int gpu_main(Gpu& gpu) {
   const Frames frames;
   Clip clip;
   if (read_clip(gpu, prep.value(), frames, clip) != 0) return 1;
-  if (test_hevc(gpu, **flag, prep.value(), frames, clip) != 0) return 1;
-  if (test_back_pressure(gpu, **flag, prep.value(), frames, clip) != 0) {
-    return 1;
+  if (part != Part::kSettle) {
+    if (test_hevc(gpu, **flag, prep.value(), frames, clip) != 0) return 1;
+    if (test_back_pressure(gpu, **flag, prep.value(), frames, clip) != 0) {
+      return 1;
+    }
+    if (test_destroy_held(gpu, **flag, prep.value(), frames, clip) != 0) {
+      return 1;
+    }
   }
-  if (test_destroy_held(gpu, **flag, prep.value(), frames, clip) != 0) {
-    return 1;
+  if (part != Part::kUnsettled) {
+    if (test_error_settles(gpu, prep.value(), frames, clip) != 0) return 1;
+    for (const bool faulted : {true, false}) {
+      if (test_wait_sees_fault(gpu, prep.value(), frames, clip, faulted) != 0) {
+        return 1;
+      }
+    }
   }
-  if (test_error_settles(gpu, prep.value(), frames, clip) != 0) return 1;
-  if (test_wait_sees_fault(gpu, prep.value(), frames, clip) != 0) return 1;
-  if (test_jpeg(gpu, **flag) != 0) return 1;
-  std::puts("sensor_video_handover: OK");
+  if (part != Part::kSettle && test_jpeg(gpu, **flag) != 0) return 1;
   return 0;
 }
 
@@ -896,5 +923,25 @@ int gpu_main(Gpu& gpu) {
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
-  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
+  const auto run = [](Part part) {
+    return vkc::test::run_on_gpu(
+        sensor::device_requirements(),
+        [part](Gpu& gpu) { return run_part(gpu, part); });
+  };
+  int code = 0;
+  if (!old_layer_validates()) {
+    code = run(Part::kAll);
+  } else {
+    code = run(Part::kUnsettled);
+    if (code == 0) {
+      std::fprintf(stderr,
+                   "the validation layer is older than 1.4.341: the settle "
+                   "tests run without it\n");
+      const vkc::test::ScopedEnv validation("VKC_TEST_VALIDATION", nullptr);
+      const vkc::test::ScopedEnv sync("VKC_TEST_SYNC_VALIDATION", nullptr);
+      code = run(Part::kSettle);
+    }
+  }
+  if (code == 0) std::puts("sensor_video_handover: OK");
+  return code;
 }

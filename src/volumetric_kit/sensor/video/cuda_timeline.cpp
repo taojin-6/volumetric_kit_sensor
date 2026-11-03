@@ -78,17 +78,27 @@ bool CudaTimeline::reached(std::uint64_t value) const {
 }
 
 core::Status CudaTimeline::wait(std::uint64_t value) const {
-  // In slices, the stream asked between them whether it failed.
+  // In slices, the stream asked between them whether it failed. A stream
+  // found idle has run the value's signal, queued before this: a slice later
+  // with the counter still short, the signal was dropped.
   constexpr std::uint64_t kSliceNs = 10'000'000;
+  bool idle = false;
   for (;;) {
     const core::Status waited = semaphore_->wait(value, kSliceNs);
     if (!core::is_timeout(waited)) return waited.with_context(who_);
+    if (idle) {
+      return core::Status::backend_error(
+          core::Status::Backend::Cuda, CUDA_ERROR_UNKNOWN,
+          std::string(who_) +
+              ": the stream ran dry with a picture's ready value unset");
+    }
     const CudaContextScope scope(context_);
     const CUresult r =
         scope.ok() ? cuda_driver()->cuStreamQuery(stream_) : scope.result();
     if (r != CUDA_SUCCESS && r != CUDA_ERROR_NOT_READY) {
       return cuda_error(who_, r, "waiting for a picture's copy");
     }
+    idle = r == CUDA_SUCCESS;
   }
 }
 
