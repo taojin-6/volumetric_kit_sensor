@@ -46,7 +46,6 @@ core::Result<std::unique_ptr<HevcColorDecoder>> HevcColorDecoder::start(
   decoding.allocator = options.allocator;
   decoding.queue_families = options.queue_families.families;
   decoding.queue_family_count = options.queue_families.count;
-  decoding.configure_ffmpeg_logging = options.configure_ffmpeg_logging;
   auto decoder = HevcDecoder::create(decoding);
   if (!decoder) {
     return decoder.status().with_context(options.who +

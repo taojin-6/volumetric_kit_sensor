@@ -58,11 +58,12 @@ struct HevcEncoderCase {
   /// The allocator the targets' writes and the decoder's pictures are made
   /// through; as @ref device.
   core::Allocator* allocator = nullptr;
-  /// Apple: code IOSurface pixel buffers the run makes, through
+  /// Apple only: code IOSurface pixel buffers the run makes, through
   /// send_pixel_buffer, on a session with or without
   /// `HevcEncoder::Options::device`. Otherwise targets the run takes
   /// (`HevcEncoder::target`) and writes on the case's device with a compute
-  /// kernel (@ref Nv12Writer), each sent with the value its batch sets.
+  /// kernel (@ref Nv12Writer), each sent with the value its batch sets: the
+  /// only way in on NVENC.
   bool pixel_buffers = false;
   /// The main stream's pictures, at least 4: a key, P-pictures, and a key
   /// asked at the middle one.
@@ -72,17 +73,22 @@ struct HevcEncoderCase {
     All,     ///< Every rule below.
     Stream,  ///< Those a session's options change: the main stream and its
              ///< decode (C2-C6, C10) and the buffers (C11), as a sweep over
-             ///< colour codes, QPs or sizes needs. C1, C7-C9, C12, C13 and
-             ///< C13b, the session's own behaviour, are left to a case that
-             ///< runs All.
+             ///< QPs or sizes needs. C1, C7-C9, C12, C13 and C13b, the
+             ///< session's own behaviour, are left to a case that runs All.
+    /// What the sequence says, on one key picture: its access unit (C3), its
+    /// SPS and VUI (C4) and the settings line (C10), as a sweep over colour
+    /// codes or efforts needs; @ref pictures is not read. The stream's other
+    /// rules are left to a case that runs Stream or All.
+    Sequence,
   };
   Rules rules = Rules::All;
 };
 
 /// @brief Run the encoder rules on @p c with this build's backend:
 ///        - C1 refusals: each argument out of range is
-///          `Status::Code::InvalidArgument`, each code outside the set and
-///          a siting the backend cannot write `Status::Code::Unsupported`;
+///          `Status::Code::InvalidArgument`, as is NVENC with no device or
+///          allocator; each code outside the set and a siting the backend
+///          cannot write `Status::Code::Unsupported`;
 ///        - C2 the first picture must be a key, and a refused target is kept
 ///          for the send that corrects it;
 ///        - C3 one Annex B access unit a picture, 4-byte start codes, an IDR
@@ -98,15 +104,18 @@ struct HevcEncoderCase {
 ///        - C8 a lost session fails what it had, never one picture coded
 ///          after one that failed, and the next picture, a key, opens it
 ///          again, once a picture coding at the loss is done;
-///        - C9 a target is NV12 R8 and R8G8 storage images in `GENERAL` of
-///          the session's size, on the device's queue family; one taken
-///          twice before a send gives up the first, and one access unit
-///          follows; a send with no target taken is refused;
+///        - C9 a target is, on VideoToolbox, NV12 R8 and R8G8 storage images
+///          in `GENERAL` of the session's size, on the device's queue
+///          family; on NVENC, NV12 rows of that size in a storage buffer,
+///          the chroma's after the luma's, one stride apart, and a target
+///          taken again at once another buffer; one taken twice before a
+///          send gives up the first, and one access unit follows; a send
+///          with no target taken is refused;
 ///        - C10 the settings line is the backend's pinned one;
-///        - C11 pixel buffers of another size, format or tag are refused,
-///          and one with no colour tags codes as the session's colour; a
-///          buffer waits for a target taken; a session with no device hands
-///          out no target and codes buffers;
+///        - C11 (Apple) pixel buffers of another size, format or tag are
+///          refused, and one with no colour tags codes as the session's
+///          colour; a buffer waits for a target taken; a session with no
+///          device hands out no target and codes buffers;
 ///        - C12 a picture sent before a move, or a target taken before one,
 ///          comes back after it;
 ///        - C13 pictures in flight come back in order, at most
@@ -130,8 +139,8 @@ struct HevcEncoderCase {
 ///         @p c's session does not open (`Status::Code::Unsupported` where
 ///         there is no hardware path, which a runner skips unless one is
 ///         promised). `Status::Code::InvalidArgument` for a case this build
-///         cannot run: off Apple, fewer than 4 pictures, or targets with no
-///         device or allocator.
+///         cannot run: fewer than 4 pictures, targets with no device or
+///         allocator, or pixel buffers off Apple.
 VS_VIDEO_TESTING_API core::Result<std::string> hevc_encoder_breach(
     const HevcEncoderCase& c);
 

@@ -62,8 +62,7 @@ Encoder::Options options_of(const HevcEncoderCase& c) {
   return o;
 }
 
-// The rules' run: a build whose encoder takes pixel buffers (Apple's).
-#if defined(__APPLE__)
+// The rules' run, on every backend; pixel buffers are Apple's alone.
 using Code = core::Status::Code;
 
 using Clock = std::chrono::steady_clock;
@@ -165,6 +164,7 @@ std::string unit_breach(const std::vector<std::uint8_t>& au, bool key,
   return {};
 }
 
+#if defined(__APPLE__)
 struct CfRelease {
   void operator()(CFTypeRef ref) const noexcept { CFRelease(ref); }
 };
@@ -209,6 +209,25 @@ std::string pinned_settings(const Encoder::Options& o) {
          ", " + (c.full_range ? "'420f'" : "'420v'") + ", siting " +
          std::to_string(c.chroma_location) + " from the buffer";
 }
+#else
+// The settings line NVENC's session must report (C10), for @p o.
+std::string pinned_settings(const Encoder::Options& o) {
+  const ColorCodes c = normalized(o.color);
+  const std::string qp = std::to_string(o.qp);
+  return "hevc_nvenc " + std::to_string(o.width) + "x" +
+         std::to_string(o.height) + ": preset=p" + std::to_string(o.effort) +
+         " tune=ll profile=main rc=constqp init_qpP=" + qp +
+         " init_qpB=" + qp +
+         " init_qpI=" + std::to_string(o.key_qp.value_or(o.qp)) +
+         " forced-idr=1 no-scenecut=1 rc-lookahead=0 delay=0 zerolatency=1 "
+         "multipass=disabled" +
+         (o.height >= 4096 ? " split_encode_mode=3" : "") +
+         " max_b_frames=0 gop_size=2147483647 colorspace=" +
+         std::to_string(c.matrix) + " color_trc=" + std::to_string(c.transfer) +
+         " color_primaries=" + std::to_string(c.primaries) +
+         (c.full_range ? " full range" : " video range");
+}
+#endif
 
 // What a target says its codes mean, as C6 compares it with the decoded
 // pictures'.
@@ -227,8 +246,10 @@ class Run {
 
  private:
   bool targets() const { return !c_.pixel_buffers; }
+#if defined(__APPLE__)
   // Picture @p i of the ring, made the first time it is asked for.
   core::Result<CVPixelBufferRef> picture(std::uint32_t i);
+#endif
   // Targets: the writer, the timeline the writing batches set, and the
   // ring's pictures on the device.
   core::Status ready_targets();
@@ -244,8 +265,13 @@ class Run {
       VKC_TRY(write_target(e, i).status());
       return e.send(key, pts, written());
     }
+#if defined(__APPLE__)
     VKC_ASSIGN(CVPixelBufferRef p, picture(i));
     return send_pixel_buffer(e, p, key, pts);
+#else
+    return core::Status::invalid_argument(
+        "hevc_encoder_breach: pixel buffers are Apple's");
+#endif
   }
   core::Status send(Encoder& e, std::uint32_t i, bool key) {
     return send(e, i, key, pts_of(i));
@@ -253,10 +279,16 @@ class Run {
   // The rules, each empty when kept.
   core::Result<std::string> refusals();
   core::Result<std::string> stream(Encoder& e);
+  core::Result<std::string> sequence(Encoder& e);
+  // C4 and C10, on the sequence @p reader has read from @p e's stream.
+  std::string sequence_breach(const SliceReader& reader,
+                              const Encoder& e) const;
   core::Result<std::string> decodes();
   core::Result<std::string> drop(Encoder& e);
   core::Result<std::string> lose(Encoder& e);
+#if defined(__APPLE__)
   core::Result<std::string> buffers(Encoder& e);
+#endif
   core::Result<std::string> move(Encoder& e);
   core::Result<std::string> in_flight(Encoder& e);
   core::Result<std::string> retake(Encoder& e);
@@ -264,8 +296,10 @@ class Run {
 
   const HevcEncoderCase& c_;
   const Encoder::Options o_;
+#if defined(__APPLE__)
   OSType format_ = 0;
   Pixels ring_[kRing];
+#endif
   // The main stream, as received, for C6.
   std::vector<std::vector<std::uint8_t>> units_;
   // The first target's description, for C6.
@@ -314,6 +348,7 @@ core::Result<YuvImage> Run::write_target(Encoder& e, std::uint32_t i,
   return t;
 }
 
+#if defined(__APPLE__)
 core::Result<CVPixelBufferRef> Run::picture(std::uint32_t i) {
   Pixels& made = ring_[i % kRing];
   if (made == nullptr) {
@@ -322,6 +357,7 @@ core::Result<CVPixelBufferRef> Run::picture(std::uint32_t i) {
   }
   return made.get();
 }
+#endif
 
 core::Result<std::string> Run::refusals() {
   struct Bad {
@@ -369,6 +405,13 @@ core::Result<std::string> Run::refusals() {
     // VideoToolbox codes QP 0 as 1.
     bad.push_back({"QP 0", with([](auto& o) { o.qp = 0; }), uns});
     bad.push_back({"key QP 0", with([](auto& o) { o.key_qp = 0; }), uns});
+  } else {
+    // NVENC codes only the targets a device writes, and writes no siting.
+    bad.push_back({"no device", with([](auto& o) { o.device = nullptr; }), inv});
+    bad.push_back(
+        {"no allocator", with([](auto& o) { o.allocator = nullptr; }), inv});
+    bad.push_back(
+        {"siting 1", with([](auto& o) { o.color.chroma_location = 1; }), uns});
   }
   for (const Bad& b : bad) {
     const core::Result<Encoder> made = Encoder::create(b.o);
@@ -456,6 +499,11 @@ core::Result<std::string> Run::stream(Encoder& e) {
     VKC_ASSIGN(const std::string b, take());
     if (!b.empty()) return b;
   }
+  return sequence_breach(reader, e);
+}
+
+std::string Run::sequence_breach(const SliceReader& reader,
+                                 const Encoder& e) const {
   // C4: the sequence.
   const std::optional<SliceReader::Sequence>& seq = reader.sequence();
   if (!seq) return std::string("C4: no SPS in the stream");
@@ -489,6 +537,31 @@ core::Result<std::string> Run::stream(Encoder& e) {
            pinned_settings(o_);
   }
   return std::string();
+}
+
+core::Result<std::string> Run::sequence(Encoder& e) {
+  // C3 and C5 on one key picture, then what its SPS and the session say.
+  VKC_TRY(send(e, 0, true));
+  Encoder::CodedPicture coded;
+  const core::Result<bool> got = e.receive(coded);
+  if (!got.ok()) return "C3: the key failed: " + said(got.status());
+  if (!*got) return std::string("C13: nothing came back with a key in flight");
+  std::vector<hevc::Nal> nals;
+  if (const std::string b = unit_breach(coded.access_unit, true, nals);
+      !b.empty()) {
+    return "C3: the key: " + b;
+  }
+  SliceReader reader;
+  const core::Result<SliceReader::Picture> p =
+      reader.read(coded.access_unit.data(), coded.access_unit.size());
+  if (!p.ok()) return "C3: the key does not parse: " + said(p.status());
+  const int want_qp = o_.key_qp.value_or(o_.qp);
+  if (p->slice_type != 2 || p->slice_qp != want_qp) {
+    return "C5: the key has slice type " + std::to_string(p->slice_type) +
+           " and QP " + std::to_string(p->slice_qp) + ", not 2 and " +
+           std::to_string(want_qp);
+  }
+  return sequence_breach(reader, e);
 }
 
 core::Result<std::string> Run::decodes() {
@@ -679,6 +752,7 @@ core::Result<std::string> Run::lose(Encoder& e) {
   return std::string();
 }
 
+#if defined(__APPLE__)
 core::Result<std::string> Run::buffers(Encoder& e) {
   const auto refused = [&](const char* what,
                            CVPixelBufferRef p) -> std::string {
@@ -799,6 +873,7 @@ core::Result<std::string> Run::buffers(Encoder& e) {
   }
   return std::string();
 }
+#endif
 
 core::Result<std::string> Run::move(Encoder& e) {
   Encoder::CodedPicture coded;
@@ -903,9 +978,11 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
   // they number at most the receiver's time over the wait.
   constexpr std::uint32_t kPictures = kRing;
   constexpr auto kWait = std::chrono::milliseconds(5);
+#if defined(__APPLE__)
   if (!targets()) {
     for (std::uint32_t i = 0; i < kRing; ++i) VKC_TRY(picture(i).status());
   }
+#endif
   std::atomic<std::uint32_t> back{0};
   std::atomic<bool> stopped{false};  // the receiver failed, or was let go
   // Written by the receiver, read once it has joined.
@@ -967,9 +1044,40 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
 core::Result<std::string> Run::retake(Encoder& e) {
   if (!targets()) return std::string();
   Encoder::CodedPicture coded;
+  core::CommandBatch batch(*c_.device, *c_.allocator);
+#if !defined(__APPLE__)
+  // What a target is on NVENC: NV12 rows of the session's size in a storage
+  // buffer, the luma's from its start and the chroma's after them, one
+  // stride of at least the width apart; the crossing to CUDA is the batch's.
+  // And one taken while another is held is another buffer.
+  {
+    VKC_ASSIGN(const YuvImage t, e.target(batch));
+    VKC_ASSIGN(const YuvImage next, e.target(batch));
+    const std::shared_ptr<const core::Buffer>& b = t.device;
+    const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    const std::uint64_t stride = t.stride[0];
+    if (t.layout != YuvLayout::Nv12 || t.width != o_.width ||
+        t.height != o_.height || b == nullptr ||
+        (b->usage() & usage) != usage || t.image[0] != nullptr ||
+        t.image[1] != nullptr || t.host != nullptr ||
+        t.queue_family != kQueueFamilyIgnored || t.ready != nullptr ||
+        stride < o_.width || t.stride[1] != stride || t.offset[0] != 0 ||
+        t.offset[1] != stride * o_.height ||
+        b->size() < t.offset[1] + stride * (o_.height / 2)) {
+      return std::string(
+          "C9: a target is not NV12 rows of the session's size in a storage "
+          "buffer, the chroma's after the luma's, one stride apart");
+    }
+    if (next.device == nullptr || next.device == b) {
+      return std::string(
+          "C9: a target taken again at once is the buffer it gave up");
+    }
+  }
+#else
   // What a target is: NV12 plane images of the session's size, which a
   // kernel stores into, on the device's own queue family.
-  core::CommandBatch batch(*c_.device, *c_.allocator);
   {
     VKC_ASSIGN(const YuvImage t, e.target(batch));
     const auto plane = [](const YuvImage& y, int p, VkFormat format) {
@@ -989,6 +1097,7 @@ core::Result<std::string> Run::retake(Encoder& e) {
           "the session's size, on the device's queue family");
     }
   }
+#endif
   // Taken twice before a send, the first is given up: one picture is sent,
   // and one access unit comes back.
   VKC_TRY(write_target(e, 2).status());
@@ -1082,17 +1191,22 @@ core::Result<std::string> Run::waits(Encoder& e) {
 }
 
 core::Result<std::string> Run::all() {
+#if defined(__APPLE__)
   format_ = o_.color.full_range
                 ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
                 : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+#endif
   // create's own refusal, for the runner, comes first.
   VKC_ASSIGN(Encoder e, Encoder::create(o_));
   if (targets()) VKC_TRY(ready_targets());
   using Rule = core::Result<std::string> (Run::*)(Encoder&);
+  if (c_.rules == HevcEncoderCase::Rules::Sequence) return sequence(e);
   const bool all = c_.rules == HevcEncoderCase::Rules::All;
   std::vector<Rule> rules = {&Run::stream};
   if (all) rules.insert(rules.end(), {&Run::drop, &Run::lose});
+#if defined(__APPLE__)
   rules.push_back(&Run::buffers);
+#endif
   if (all) {
     rules.insert(rules.end(),
                  {&Run::move, &Run::in_flight, &Run::retake, &Run::waits});
@@ -1110,7 +1224,6 @@ core::Result<std::string> Run::all() {
   }
   return std::string();
 }
-#endif
 
 }  // namespace
 
@@ -1123,17 +1236,15 @@ core::Result<std::string> hevc_encoder_breach(const HevcEncoderCase& c) try {
     return core::Status::invalid_argument(
         "hevc_encoder_breach: targets need the case's device and allocator");
   }
-#if defined(__APPLE__)
+#if !defined(__APPLE__)
+  if (c.pixel_buffers) {
+    return core::Status::invalid_argument(
+        "hevc_encoder_breach: pixel buffers are Apple's; this build codes "
+        "targets");
+  }
+#endif
   Run run(c);
   return run.all();
-#else
-  {
-    // No hardware path here: create's own refusal, for the runner.
-    VKC_ASSIGN(const Encoder probe, Encoder::create(options_of(c)));
-  }
-  return core::Status::invalid_argument(
-      "hevc_encoder_breach: this build's encoder has no way in to run");
-#endif
 } catch (...) {
   return core::exception_status("hevc_encoder_breach",
                                 core::Status::Code::OutOfMemory);

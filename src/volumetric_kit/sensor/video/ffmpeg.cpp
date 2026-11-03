@@ -3,7 +3,12 @@
 
 #include "ffmpeg.hpp"
 
+#include <mutex>
 #include <string>
+
+extern "C" {
+#include <libavutil/log.h>
+}
 
 namespace volumetric_kit::sensor::video {
 
@@ -41,6 +46,20 @@ ColorCodes color_codes(const AVFrame& frame) noexcept {
     codes.chroma_location = frame.chroma_location - 1;
   }
   return codes;
+}
+
+void set_color(AVCodecContext& context, const ColorCodes& codes) noexcept {
+  context.colorspace = static_cast<AVColorSpace>(codes.matrix);
+  context.color_trc = static_cast<AVColorTransferCharacteristic>(codes.transfer);
+  context.color_primaries = static_cast<AVColorPrimaries>(codes.primaries);
+  context.color_range = codes.full_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+  context.chroma_sample_location =
+      static_cast<AVChromaLocation>(codes.chroma_location + 1);
+}
+
+void quiet_ffmpeg_log() noexcept {
+  static std::once_flag once;
+  std::call_once(once, [] { av_log_set_level(AV_LOG_ERROR); });
 }
 
 }  // namespace volumetric_kit::sensor::video

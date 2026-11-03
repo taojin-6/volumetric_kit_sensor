@@ -349,11 +349,16 @@ H.265 syntax the Apple decoder reads (`volumetric_kit::sensor_video_syntax`,
 code, in every build.
 
 The HEVC encoder (`video/hevc_encoder.hpp`, the same target) codes on
-VideoToolbox in every Apple build, iOS included: a target it hands out on
-the device, which the caller's kernel writes in its own batch and sends
-with the timeline value that batch sets, or a camera's `CVPixelBuffer`
-sent as it is (`video/hevc_encoder_apple.hpp`). Its `create` refuses on
-Linux until NVENC lands. `video/backend.hpp` names the build's backend.
+VideoToolbox in every Apple build, iOS included, and on NVENC through
+FFmpeg's `hevc_nvenc` in a Linux build with `VS_WITH_FFMPEG` and
+`VS_WITH_CUDA`: a target it hands out on the device (plane images on
+VideoToolbox, rows in an exported buffer on NVENC), which the caller's kernel
+writes in its own batch and sends with the timeline value that batch sets,
+or on Apple a camera's `CVPixelBuffer` sent as it is
+(`video/hevc_encoder_apple.hpp`). NVENC needs FFmpeg 7.1 or later, built with
+nv-codec-headers 12.1 or later, for a picture of 4096 rows or more, which it
+codes in strips; an older FFmpeg refuses those in `create`.
+`video/backend.hpp` names the build's backend.
 
 ```cpp
 #include "volumetric_kit/sensor/video/hevc_encoder.hpp"
@@ -369,7 +374,7 @@ o.allocator = &allocator;
 VKC_ASSIGN(sensor::HevcEncoder encoder, sensor::HevcEncoder::create(o));
 core::CommandBatch batch(device, allocator);
 VKC_ASSIGN(const sensor::YuvImage target, encoder.target(batch));
-VKC_TRY(record_picture(batch, target));  // the caller's kernel: R8, R8G8 stores
+VKC_TRY(record_picture(batch, target));  // the caller's kernel: images or rows
 VKC_ASSIGN(core::PendingBatch writing, batch.submit_async({}, {{&timeline, n}}));
 VKC_TRY(encoder.send(encoder.key_owed(), pts, {&timeline, n}));  // returns at once
 // or, a camera's buffer as it is:
@@ -382,9 +387,10 @@ VKC_ASSIGN(const bool got, encoder.receive(coded));  // waits for it
 sudo apt install pkg-config libavcodec-dev libavutil-dev
 cmake -S "$sensor_root" -B "$sensor_root/build" \
     -DCMAKE_BUILD_TYPE=Release -DVS_WITH_FFMPEG=ON -DVS_WITH_CUDA=ON
-# fail, rather than skip, where the decoders find no device path
-# (videotoolbox on a Mac), and on a Mac the encoder too:
-VS_TEST_HEVC_BACKEND=cuda ctest --test-dir "$sensor_root/build" -R video
+# fail, rather than skip, where the decoders and the encoder find no device
+# path (videotoolbox on a Mac):
+VS_TEST_HEVC_BACKEND=cuda VS_TEST_HEVC_ENCODER=nvenc \
+    ctest --test-dir "$sensor_root/build" -R video
 VS_TEST_HEVC_BACKEND=videotoolbox VS_TEST_HEVC_ENCODER=videotoolbox \
     ctest --test-dir "$sensor_root/build" -R video
 ```
@@ -415,7 +421,7 @@ pixel buffers or on targets, which `testing/nv12_writer.hpp`'s
 
 ## Versions
 
-The version is `project()`'s (0.33.0), carried by the umbrella as
+The version is `project()`'s (0.36.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per
