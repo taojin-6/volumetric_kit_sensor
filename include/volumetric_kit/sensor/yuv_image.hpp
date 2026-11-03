@@ -122,8 +122,9 @@ struct YuvImage {
   /// fence waited on, or the CUDA stream synchronized -- or set @ref ready,
   /// which the pass's submission waits for on the device; any other
   /// unfinished write reads as a torn picture. The frame holds the buffer, so
-  /// the decoder cannot reuse it while the frame is prepared, and a prepare
-  /// whose wait fails holds it for good, as the device may still read it.
+  /// the decoder cannot reuse it while the frame is prepared, and so does
+  /// each reader's batch here: after a failed wait until the device has
+  /// waited for that batch, as the device may still read it.
   std::shared_ptr<const core::Buffer> device;
   /// Each plane's byte offset in @ref device or from @ref host.
   std::uint64_t offset[3] = {};

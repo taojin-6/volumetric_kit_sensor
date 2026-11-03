@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0] - 2026-11-03
+
+### Changed
+
+- **`GpuFramePrep::record` and `record_set`** (and so
+  `SensorArray::record_process`) hold the frames' device depth and planes
+  in the caller's batch (the core's `CommandBatch::retain`), so the caller
+  may drop the frames as soon as the call returns. The clause that it keep
+  them "for as long as `PendingBatch::in_flight` says" after a failed wait,
+  which no caller could meet after a failed `submit_async`, is gone.
+- **What a batch reads goes with it**, on failure paths only: frame prep,
+  `LumaPass`, `PictureReadback`, `StereoRectifier`, the NVIDIA pictures'
+  handover to CUDA and the DeckLink upload hand the owners of their inputs
+  (a picture's buffer or images and its ready timeline, a frame's device
+  depth, the readback's staging, the luma outputs, a DeckLink pair's device
+  pictures and SDK frames) to their batch before it is submitted. After a
+  failed fence wait the device keeps them until its destruction has waited
+  for the work, then frees them; before, they leaked for the life of the
+  process, and the DeckLink upload gave its device pictures back to their
+  pool. A refused submit, which ran nothing, frees them as before.
+  DECISIONS.md, the 2026-11-03 retain entry.
+- The core is pinned at 0.45.0 (core #93: `CommandBatch::retain` of a
+  shared owner), and every build but a camera-only one needs it.
+- `sensor_failed_wait`, a new test, refuses one fence wait and checks what
+  each of those readers leaves to the device.
+
+### Migration
+
+- A consumer that declares the core ahead of this package (recon, an
+  application) takes core 0.45.0 or newer. A caller of `record`,
+  `record_set` or `record_process` that kept the frames until its batch
+  resolved may stop; keeping them still works.
+
 ## [0.30.0] - 2026-11-02
 
 ### Added

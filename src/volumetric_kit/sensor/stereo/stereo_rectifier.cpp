@@ -409,16 +409,6 @@ core::Result<Inputs> device_inputs(const StereoFrame& frame,
   return out;
 }
 
-// After a batch that failed and may still run: let go of the device planes
-// it may read, which the caller may drop as soon as the call returns.
-void abandon(const StereoFrame& frame) {
-  for (const YuvImage* image : {&frame.left, &frame.right}) {
-    if (image->device != nullptr) {
-      static_cast<void>(new std::shared_ptr<const core::Buffer>(image->device));
-    }
-  }
-}
-
 }  // namespace
 
 core::Result<RectifiedPair> StereoRectifier::rectify(
@@ -513,12 +503,13 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
   // (YuvImage::ready), which the batch waits for on the device.
   std::vector<core::TimelinePoint> ready;
   for (const YuvImage* image : images) add_ready_point(*image, ready);
+  // The frame's device planes, which the caller may drop as soon as this
+  // returns, go with the batch, which keeps them past a failed wait.
+  for (const YuvImage* image : images) detail::retain_picture(batch, *image);
   core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
   const core::Status ran = pending.ok() ? pending->wait() : pending.status();
   if (!ran.ok()) {
-    // The pass may still run: the frame's device planes are let go rather
-    // than freed, and no later pass rewrites what it binds.
-    abandon(frame);
+    // The pass may still run: no later pass rewrites what it binds.
     failed = ran;
     return ran;
   }

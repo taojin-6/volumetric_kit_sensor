@@ -190,8 +190,9 @@ class VS_PREP_API PictureReadback {
   const core::Device& device_;
   core::Allocator& allocator_;
   core::GpuTimer timer_;
-  // Where the copies land: host memory, mapped, grown to the largest read.
-  core::Buffer staging_;
+  // Where the copies land: host memory, mapped, grown to the largest read;
+  // shared with each read's batch, which keeps it past a failed wait.
+  std::shared_ptr<core::Buffer> staging_;
 };
 
 }  // namespace volumetric_kit::sensor

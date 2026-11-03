@@ -504,7 +504,12 @@ submission that reads the picture: `GpuFramePrep::prepare` and
 `prepare_batch`, `PictureReadback`, `LumaPass` and `StereoRectifier`, each
 one wait a timeline at its highest value (`frame/ready_points.hpp`'s
 `add_ready_point`, which a reader of its own uses too), and each refuses a
-timeline made on another device before it records anything. A caller of
+timeline made on another device before it records anything. Each keeps the
+picture's buffer or images and its timeline with its batch (the core's
+`CommandBatch::retain`), past a failed wait until the device has waited for
+it, so the picture's holder may drop it as soon as the reader returns;
+`GpuFramePrep::record` and `record_set` keep a frame's device depth and
+planes so in the caller's batch. A caller of
 `GpuFramePrep::record` passes `ready_points(frame)` among its `submit_async`
 waits, one of `record_set` or `SensorArray::record_process`
 `ready_points(frames)` (`set.frames`). On a CUDA failure a decoder synchronizes its stream, then sets the
@@ -1076,8 +1081,10 @@ units' driver and hands it the SDK's capture.
   pair published, the newest winning. The device buffers (`DevicePictures`)
   are each picture's own owner (`YuvImage::device`), back in the pool once
   no frame holds them, so none is made after warm-up; past 24 a pair fails
-  rather than fill the device. A copy that fails keeps its pages from the
-  card for good and fails every later poll.
+  rather than fill the device. A copy whose wait fails leaves its pages and
+  device pictures to the batch (the core's `CommandBatch::retain`), kept
+  from the card and the pool until the device has waited for it, and fails
+  every later poll.
 - **Counts**, in left frames: received, every left frame; failed, one not
   delivered in a pair (no partner, no signal, past the bound, no device
   buffer free); dropped, a pair replaced before a poll. `stop` logs the

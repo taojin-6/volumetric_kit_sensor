@@ -183,9 +183,6 @@ class Uploader {
   std::uint64_t dropped_ = 0;         // guarded by mutex_
   std::uint64_t failed_ = 0;          // guarded by mutex_
   std::uint64_t published_ = 0;       // guarded by mutex_
-  // Pairs whose copy may still run after a failed wait: their pages are
-  // never handed back to the card.
-  std::vector<Pair> lost_;  // the thread's
   std::thread thread_;
 };
 

@@ -493,17 +493,18 @@ core::Result<std::vector<DeviceLuma>> LumaPass::Impl::run(
         core::group_count((plan.half_pixels + 3) / 4, kLocalSize), max_groups,
         &stage));
   }
+  // The outputs and the pictures' buffers and images, which the pass and the
+  // caller may drop as soon as this returns, go with the batch, which keeps
+  // them past a failed wait.
+  for (std::size_t i = 0; i < count; ++i) {
+    batch.retain(plans[i].out);
+    detail::retain_picture(batch, *pictures[i]);
+  }
   core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
   const core::Status submitted =
       pending.ok() ? pending->wait() : pending.status();
   if (!submitted.ok()) {
-    // The batch may still run: its outputs and the pictures' buffers and
-    // images, which the caller may drop as soon as this returns, are let go
-    // rather than freed, and no later run rewrites what it binds.
-    for (std::size_t i = 0; i < count; ++i) {
-      static_cast<void>(new std::shared_ptr<Output>(plans[i].out));
-      static_cast<void>(new YuvImage(*pictures[i]));
-    }
+    // The batch may still run: no later run rewrites what it binds.
     failed = submitted;
     return submitted;
   }

@@ -736,26 +736,6 @@ core::Status GpuFramePrep::record_passes(core::CommandBatch& batch,
   return {};
 }
 
-void GpuFramePrep::abandon(const RgbdFrame& frame) {
-  // The device may still run the kernels, so the device depth and planes,
-  // buffers or images, which the caller may drop, and a writer reuse, as soon
-  // as the call returns, are let go rather than freed. The slot stays with
-  // the batch, which the device keeps.
-  if (frame.depth_device.buffer != nullptr) {
-    static_cast<void>(
-        new std::shared_ptr<const core::Buffer>(frame.depth_device.buffer));
-  }
-  if (frame.color.device != nullptr) {
-    static_cast<void>(
-        new std::shared_ptr<const core::Buffer>(frame.color.device));
-  }
-  for (const std::shared_ptr<const core::Image>& plane : frame.color.image) {
-    if (plane != nullptr) {
-      static_cast<void>(new std::shared_ptr<const core::Image>(plane));
-    }
-  }
-}
-
 DeviceFrame GpuFramePrep::finish(const RgbdFrame& frame) const {
   // An output's buffer for the frame, its lease held until every copy goes.
   const auto lease = [](const std::shared_ptr<Output>& output) {
@@ -976,6 +956,15 @@ core::Status GpuFramePrep::record_frames(
     VKC_TRY(preps[i].record_passes(batch, *frames[i], layouts[i], inputs[i],
                                    stage));
   }
+  // What holds the frames' device depth and planes goes with the batch,
+  // which keeps it past a failed wait, so the caller may drop the frames, and
+  // a writer reuse their buffers, as soon as this returns. The slots are the
+  // batch's already.
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] == nullptr) continue;
+    batch.retain(frames[i]->depth_device.buffer);
+    detail::retain_picture(batch, frames[i]->color);
+  }
   for (std::size_t i = 0; i < count; ++i) {
     if (frames[i] != nullptr) out[i] = preps[i].finish(*frames[i]);
   }
@@ -1008,15 +997,8 @@ core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
   core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
   const core::Status ran = pending.ok() ? pending->wait() : pending.status();
   if (!ran.ok()) {
-    // A submit that loses the device may still be pending, as may a failed
-    // wait. The core keeps the command resources in both cases, but the
-    // external pictures read by those commands belong to the frame.
-    if ((pending.ok() && pending->in_flight()) ||
-        (!pending.ok() && core::vk_result(ran) == VK_ERROR_DEVICE_LOST)) {
-      for (std::size_t i = 0; i < count; ++i) {
-        if (frames[i] != nullptr) abandon(*frames[i]);
-      }
-    }
+    // The batch holds the frames' device depth and planes (record_frames),
+    // and the device keeps them after a submit that lost it or a failed wait.
     for (std::size_t i = 0; i < count; ++i) out[i].reset();
     return ran;
   }

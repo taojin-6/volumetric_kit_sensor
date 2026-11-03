@@ -167,13 +167,11 @@ CudaPlanePictures::make_slot(std::uint32_t width, std::uint32_t height) {
     VKC_TRY(batch.release(image, VK_QUEUE_FAMILY_EXTERNAL,
                           VK_IMAGE_LAYOUT_GENERAL));
   }
+  // A failed wait may leave the barriers on the device: the images go with
+  // the batch, which keeps them then.
+  batch.retain(s->planes);
   const core::Status handed = batch.submit();
-  if (!handed.ok()) {
-    // A failed wait may leave the barriers on the device, so the images are
-    // let go rather than freed, as GpuFramePrep lets go of a picture.
-    static_cast<void>(new std::shared_ptr<Planes>(s->planes));
-    return handed.with_context(who_);
-  }
+  if (!handed.ok()) return handed.with_context(who_);
   for (core::Image& image : s->planes->image) {
     image.set_layout(VK_IMAGE_LAYOUT_GENERAL);
   }

@@ -243,47 +243,49 @@ core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
       }
     }
   }
-  if (!staging_.valid() || staging_.size() < staged) {
-    staging_ = core::Buffer();  // freed first: the last read's views end here
+  if (staging_ == nullptr || staging_->size() < staged) {
+    staging_.reset();  // freed first: the last read's views end here
     core::BufferDesc desc;
     desc.size = staged;
     desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     desc.memory = core::MemoryUsage::Staging;
     desc.host_access = core::HostAccess::Random;
-    VKC_ASSIGN(staging_, allocator_.create_buffer(desc));
+    VKC_ASSIGN(core::Buffer made, allocator_.create_buffer(desc));
     device_.set_object_name(VK_OBJECT_TYPE_BUFFER,
-                            core::debug_object_handle(staging_.handle()),
+                            core::debug_object_handle(made.handle()),
                             "sensor.picture_readback");
+    staging_ = std::make_shared<core::Buffer>(std::move(made));
   }
   for (std::size_t i = 0; i < count; ++i) {
     for (int p = 0; p < plans[i].count; ++p) {
       const PlaneCopy& c = plans[i].plane[p];
       if (c.image != nullptr) {
-        VKC_TRY(batch.copy(*c.image, c.width, c.rows, staging_, c.at, &stage));
+        VKC_TRY(batch.copy(*c.image, c.width, c.rows, *staging_, c.at, &stage));
       } else {
-        VKC_TRY(batch.copy(*pictures[i]->device, c.from, staging_, c.at,
+        VKC_TRY(batch.copy(*pictures[i]->device, c.from, *staging_, c.at,
                            c.bytes, &stage));
       }
     }
+  }
+  // The staging and the pictures, which the caller may drop, and a decoder
+  // reuse, as soon as this returns, go with the batch, which keeps them past
+  // a failed wait.
+  batch.retain(staging_);
+  for (std::size_t i = 0; i < count; ++i) {
+    if (pictures[i] != nullptr) detail::retain_picture(batch, *pictures[i]);
   }
   core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
   const core::Status submitted =
       pending.ok() ? pending->wait() : pending.status();
   if (!submitted.ok()) {
-    // A failed wait may leave the copies running, so the staging is let go
-    // rather than freed or rewritten, as GpuFramePrep lets go of its own; and
-    // so are the pictures, which the caller may drop, and a decoder reuse, as
-    // soon as this returns.
-    static_cast<void>(new core::Buffer(std::move(staging_)));
-    for (std::size_t i = 0; i < count; ++i) {
-      if (pictures[i] == nullptr) continue;
-      static_cast<void>(new YuvImage(*pictures[i]));
-    }
+    // A failed wait may leave the copies running: the next read stages
+    // elsewhere rather than rewrite what they may still write.
+    staging_.reset();
     return submitted;
   }
   if (metrics != nullptr) metrics->merge_device(pending->device_rows());
 
-  const auto* base = static_cast<const std::uint8_t*>(staging_.mapped());
+  const auto* base = static_cast<const std::uint8_t*>(staging_->mapped());
   for (std::size_t i = 0; i < count; ++i) {
     if (pictures[i] == nullptr) continue;
     YuvImage& picture = *pictures[i];
