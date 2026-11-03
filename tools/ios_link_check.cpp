@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// The calls an iOS app makes to code a camera's pictures, linked into an iOS
-// executable by tools/ios_build_check.sh, so a symbol iOS lacks, an FFmpeg
-// or CUDA one among them, fails the check. Never run: it opens no session
-// unless given a picture.
+// The calls an iOS app makes to code a camera's pictures, and pictures its
+// kernels write on the device, linked into an iOS executable by
+// tools/ios_build_check.sh, so a symbol iOS lacks, an FFmpeg or CUDA one
+// among them, fails the check. Never run: it opens no session unless given a
+// picture.
 
 #include <CoreVideo/CoreVideo.h>
 
 #include <cstdint>
 #include <cstdio>
 
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/sensor/apple/core_video_color.hpp"
 #include "volumetric_kit/sensor/testing/hevc_conformance.hpp"
+#include "volumetric_kit/sensor/testing/nv12_writer.hpp"
 #include "volumetric_kit/sensor/video/backend.hpp"
 #include "volumetric_kit/sensor/video/hevc_encoder.hpp"
 #include "volumetric_kit/sensor/video/hevc_encoder_apple.hpp"
 
+namespace core = volumetric_kit::core;
 namespace sensor = volumetric_kit::sensor;
 
 int main(int argc, char** argv) {
@@ -42,5 +46,26 @@ int main(int argc, char** argv) {
   const auto breach = sensor::testing::hevc_encoder_breach(c);
   std::printf("%zu %d\n", coded.access_unit.size(),
               breach.ok() && breach->empty());
+  // A target its kernel writes, where a device is handed in too.
+  if (argc > 100) {
+    const auto* device = reinterpret_cast<const core::Device*>(argv[1]);
+    auto* allocator = reinterpret_cast<core::Allocator*>(argv[2]);
+    o.device = device;
+    o.allocator = allocator;
+    auto written = sensor::HevcEncoder::create(o);
+    auto writer = sensor::testing::Nv12Writer::create(*device);
+    if (!written || !writer) return 1;
+    core::CommandBatch batch(*device, *allocator);
+    const auto target = written->target(batch);
+    if (!target.ok() ||
+        !writer
+             ->record_upload(
+                 batch, *allocator,
+                 sensor::testing::test_pattern(o.width, o.height, 0), *target)
+             .ok() ||
+        !batch.submit().ok() || !written->send(true, 0, {}).ok()) {
+      return 1;
+    }
+  }
   return got.ok() ? 0 : 1;
 }

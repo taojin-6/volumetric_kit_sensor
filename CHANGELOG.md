@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.30.0] - 2026-11-03
+## [0.31.0] - 2026-11-03
 
 ### Changed
 
@@ -16,6 +16,52 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as none too: a pair's sequence is still checked, and its time, where it
   has one, on the last one reported. DECISIONS.md, the 2026-11-02 frame
   contract entry, amended.
+
+## [0.30.0] - 2026-11-02
+
+### Added
+
+- **`HevcEncoder::target(batch)`** and **`send(key, pts, written)`**
+  (`video/hevc_encoder.hpp`): the encoder hands out its next picture on the
+  device, NV12 R8 and R8G8 storage images over a picture of VideoToolbox's
+  pool, described by the session's colour, for the caller's kernel to write
+  in its own batch; `send` hands over the timeline value that batch sets,
+  returns at once, and the coding thread waits for that value on the host
+  before it codes. A second `target` before `send` gives up the first once
+  it succeeds; a refused `send` keeps the target. The images are kept for
+  the batch that writes them across a lost session too. `create` readies
+  the targets' pictures (one throwaway picture coded first, as VideoToolbox
+  replaces its pool at its first), so a producer's targets wait for no
+  batch; one on a picture new to the session, as after a reopen, waits on
+  the host for the device's earlier work, without the encoder's lock. A
+  session whose pool is gone, as after the system reclaims it, fails the
+  target (`IoError`) and is lost. DECISIONS.md, the 2026-11-02 target
+  entry.
+- `HevcEncoder::Options::device` and `Options::allocator`, and
+  **`hevc_encoder_device_requirements()`**: `device_requirements()` plus
+  `shaderStorageImageExtendedFormats`, which `create` checks of a device it
+  is given.
+- **`PixelBufferImporter::Access`** (`apple/pixel_buffer_importer.hpp`):
+  `Write` imports planes a compute shader stores into as well (`STORAGE`
+  and `TRANSFER_DST` usage, Metal textures written in place), refused where
+  the device has no R8 or R8G8 storage images; `Read`, the default, is
+  unchanged.
+- **Test support:** `testing::Nv12Writer` (`testing/nv12_writer.hpp`,
+  `sensor_video_testing`): a compute kernel that stores an NV12 test picture
+  into plane images in the caller's batch, as a producer's kernel writes a
+  target. `hevc_encoder_breach` runs on targets when the case is not
+  `pixel_buffers`, and checks C9 (the target, taken twice) and C13b (the
+  coding thread waits for each target's writer).
+
+### Changed
+
+- The encoder's destructor waits for the writer of each target sent, with
+  no limit, as a pending batch does; `send_pixel_buffer` refuses while a
+  target is taken and not sent.
+- `HevcEncoderCase::device` and `allocator` also write the targets; a case
+  that is not `pixel_buffers` runs on targets rather than being refused.
+- The encoder test runs on a device made with
+  `hevc_encoder_device_requirements()` on every leg, the test writer first.
 
 ## [0.29.0] - 2026-11-02
 

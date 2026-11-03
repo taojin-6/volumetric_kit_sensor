@@ -10,7 +10,10 @@
 // the description its caller gives, sampled in place to the words its buffer
 // form gives; the images' sharing across queue families, and a renderer's
 // family copying them on a device shared with recon; what it refuses; and
-// moves.
+// moves. Made for writing (Access::Write), the images are storage images a
+// compute pass stores into, read back through the locked IOSurface, which
+// allocate nothing more in Metal; and a surface no picture arrived on in 64
+// is let go.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -39,17 +42,23 @@
 #include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/sensor/apple/pixel_buffer_importer.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/testing/nv12_pattern.hpp"
+#include "volumetric_kit/sensor/testing/nv12_writer.hpp"
+#include "volumetric_kit/sensor/video/hevc_encoder.hpp"
 #include "yuv_reference.hpp"
 
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::sensor;
+namespace testing = volumetric_kit::sensor::testing;
 using sensor::PixelBufferImporter;
+using Access = PixelBufferImporter::Access;
 using sensor::VideoColorMatrix;
 using sensor::YuvImage;
 
@@ -257,12 +266,14 @@ int test_holds_the_buffer(const Gpu& gpu) {
 // do, plus less than one luma plane. Memory not dedicated to the images would
 // add a heap per plane, 13.2 MB a surface on an M4. A surface imported once
 // more adds nothing.
-int test_allocates_only_textures(const Gpu& gpu) {
+// So do they made for writing, as an encoder's pool pictures are.
+int test_allocates_only_textures(const Gpu& gpu, Access access) {
   constexpr std::uint32_t kW = 3840;
   constexpr std::uint32_t kH = 2160;
   constexpr std::int64_t kLuma = std::int64_t{kW} * kH;
   constexpr std::size_t kSurfaces = 4;
-  auto importer = PixelBufferImporter::create(gpu.device, "test");
+  auto importer =
+      PixelBufferImporter::create(gpu.device, "test", nullptr, 0, access);
   CHECK(importer.ok());
   // What a first import alone makes is not counted.
   const Pixels first(make_pixels(64, 48, kFull));
@@ -294,15 +305,131 @@ int test_allocates_only_textures(const Gpu& gpu) {
   CHECK(imported.has_value());
   const std::int64_t grown = *imported - *before;
   std::printf(
-      "%zu surfaces of %ux%u: imported +%lld B, bare textures +%lld B\n",
-      kSurfaces, kW, kH, static_cast<long long>(grown),
-      static_cast<long long>(*bare));
+      "%zu surfaces of %ux%u, %s: imported +%lld B, bare textures +%lld B\n",
+      kSurfaces, kW, kH, access == Access::Write ? "written" : "read",
+      static_cast<long long>(grown), static_cast<long long>(*bare));
   CHECK(grown < *bare + kLuma);
 
   YuvImage again;
   CHECK(importer->import(refs[0], kW, kH, again).ok());
   CHECK(again.image[0] == yuv[0].image[0]);
   CHECK(vs_test::metal_allocated_size(gpu.device) == imported);
+  return 0;
+}
+
+// Made for writing, the planes are storage images too, and a compute pass
+// that stores a picture into them (testing::Nv12Writer) writes the
+// IOSurface itself: locked on the host, the buffer holds the picture at its
+// corner, byte for byte, and what lies past it is as it was. A '420v' buffer
+// larger than the picture and a '420f' one of its size. Made for reading,
+// they have neither STORAGE nor TRANSFER_DST usage.
+int test_writes_in_place(const Gpu& gpu) {
+  auto writer = testing::Nv12Writer::create(gpu.device);
+  CHECK(writer.ok());
+  auto importer = PixelBufferImporter::create(gpu.device, "test", nullptr, 0,
+                                              Access::Write);
+  CHECK(importer.ok());
+  const struct {
+    OSType format;
+    std::uint32_t width, height, pad;
+  } cases[] = {{kVideo, 254, 142, 4}, {kFull, 256, 144, 0}};
+  for (const auto& c : cases) {
+    const Pixels pixels(
+        make_pixels(c.width + c.pad, c.height + c.pad, c.format));
+    const std::uint8_t flat[2] = {0x55, 0x66};
+    CHECK(pixels.ref != nullptr && fill(pixels.ref, 0x44, flat));
+    YuvImage yuv;
+    CHECK(importer->import(pixels.ref, c.width, c.height, yuv).ok());
+    const VkImageUsageFlags written =
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    CHECK(yuv.image[0]->usage() == written && yuv.image[1]->usage() == written);
+    const testing::HostNv12 picture =
+        testing::test_pattern(c.width, c.height, 9);
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    CHECK(writer->record_upload(batch, gpu.allocator, picture, yuv).ok());
+    CHECK(batch.submit().ok());
+    CHECK(CVPixelBufferLockBaseAddress(
+              pixels.ref, kCVPixelBufferLock_ReadOnly) == kCVReturnSuccess);
+    const auto* luma = static_cast<const std::uint8_t*>(
+        CVPixelBufferGetBaseAddressOfPlane(pixels.ref, 0));
+    const auto* chroma = static_cast<const std::uint8_t*>(
+        CVPixelBufferGetBaseAddressOfPlane(pixels.ref, 1));
+    const std::size_t luma_row =
+        CVPixelBufferGetBytesPerRowOfPlane(pixels.ref, 0);
+    const std::size_t chroma_row =
+        CVPixelBufferGetBytesPerRowOfPlane(pixels.ref, 1);
+    int wrong = 0;
+    for (std::uint32_t y = 0; y < c.height + c.pad; ++y) {
+      for (std::uint32_t x = 0; x < c.width + c.pad; ++x) {
+        const bool in = x < c.width && y < c.height;
+        const std::uint8_t want =
+            in ? picture.luma[std::size_t{y} * c.width + x] : 0x44;
+        wrong += luma[y * luma_row + x] != want;
+      }
+    }
+    const std::uint32_t cw = c.width / 2;
+    const std::uint32_t ch = c.height / 2;
+    for (std::uint32_t y = 0; y < (c.height + c.pad) / 2; ++y) {
+      for (std::uint32_t x = 0; x < (c.width + c.pad) / 2; ++x) {
+        const bool in = x < cw && y < ch;
+        for (std::uint32_t k = 0; k < 2; ++k) {
+          const std::uint8_t want =
+              in ? picture.chroma[(std::size_t{y} * cw + x) * 2 + k] : flat[k];
+          wrong += chroma[y * chroma_row + 2 * x + k] != want;
+        }
+      }
+    }
+    CVPixelBufferUnlockBaseAddress(pixels.ref, kCVPixelBufferLock_ReadOnly);
+    if (wrong != 0) std::fprintf(stderr, "%d bytes differ\n", wrong);
+    CHECK(wrong == 0);
+  }
+  auto reader = PixelBufferImporter::create(gpu.device, "test");
+  CHECK(reader.ok());
+  const Pixels read(make_pixels(64, 48, kFull));
+  CHECK(read.ref != nullptr);
+  YuvImage yuv;
+  CHECK(reader->import(read.ref, 64, 48, yuv).ok());
+  CHECK(yuv.image[0]->usage() ==
+        (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
+  return 0;
+}
+
+// A surface no picture has arrived on in 64 is let go, as a decoder's after
+// a reset or an encoder's pool after a lost session: the importer releases
+// the IOSurface it held. Before then it is kept, the images not held by any
+// picture.
+int test_lets_stale_surfaces_go(const Gpu& gpu) {
+  auto importer = PixelBufferImporter::create(gpu.device, "test", nullptr, 0,
+                                              Access::Write);
+  CHECK(importer.ok());
+  const Pixels gone(make_pixels(64, 48, kFull));
+  const Pixels kept(make_pixels(64, 48, kFull));
+  CHECK(gone.ref != nullptr && kept.ref != nullptr);
+  IOSurfaceRef surface = CVPixelBufferGetIOSurface(gone.ref);
+  CHECK(surface != nullptr);
+  const CFIndex alone = CFGetRetainCount(surface);
+  {
+    YuvImage yuv;
+    CHECK(importer->import(gone.ref, 64, 48, yuv).ok());
+  }
+  const CFIndex cached = CFGetRetainCount(surface);
+  CHECK(cached > alone);
+  for (int i = 0; i < 64; ++i) {
+    YuvImage yuv;
+    CHECK(importer->import(kept.ref, 64, 48, yuv).ok());
+  }
+  CHECK(CFGetRetainCount(surface) == cached);  // 64 since: still kept
+  {
+    YuvImage yuv;
+    CHECK(importer->import(kept.ref, 64, 48, yuv).ok());
+  }
+  const CFIndex after = CFGetRetainCount(surface);
+  if (after >= cached) {
+    std::fprintf(stderr, "the stale surface held %ld, now %ld\n",
+                 static_cast<long>(cached), static_cast<long>(after));
+  }
+  CHECK(after < cached);
   return 0;
 }
 
@@ -633,7 +760,10 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_planes(gpu) != 0) return 1;
   if (test_sets_only_the_planes(gpu) != 0) return 1;
   if (test_holds_the_buffer(gpu) != 0) return 1;
-  if (test_allocates_only_textures(gpu) != 0) return 1;
+  if (test_allocates_only_textures(gpu, Access::Read) != 0) return 1;
+  if (test_allocates_only_textures(gpu, Access::Write) != 0) return 1;
+  if (test_writes_in_place(gpu) != 0) return 1;
+  if (test_lets_stale_surfaces_go(gpu) != 0) return 1;
   if (test_prepares(gpu) != 0) return 1;
   if (test_samples_as_buffer(gpu) != 0) return 1;
   if (test_sharing(gpu) != 0) return 1;
@@ -648,5 +778,8 @@ int gpu_main(vkc::test::GpuContext& gpu) {
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
-  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
+  // The encoder's requirements, a superset of the package's: the written
+  // planes' storage images.
+  return vkc::test::run_on_gpu(sensor::hevc_encoder_device_requirements(),
+                               gpu_main);
 }
