@@ -55,7 +55,8 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 
 Requires CMake ≥ 3.21, a C++17 compiler and the Vulkan toolchain (MoltenVK
 on Apple). The package fetches the core pinned by commit and checks it is
-0.29.0 or newer, or 0.38.0 where the DeckLink driver or the tests build.
+0.41.0 or newer (a picture's ready value names its `TimelineSemaphore`), or
+0.29.0 or newer for a camera-only build (`VS_CAMERA_ONLY`).
 
 ```sh
 sensor_root="$(git rev-parse --show-toplevel)"
@@ -335,7 +336,14 @@ build has them, on VideoToolbox with no FFmpeg; their pictures reach Vulkan
 through `PixelBufferImporter` (`volumetric_kit::sensor_apple`). On Linux
 they are off by default: NVDEC through FFmpeg ≥ 6.1, found through
 pkg-config, and nvJPEG, with the CUDA 13 toolkit's headers
-(`cmake/vs_cuda.cmake`). `VS_WITH_FFMPEG` on Apple fails the configure. The
+(`cmake/vs_cuda.cmake`). NVIDIA's pictures come out before CUDA's copy into
+them has run, with the timeline value CUDA sets once it has
+(`YuvImage::ready`): the package's readers wait for it on the device, and a
+caller that records `GpuFramePrep` into its own batch passes
+`ready_points(frame)`, or a set's `ready_points(set.frames)`, among the
+batch's `submit_async` waits; a reader of its own gathers them with
+`add_ready_point` (`frame/ready_points.hpp`).
+`VS_WITH_FFMPEG` on Apple fails the configure. The
 H.265 syntax the Apple decoder reads (`volumetric_kit::sensor_video_syntax`,
 `video/hevc_syntax.hpp`) and the key gate (`video/key_gate.hpp`) are host
 code, in every build.
@@ -396,7 +404,7 @@ slice types and QPs. The encoder rules (`testing/hevc_conformance.hpp`,
 
 ## Versions
 
-The version is `project()`'s (0.28.0), carried by the umbrella as
+The version is `project()`'s (0.29.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

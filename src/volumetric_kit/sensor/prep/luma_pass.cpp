@@ -26,6 +26,7 @@
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
 #include "yuv_planes.hpp"
 
 namespace volumetric_kit::sensor {
@@ -336,9 +337,14 @@ core::Result<std::vector<DeviceLuma>> LumaPass::Impl::run(
   if (count == 0) return out;
 
   // Every picture checked before anything is allocated or recorded.
+  // What the batch waits for on the device: the values of the pictures'
+  // writers that did not wait for their work (YuvImage::ready).
   std::vector<Plan> plans(count);
+  std::vector<core::TimelinePoint> ready;
   for (std::size_t i = 0; i < count; ++i) {
     VKC_ASSIGN(plans[i], check(pictures[i], i));
+    VKC_TRY(detail::check_ready(*pictures[i], *device, "LumaPass"));
+    add_ready_point(*pictures[i], ready);
   }
   // Each buffer the pictures are in is taken over once, however many name
   // it -- a side-by-side pair in one, say -- since its writer released it
@@ -487,7 +493,9 @@ core::Result<std::vector<DeviceLuma>> LumaPass::Impl::run(
         core::group_count((plan.half_pixels + 3) / 4, kLocalSize), max_groups,
         &stage));
   }
-  const core::Status submitted = batch.submit();
+  core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
+  const core::Status submitted =
+      pending.ok() ? pending->wait() : pending.status();
   if (!submitted.ok()) {
     // The batch may still run: its outputs and the pictures' buffers and
     // images, which the caller may drop as soon as this returns, are let go
@@ -499,6 +507,7 @@ core::Result<std::vector<DeviceLuma>> LumaPass::Impl::run(
     failed = submitted;
     return submitted;
   }
+  if (metrics != nullptr) metrics->merge_device(pending->device_rows());
 
   // The pictures' ownership as the batch left it, published only now: a
   // later stage must not repeat the writer's release and this acquire.

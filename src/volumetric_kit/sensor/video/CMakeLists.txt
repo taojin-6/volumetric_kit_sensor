@@ -125,12 +125,14 @@ else()
   # NVDEC's pictures copied into Vulkan plane images, and nvJPEG's decoded into
   # Vulkan buffers, that CUDA has imported, without a trip through the host
   # (cuda_pictures.cpp), through the public CUDA interop (cuda_interop.hpp,
-  # which includes cuda.h, so the toolkit's headers are PUBLIC). FFmpeg is
-  # PRIVATE. CUDA's headers only: libcuda and libnvjpeg are loaded at run time
-  # (cuda_driver.cpp), so a program built with CUDA starts where no NVIDIA
-  # driver is.
-  target_sources(sensor_video PRIVATE ffmpeg.cpp cuda_driver.cpp
-                                      cuda_interop.cpp cuda_pictures.cpp)
+  # which includes cuda.h, so the toolkit's headers are PUBLIC), and handed out
+  # before CUDA's work has run, with the value of an exported timeline CUDA
+  # signals after it (cuda_timeline.cpp). FFmpeg is PRIVATE. CUDA's headers
+  # only: libcuda and libnvjpeg are loaded at run time (cuda_driver.cpp), so a
+  # program built with CUDA starts where no NVIDIA driver is.
+  target_sources(
+    sensor_video PRIVATE ffmpeg.cpp cuda_driver.cpp cuda_interop.cpp
+                         cuda_pictures.cpp cuda_timeline.cpp)
   target_include_directories(sensor_video SYSTEM
                              PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
   target_link_libraries(sensor_video PRIVATE PkgConfig::VS_FFMPEG

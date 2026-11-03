@@ -49,6 +49,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -60,6 +61,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -71,11 +73,14 @@
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/testing/two_family_device.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/camera/geometry.hpp"
 #include "volumetric_kit/sensor/camera/projection.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
 #include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/sensor/testing/nv12_picture.hpp"
@@ -2152,6 +2157,81 @@ int test_prepare_batch(vkc::Device& device, vkc::Allocator& allocator) {
   return 0;
 }
 
+// A set's ready values (YuvImage::ready): ready_points gives one a timeline
+// at its highest value, skipping an absent frame and a picture with none, as
+// add_ready_point does for a bare picture; a batch recorded with record_set
+// and submitted with them waits on the device until the host has set both.
+int test_ready_points(vkc::Device& device, vkc::Allocator& allocator) {
+  auto made_a = vkc::TimelineSemaphore::create(device);
+  auto made_b = vkc::TimelineSemaphore::create(device);
+  CHECK(made_a.ok() && made_b.ok());
+  const auto a =
+      std::make_shared<vkc::TimelineSemaphore>(std::move(made_a).value());
+  const auto b =
+      std::make_shared<vkc::TimelineSemaphore>(std::move(made_b).value());
+  constexpr std::size_t kCams = 5;
+  std::vector<sensor::GpuFramePrep> preps;
+  for (std::size_t c = 0; c < kCams; ++c) {
+    auto made = sensor::GpuFramePrep::create(device, allocator, unfiltered());
+    CHECK(made.ok());
+    preps.push_back(std::move(made).value());
+  }
+  const std::vector<std::uint16_t> raw(std::size_t{kWidth} * kHeight, 1200);
+  const Planes planes = make_planes();
+  std::vector<std::optional<sensor::RgbdFrame>> frames(kCams);
+  for (std::optional<sensor::RgbdFrame>& f : frames) {
+    f = frame_of(raw, lensed());
+    f->color = planes.image(0.2126f, 0.0722f, false);
+    f->color_camera = pinhole();
+  }
+  frames[1].reset();
+  frames[0]->color.ready = a;
+  frames[0]->color.ready_value = 3;
+  frames[2]->color.ready = a;  // the same timeline, a lower value
+  frames[2]->color.ready_value = 2;
+  frames[3]->color.ready = b;  // frame 4 carries none
+  frames[3]->color.ready_value = 1;
+
+  const std::vector<vkc::TimelinePoint> points = sensor::ready_points(frames);
+  CHECK(points.size() == 2);
+  CHECK(points[0].semaphore == a.get() && points[0].value == 3);
+  CHECK(points[1].semaphore == b.get() && points[1].value == 1);
+  CHECK(sensor::ready_points(*frames[2]).size() == 1 &&
+        sensor::ready_points(*frames[2])[0].value == 2);
+  CHECK(sensor::ready_points(*frames[4]).empty());
+  std::vector<vkc::TimelinePoint> waits = points;
+  sensor::add_ready_point(frames[4]->color, waits);
+  CHECK(waits.size() == 2);
+  sensor::YuvImage later;
+  later.ready = b;
+  later.ready_value = 4;
+  sensor::add_ready_point(later, waits);
+  CHECK(waits.size() == 2 && waits[1].value == 4);
+  sensor::add_ready_point(frames[3]->color, waits);  // lower: kept at 4
+  CHECK(waits[1].value == 4);
+
+  vkc::CommandBatch batch(device, allocator);
+  auto prepared = sensor::GpuFramePrep::record_set(batch, preps, frames);
+  CHECK(prepared.ok());
+  auto pending = batch.submit_async(points, {});
+  CHECK(pending.ok());
+  // Both set before any check, so a failing one leaves no batch waiting.
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  const bool waited = !pending->ready();
+  const bool set_a = a->signal(3).ok();
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  const bool waited_for_b = !pending->ready();
+  const bool set_b = b->signal(1).ok();
+  CHECK(waited && set_a && waited_for_b && set_b);
+  CHECK(pending->wait().ok());
+  auto alone = sensor::GpuFramePrep::create(device, allocator, unfiltered());
+  CHECK(alone.ok());
+  auto one = alone.value().prepare(*frames[0]);
+  CHECK(one.ok() && (*prepared)[0].has_value());
+  CHECK(color_of(*(*prepared)[0]) == color_of(one.value()));
+  return 0;
+}
+
 // The driver's depth noise, as GpuFramePrep::finish hands it on: unchanged,
 // term by term, with every other field and both buffers' words as the same
 // frame stating none gives; a frame that states none hands on unknown, as a
@@ -3900,6 +3980,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_frames_hold_buffers(prep.value()) != 0) return 1;
   if (test_depth_noise(prep.value()) != 0) return 1;
   if (test_prepare_batch(gpu.device, gpu.allocator) != 0) return 1;
+  if (test_ready_points(gpu.device, gpu.allocator) != 0) return 1;
   if (test_record(gpu.device, gpu.allocator) != 0) return 1;
   if (test_batch_timing(gpu.device, gpu.allocator) != 0) return 1;
   if (test_queue_families(gpu.device, gpu.allocator) != 0) return 1;

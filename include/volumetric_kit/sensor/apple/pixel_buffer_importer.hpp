@@ -34,8 +34,8 @@ namespace volumetric_kit::sensor {
 /// arrived on in 64 is let go, and the pictures still holding it keep it.
 ///
 /// The images hold the pixel buffer, so its producer does not reuse the
-/// surface while anything reads them. Its writer must have finished, as for
-/// any @ref YuvImage: the GPU pass waits on nothing.
+/// surface while anything reads them. Its writer must have finished: the
+/// images carry no `YuvImage::ready` for a reader to wait on.
 ///
 /// The images are shared across the queue families @ref create is given, as
 /// when a renderer on another family draws the pictures (MoltenVK hands a

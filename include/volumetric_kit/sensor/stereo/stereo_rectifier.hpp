@@ -186,7 +186,8 @@ class VS_STEREO_API StereoRectifier final {
   /// @brief Rectify both views of @p frame: one submit, both passes, and its
   ///        wait.
   /// @param frame    The pair. Host planes are copied here; device planes,
-  ///                 their writer finished, are read before this returns,
+  ///                 their writer finished or `YuvImage::ready` set (which
+  ///                 the batch waits for), are read before this returns,
   ///                 each buffer taken over once: pictures in one buffer (a
   ///                 side-by-side frame, a colour picture beside them) name
   ///                 the family that wrote it. @p frame keeps the families it

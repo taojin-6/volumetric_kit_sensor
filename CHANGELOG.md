@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.28.0] - 2026-11-02
+## [0.29.0] - 2026-11-02
 
 ### Added
 
@@ -55,6 +55,50 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The iOS build check also compiles `sensor_video_testing` and the Apple
   headers as plain C++, and links an app's encoder calls into an iOS
   executable.
+
+## [0.28.0] - 2026-11-02
+
+### Added
+
+- **A picture's ready value** (`YuvImage::ready`, `YuvImage::ready_value`):
+  the timeline value a writer that did not wait for its work sets once the
+  picture is written, which a reader's submission waits for on the device.
+  NVDEC's and nvJPEG's pictures carry one; VideoToolbox's, a camera's and
+  host planes none. DECISIONS.md, the 2026-11-02 hand-over entry.
+- **`ready_points(frame)`** and **`ready_points(frames)`**
+  (`prep/gpu_frame_prep.hpp`, `sensor_prep`): the values a batch that reads
+  a frame's colour, or a set's, waits for, for a caller of
+  `GpuFramePrep::record`, `record_set` or `SensorArray::record_process`
+  (`ready_points(set.frames)`) to pass among its `submit_async` waits.
+- **`add_ready_point(image, points)`** (`frame/ready_points.hpp`,
+  `sensor_frame`): a picture's ready value added to a submission's waits,
+  one a timeline at its highest value, for a reader of its own.
+- `device_requirements()` names `VK_KHR_external_semaphore_fd` among its
+  optional extensions.
+
+### Changed
+
+- **NVIDIA's decoders hand their pictures over on the GPU.** `HevcDecoder`
+  (NVDEC) and `JpegDecoder` (nvJPEG) queue the copy or decode, signal an
+  exported timeline CUDA imported after it, and hand the picture out with
+  that value, in place of `cuStreamSynchronize` and the event wait.
+  `HevcDecoder` keeps each frame FFmpeg handed out until its value is
+  reached, whoever holds the picture, and up to three: with three kept, the
+  next `receive` waits on the host for the oldest. FFmpeg's own copy of
+  NVDEC's output stays (dropping it costs about 100 MB more a 4K decoder).
+  On NVIDIA `create` is `Unsupported` on a device that does not export
+  semaphores (`Device::exports_semaphores`).
+- **Every reader here waits for a picture's ready value on the device:**
+  `GpuFramePrep::prepare` and `prepare_batch`, `PictureReadback`,
+  `LumaPass` and `StereoRectifier`; each refuses a ready timeline made on
+  another device (`InvalidArgument`). **A caller that records
+  `GpuFramePrep` into its own batch, or reads a decoder's picture in its
+  own, must pass the picture's ready value among its waits**
+  (`ready_points`, `add_ready_point`), or it reads an NVIDIA picture CUDA
+  may not have written yet.
+- The core is pinned at 0.41.0 (core #88: `create_exported_timeline`,
+  `Device::exports_semaphores`, `fwd.hpp`'s `TimelineSemaphore`), and every
+  build but a camera-only one needs it.
 
 ## [0.27.0] - 2026-11-02
 
