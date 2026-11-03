@@ -103,7 +103,7 @@ constexpr YcbcrWeights ycbcr_weights(VideoColorMatrix matrix) noexcept {
 /// @code
 /// YuvImage image;  // a decoder's NV12 picture, left on the device
 /// image.layout = YuvLayout::Nv12;
-/// image.image[0] = luma;    // R8, written, and the writer waited on
+/// image.image[0] = luma;    // R8, written (or `ready` set, below)
 /// image.image[1] = chroma;  // R8G8
 /// image.queue_family = kQueueFamilyExternal;  // CUDA wrote them
 /// image.width = width;
@@ -115,11 +115,11 @@ struct YuvImage {
   /// plane `p` at byte @ref offset `[p]`, @ref stride `[p]` bytes a row.
   ///
   /// Its writer must have **finished** before the frame is prepared -- a
-  /// fence waited on, or the CUDA stream synchronized -- since the pass
-  /// submits on its own queue and waits on no semaphore; an unfinished write
-  /// reads as a torn picture. The frame holds the buffer, so the decoder
-  /// cannot reuse it while the frame is prepared, and a prepare whose wait
-  /// fails holds it for good, as the device may still read it.
+  /// fence waited on, or the CUDA stream synchronized -- or set @ref ready,
+  /// which the pass's submission waits for on the device; any other
+  /// unfinished write reads as a torn picture. The frame holds the buffer, so
+  /// the decoder cannot reuse it while the frame is prepared, and a prepare
+  /// whose wait fails holds it for good, as the device may still read it.
   std::shared_ptr<const core::Buffer> device;
   /// Each plane's byte offset in @ref device or from @ref host.
   std::uint64_t offset[3] = {};
@@ -143,8 +143,8 @@ struct YuvImage {
   /// from its corner. `GpuFramePrep` samples them where they are when its
   /// batch runs, through their views (`SAMPLED` usage), and
   /// `PictureReadback` copies them (`TRANSFER_SRC`), so their writer must
-  /// have finished, as for @ref device, and the frame holds them as it does
-  /// @ref device.
+  /// have finished or set @ref ready, as for @ref device, and the frame holds
+  /// them as it does @ref device.
   std::shared_ptr<const core::Image> image[2];
   /// Or the planes on the host, plane `p` at @ref host `+` @ref offset `[p]`,
   /// @ref stride `[p]` bytes a row: a camera's YUYV, or a mono camera's
@@ -162,6 +162,15 @@ struct YuvImage {
   float kb = 0.114f;       ///< See @ref kr.
   bool full_range = true;  ///< Y in 0..255 rather than 16..235.
   ChromaLocation chroma_location = ChromaLocation::Left;  ///< Sample positions.
+  /// When the writer's work on the device is done, for a writer that did not
+  /// wait for it: a timeline value its submission sets. A reader's
+  /// submission waits for it (`CommandBatch::submit_async`; the waits
+  /// gathered by `frame/ready_points.hpp`) before reading, so neither host
+  /// waits. Null when the writer had finished before handing the picture
+  /// over. NVDEC's and nvJPEG's pictures carry one; VideoToolbox's, a
+  /// camera's and host planes do not.
+  std::shared_ptr<const core::TimelineSemaphore> ready;
+  std::uint64_t ready_value = 0;  ///< See @ref ready.
 };
 
 }  // namespace volumetric_kit::sensor

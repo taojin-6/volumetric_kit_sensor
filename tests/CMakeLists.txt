@@ -603,6 +603,53 @@ if(APPLE OR VS_WITH_FFMPEG)
     vs_target_warnings(sensor_stereo_cuda_test)
     add_test(NAME sensor_stereo_cuda COMMAND sensor_stereo_cuda_test)
 
+    # The decoders' GPU hand-over: their sources, compiled here over a CUDA
+    # driver table that can hold their stream behind a flag the test raises,
+    # with libcuda's loader (cuda_driver.cpp) compiled under another name for
+    # that table to wrap; frame prep, readback and the luma pass read each held
+    # picture. It skips as the decoder tests do.
+    add_library(sensor_video_handover_real_driver OBJECT
+                ${_vs_video_src}/cuda_driver.cpp)
+    target_compile_definitions(sensor_video_handover_real_driver
+                               PRIVATE cuda_driver=vs_test_real_cuda_driver)
+    target_include_directories(sensor_video_handover_real_driver
+                               PRIVATE ${_vs_video_src})
+    target_include_directories(sensor_video_handover_real_driver SYSTEM
+                               PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_link_libraries(sensor_video_handover_real_driver
+                          PRIVATE volumetric_kit::core_base)
+    vs_target_warnings(sensor_video_handover_real_driver)
+    add_executable(
+      sensor_video_handover_test
+      sensor_video_handover_test.cpp
+      ${_vs_video_src}/hevc_decoder.cpp
+      ${_vs_video_src}/jpeg_decoder.cpp
+      ${_vs_video_src}/cuda_interop.cpp
+      ${_vs_video_src}/cuda_pictures.cpp
+      ${_vs_video_src}/cuda_timeline.cpp
+      ${_vs_video_src}/ffmpeg.cpp
+      $<TARGET_OBJECTS:sensor_video_handover_real_driver>)
+    target_compile_definitions(
+      sensor_video_handover_test
+      PRIVATE VS_VIDEO_WITH_CUDA=1
+              VS_HEVC_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data/hevc"
+              VS_JPEG_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data/jpeg")
+    target_include_directories(sensor_video_handover_test
+                               PRIVATE ${_vs_video_src})
+    target_include_directories(sensor_video_handover_test SYSTEM
+                               PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_link_libraries(
+      sensor_video_handover_test
+      PRIVATE sensor_video_frame_color_source
+              volumetric_kit::sensor_video_syntax
+              volumetric_kit::sensor_prep
+              volumetric_kit::core_test_policy
+              PkgConfig::VS_FFMPEG
+              ${CMAKE_DL_LIBS})
+    target_compile_options(sensor_video_handover_test PRIVATE -fexceptions)
+    vs_target_warnings(sensor_video_handover_test)
+    add_test(NAME sensor_video_handover COMMAND sensor_video_handover_test)
+
     # The Status of a failed driver or nvJPEG call. It compiles the driver
     # source itself, which loads libcuda for the error's name and opens no
     # device.
@@ -1008,8 +1055,8 @@ add_test(NAME sensor_subproject_glsl
                  --target vs_glsl_consumer)
 set_tests_properties(sensor_subproject_glsl PROPERTIES FIXTURES_REQUIRED
                                                        vs_subproject_defaults)
-# A subproject builds neither the tests nor the DeckLink driver, so its floor is
-# the base one, not the 0.38.0 the driver's units need.
+# A subproject builds neither the tests nor the DeckLink driver; its floor is
+# the base one all the same, every build's but a camera-only one.
 _vs_add_subproject_test(sensor_subproject_old_core old_core -DVS_CORE_FIRST=ON
                         -DVKC_WITH_VULKAN=ON -DVS_CONSUMER_CORE_VERSION=0.0.1)
 _vs_expect_message(

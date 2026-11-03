@@ -42,6 +42,8 @@ int main() {
   CHECK(reqs.scalar_block_layout);
   CHECK(lists(reqs.optional_extensions,
               VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME));
+  CHECK(lists(reqs.optional_extensions,
+              VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME));
   CHECK(lists(reqs.optional_extensions, "VK_EXT_metal_objects"));
   CHECK(lists(reqs.optional_extensions,
               VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME));

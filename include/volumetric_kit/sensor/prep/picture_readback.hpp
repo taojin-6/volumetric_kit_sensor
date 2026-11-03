@@ -67,7 +67,9 @@ struct PictureView {
 /// updated picture to subsequent stages, including `GpuFramePrep`; copies
 /// made before the read retain the old ownership metadata. Each read checks
 /// every picture before it records anything, records every copy into one
-/// `CommandBatch`, submits it and waits. The copies land in one host
+/// `CommandBatch`, submits it and waits; the batch waits on the device for
+/// each picture's `YuvImage::ready` value, NVDEC's and nvJPEG's, before it
+/// copies. The copies land in one host
 /// buffer the readback keeps (`MemoryUsage::Staging`, cached for reading),
 /// grown to the largest read and reused, so a steady stream of sets
 /// allocates nothing.
@@ -131,8 +133,9 @@ class VS_PREP_API PictureReadback {
 
   /// @brief Copy one picture's @p planes to the host: a decoder's
   ///        `DecodedPicture::yuv`, say.
-  /// @param[in,out] picture  On the device, its writer finished; its
-  ///                        ownership is updated on success, as above.
+  /// @param[in,out] picture  On the device, its writer finished or
+  ///                        `YuvImage::ready` set; its ownership is updated
+  ///                        on success, as above.
   /// @param planes   Luma alone, or every plane.
   /// @param metrics  As the other overload.
   /// @return The view, valid as the other overload's;

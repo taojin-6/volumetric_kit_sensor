@@ -77,10 +77,11 @@ struct DeviceDepth {
   /// samples, through the word holding the last one: the buffer's size is at
   /// least @ref offset plus the samples' bytes, rounded up to 4, since the
   /// pass reads whole words. Its writer must have **finished** before the
-  /// frame is prepared, as for `YuvImage::device`, since the pass waits on no
-  /// semaphore. The frame holds it, so its writer cannot reuse it while the
-  /// frame is kept or prepared, and a prepare whose wait fails holds it for
-  /// good, as the device may still read it.
+  /// frame is prepared, a fence waited on or a CUDA stream synchronized:
+  /// unlike a picture (`YuvImage::ready`), depth carries no timeline value
+  /// for the pass to wait on. The frame holds it, so its writer cannot reuse
+  /// it while the frame is kept or prepared, and a prepare whose wait fails
+  /// holds it for good, as the device may still read it.
   std::shared_ptr<const core::Buffer> buffer;
   /// The first sample's byte in @ref buffer, any even one: the pass binds
   /// from below it at the alignment a binding needs, so it need not be

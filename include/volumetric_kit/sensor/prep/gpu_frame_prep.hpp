@@ -32,6 +32,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/host_ring.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/sensor/frame/camera_params.hpp"
@@ -174,9 +175,15 @@ struct GpuFramePrepConfig {
 /// arrive, are sampled where they are, with no copy, either after the pass
 /// takes them over from the queue family that wrote them
 /// (`YuvImage::queue_family`). The two read the same samples, so give the
-/// same frame. Or it comes on the host: planes as a camera's SDK hands them
-/// over (`YuvImage::host`; a UVC camera's YUYV), converted on the device like
-/// a buffer's, or words a dataset decoded (@ref RgbdFrame::color_packed).
+/// same frame. A picture whose writer has not finished carries the timeline
+/// value that says it has (`YuvImage::ready`, NVDEC's and nvJPEG's): the
+/// batch that reads it waits for that value on the device, so no host waits
+/// between the decoder and the pass. @ref prepare and @ref prepare_batch
+/// wait for it themselves; a caller of @ref record or @ref record_set passes
+/// @ref ready_points among its `submit_async` waits. Or it comes on the host:
+/// planes as a camera's SDK hands them over (`YuvImage::host`; a UVC camera's
+/// YUYV), converted on the device like a buffer's, or words a dataset decoded
+/// (@ref RgbdFrame::color_packed).
 ///
 /// Depth comes from the host, as a sensor's SDK hands it over
 /// (@ref RgbdFrame::depth), or from the device, as a GPU stage such as stereo
@@ -265,7 +272,9 @@ class VS_PREP_API GpuFramePrep {
   ///                 Device depth and planes are read when @p batch runs, so
   ///                 keep the frame until the batch has resolved, and after a
   ///                 failed wait for as long as `PendingBatch::in_flight`
-  ///                 says.
+  ///                 says. A picture with `YuvImage::ready` is read only once
+  ///                 its value is reached: submit @p batch with
+  ///                 `submit_async`, @ref ready_points among its waits.
   /// @param metrics  Optional: a `"frame prep"` row, its host half now and its
   ///                 device half from `PendingBatch::device_rows`.
   /// @return The frame; with nothing recorded, @ref prepare's refusals, or
@@ -288,7 +297,8 @@ class VS_PREP_API GpuFramePrep {
   /// @param preps    One pass per camera, all made with @p batch's `Device`;
   ///                 `preps[i]` records `frames[i]`.
   /// @param frames   One entry per camera, an empty one skipped; kept as
-  ///                 @ref record says.
+  ///                 @ref record says, and @p batch submitted with
+  ///                 `ready_points(frames)` among its waits.
   /// @param metrics  Optional: one `"frame prep"` row for the set, timed by
   ///                 the first pass used.
   /// @return One `DeviceFrame` per present frame, empty where the frame was;
@@ -302,7 +312,8 @@ class VS_PREP_API GpuFramePrep {
   ///        buffers on the device: @ref record, one submit and its wait.
   /// @param frame    The frame; read during the call only. Device depth and
   ///                 planes must be on this pass's device, their writer
-  ///                 finished.
+  ///                 finished; or for planes, `YuvImage::ready` set, which
+  ///                 the batch waits for on the device (@ref ready_points).
   /// @param metrics  Optional `StageMetrics` collecting a `"frame prep"`
   ///                 row: the copy into the slot and the passes on the host,
   ///                 and on the device the frame's copy up and the three
@@ -333,8 +344,9 @@ class VS_PREP_API GpuFramePrep {
   ///         and a view, in `GENERAL` or `SHADER_READ_ONLY_OPTIMAL`, a
   ///         `queue_family` the device lacks, depth and planes in one buffer
   ///         that name different writers' families, `EXCLUSIVE` images from
-  ///         another of its families, or an image past a single
-  ///         dispatch (16.7 M pixels);
+  ///         another of its families, an image past a single
+  ///         dispatch (16.7 M pixels), or a `YuvImage::ready` timeline
+  ///         made on another device;
   ///         `Status::Code::Unsupported` for a colour encoding
   ///         @ref is_canonical refuses; `Status::Code::OutOfMemory` for a
   ///         host allocation failure, with previously returned frames intact;
@@ -479,5 +491,40 @@ class VS_PREP_API GpuFramePrep {
   std::unique_ptr<detail::DepthOutlierPass> outliers_;
   core::Buffer undistorted_;
 };
+
+/// @brief What a batch that reads @p frame waits for on the device.
+///
+/// @code
+/// VKC_ASSIGN(DeviceFrame prepared, prep.record(batch, frame));
+/// // ... fusion recorded into the same batch ...
+/// VKC_ASSIGN(core::PendingBatch fused,
+///            batch.submit_async(ready_points(frame), {}));
+/// @endcode
+/// @param frame  A frame whose colour may carry `YuvImage::ready`.
+/// @return The timeline values @p frame's colour must reach before a batch
+///         reads it (`YuvImage::ready`): none, or one. Depth carries none. For
+///         a caller of @ref GpuFramePrep::record to pass among its
+///         `submit_async` waits (a set's, below); @ref GpuFramePrep::prepare
+///         and @ref GpuFramePrep::prepare_batch wait for them on the device
+///         themselves.
+VS_PREP_API std::vector<core::TimelinePoint> ready_points(
+    const RgbdFrame& frame);
+
+/// @brief What a batch that reads @p frames waits for on the device.
+///
+/// @code
+/// VKC_ASSIGN(DeviceFrameSet prepared, array.record_process(batch, set));
+/// // ... fusion recorded into the same batch ...
+/// VKC_ASSIGN(core::PendingBatch fused,
+///            batch.submit_async(ready_points(set.frames), {}));
+/// @endcode
+/// @param frames  One entry per camera, an empty one skipped, as
+///                @ref GpuFramePrep::record_set takes them.
+/// @return Every frame's @ref ready_points, one point a timeline at its
+///         highest value: for a caller of @ref GpuFramePrep::record_set or
+///         `SensorArray::record_process` to pass among its `submit_async`
+///         waits.
+VS_PREP_API std::vector<core::TimelinePoint> ready_points(
+    const std::vector<std::optional<RgbdFrame>>& frames);
 
 }  // namespace volumetric_kit::sensor

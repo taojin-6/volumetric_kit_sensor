@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -196,9 +197,12 @@ int check_on_device(const sensor::DecodedPicture& p) {
   CHECK(p.yuv.image[0] != nullptr && p.yuv.image[1] != nullptr &&
         p.yuv.device == nullptr);
   CHECK(p.yuv.queue_family == sensor::kQueueFamilyIgnored);
+  CHECK(p.yuv.ready == nullptr);
 #else
   CHECK(p.yuv.device != nullptr && p.yuv.image[0] == nullptr);
   CHECK(p.yuv.queue_family == sensor::kQueueFamilyExternal);
+  // Handed out with the value CUDA sets once the decode is done.
+  CHECK(p.yuv.ready != nullptr && p.yuv.ready_value > 0);
 #endif
   return 0;
 }
@@ -261,7 +265,8 @@ int test_device(const Gpu& gpu) {
 }
 
 // No device, a device the hardware path cannot reach, and on nvJPEG no
-// allocator: each Unsupported.
+// allocator or a device that exports memory and not semaphores (the timeline
+// its pictures' ready values are on): each Unsupported.
 int test_create_refusals(const Gpu& gpu) {
   CHECK(JpegDecoder::create({}).status().domain() ==
         vkc::Status::Code::Unsupported);
@@ -276,6 +281,15 @@ int test_create_refusals(const Gpu& gpu) {
   options.allocator = nullptr;
   CHECK(JpegDecoder::create(options).status().domain() ==
         vkc::Status::Code::Unsupported);
+  vkc::Result<vkc::Device> memory_only = vs_test::memory_only_device(gpu);
+  CHECK(memory_only.ok() && memory_only->exports_memory() &&
+        !memory_only->exports_semaphores());
+  options = decoder_options(gpu);
+  options.device = &memory_only.value();
+  const vkc::Status refused = JpegDecoder::create(options).status();
+  CHECK(refused.domain() == vkc::Status::Code::Unsupported);
+  CHECK(refused.message().find("VK_KHR_external_semaphore_fd") !=
+        std::string::npos);
 #endif
   return 0;
 }

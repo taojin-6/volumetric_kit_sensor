@@ -28,6 +28,8 @@
 #include "volumetric_kit/core/vulkan/shader.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
+#include "yuv_planes.hpp"
 
 namespace volumetric_kit::sensor {
 namespace {
@@ -536,6 +538,9 @@ core::Result<GpuFramePrep::Layout> GpuFramePrep::check(
         std::to_string(frame.depth_device.queue_family) +
         ", which the device does not have");
   }
+  // A picture's ready value is one the batch can wait for: a timeline on
+  // this device.
+  VKC_TRY(detail::check_ready(frame.color, *device_, "GpuFramePrep"));
   if (frame.color.device != nullptr || layout.from_images) {
     const std::uint32_t family = frame.color.queue_family;
     const bool special =
@@ -991,10 +996,16 @@ core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
       *first->device_, kSpansPerFrame * static_cast<std::uint32_t>(count)));
   // The row spans the wait too, and takes the batch's device half after it.
   core::GpuStageScope stage(metrics, first->gpu_timer_, "frame prep");
+  // The pictures' writers that did not wait for their work (NVDEC's, nvJPEG's
+  // copies) set these values, which the batch waits for on the device.
+  std::vector<core::TimelinePoint> ready;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (frames[i] != nullptr) add_ready_point(frames[i]->color, ready);
+  }
   core::CommandBatch batch(*first->device_, *first->allocator_);
   VKC_TRY(record_frames(batch, preps, frames, layouts, acquires, out, count,
                         &stage));
-  core::Result<core::PendingBatch> pending = batch.submit_async({}, {});
+  core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
   const core::Status ran = pending.ok() ? pending->wait() : pending.status();
   if (!ran.ok()) {
     // A submit that loses the device may still be pending, as may a failed
@@ -1040,6 +1051,21 @@ core::Status GpuFramePrep::ensure_output(std::shared_ptr<Output>& output,
                            name);
   output = std::move(made);
   return {};
+}
+
+std::vector<core::TimelinePoint> ready_points(const RgbdFrame& frame) {
+  std::vector<core::TimelinePoint> points;
+  add_ready_point(frame.color, points);
+  return points;
+}
+
+std::vector<core::TimelinePoint> ready_points(
+    const std::vector<std::optional<RgbdFrame>>& frames) {
+  std::vector<core::TimelinePoint> points;
+  for (const std::optional<RgbdFrame>& frame : frames) {
+    if (frame) add_ready_point(frame->color, points);
+  }
+  return points;
 }
 
 }  // namespace volumetric_kit::sensor
