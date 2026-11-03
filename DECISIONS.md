@@ -5845,7 +5845,10 @@ bin's lower edge.
 **Validation.** Release with warnings as errors, under the validation
 layer: the whole suite passes on the M5 Max (default options, 44 tests)
 and on an RTX 5090 (the CI NVIDIA leg's options, `VS_WITH_ORBBEC` and the
-tool included, sync validation too, 60 tests). No camera was opened.
+tool included, sync validation too, 60 tests). Merged onto 0.36.0
+(0.37.0): the whole suite passes on the M5 Max (59 tests), the tool builds
+there with `VS_WITH_ORBBEC`, and the fit's numbers above are unchanged. No
+camera was opened.
 
 ### 2026-11-01 — V210 pictures, SDI's 10-bit 4:2:2: frame prep and the stereo rectifier read them at 10 bits through the one unpack they share, as code / 4, and round to 8 bits once; `PictureReadback` refuses them for now (amends the 2026-10-29 host-planes entry).
 

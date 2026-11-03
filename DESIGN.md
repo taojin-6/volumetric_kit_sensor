@@ -1288,7 +1288,10 @@ on every leg so its test, `sensor_color_fit`, runs there. The `color_fit`
 tool opens the rig with H.265 colour, the rig's live codec; it builds with
 `VS_WITH_ORBBEC`, and no test runs it. The fit takes any array of two or
 more sensors of one `SensorInfo::model`, each with colour and depth; only
-the tool's open is Orbbec's.
+the tool's open is Orbbec's. It reads the prepared frames alone, where
+depth below its frame's confidence floor is already a hole (frame prep's
+gate), which no sample's window may hold: low-confidence depth feeds no
+sample.
 
 Every per-pixel step is a kernel (`tools/color_fit/shaders/`, over the
 exported `pinhole.glsl` and `srgb.glsl`). `add(set)`, one submit: each
