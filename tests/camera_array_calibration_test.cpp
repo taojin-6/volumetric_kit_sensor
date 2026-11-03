@@ -869,7 +869,8 @@ int test_color_controls() {
 // read from a version-4 file beside the controls it was fitted at, refused in
 // a version-2 or -3 file, without controls and when fitted_at is not them;
 // written only when it is not the identity, and only then as version 4, so a
-// calibration without one keeps its version-2 or -3 bytes.
+// calibration without one keeps its version-2 or -3 bytes; read back exactly
+// beside either world.
 int test_color_response() {
   // F, held beyond r_max; the identity is F = 1 at any radius.
   camera::ColorResponse r;
@@ -1074,6 +1075,16 @@ int test_color_response() {
           nlohmann::json({{"exposure", 2000}, {"gain", 240}}));
   }
   CHECK(responses == 2);
+  // Beside a tag world, the other world block, they come back exactly too.
+  camera::ArrayCalibration tagged = all;
+  tagged.world.sensor.clear();
+  tagged.world.apriltag = camera::AprilTagWorld{"tag36h11", 7, 0.15};
+  const auto tag_text = camera::format_array_calibration(tagged);
+  CHECK(tag_text.ok());
+  const auto tag_back = camera::parse_array_calibration(tag_text.value());
+  CHECK(tag_back.ok() &&
+        nlohmann::json::parse(tag_text.value()).at("version") == 4);
+  if (check_same(tagged, tag_back.value()) != 0) return 1;
   // Back to the identity: the version-3 bytes again.
   all.sensors[0].color_response = {};
   all.sensors[1].color_response = {};

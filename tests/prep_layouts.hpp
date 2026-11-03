@@ -5,7 +5,8 @@
 
 // One picture in every layout GpuFramePrep's colour pass reads -- I420 and
 // NV12 planes in a device buffer, NV12 plane images, I420 planes, YUYV and
-// luma on the host, and packed R'G'B' words on the host -- and the pass's
+// luma on the host, V210 on the host and in a buffer, and packed R'G'B'
+// words on the host -- and the pass's
 // sampling of it on the host, before the 8-bit code: the oracle every layout
 // is held to (sensor_gpu_frame_prep_identity, sensor_gpu_frame_prep_response).
 // Its luma and chroma swing far enough that limited-range Y'CbCr leaves
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "test_image.hpp"
+#include "v210.hpp"
 #include "volumetric_kit/core/testing/buffer_readback.hpp"
 #include "volumetric_kit/core/vulkan/allocator.hpp"
 #include "volumetric_kit/core/vulkan/compute_util.hpp"
@@ -50,8 +52,9 @@ struct Picture {
   std::uint32_t w = 0, h = 0;
   std::uint32_t cw = 0, ch = 0;                // 4:2:0 chroma
   std::vector<std::uint8_t> y, cb, cr;         // 4:2:0 planes
-  std::vector<std::uint8_t> cb422, cr422;      // YUYV's chroma, cw x h
+  std::vector<std::uint8_t> cb422, cr422;      // 4:2:2 chroma, cw x h
   std::vector<std::uint8_t> i420, yuyv, mono;  // host bytes
+  std::vector<std::uint8_t> v210;              // host bytes
   std::vector<std::uint32_t> packed;           // R'G'B' words, junk high byte
   std::vector<Layout> layouts;
 };
@@ -187,6 +190,28 @@ inline std::unique_ptr<Picture> make_picture(vkc::Device& device,
   yuyv.full_range = false;
   p->layouts.push_back({"YUYV host", yuyv});
 
+  // V210 on the host and in a buffer, as a DeckLink card captures it: BT.709
+  // limited range, chroma sited left, YUYV's samples times 4 (v210.hpp).
+  p->v210 = v210::pack(v210::widen(p->y), v210::widen(p->cb422),
+                       v210::widen(p->cr422), w, h, 0, v210::row_bytes(w));
+  sensor::YuvImage v210_host;
+  v210_host.layout = sensor::YuvLayout::V210;
+  v210_host.host = p->v210.data();
+  v210_host.stride[0] = v210::row_bytes(w);
+  v210_host.width = w;
+  v210_host.height = h;
+  v210_host.kr = 0.2126f;
+  v210_host.kb = 0.0722f;
+  v210_host.full_range = false;
+  v210_host.chroma_location = sensor::ChromaLocation::Left;
+  p->layouts.push_back({"V210 host", v210_host});
+  sensor::YuvImage v210_buffer = v210_host;
+  v210_buffer.host = nullptr;
+  v210_buffer.device = on_device(device, allocator, p->v210);
+  if (v210_buffer.device != nullptr) {
+    p->layouts.push_back({"V210 buffer", v210_buffer});
+  }
+
   // Luma alone on the host, full range, as an infrared camera's.
   p->mono = p->y;
   sensor::YuvImage mono;
@@ -291,7 +316,8 @@ inline bool rgb_at(const Picture& p, const Layout& layout,
   }
   const auto siting = sensor::chroma_offset(im.chroma_location);
   float cbv = 0.0f, crv = 0.0f;
-  if (im.layout == sensor::YuvLayout::Yuyv) {
+  if (im.layout == sensor::YuvLayout::Yuyv ||
+      im.layout == sensor::YuvLayout::V210) {
     const float cx = (s.x - siting[0]) * 0.5f;
     cbv = bilinear(p.cb422, p.cw, p.h, cx, s.y);
     crv = bilinear(p.cr422, p.cw, p.h, cx, s.y);

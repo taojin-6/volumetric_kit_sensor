@@ -5609,7 +5609,8 @@ colour is multiplied by so a rig's cameras agree on a surface they share:
 - **Where.** In linear BT.709, after the canonical conversion, so the format
   is the same whatever a driver's encoding. `GpuFramePrep` applies it in
   both colour entries, for every layout (I420 and NV12 buffers, NV12 plane
-  images, YUYV and Y'CbCr planes from the host, packed words): the R'G'B' the
+  images, YUYV and Y'CbCr planes from the host, V210 from the host or a
+  buffer, packed words): the R'G'B' the
   matrix forms is clamped to [0, 1] (the matrix can leave it), decoded
   through `frame/shaders/srgb.glsl`, multiplied, encoded, and coded. `r =
   |((x - cx) / fx, (y - cy) / fy)|` at the pinhole pixel, whose intrinsics
@@ -5619,12 +5620,13 @@ colour is multiplied by so a rig's cameras agree on a surface they share:
 - **The identity** (gains 1, `a = b = 0`) is today's words: the host derives
   a flag from the values, and the entries then call the unchanged
   `ycbcr_word`, so it is data, not a switch. The stereo rectifier calls
-  `ycbcr_word` alone; its words are prepared again downstream, which
-  applies a response once. A luma-only picture on a pass with a response
-  is refused: RGB gains would tint grey.
+  `ycbcr_word` and, over a footprint it averages, `ycbcr_to_word` alone,
+  and `LumaPass` reads luma alone; the rectifier's words are prepared again
+  downstream, which applies a response once. A luma-only picture on a pass
+  with a response is refused: RGB gains would tint grey.
 - **Parameters.** At the end of the overlap buffer both colour entries
   already upload for each frame (+28 B: three gains, a, b, `r_max` and the
-  flag), not push constants: `ColorParams` holds 120 of the 128 B Vulkan
+  flag), not push constants: `ColorParams` holds 124 of the 128 B Vulkan
   guarantees.
 - **The file.** `SensorCalibration::color_response`, a version-4 field,
   only beside the array's `color_controls`. Its `fitted_at` repeats the
@@ -5633,8 +5635,8 @@ colour is multiplied by so a rig's cameras agree on a surface they share:
   from them, and it is not kept in memory. The identity is not written, so
   a calibration without a response keeps its version-2 or -3 bytes. A
   reader ignores keys it does not know, so a response in a version-3 file
-  would run uncorrected under 0.13.0; a version-4 file is refused there,
-  and a response in a version-2 or -3 file is refused here.
+  would run uncorrected under 0.35.0 and before; a version-4 file is
+  refused there, and a response in a version-2 or -3 file is refused here.
 - **One check.** `camera::validate`, used by the reader, the writer and
   `GpuFramePrep::create`: the identity, or gains finite and above 0, a and b
   finite, `r_max` finite and above 0, and F above 0 on `[0, r_max]`.
@@ -5661,7 +5663,7 @@ sRGB levels after a sigma-8 blur, held out by world position:
   the rig `r_max` is 0.65-0.68, and F is held over 28-32% of each image,
   where it is x1.53-1.70.
 - **Gauge G2 (owner, 2026-10-31).** Gains and F are fixed only up to a
-  common scale; the fit (0.15.0) sets it so that, per channel, the mean of
+  common scale; the fit (0.37.0) sets it so that, per channel, the mean of
   `gain * F` over both pixels of every kept sample is 1. The held-out
   residual is 6.271 under every gauge. G2 keeps the shared floor at today's
   brightness (0.000 stop, against -0.227 for G1, which matches the

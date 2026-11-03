@@ -880,12 +880,17 @@ every layout, between the R'G'B' the matrix forms (`ycbcr_rgb`, or packed
 words' samples) and the 8-bit code: clamped to [0, 1], decoded through
 `srgb.glsl`, times `gain * F(r)` at the pinhole pixel, encoded and coded
 (`responded_word`). Its parameters ride at the end of the overlap buffer
-(+28 B, not push constants: `ColorParams` is 120 of Vulkan's minimum 128),
+(+28 B, not push constants: `ColorParams` is 124 of Vulkan's minimum 128),
 with an identity flag the host derives from them, at which the entries
 write `ycbcr_word`'s words, today's, byte for byte. The stereo rectifier
-calls `ycbcr_word` alone, so a correction is applied once, downstream. A
-luma-only picture on a pass with a response is refused: gains would tint
-grey.
+calls `ycbcr_word` and, where it averages a footprint, `ycbcr_to_word`
+alone, and `LumaPass` reads luma alone; neither binds the overlap buffer,
+so a correction is applied once, downstream. A luma-only picture on a pass
+with a response is refused: gains would tint grey. The response is the
+pass's, as the depth offset is: `RgbdFrame`, the frame contract and
+`sensor_wire` carry a frame as its driver handed it out, and
+`stereo_calibration` a pair's lenses and poses, so none carries one; the
+receiver's `SensorArray` sets it from its calibration.
 **`prep/`'s `PictureReadback`** copies a set's colour pictures to the
 host, luma alone or every plane, for calib's detector: NV12 images from
 their corner, and planes in a buffer where they sit, after the batch takes
