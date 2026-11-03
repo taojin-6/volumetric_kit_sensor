@@ -163,8 +163,9 @@ core::Status check_format(const Json& doc, std::string_view format,
                        "; this reader knows version " +
                        std::to_string(version));
   }
-  if (n < 1)
+  if (n < 1) {
     return bad("version " + std::to_string(n) + "; versions start at 1");
+  }
   return {};
 }
 
