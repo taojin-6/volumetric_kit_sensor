@@ -5747,11 +5747,12 @@ ungated, the returns with the output are those without it on 99.9975% of
 the samples (|dz| median 0.3 mm, p99 2.4 mm: a rebuild's noise); two
 processes on one plan give the same bits; and the gate at 0.2 px drops
 9.03% of the returns, adds none and leaves every kept one bit-identical.
-Merged with 0.36.0 (the outlier filter on by default and the near gate
+Merged with 0.37.0 (the outlier filter on by default and the near gate
 since 0.21.0, the frame contract since 0.26.0), Release with warnings as
-errors under the validation layer and synchronization validation: the M5
-Max suite, 55 tests, passes with default options, and the RTX 5090's, 63
-tests, with DeckLink, RealSense, FFmpeg, CUDA and FFS; the gate rounds
+errors under the validation layer: the M5 Max suite, 56 tests, passes with
+default options, and the RTX 5090's, 64 tests, with DeckLink, RealSense,
+FFmpeg, CUDA and FFS (both also under synchronization validation at the
+0.36.0 merge); the gate rounds
 drop 0, 545 and 0 returns at 64 x 32, 456 at 60 x 30 and 422 beside the
 near gate.
 Merged with 0.21.0, whose FFS code main has not changed since, it failed
