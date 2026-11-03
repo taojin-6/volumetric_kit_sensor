@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] - 2026-11-03
+
+### Added
+
+- **`HevcEncoderCase::rules`** (`testing/hevc_conformance.hpp`): `All`, the
+  default, runs every rule as before; `Stream` runs only those a session's
+  options change (C2-C6, C10, C11), for a sweep over colour codes, QPs or
+  sizes. A caller that sets no `rules`, as the iOS self-test, is unchanged.
+
+### Changed
+
+- **The encoder tests are fast.** `sensor_video_hevc_encoder` runs its rules
+  on 256x144 pictures (and 258x146, a 4n+2 width), 6 pictures a case, and its
+  colour-code sweep on the stream's rules alone: 3.0 s in Release (was
+  25.6 s) and 16.2 s under ThreadSanitizer (was 163-178 s) on an M5 Max.
+  Full-size coding stays in the benchmarks and the iOS self-test.
+- **C13b holds its writer's value instead of waiting 1 s.** It holds ten times
+  one picture's whole path, as the run measures it (at least 20 ms); nothing
+  may come back while the value is held, and the access unit comes back once
+  the run sets it. A watchdog sets the value 5 s past the hold, so a coding
+  thread that never waits fails the rule rather than hanging the run.
+
 ## [0.32.0] - 2026-11-03
 
 ### Changed
