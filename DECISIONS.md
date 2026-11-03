@@ -489,7 +489,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   and every driver's fake runs it under injected faults.
   `color_from_registered_depth` derives the colour camera from registered
   depth; `testing/rgbd_pattern.hpp`'s depth carries the picture's index
-  band.
+  band. *Amended 2026-11-03:* the stereo contract takes a time of 0 as none
+  too, and `order_breach` holds that rule for both.
 - [**2026-11-02**](#2026-11-02--an-rgb-d-sensors-frames-as-bytes-are-the-sensor-packages-sensor_wire-writes-the-sensorinfo-once-and-each-rgbdframes-depth-and-colour-halves-a-record-each-for-any-sensor-a-container-carries-them-unread-the-version-is-in-the-params-and-the-decode-checks-the-layout-not-the-values) —
   An RGB-D sensor's frames as bytes are this package's
   (`wire/rgbd_wire.hpp`, `sensor_wire`): the `SensorInfo` once, as a
@@ -6504,6 +6505,19 @@ suite for its own file. The array file's parse refusals without its name
 fail `sensor_camera_array_calibration`.
 
 ### 2026-11-02 — Every RGB-D driver keeps one frame contract (same capture, whole frames, loss read off the sequence), checked by `rgbd_breach` in every driver's fake; the colour camera derives from registered depth, and test depth carries the picture's index band.
+
+*Amended 2026-11-03 (the owner's call, below under "0 is no time"):* the
+stereo contract (`tests/stereo_contract.hpp`) takes a time of 0 as none
+too, as `StereoFrame::timestamp_ns` is `RgbdFrame::timestamp_ns`: a
+pair's sequence is still checked, and its time, where it has one, on the
+last one reported. The rule is `order_breach`'s own now, the time's
+checked only where both times are non-zero, so `RgbdContract` and the
+stereo contract each pass it the last non-zero time and keep no copy of
+it. A pair that goes back in time past a 0 still breaks it. Planted bugs,
+each failing its test: `order_breach` counting a 0 as a time again
+(`sensor_rgbd_contract`, `sensor_stereo_sensor`), and the stereo contract
+keeping a 0 as the last time, or skipping the sequence of a pair with no
+time (`sensor_stereo_sensor`).
 
 **The rule.** `IRgbdSensor`'s doc states the frame contract every driver
 keeps: a frame's colour is the picture of the capture its depth is from; a
