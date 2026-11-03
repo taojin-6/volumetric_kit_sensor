@@ -465,8 +465,11 @@ endif()
 # Apple's pixel buffers imported as images (sensor_apple, any Apple build, with
 # or without FFmpeg): buffers made here, read back in place, prepared as a
 # frame's colour, what the import allocates in Metal (metal_allocation.mm), and
-# the refusals. Skips without a device. The Metal device is sensor_apple's
-# internal metal_device, so the test compiles its source itself.
+# the refusals; imported for writing, stored into by the test writer
+# (sensor_video_testing's Nv12Writer, which every Apple build has) and read back
+# through the locked IOSurface; and the stale surfaces let go. Skips without a
+# device. The Metal device is sensor_apple's internal metal_device, so the test
+# compiles its source itself.
 if(APPLE)
   set(_vs_apple_src ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/apple)
   add_executable(
@@ -483,6 +486,7 @@ if(APPLE)
     PRIVATE volumetric_kit::core_test_policy
             volumetric_kit::sensor_apple
             volumetric_kit::sensor_prep
+            volumetric_kit::sensor_video_testing
             "-framework CoreFoundation"
             "-framework CoreVideo"
             "-framework IOSurface"
@@ -744,7 +748,8 @@ if(APPLE OR VS_WITH_FFMPEG)
              COMMAND sensor_video_vt_jpeg_error_test)
 
     # The encoder's open and output failures, through its public calls, its
-    # VideoToolbox session's calls replaced here as for the JPEG decoder.
+    # VideoToolbox session's calls replaced here as for the JPEG decoder; and on
+    # the device, targets on a session the system reclaims.
     add_executable(
       sensor_video_vt_encode_error_test
       sensor_video_vt_encode_error_test.cpp ${_vs_video_src}/hevc_encoder.cpp

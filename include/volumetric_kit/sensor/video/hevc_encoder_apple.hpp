@@ -34,13 +34,15 @@ namespace volumetric_kit::sensor {
 /// VideoToolbox writes the stream's chroma siting from the buffer, so a
 /// buffer with no chroma-location tag is given one where the session's
 /// siting is not 0. The encoder retains @p pixels until coded: do not write
-/// it after this call. A lost session is opened again here, and its first
-/// picture must be a key.
+/// it after this call. It works with or without `HevcEncoder::Options::
+/// device`. A lost session is opened again here, and its first picture must
+/// be a key.
 /// @return OK. `Status::Code::InvalidArgument` for no @p pixels, another
 ///         size or format, a tag that differs or that Core Video names no
-///         code for, no key while `HevcEncoder::key_owed`,
-///         `HevcEncoder::kInFlight` pictures already in flight, or a
-///         moved-from encoder. A lost session's reopening failure, as
+///         code for, a target taken (`HevcEncoder::target`) and not sent, no
+///         key while `HevcEncoder::key_owed`, `HevcEncoder::kInFlight`
+///         pictures already in flight, or a moved-from encoder. A lost
+///         session's reopening failure, as
 ///         `HevcEncoder::create`'s. Coding failures come from
 ///         `HevcEncoder::receive`.
 VS_VIDEO_API core::Status send_pixel_buffer(HevcEncoder& encoder,

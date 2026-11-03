@@ -40,8 +40,8 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
 | `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
 | `sensor_video_syntax` | `video/` | H.265 syntax read on the host and `KeyGate` (which units decode after a loss), every build | core base |
-| `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, `HevcEncoder` (VideoToolbox; `send_pixel_buffer` on Apple), `video_backend()`, what H.273 colour codes mean (`frame_color.hpp`), CUDA interop | frame, video_syntax |
-| `sensor_video_testing` | `testing/hevc_conformance.hpp` | `hevc_encoder_breach`, the encoder rules for any runner; static | video |
+| `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, `HevcEncoder` (VideoToolbox: a device target or, on Apple, `send_pixel_buffer`), `video_backend()`, what H.273 colour codes mean (`frame_color.hpp`), CUDA interop | frame, video_syntax |
+| `sensor_video_testing` | `testing/hevc_conformance.hpp`, `testing/nv12_writer.hpp` | `hevc_encoder_breach`, the encoder rules for any runner, and `Nv12Writer`, a test picture written into a target by a kernel; static | video |
 | `sensor_wire` | `wire/` | An RGB-D sensor's frames as bytes for a recording or a live link (`rgbd_wire.hpp`): the sensor once, each frame's depth and colour halves, read back in place; every build, iOS included | interface, video_syntax |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, `color_codes_of`, every Apple build | frame, video_syntax |
 | `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video, video_syntax |
@@ -349,10 +349,11 @@ H.265 syntax the Apple decoder reads (`volumetric_kit::sensor_video_syntax`,
 code, in every build.
 
 The HEVC encoder (`video/hevc_encoder.hpp`, the same target) codes on
-VideoToolbox in every Apple build, iOS included, a camera's
-`CVPixelBuffer` sent as it is (`video/hevc_encoder_apple.hpp`); its
-`create` refuses on Linux until NVENC lands. `video/backend.hpp` names the
-build's backend.
+VideoToolbox in every Apple build, iOS included: a target it hands out on
+the device, which the caller's kernel writes in its own batch and sends
+with the timeline value that batch sets, or a camera's `CVPixelBuffer`
+sent as it is (`video/hevc_encoder_apple.hpp`). Its `create` refuses on
+Linux until NVENC lands. `video/backend.hpp` names the build's backend.
 
 ```cpp
 #include "volumetric_kit/sensor/video/hevc_encoder.hpp"
@@ -363,8 +364,16 @@ o.width = 1920;
 o.height = 1440;
 o.qp = 22;
 o.color = {6, 1, 6, true, 0};  // BT.601, full range: the buffers' '420f'
+o.device = &device;  // made with sensor::hevc_encoder_device_requirements()
+o.allocator = &allocator;
 VKC_ASSIGN(sensor::HevcEncoder encoder, sensor::HevcEncoder::create(o));
-VKC_TRY(sensor::send_pixel_buffer(encoder, pixels, encoder.key_owed(), pts));
+core::CommandBatch batch(device, allocator);
+VKC_ASSIGN(const sensor::YuvImage target, encoder.target(batch));
+VKC_TRY(record_picture(batch, target));  // the caller's kernel: R8, R8G8 stores
+VKC_ASSIGN(core::PendingBatch writing, batch.submit_async({}, {{&timeline, n}}));
+VKC_TRY(encoder.send(encoder.key_owed(), pts, {&timeline, n}));  // returns at once
+// or, a camera's buffer as it is:
+// VKC_TRY(sensor::send_pixel_buffer(encoder, pixels, encoder.key_owed(), pts));
 sensor::HevcEncoder::CodedPicture coded;
 VKC_ASSIGN(const bool got, encoder.receive(coded));  // waits for it
 ```
@@ -397,17 +406,20 @@ index back, on the standard library alone. `testing/rgbd_contract.hpp`
 checks the frames and counters an `IRgbdSensor` handed out against the
 frame contract (`rgbd_sensor.hpp`): `rgbd_breach` over a vector, or
 `RgbdContract` one frame at a time for a run of any length.
-`testing/pattern_reader.hpp` (`sensor_prep`) reads that index from a
-picture or depth wherever it is, on the GPU, for the tools that check each
-frame carries its own picture: `PatternReader::read`, 4 bytes back a read.
+`testing/pattern_reader.hpp` (`sensor_prep`) reads the band's index from
+a picture or test depth wherever it is, on the GPU, for the tools that
+check each frame carries its own picture: `PatternReader::read`, 4 bytes
+back a read.
 `testing/hevc_slices.hpp` (`sensor_video_syntax`) reads a coded stream's
 slice types and QPs. The encoder rules (`testing/hevc_conformance.hpp`,
 `volumetric_kit::sensor_video_testing`) run on any device whose build has
-`sensor_video`: `hevc_encoder_breach` returns the first rule broken.
+`sensor_video`: `hevc_encoder_breach` returns the first rule broken, on
+pixel buffers or on targets, which `testing/nv12_writer.hpp`'s
+`Nv12Writer` writes with a compute kernel in the caller's batch.
 
 ## Versions
 
-The version is `project()`'s (0.30.0), carried by the umbrella as
+The version is `project()`'s (0.31.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per
