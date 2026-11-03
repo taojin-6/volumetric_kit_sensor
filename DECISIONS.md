@@ -462,7 +462,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   and received through a coding thread of its own, at most 2 in flight;
   VideoToolbox first, a camera's `CVPixelBuffer` coded as it is
   (`send_pixel_buffer`). The encoder rules C1-C13 are one function any
-  runner calls (`sensor_video_testing`).
+  runner calls (`sensor_video_testing`). *Amended 2026-11-02:* the
+  device-written target (`target`, `send` with a timeline value) followed,
+  with C9 and C13b.
 - [**2026-11-02**](#2026-11-02--host-depth-may-carry-a-confidence-plane-which-frame-prep-gates-on-the-gpu-per-raw-sample-before-anything-else-reads-it-level-0-is-never-integrated-and-a-frame-without-a-plane-is-prepared-bit-for-bit-as-before-amends-the-2026-09-28-gpu-pre-processing-entry) —
   Host depth may carry a confidence plane (`RgbdFrame::depth_confidence`, a
   byte a sample in the sensor's levels) and a floor (`min_confidence`):
@@ -511,6 +513,18 @@ entries relevant to your task; later amendments supersede earlier rules.
   hands out is kept until its value is reached, never by the picture's
   holder.
 
+- [**2026-11-02**](#2026-11-02--the-encoder-hands-out-its-next-picture-on-the-device-targetbatch-gives-a-picture-of-the-sessions-own-as-storage-images-the-callers-kernel-writes-in-its-batch-and-send-hands-over-the-value-that-batch-sets-which-the-coding-thread-waits-for-on-the-host-amends-the-2026-11-02-encoder-entry) —
+  The encoder hands out its next picture on the device: `target(batch)`,
+  on VideoToolbox a pool picture's planes as R8 and R8G8 storage images
+  (`PixelBufferImporter::Access::Write`), described by the session's
+  colour, for the caller's kernel to write in its batch; `send(key, pts,
+  written)` hands over the value that batch sets, and the coding thread
+  waits for it on the host before it codes. The targets' images stay with
+  the encoder across a lost session; the writer of every target sent is
+  waited for, the destructor's included. `create` readies the targets'
+  surfaces (a throwaway picture first), so a producer's targets wait for no
+  batch; a surface new to the session waits on the host, unlocked. The test
+  picture is written by a kernel (`testing::Nv12Writer`), not a copy.
 - [**2026-11-03**](#2026-11-03--one-frame-queue-for-every-threaded-driver-frame_queuehpp-in-sensordetail-holds-the-realsense-orbbec-and-stereodepthsensor-frames-their-drops-and-their-failure) —
   One frame queue for every threaded driver: `frame_queue.hpp`, in
   `sensor::detail`, holds the RealSense, Orbbec and `StereoDepthSensor`
@@ -6221,7 +6235,8 @@ send opens a lost session again. On Apple the way in is
 buffer of the session's size and range, its tags agreeing with the
 session's colour, coded as it is, with no Vulkan device. The device-written
 target (`target`, `send` with a timeline value) and NVENC follow in their
-own PRs; until NVENC, a Linux build's `create` refuses.
+own PRs; until NVENC, a Linux build's `create` refuses. *Amended
+2026-11-02:* the target landed (the 2026-11-02 target entry).
 
 **Why a coding thread.** In this mode VideoToolbox codes inside
 `VTCompressionSessionEncodeFrame`: 5.6-5.9 ms at 1920x1440 and 15.2-15.4 ms
@@ -6826,6 +6841,135 @@ copy waited on the host and the full ring not waited for
 lab RTX 5090 (FFmpeg 8, the validation layer 1.4.341 with synchronization
 validation) and the M5 Max (VideoToolbox, the Orbbec driver, validation);
 recon's suite on this checkout on the Mac.
+
+### 2026-11-02 — The encoder hands out its next picture on the device: `target(batch)` gives a picture of the session's own as storage images the caller's kernel writes in its batch, and `send` hands over the value that batch sets, which the coding thread waits for on the host (amends the 2026-11-02 encoder entry).
+
+**The rule.** With `Options::device`, a device with
+`hevc_encoder_device_requirements()` (`device_requirements()` plus
+`shaderStorageImageExtendedFormats`, which `create` checks with
+`Device::check_enabled`), `HevcEncoder::target(batch)` hands out the next
+picture as a `YuvImage`: on VideoToolbox a picture of the session's pool,
+its planes R8 and R8G8 images over the IOSurface in `GENERAL`, with
+`STORAGE`, `SAMPLED`, `TRANSFER_SRC` and `TRANSFER_DST` usage
+(`PixelBufferImporter::Access::Write`), described by the session's colour:
+the matrix's weights, the range and the siting, which the VUI states. It
+records into the batch what the planes need, which on VideoToolbox is
+nothing: they stay on the device's family, Metal sharing the surface with
+VideoToolbox. The caller writes them in that batch, submits it, and
+`send(key, pts, written)` hands over the value it sets and returns at once;
+the coding thread waits for that value on the host, then codes. A second
+`target` before `send` gives up the first; a refused send (no key while one
+is owed, two in flight) keeps the target for the send that corrects it;
+`send_pixel_buffer` is refused while a target is taken. `Options::allocator`
+is for a backend with target buffers of its own (NVENC, next); VideoToolbox
+needs none. A session with no device has no target and codes pixel buffers,
+as before.
+
+**Why the host waits, on the coding thread.** VideoToolbox reads the
+surface when `VTCompressionSessionEncodeFrame` is called, so something must
+know the write is done: the coding thread, which holds a thread for the
+encode anyway, waits for the value (`vkWaitSemaphores`, Vulkan's own call,
+so it allocates nothing but a failure's message) and neither the producer
+nor the device waits. At 1920x1440 with the device writing the target,
+send to access unit is 5.99 ms p50 (5.35 with pixel buffers), and the
+device's write, submission and signal included, is 0.57 ms of it; at
+3840x2160 15.54 ms (14.71), the write 0.78 ms. The wait itself adds under
+0.1 ms. The producer's time a picture (target, the kernel's record, the
+submit, the send) is 0.022 ms p50 at 1920x1440 and 0.032 ms at 3840x2160;
+with two in flight the throughput is the pixel buffers' (186 and 67.6
+pictures a second).
+
+**Why the images stay with the encoder.** A batch may still be writing a
+target when its session is lost: the coding thread fails a picture sent
+before a loss uncoded, and a reopen used to drop the importer, and with it
+the images, at once. The validation layer named it (an image view destroyed
+while a command buffer that wrote it was in use). So the new session takes
+over the lost one's importer, whose surface cache keeps each picture's
+images until 64 targets have come with none on its surface; the coding
+thread waits for each sent target's writer whatever comes of the picture,
+and the destructor waits for them all with no limit, as a pending batch
+does. The caller destroys the encoder only once the batches of the targets
+it gave up have completed.
+
+**Why `create` readies the targets' surfaces.** The importer readies a
+surface new to it (`UNDEFINED` to `GENERAL`) with a single-time submit it
+waits for on the host, and MoltenVK runs the device's one queue in order,
+so that wait runs behind every batch the caller submitted before. A target
+on such a surface held the producer for as long, and the encoder's lock
+with it (receive and the coding thread), and a batch waiting for a value
+the same thread sets only after `target` returns made it endless: Metal's
+GPU timeout lost the device after 5 s. A session cycles through a few
+surfaces, so `create` imports them before any batch of the caller's exists.
+The session replaces its pool as it codes its first picture (it picks the
+level then: with `ProfileLevel` set to `HEVC_Main_AutoLevel` the first
+encode hands out a new pool, without it the old one stays), so surfaces
+taken before that are never handed out again; `create` therefore codes
+one throwaway picture first, sited as the stream (VideoToolbox takes the
+siting from the first picture), and then imports `kInFlight + 2` pictures
+of the pool it keeps. At 1920x1440 and 3840x2160 every target of a fresh
+encoder then returns in 0.007-0.011 ms with one or two in flight, a target
+given up each time, or the images held past `send` (2 to 4 surfaces), where
+the first three were 0.4-0.8 ms before; `create` with a device takes 24 ms
+at 1920x1440 and 33 ms at 3840x2160 (1.4 ms without). A reopen's surfaces
+come as they are handed out, as do any more the pool makes: such a target
+waits behind the caller's earlier batches, now without the encoder's lock
+(299.5 ms behind a batch held 300 ms). Recording the transition into the
+caller's batch would need no host wait at all, but `CommandBatch::acquire`
+refuses a layout change with nothing to transfer: a core call first. A
+session whose pool is gone (VideoToolbox's
+`GetPixelBufferPool` is null once the session is invalidated, as the system
+reclaims one) fails the target (`IoError`) and is lost, so a producer of
+targets alone opens it again with its next target.
+
+**Why a kernel writes the test picture** (`testing::Nv12Writer`,
+`sensor_video_testing`, one compute kernel recorded into the caller's
+batch). The test pictures' upload into images waited for this, as the
+core's `CommandBatch` has no buffer-to-image copy. A copy added to the core
+would be its own core PR first, and would write the planes through
+`TRANSFER_DST`, which a target's caller does not use; a helper that takes
+no batch (the core's
+`test::write_image`, a blocking single-time submit) cannot be ordered by a
+timeline value, which C13b needs. The kernel stores into the planes as a
+producer's kernel does, so the storage images, the device requirement and
+`Access::Write` are what the tests exercise. `device_picture`, a new
+decoder-like picture through the core's `write_image`, stays as it is.
+
+**Tests.** `hevc_encoder_breach` runs on targets when the case is not
+`pixel_buffers`: C2 (a refused target kept), C6 (the target described by
+the colour its pictures decode with), C9 (a target is NV12 storage images
+of the session's size on the device's family; taken twice, one access unit
+follows; a send with no target refused), C11 (a pixel buffer refused while
+a target is taken; a session with no device hands out none), C12 (moved
+between `target` and `send`), C13 (a third target refused) and C13b (the
+batch waits for a value a helper thread sets 1 s later; `written` is below
+its value when `send` returns, and the access unit comes back only after
+the helper set it). `sensor_video_hevc_encoder` runs it on 512x512,
+1922x1082, 3840x4096 and 1920x1440 at either range, one sited at the
+centre, through targets beside the pixel-buffer cases; codes the pattern
+through targets with one batch held 300 ms behind a host value, decoding to
+the same PSNR as pixel buffers (52.9 dB luma) and each picture's index;
+describes a target by H.273's weights on each matrix of the set, at either
+range and each siting; runs four pictures two in flight, each batch behind
+a host value a helper sets 300 ms after the one before, each target
+returning before the batch before it may run, and the encoder destroyed
+with the last two sent returning only once the last value is set; loses
+the session while a sent target's batch waits, the next target reopening;
+and refuses a device without the storage formats. The test writer's own
+test runs on every leg with a device. `sensor_video_vt_encode_error`
+invalidates the session under targets, as the system reclaims one: the
+next target is `IoError` and loses it, the target taken before kept and
+coded as the key on the reopened session. `sensor_apple_pixel_buffer_importer`:
+written planes read back through the locked IOSurface, byte for byte, the
+bytes past the picture untouched; what written images allocate in Metal;
+a surface let go after 64 pictures. Planted bugs, each failing a test:
+`Access::Write` without `STORAGE`, the surface cache never letting go, the
+target's weights not from the matrix (C6), the coding thread skipping
+the wait for `written` (C13b, and the held picture's index), the
+destructor's drain not waiting for a writer, a reopen with an importer of
+its own, `create` readying no surface or the first pool's, a gone pool not
+losing the session, and a failed second target giving up the first. The suite on
+the M5 Max (Release, validation, both promises) and the threaded tests
+under ThreadSanitizer; the iOS build check links an app's target calls.
 
 ### 2026-11-03 — One frame queue for every threaded driver: `frame_queue.hpp`, in `sensor::detail`, holds the RealSense, Orbbec and `StereoDepthSensor` frames, their drops and their failure.
 

@@ -4,7 +4,8 @@
 // The encoder rules (testing/hevc_conformance.hpp): each is checked through
 // HevcEncoder's public calls, with the stream read by sensor's syntax
 // readers (hevc_syntax.hpp, testing/hevc_slices.hpp) and decoded by
-// HevcDecoder. Written apart from the encoder, so a rule here is never the
+// HevcDecoder, each picture a pixel buffer or a target the device writes
+// (Nv12Writer). Written apart from the encoder, so a rule here is never the
 // encoder's own code agreeing with itself.
 
 #include "volumetric_kit/sensor/testing/hevc_conformance.hpp"
@@ -23,9 +24,15 @@
 #include <vector>
 
 #include "volumetric_kit/core/base/exception_status.hpp"
+#include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
+#include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
+#include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/sensor/frame/color_space.hpp"
 #include "volumetric_kit/sensor/testing/hevc_slices.hpp"
 #include "volumetric_kit/sensor/testing/nv12_pattern.hpp"
+#include "volumetric_kit/sensor/testing/nv12_writer.hpp"
 #include "volumetric_kit/sensor/video/backend.hpp"
 #include "volumetric_kit/sensor/video/frame_color.hpp"
 #include "volumetric_kit/sensor/video/hevc_decoder.hpp"
@@ -43,11 +50,25 @@ namespace {
 
 using Encoder = HevcEncoder;
 
+// The session's options: for targets, opened on the case's device.
+Encoder::Options options_of(const HevcEncoderCase& c) {
+  Encoder::Options o = c.options;
+  if (!c.pixel_buffers) {
+    o.device = c.device;
+    o.allocator = c.allocator;
+  }
+  return o;
+}
+
 // The rules' run: a build whose encoder takes pixel buffers (Apple's).
 #if defined(__APPLE__)
 using Code = core::Status::Code;
 
 constexpr std::uint32_t kRing = 8;  // distinct pictures a run sends
+// How long C13b's helper thread waits before it sets the value the batch
+// that writes the target waits for: far past a picture's coding, so a
+// coding thread that did not wait has coded it by then.
+constexpr auto kWriterDelay = std::chrono::seconds(1);
 
 std::int64_t pts_of(std::uint32_t i) { return 1000 + 333 * std::int64_t{i}; }
 
@@ -176,18 +197,45 @@ std::string pinned_settings(const Encoder::Options& o) {
          std::to_string(c.chroma_location) + " from the buffer";
 }
 
+// What a target says its codes mean, as C6 compares it with the decoded
+// pictures'.
+struct Described {
+  float kr = 0;
+  float kb = 0;
+  bool full_range = false;
+  ChromaLocation siting = ChromaLocation::Left;
+};
+
 class Run {
  public:
-  explicit Run(const HevcEncoderCase& c) : c_(c), o_(c.options) {}
+  explicit Run(const HevcEncoderCase& c) : c_(c), o_(options_of(c)) {}
 
   core::Result<std::string> all();
 
  private:
+  bool targets() const { return !c_.pixel_buffers; }
   // Picture @p i of the ring, made the first time it is asked for.
   core::Result<CVPixelBufferRef> picture(std::uint32_t i);
-  core::Status send(Encoder& e, std::uint32_t i, bool key) {
+  // Targets: the writer, the timeline the writing batches set, and the
+  // ring's pictures on the device.
+  core::Status ready_targets();
+  // Picture @p i of the ring written into a target taken now, by a batch
+  // that sets written_'s next value, which written() then names; @p gate's
+  // value first, when given. The batch is kept in pending_.
+  core::Result<YuvImage> write_target(Encoder& e, std::uint32_t i,
+                                      core::TimelinePoint gate = {});
+  core::TimelinePoint written() { return {&written_, value_}; }
+  // Picture @p i sent as @p pts: a pixel buffer, or a target written.
+  core::Status send(Encoder& e, std::uint32_t i, bool key, std::int64_t pts) {
+    if (targets()) {
+      VKC_TRY(write_target(e, i).status());
+      return e.send(key, pts, written());
+    }
     VKC_ASSIGN(CVPixelBufferRef p, picture(i));
-    return send_pixel_buffer(e, p, key, pts_of(i));
+    return send_pixel_buffer(e, p, key, pts);
+  }
+  core::Status send(Encoder& e, std::uint32_t i, bool key) {
+    return send(e, i, key, pts_of(i));
   }
   // The rules, each empty when kept.
   core::Result<std::string> refusals();
@@ -198,6 +246,8 @@ class Run {
   core::Result<std::string> buffers(Encoder& e);
   core::Result<std::string> move(Encoder& e);
   core::Result<std::string> in_flight(Encoder& e);
+  core::Result<std::string> retake(Encoder& e);
+  core::Result<std::string> waits(Encoder& e);
 
   const HevcEncoderCase& c_;
   const Encoder::Options o_;
@@ -205,7 +255,51 @@ class Run {
   Pixels ring_[kRing];
   // The main stream, as received, for C6.
   std::vector<std::vector<std::uint8_t>> units_;
+  // The first target's description, for C6.
+  std::optional<Described> described_;
+  // Targets. The pending batches last, so they go first: they name the
+  // timelines, the pictures and the writer's sets.
+  std::optional<Nv12Writer> writer_;
+  core::TimelineSemaphore written_;
+  core::TimelineSemaphore gate_;  // C13b's helper sets it
+  std::uint64_t value_ = 0;       // written_'s last value
+  std::uint64_t gate_value_ = 0;
+  core::Buffer planes_[kRing];
+  core::PendingBatch pending_[kRing];
 };
+
+core::Status Run::ready_targets() {
+  VKC_ASSIGN(writer_, Nv12Writer::create(*c_.device));
+  VKC_ASSIGN(written_, core::TimelineSemaphore::create(*c_.device));
+  VKC_ASSIGN(gate_, core::TimelineSemaphore::create(*c_.device));
+  core::CommandBatch batch(*c_.device, *c_.allocator);
+  for (std::uint32_t i = 0; i < kRing; ++i) {
+    VKC_ASSIGN(planes_[i],
+               Nv12Writer::upload(batch, *c_.allocator,
+                                  test_pattern(o_.width, o_.height, i)));
+  }
+  return batch.submit();
+}
+
+core::Result<YuvImage> Run::write_target(Encoder& e, std::uint32_t i,
+                                         core::TimelinePoint gate) {
+  const std::uint64_t v = value_ + 1;
+  core::PendingBatch& kept = pending_[v % kRing];
+  // The batch kRing writes ago, whose descriptor set the writer takes next:
+  // done, as its picture was coded or given up long since.
+  VKC_TRY(kept.wait());
+  core::CommandBatch batch(*c_.device, *c_.allocator);
+  VKC_ASSIGN(YuvImage t, e.target(batch));
+  VKC_TRY(writer_->record(batch, planes_[i % kRing], t));
+  std::vector<core::TimelinePoint> waits;
+  if (gate.semaphore != nullptr) waits.push_back(gate);
+  VKC_ASSIGN(kept, batch.submit_async(waits, {{&written_, v}}));
+  value_ = v;
+  if (!described_) {
+    described_ = Described{t.kr, t.kb, t.full_range, t.chroma_location};
+  }
+  return t;
+}
 
 core::Result<CVPixelBufferRef> Run::picture(std::uint32_t i) {
   Pixels& made = ring_[i % kRing];
@@ -274,11 +368,20 @@ core::Result<std::string> Run::refusals() {
 }
 
 core::Result<std::string> Run::stream(Encoder& e) {
-  // C2: the first must be a key.
+  // C2: the first must be a key. A refused target is kept, and sent as one.
   const core::Status first = send(e, 0, false);
   if (first.domain() != Code::InvalidArgument || e.in_flight() != 0) {
     return "C2: a P-picture first gave " + said(first) +
            ", not InvalidArgument";
+  }
+  std::uint32_t from = 0;
+  if (targets()) {
+    const core::Status kept = e.send(true, pts_of(0), written());
+    if (!kept.ok()) {
+      return "C2: the target a refused send kept, sent as a key, gave " +
+             said(kept);
+    }
+    from = 1;
   }
   const std::uint32_t n = c_.pictures;
   const std::uint32_t middle = n / 2;
@@ -325,7 +428,7 @@ core::Result<std::string> Run::stream(Encoder& e) {
     units_.push_back(coded.access_unit);
     return std::string();
   };
-  for (std::uint32_t i = 0; i < n; ++i) {
+  for (std::uint32_t i = from; i < n; ++i) {
     if (e.in_flight() == Encoder::kInFlight) {
       VKC_ASSIGN(const std::string b, take());
       if (!b.empty()) return b;
@@ -437,7 +540,23 @@ core::Result<std::string> Run::decodes() {
   };
   VKC_ASSIGN(const std::string whole, run(0));
   if (!whole.empty()) return whole;
-  return run(c_.pictures / 2);
+  VKC_ASSIGN(const std::string middle, run(c_.pictures / 2));
+  if (!middle.empty()) return middle;
+  // The target is described as the stream's pictures decode: its codes are
+  // written by the matrix, range and siting the VUI states.
+  if (described_) {
+    const ColorCodes want = normalized(o_.color);
+    const YcbcrWeights weights =
+        ycbcr_weights(resolve_matrix(want.matrix, o_.height));
+    if (described_->kr != weights.kr || described_->kb != weights.kb ||
+        described_->full_range != want.full_range ||
+        described_->siting != resolve_chroma_location(want.chroma_location)) {
+      return std::string(
+          "C6: a target is described by another matrix, range or siting than "
+          "its pictures decode with");
+    }
+  }
+  return std::string();
 }
 
 core::Result<std::string> Run::drop(Encoder& e) {
@@ -554,6 +673,34 @@ core::Result<std::string> Run::buffers(Encoder& e) {
     return "C11: " + std::string(what) + " gave " + said(s);
   };
   if (std::string b = refused("no buffer", nullptr); !b.empty()) return b;
+  if (targets()) {
+    // A target taken and not sent: a buffer waits for it. Sent, it codes.
+    VKC_TRY(write_target(e, 1).status());
+    VKC_ASSIGN(CVPixelBufferRef p, picture(1));
+    if (std::string b = refused("a buffer while a target is taken", p);
+        !b.empty()) {
+      return b;
+    }
+    VKC_TRY(e.send(true, pts_of(1), written()));
+    Encoder::CodedPicture coded;
+    const core::Result<bool> got = e.receive(coded);
+    if (!got.ok() || !*got || coded.pts != pts_of(1)) {
+      return "C11: the target a buffer waited for came back " +
+             (got.ok() ? std::string(*got ? "mislabelled" : "nothing")
+                       : said(got.status()));
+    }
+  } else if (o_.device == nullptr && c_.device != nullptr) {
+    // A session with no device has no target, and codes buffers still.
+    core::CommandBatch batch(*c_.device, *c_.allocator);
+    const core::Result<YuvImage> t = e.target(batch);
+    if (t.ok() || t.status().domain() != Code::InvalidArgument) {
+      return "C11: a session with no device handed out a target, or gave " +
+             said(t.status());
+    }
+    if (e.send(true, 0, {}).domain() != Code::InvalidArgument) {
+      return std::string("C11: a send with no target taken was taken");
+    }
+  }
   {
     VKC_ASSIGN(Pixels small, make_pixels(o_.width - 2, o_.height, 0, o_.color));
     if (std::string b = refused("another size", small.get()); !b.empty()) {
@@ -638,7 +785,15 @@ core::Result<std::string> Run::buffers(Encoder& e) {
 
 core::Result<std::string> Run::move(Encoder& e) {
   Encoder::CodedPicture coded;
-  VKC_TRY(send(e, 8, e.key_owed()));
+  if (targets()) {
+    // Moved between target() and send(): the target moves with it.
+    VKC_TRY(write_target(e, 8).status());
+    Encoder holder(std::move(e));
+    VKC_TRY(holder.send(holder.key_owed(), pts_of(8), written()));
+    e = std::move(holder);
+  } else {
+    VKC_TRY(send(e, 8, e.key_owed()));
+  }
   Encoder moved(std::move(e));
   // NOLINTNEXTLINE(bugprone-use-after-move): the moved-from contract
   if (e.in_flight() != 0 || !e.key_owed() || e.lost() ||
@@ -666,6 +821,14 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
   const core::Status third = send(e, 12, false);
   if (third.domain() != Code::InvalidArgument) {
     return "C13: a third picture in flight gave " + said(third);
+  }
+  if (targets()) {
+    core::CommandBatch batch(*c_.device, *c_.allocator);
+    const core::Result<YuvImage> refused = e.target(batch);
+    if (refused.ok() || refused.status().domain() != Code::InvalidArgument) {
+      return "C13: a third target with two in flight gave " +
+             said(refused.status());
+    }
   }
   for (const std::uint32_t i : {10u, 11u}) {
     VKC_ASSIGN(const bool got, e.receive(coded));
@@ -723,7 +886,9 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
   // they number at most the receiver's time over the wait.
   constexpr std::uint32_t kPictures = 30;
   constexpr auto kWait = std::chrono::milliseconds(5);
-  for (std::uint32_t i = 0; i < kRing; ++i) VKC_TRY(picture(i).status());
+  if (!targets()) {
+    for (std::uint32_t i = 0; i < kRing; ++i) VKC_TRY(picture(i).status());
+  }
   std::atomic<std::uint32_t> back{0};
   std::atomic<bool> stopped{false};  // the receiver failed, or was let go
   // Written by the receiver, read once it has joined.
@@ -761,8 +926,7 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
       std::this_thread::yield();
       continue;
     }
-    sent =
-        send_pixel_buffer(e, ring_[i % kRing].get(), i == 0, pts_of(100 + i));
+    sent = send(e, i % kRing, i == 0, pts_of(100 + i));
     ++i;
   }
   if (!sent.ok()) stopped = true;  // let the receiver go
@@ -783,14 +947,109 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
   return std::string();
 }
 
+core::Result<std::string> Run::retake(Encoder& e) {
+  if (!targets()) return std::string();
+  Encoder::CodedPicture coded;
+  // What a target is: NV12 plane images of the session's size, which a
+  // kernel stores into, on the device's own queue family.
+  core::CommandBatch batch(*c_.device, *c_.allocator);
+  {
+    VKC_ASSIGN(const YuvImage t, e.target(batch));
+    const auto plane = [](const YuvImage& y, int p, VkFormat format) {
+      const auto& image = y.image[p];
+      return image != nullptr && image->format() == format &&
+             image->layout() == VK_IMAGE_LAYOUT_GENERAL &&
+             (image->usage() & VK_IMAGE_USAGE_STORAGE_BIT) != 0 &&
+             image->view() != VK_NULL_HANDLE;
+    };
+    if (t.layout != YuvLayout::Nv12 || t.width != o_.width ||
+        t.height != o_.height || t.device != nullptr ||
+        t.queue_family != kQueueFamilyIgnored || t.ready != nullptr ||
+        !plane(t, 0, VK_FORMAT_R8_UNORM) ||
+        !plane(t, 1, VK_FORMAT_R8G8_UNORM)) {
+      return std::string(
+          "C9: a target is not NV12 R8 and R8G8 storage images in GENERAL of "
+          "the session's size, on the device's queue family");
+    }
+  }
+  // Taken twice before a send, the first is given up: one picture is sent,
+  // and one access unit comes back.
+  VKC_TRY(write_target(e, 2).status());
+  VKC_TRY(write_target(e, 3).status());
+  VKC_TRY(e.send(e.key_owed(), pts_of(3), written()));
+  if (e.in_flight() != 1) {
+    return "C9: a target taken twice put " + std::to_string(e.in_flight()) +
+           " pictures in flight";
+  }
+  VKC_ASSIGN(const bool got, e.receive(coded));
+  if (!got || coded.pts != pts_of(3)) {
+    return std::string("C9: the target taken second did not come back");
+  }
+  VKC_ASSIGN(const bool more, e.receive(coded, 0));
+  if (more || e.in_flight() != 0) {
+    return std::string("C9: a target given up came back too");
+  }
+  // A target is sent once: another send needs another target.
+  const core::Status again = e.send(true, pts_of(4), written());
+  if (again.domain() != Code::InvalidArgument) {
+    return "C9: a send with no target taken gave " + said(again);
+  }
+  return std::string();
+}
+
+core::Result<std::string> Run::waits(Encoder& e) {
+  if (!targets()) return std::string();
+  // C13b: the batch that writes the target waits for a value a helper
+  // thread sets later. send returns at once, before the value is reached,
+  // and the picture is coded only once it is.
+  Encoder::CodedPicture coded;
+  const std::uint64_t gate = ++gate_value_;
+  VKC_TRY(write_target(e, 5, {&gate_, gate}).status());
+  const std::uint64_t value = value_;
+  std::atomic<bool> set{false};
+  core::Status signalled;
+  std::thread helper([&] {
+    std::this_thread::sleep_for(kWriterDelay);
+    set = true;
+    signalled = gate_.signal(gate);
+  });
+  const core::Status sent = e.send(e.key_owed(), pts_of(5), written());
+  const core::Result<std::uint64_t> at_send = written_.value();
+  core::Result<bool> got = false;
+  if (sent.ok()) got = e.receive(coded);
+  const bool after = set;
+  helper.join();
+  VKC_TRY(signalled);
+  if (!sent.ok()) return "C13b: the send gave " + said(sent);
+  VKC_TRY(at_send.status());
+  if (*at_send >= value) {
+    return std::string(
+        "C13b: the writer's value was reached when send returned: send "
+        "waited for the writer");
+  }
+  if (!got.ok() || !*got || coded.pts != pts_of(5)) {
+    return "C13b: the picture came back " +
+           (got.ok() ? std::string(*got ? "mislabelled" : "nothing")
+                     : said(got.status()));
+  }
+  if (!after) {
+    return std::string(
+        "C13b: the access unit came back before the value its writer waited "
+        "for was set: the picture was coded before it was written");
+  }
+  return std::string();
+}
+
 core::Result<std::string> Run::all() {
   format_ = o_.color.full_range
                 ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
                 : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
   VKC_ASSIGN(Encoder e, Encoder::create(o_));
+  if (targets()) VKC_TRY(ready_targets());
   using Rule = core::Result<std::string> (Run::*)(Encoder&);
   const Rule rules[] = {&Run::stream,  &Run::drop, &Run::lose,
-                        &Run::buffers, &Run::move, &Run::in_flight};
+                        &Run::buffers, &Run::move, &Run::in_flight,
+                        &Run::retake,  &Run::waits};
   VKC_ASSIGN(const std::string refused, refusals());
   if (!refused.empty()) return refused;
   for (const Rule rule : rules) {
@@ -813,16 +1072,15 @@ core::Result<std::string> hevc_encoder_breach(const HevcEncoderCase& c) try {
     return core::Status::invalid_argument(
         "hevc_encoder_breach: a case of fewer than 4 pictures");
   }
+  if (!c.pixel_buffers && (c.device == nullptr || c.allocator == nullptr)) {
+    return core::Status::invalid_argument(
+        "hevc_encoder_breach: targets need the case's device and allocator");
+  }
   {
     // No hardware path here: create's own refusal, for the runner.
-    VKC_ASSIGN(const Encoder probe, Encoder::create(c.options));
+    VKC_ASSIGN(const Encoder probe, Encoder::create(options_of(c)));
   }
 #if defined(__APPLE__)
-  if (!c.pixel_buffers) {
-    return core::Status::invalid_argument(
-        "hevc_encoder_breach: this build's encoder takes pixel buffers only "
-        "(HevcEncoderCase::pixel_buffers)");
-  }
   Run run(c);
   return run.all();
 #else

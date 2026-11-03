@@ -64,6 +64,7 @@ struct Held {
 struct PixelBufferImporter::Impl {
   const core::Device* device = nullptr;
   std::string who;
+  Access access = Access::Read;
   id<MTLDevice> metal = nil;  // the one MoltenVK runs the device on
   // The families the images are CONCURRENT across; empty for EXCLUSIVE.
   std::vector<std::uint32_t> families;
@@ -75,7 +76,8 @@ struct PixelBufferImporter::Impl {
   }
 
   // Plane @p plane of @p surface as an image of @p format, still UNDEFINED,
-  // with a view: GpuFramePrep samples it, and PictureReadback copies it.
+  // with a view: GpuFramePrep samples it, and PictureReadback copies it; for
+  // Write, a compute shader stores into it and a copy writes it too.
   core::Result<core::Image> plane_image(CVPixelBufferRef pixels,
                                         IOSurfaceRef surface, int plane,
                                         VkFormat format,
@@ -97,7 +99,9 @@ core::Result<core::Image> PixelBufferImporter::Impl::plane_image(
                                                          width:width
                                                         height:height
                                                      mipmapped:NO];
-  desc.usage = MTLTextureUsageShaderRead;
+  const bool write = access == Access::Write;
+  desc.usage = write ? MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite
+                     : MTLTextureUsageShaderRead;
   desc.storageMode = MTLStorageModeShared;  // Apple silicon: unified memory
   id<MTLTexture> texture =
       [metal newTextureWithDescriptor:desc
@@ -120,6 +124,9 @@ core::Result<core::Image> PixelBufferImporter::Impl::plane_image(
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
   info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  if (write) {
+    info.usage |= VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  }
   if (!families.empty()) {
     info.sharingMode = VK_SHARING_MODE_CONCURRENT;
     info.queueFamilyIndexCount = static_cast<std::uint32_t>(families.size());
@@ -173,14 +180,19 @@ PixelBufferImporter::Impl::import_surface(CVPixelBufferRef pixels,
   VKC_ASSIGN(out->chroma, plane_image(pixels, surface, 1, VK_FORMAT_R8G8_UNORM,
                                       MTLPixelFormatRG8Unorm));
   // Into GENERAL, once, before every later read: a compute shader's sample or
-  // a copy. Vulkan may discard contents on a transition from UNDEFINED, but
-  // Metal has no layouts, so MoltenVK keeps them.
+  // a copy; and for Write every later store. Vulkan may discard contents on a
+  // transition from UNDEFINED, but Metal has no layouts, so MoltenVK keeps
+  // them.
   VkImageMemoryBarrier b[2]{};
   const VkImage images[2] = {out->luma.handle(), out->chroma.handle()};
+  const VkAccessFlags writes =
+      access == Access::Write
+          ? VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT
+          : 0;
   for (int i = 0; i < 2; ++i) {
     b[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     b[i].dstAccessMask =
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | writes;
     b[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     b[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
     b[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -203,7 +215,8 @@ PixelBufferImporter::Impl::import_surface(CVPixelBufferRef pixels,
 
 core::Result<PixelBufferImporter> PixelBufferImporter::create(
     const core::Device& device, std::string who,
-    const std::uint32_t* queue_families, std::uint32_t queue_family_count) {
+    const std::uint32_t* queue_families, std::uint32_t queue_family_count,
+    Access access) {
   VKC_ASSIGN(std::vector<std::uint32_t> families,
              detail::sharing_families(device, queue_families,
                                       queue_family_count, who));
@@ -211,6 +224,24 @@ core::Result<PixelBufferImporter> PixelBufferImporter::create(
     return core::Status::unsupported(who +
                                      ": the device imports no Metal textures "
                                      "(VK_EXT_metal_objects)");
+  }
+  if (access == Access::Write) {
+    // The planes a compute shader stores into: R8 and R8G8 storage images.
+    const struct {
+      VkFormat format;
+      const char* name;
+    } planes[2] = {{VK_FORMAT_R8_UNORM, "R8"}, {VK_FORMAT_R8G8_UNORM, "R8G8"}};
+    for (const auto& plane : planes) {
+      VkFormatProperties props{};
+      vkGetPhysicalDeviceFormatProperties(device.physical_device(),
+                                          plane.format, &props);
+      if ((props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) ==
+          0) {
+        return core::Status::unsupported(
+            who + ": the device has no " + plane.name +
+            " storage images, which written planes are (Access::Write)");
+      }
+    }
   }
   const id<MTLDevice> metal = detail::metal_device(device);
   if (metal == nil) {
@@ -220,6 +251,7 @@ core::Result<PixelBufferImporter> PixelBufferImporter::create(
   auto impl = std::make_unique<Impl>();
   impl->device = &device;
   impl->who = std::move(who);
+  impl->access = access;
   impl->metal = metal;
   impl->families = std::move(families);
   return PixelBufferImporter(std::move(impl));

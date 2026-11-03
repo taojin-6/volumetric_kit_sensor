@@ -23,8 +23,9 @@ struct HevcEncoderAccess {
   static const HevcEncoder::Options* options(
       const HevcEncoder& encoder) noexcept;
 
-  // @p picture sent: InvalidArgument for kInFlight pictures already in
-  // flight, no key while one is owed, or a moved-from encoder; a lost
+  // @p picture sent: InvalidArgument for a target taken and not sent,
+  // kInFlight pictures already in flight, no key while one is owed, or a
+  // moved-from encoder; a lost
   // session opened again first, its failure as create's; else queued for
   // the coding thread, returning at once.
   static core::Status send(HevcEncoder& encoder, video::EncodePicture picture,
