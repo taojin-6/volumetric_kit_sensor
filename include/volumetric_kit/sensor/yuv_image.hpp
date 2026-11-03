@@ -53,6 +53,11 @@ inline constexpr std::uint32_t kQueueFamilyIgnored = ~std::uint32_t{0};
 ///        wrote, such as CUDA through imported memory, and `DeviceDepth`'s
 ///        likewise. Vulkan's `VK_QUEUE_FAMILY_EXTERNAL`.
 inline constexpr std::uint32_t kQueueFamilyExternal = ~std::uint32_t{0} - 1;
+/// @brief The most queue families a picture's images are shared across, as a
+///        driver's `color_queue_families` hold them (`OrbbecStreamOptions`,
+///        `ArkitSensor::Options`): the core's `BufferDesc::kMaxQueueFamilies`,
+///        mirrored so this header includes no Vulkan.
+inline constexpr std::uint32_t kMaxColorQueueFamilies = 4;
 
 /// @brief The YCbCr-to-RGB matrix of a coded picture.
 enum class VideoColorMatrix {

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Tao Jin
 
-// The calls an iOS app makes to code a camera's pictures, and pictures its
-// kernels write on the device, linked into an iOS executable by
-// tools/ios_build_check.sh, so a symbol iOS lacks, an FFmpeg or CUDA one
-// among them, fails the check. Never run: it opens no session unless given a
-// picture.
+// The calls an iOS app makes to open ARKit's camera and code its pictures,
+// and pictures its kernels write on the device, linked into an iOS executable
+// by tools/ios_build_check.sh, so a symbol iOS lacks, an FFmpeg or CUDA one
+// among them, fails the check. Never run: it opens no camera or session
+// unless given a picture.
 
 #include <CoreVideo/CoreVideo.h>
 
@@ -14,6 +14,8 @@
 
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/sensor/apple/core_video_color.hpp"
+#include "volumetric_kit/sensor/apple/pixel_buffer_importer.hpp"
+#include "volumetric_kit/sensor/arkit/arkit_sensor.hpp"
 #include "volumetric_kit/sensor/testing/hevc_conformance.hpp"
 #include "volumetric_kit/sensor/testing/nv12_writer.hpp"
 #include "volumetric_kit/sensor/video/backend.hpp"
@@ -29,6 +31,17 @@ int main(int argc, char** argv) {
   auto* picture =
       argc > 99 ? reinterpret_cast<CVPixelBufferRef>(argv[0]) : nullptr;
   if (picture == nullptr) return 0;
+  // ARKit's camera, as the scanner opens it (the device is the app's).
+  sensor::ArkitSensor::Options camera_options;
+  camera_options.device = reinterpret_cast<const core::Device*>(argv[1]);
+  auto camera = sensor::ArkitSensor::open(camera_options);
+  if (camera.ok() && camera->start().ok()) {
+    auto frame = camera->poll();
+    if (frame.ok() && frame.value()) {
+      picture = sensor::pixel_buffer_of(frame.value()->color);
+    }
+    std::printf("%s\n", sensor::to_string(camera->status().tracking));
+  }
   const auto tags = sensor::color_codes_of(picture);
   if (!tags) return 1;
   sensor::HevcEncoder::Options o;

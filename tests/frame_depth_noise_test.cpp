@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Tao Jin
 
 // DepthNoise (frame/depth_noise.hpp), on the host: sigma(z) term by term; what
-// known() takes as a model -- not the default, all zero, a negative, NaN or
-// infinite term, and any one positive term with the rest 0; stereo() against
+// known() takes as a model -- not the default, all zero, a negative a or c, a
+// NaN or infinite term, or a negative b unless b^2 < 4ac (ARKit's fit, above 0
+// at every depth); any one positive term with the rest 0; stereo() against
 // hand values, and unknown unless all three inputs are finite and above 0; ==
 // and != term by term; and a DeviceFrame's default is unknown. It links
 // sensor_frame alone, as recon's libraries do.
@@ -56,6 +57,34 @@ int test_known() {
     CHECK(!(sensor::DepthNoise{0.001f, bad, 0.0f}.known()));
     CHECK(!(sensor::DepthNoise{0.0f, 0.001f, bad}.known()));
   }
+  return 0;
+}
+
+int test_known_negative_linear() {
+  // ARKit's fit, as measured: b < 0 with b^2 = 5.9e-5 < 4ac = 1.3e-4, so
+  // sigma stays above 0 everywhere, least (4.7 mm) near 1 m.
+  const sensor::DepthNoise lidar{8.58e-3f, -7.67e-3f, 3.79e-3f};
+  CHECK(lidar.known());
+  CHECK(near(lidar.sigma(1.0f), 4.70e-3));
+  CHECK(near(lidar.sigma(4.0f), 38.54e-3));
+  for (float z = 0.0f; z <= 10.0f; z += 0.01f) CHECK(lidar.sigma(z) > 0.0f);
+  // A negative b needs both a and c: sigma then dips to a - b^2 / 4c, which
+  // must stay above 0 -- not at 0 (b^2 = 4ac: 0 at z = 1), nor below it.
+  CHECK(!(sensor::DepthNoise{0.001f, -0.002f, 0.001f}.known()));
+  CHECK(!(sensor::DepthNoise{0.001f, -0.003f, 0.001f}.known()));
+  CHECK((sensor::DepthNoise{0.001f, -0.0019f, 0.001f}.known()));
+  CHECK(!(sensor::DepthNoise{0.0f, -0.001f, 0.001f}.known()));
+  CHECK(!(sensor::DepthNoise{0.001f, -0.001f, 0.0f}.known()));
+  // A negative a or c is no model, whatever b is.
+  CHECK(!(sensor::DepthNoise{-0.001f, -0.001f, 0.01f}.known()));
+  CHECK(!(sensor::DepthNoise{0.01f, -0.001f, -0.001f}.known()));
+  CHECK(!(sensor::DepthNoise{-0.001f, 0.01f, 0.01f}.known()));
+  CHECK(!(sensor::DepthNoise{0.01f, 0.01f, -0.001f}.known()));
+  // Terms too large to square in float still decide by the same rule.
+  CHECK((sensor::DepthNoise{3e38f, -3e38f, 3e38f}.known()));
+  CHECK(!(sensor::DepthNoise{1e-30f, -3e38f, 1e-30f}.known()));
+  // A -0 b is b = 0.
+  CHECK((sensor::DepthNoise{0.0f, -0.0f, 0.002f}.known()));
   return 0;
 }
 
@@ -112,6 +141,7 @@ int test_frame_default_unknown() {
 int main() {
   if (test_sigma() != 0) return 1;
   if (test_known() != 0) return 1;
+  if (test_known_negative_linear() != 0) return 1;
   if (test_stereo() != 0) return 1;
   if (test_equality() != 0) return 1;
   if (test_frame_default_unknown() != 0) return 1;

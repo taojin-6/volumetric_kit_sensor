@@ -11,7 +11,8 @@
 # frame; sensor_orbbec on the interface and the decoders; sensor_realsense on
 # the interface and sensor_stereo; sensor_ffs on the stereo tier and, privately,
 # the video tier's CUDA; sensor_decklink on the stereo tier; sensor_microphone
-# on the interface; sensor_wire on the interface and sensor_video_syntax.
+# on the interface; sensor_wire on the interface and sensor_video_syntax;
+# sensor_arkit on the interface and, privately, sensor_apple and sensor_video.
 add_subdirectory(volumetric_kit/sensor/camera)
 set(_vs_tiers sensor_camera)
 if(NOT VS_CAMERA_ONLY)
@@ -39,7 +40,8 @@ if(NOT VS_CAMERA_ONLY)
     sensor_realsense
     sensor_ffs
     sensor_decklink
-    sensor_microphone)
+    sensor_microphone
+    sensor_arkit)
     if(TARGET ${_vs_optional})
       list(APPEND _vs_tiers ${_vs_optional})
     endif()

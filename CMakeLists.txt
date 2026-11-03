@@ -174,8 +174,9 @@ if(VS_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
     add_subdirectory(tools/mic_check)
   endif()
   # The VideoToolbox-coded clip's maker, built with the tests and never run by
-  # them: its output is committed (tools/make_hevc_fixtures.sh).
-  if(APPLE)
+  # them: its output is committed (tools/make_hevc_fixtures.sh). A camera-only
+  # build has no video tier to build it on.
+  if(APPLE AND NOT VS_CAMERA_ONLY)
     add_subdirectory(tools/vt_pattern_clip)
   endif()
 endif()
