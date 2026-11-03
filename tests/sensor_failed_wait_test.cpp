@@ -291,7 +291,9 @@ int decklink(vkc::test::GpuContext& gpu) {
   constexpr std::uint32_t kH = 16;
   const std::size_t row = dl::v210_row_bytes(kW);
   const std::size_t bytes = row * kH;
-  std::weak_ptr<void> held[2];
+  // The frames handed back, counted rather than watched by a weak_ptr: one
+  // would keep the hold's deleter, and the pages it holds, past the device.
+  const auto handed_back = std::make_shared<std::atomic<int>>(0);
   std::weak_ptr<dl::DevicePictures> pool;
   {
     std::array<std::shared_ptr<dl::PagePool>, 2> pages;
@@ -317,8 +319,10 @@ int decklink(vkc::test::GpuContext& gpu) {
       sides[i]->input = i;
       sides[i]->bytes = *data;
       sides[i]->hold = std::shared_ptr<void>(
-          *data, [p = pages[i]](void* q) { p->give_back(q); });
-      held[i] = sides[i]->hold;
+          *data, [p = pages[i], back = handed_back](void* q) {
+            p->give_back(q);
+            ++*back;
+          });
     }
     refused = 0;
     refuse_wait = true;
@@ -331,15 +335,15 @@ int decklink(vkc::test::GpuContext& gpu) {
     refuse_wait = false;
     CHECK(!uploader.fault().ok() && refused == 1);
     uploader.stop();
-    CHECK(!held[0].expired() && !held[1].expired());
+    CHECK(*handed_back == 0);
     CHECK(pages[0]->in_use() == 1 && pages[1]->in_use() == 1);
     const std::shared_ptr<dl::DevicePictures> kept = pool.lock();
     CHECK(kept != nullptr && kept->in_use() == 2);
   }
   CHECK(own.device->wait_idle().ok());
-  CHECK(!held[0].expired() && !held[1].expired() && !pool.expired());
+  CHECK(*handed_back == 0 && !pool.expired());
   own.destroy();
-  CHECK(held[0].expired() && held[1].expired() && pool.expired());
+  CHECK(*handed_back == 2 && pool.expired());
   std::puts("decklink: a failed wait leaves the pictures and the frames");
   return 0;
 }
