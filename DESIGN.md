@@ -507,10 +507,14 @@ one wait a timeline at its highest value (`frame/ready_points.hpp`'s
 timeline made on another device before it records anything. A caller of
 `GpuFramePrep::record` passes `ready_points(frame)` among its `submit_async`
 waits, one of `record_set` or `SensorArray::record_process`
-`ready_points(frames)` (`set.frames`). On a CUDA failure a decoder synchronizes its stream, then sets the
-last value it handed out from the host if the counter is below it, so no
-batch waits for good; its destructor does the same before CUDA's import
-goes. VideoToolbox's pictures, a camera's and host planes carry none.
+`ready_points(frames)` (`set.frames`). After a CUDA failure, before NVDEC's
+`send` or `receive` returns any error but `InvalidArgument`, and in its
+destructor before CUDA's import goes, a decoder settles: it synchronizes its
+stream, then sets the last value it handed out from the host if the counter
+is below it, so no batch waits for good on a signal a failed stream dropped.
+NVDEC's host wait for the oldest of three kept pictures asks the stream
+between 10 ms slices, so a failed one returns its error, settled (the
+2026-11-03 fault decision). VideoToolbox's pictures, a camera's and host planes carry none.
 **`video/`'s H.265 syntax** (`hevc_syntax.hpp`, target
 `sensor_video_syntax`) is public and builds on every platform: host
 code on the family core's base tier, with no codec, GPU or FFmpeg (the

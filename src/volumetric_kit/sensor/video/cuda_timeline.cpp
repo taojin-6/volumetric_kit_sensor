@@ -9,6 +9,7 @@
 #include "cuda_driver.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/sync.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
 
 namespace volumetric_kit::sensor::video {
 
@@ -77,7 +78,18 @@ bool CudaTimeline::reached(std::uint64_t value) const {
 }
 
 core::Status CudaTimeline::wait(std::uint64_t value) const {
-  return semaphore_->wait(value).with_context(who_);
+  // In slices, the stream asked between them whether it failed.
+  constexpr std::uint64_t kSliceNs = 10'000'000;
+  for (;;) {
+    const core::Status waited = semaphore_->wait(value, kSliceNs);
+    if (!core::is_timeout(waited)) return waited.with_context(who_);
+    const CudaContextScope scope(context_);
+    const CUresult r =
+        scope.ok() ? cuda_driver()->cuStreamQuery(stream_) : scope.result();
+    if (r != CUDA_SUCCESS && r != CUDA_ERROR_NOT_READY) {
+      return cuda_error(who_, r, "waiting for a picture's copy");
+    }
+  }
 }
 
 void CudaTimeline::settle() noexcept {

@@ -16,7 +16,9 @@
 // destroyed while its stream is held waits for it, so the picture it handed
 // out reads as unheld. A watchdog raises a flag the test has not after 10 s,
 // so a decoder that waits on the host where it should not fails rather than
-// hangs.
+// hangs. The table also drops ready values' signals and reports a faulted
+// stream, as a GPU fault leaves them: the error the decoder then returns comes
+// back with every value it handed out set, so no reader waits for good.
 //
 // Where no device path opens the test skips, or fails where
 // VS_TEST_HEVC_BACKEND promises one, as the decoder tests do; the JPEG part
@@ -97,6 +99,10 @@ struct Held {
   CUstream jpeg_stream = nullptr;
   std::atomic<CUstream> last_stream{nullptr};  // the last stream made
   std::atomic<CUresult> failed{CUDA_SUCCESS};  // a hold that did not queue
+  // As a stream that failed leaves them: the next `drops` ready values'
+  // signals dropped, never queued, and cuStreamQuery reporting a fault.
+  std::atomic<int> drops{0};
+  std::atomic<bool> faulted{false};
 };
 
 Held& held() {
@@ -131,6 +137,22 @@ CUresult held_push(CUcontext context) {
   return r;
 }
 
+CUresult dropped_signal(const CUexternalSemaphore* semaphores,
+                        const CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS* params,
+                        unsigned int count, CUstream stream) {
+  int left = held().drops.load();
+  while (left > 0 && !held().drops.compare_exchange_weak(left, left - 1)) {
+  }
+  if (left > 0) return CUDA_SUCCESS;
+  return held().real->cuSignalExternalSemaphoresAsync(semaphores, params, count,
+                                                      stream);
+}
+
+CUresult faulted_query(CUstream stream) {
+  if (held().faulted.load()) return CUDA_ERROR_ILLEGAL_ADDRESS;
+  return held().real->cuStreamQuery(stream);
+}
+
 CUresult held_stream_create(CUstream* stream, unsigned int flags) {
   const CUresult r = held().real->cuStreamCreate(stream, flags);
   if (r == CUDA_SUCCESS) held().last_stream.store(*stream);
@@ -141,8 +163,8 @@ CUresult held_stream_create(CUstream* stream, unsigned int flags) {
 
 namespace volumetric_kit::sensor::video {
 
-// The decoders' table: libcuda's, with the copy, the context push and stream
-// creation wrapped as above.
+// The decoders' table: libcuda's, with the copy, the context push, the ready
+// values' signal, the stream query and stream creation wrapped as above.
 const CudaDriver* cuda_driver() {
   static const std::optional<CudaDriver> table =
       []() -> std::optional<CudaDriver> {
@@ -165,6 +187,8 @@ const CudaDriver* cuda_driver() {
     t.cuMemcpy2DAsync = &held_copy;
     t.cuCtxPushCurrent = &held_push;
     t.cuStreamCreate = &held_stream_create;
+    t.cuSignalExternalSemaphoresAsync = &dropped_signal;
+    t.cuStreamQuery = &faulted_query;
     return t;
   }();
   return table ? &*table : nullptr;
@@ -289,6 +313,7 @@ constexpr std::uint32_t kHeight = 144;
 constexpr std::size_t kPixels = std::size_t{kWidth} * kHeight;
 constexpr const char* kPatches = VS_HEVC_DATA "/patches_256x144.h265";
 constexpr const char* kJpegFile = VS_JPEG_DATA "/patches_256x144.jpg";
+constexpr const char* kRefused = VS_HEVC_DATA "/refused_256x144.h265";
 
 // A frame of @p color's picture, through a lens, beside flat host depth.
 struct Frames {
@@ -588,6 +613,178 @@ int test_destroy_held(const Gpu& gpu, const Flag& flag,
   return 0;
 }
 
+// --- A failed stream ---------------------------------------------------------
+
+// Runs `act` after `after` unless stopped first: frees a decoder that waits
+// for good, so the test fails rather than hangs.
+class Watchdog {
+ public:
+  template <typename Act>
+  Watchdog(std::chrono::milliseconds after, Act act)
+      : thread_([this, after, act] {
+          std::unique_lock<std::mutex> lock(mutex_);
+          if (!cv_.wait_for(lock, after, [this] { return stopped_; })) {
+            act();
+            fired_ = true;
+          }
+        }) {}
+  ~Watchdog() { stop(); }
+  Watchdog(const Watchdog&) = delete;
+  Watchdog& operator=(const Watchdog&) = delete;
+
+  // Whether it had run `act`.
+  bool stop() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopped_ = true;
+    }
+    cv_.notify_all();
+    if (thread_.joinable()) thread_.join();
+    return fired_;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool stopped_ = false;
+  bool fired_ = false;
+  std::thread thread_;  // last: it runs on the members above
+};
+
+// @p unit, a P picture's access unit, its slice naming picture parameter set
+// 1, which the clip never sends.
+std::vector<std::uint8_t> naming_no_pps(std::vector<std::uint8_t> unit) {
+  for (std::size_t i = 0; i + 5 < unit.size(); ++i) {
+    const bool slice = unit[i] == 0 && unit[i + 1] == 0 && unit[i + 2] == 1 &&
+                       ((unit[i + 3] >> 1) & 0x3f) < 32;
+    // After the two header bytes: first_slice_segment_in_pic_flag (1), then
+    // slice_pic_parameter_set_id as ue(v), '1' for 0 and '010' for 1.
+    if (slice && (unit[i + 5] & 0xc0) == 0xc0) {
+      unit[i + 5] = static_cast<std::uint8_t>(0xa0 | (unit[i + 5] & 0x0f));
+      return unit;
+    }
+  }
+  return {};
+}
+
+// Whether this FFmpeg reports @p unit, sent after the patch clip's first
+// picture is taken, as an error: FFmpeg 6.1 reports a slice naming a missing
+// picture parameter set; FFmpeg 8 skips it.
+bool reported(const Gpu& gpu, const Clip& clip,
+              const std::vector<std::uint8_t>& unit) {
+  auto decoder = sensor::HevcDecoder::create(options_of(gpu));
+  if (!decoder ||
+      !decoder->send(clip.units[0].data(), clip.units[0].size(), 0).ok()) {
+    return false;
+  }
+  for (;;) {
+    auto picture = decoder->receive();
+    if (!picture.ok() || !picture.value()) break;
+  }
+  return !decoder->send(unit.data(), unit.size(), 1).ok();
+}
+
+// Picture 0's ready value dropped, as a stream that fails after queuing its
+// signal drops it, then an access unit that fails: one naming a picture
+// parameter set never sent (IoError, where FFmpeg reports it), or the refused
+// clip's 4:0:0 grey (Unsupported). Sent after picture 0 is taken, send
+// reports it; sent before, FFmpeg holds it until picture 0 is taken and
+// receive reports it. Either way the value is set by the time the error
+// returns, and the picture reads as unheld (its copy ran).
+int test_error_settles(const Gpu& gpu, sensor::GpuFramePrep& prep,
+                       const Frames& frames, const Clip& clip) {
+  const AccessUnits refused = sensor::testing::access_units_of_file(kRefused);
+  CHECK(refused.size() == 10);
+  const struct {
+    std::vector<std::uint8_t> unit;
+    vkc::Status::Code code;
+  } bad[] = {{naming_no_pps(clip.units[1]), vkc::Status::Code::IoError},
+             {refused[8], vkc::Status::Code::Unsupported}};
+  for (const auto& b : bad) {
+    CHECK(!b.unit.empty());
+    if (b.code == vkc::Status::Code::IoError && !reported(gpu, clip, b.unit)) {
+      std::fprintf(stderr,
+                   "this FFmpeg skips a slice naming a missing picture "
+                   "parameter set; the decode-error cases skipped\n");
+      continue;
+    }
+    for (const bool before : {false, true}) {
+      auto decoder = sensor::HevcDecoder::create(options_of(gpu));
+      CHECK(decoder.ok());
+      held().drops.store(1);
+      CHECK(decoder->send(clip.units[0].data(), clip.units[0].size(), 0).ok());
+      if (before) CHECK(decoder->send(b.unit.data(), b.unit.size(), 1).ok());
+      auto picture = decoder->receive();
+      CHECK(picture.ok() && picture.value() && held().drops.load() == 0);
+      const sensor::YuvImage yuv = picture.value()->yuv;
+      CHECK(unset(yuv));
+      vkc::Status failed;
+      if (before) {
+        failed = decoder->receive().status();
+      } else {
+        auto none = decoder->receive();
+        CHECK(none.ok() && !none.value());
+        failed = decoder->send(b.unit.data(), b.unit.size(), 1);
+      }
+      CHECK(failed.domain() == b.code);
+      CHECK(!unset(yuv));
+      CHECK(prepared_words(gpu, prep, frames.of(yuv)) == clip.want[0].words);
+    }
+  }
+  return 0;
+}
+
+// Pictures 0 to 2's ready values dropped, and the stream then reporting a
+// fault: with three kept, the next receive's wait for picture 0 sees the
+// fault, sets every value handed out and returns CUDA's error. A watchdog
+// sets them after 5 s, so a decoder that waits for good fails rather than
+// hangs.
+int test_wait_sees_fault(const Gpu& gpu, sensor::GpuFramePrep& prep,
+                         const Frames& frames, const Clip& clip) {
+  auto decoder = sensor::HevcDecoder::create(options_of(gpu));
+  CHECK(decoder.ok());
+  held().drops.store(3);
+  std::vector<sensor::DecodedPicture> got;
+  std::size_t sent = 0;
+  while (got.size() < 3 && sent < clip.units.size()) {
+    CHECK(decoder
+              ->send(clip.units[sent].data(), clip.units[sent].size(),
+                     static_cast<std::int64_t>(sent))
+              .ok());
+    ++sent;
+    while (got.size() < 3) {  // a fourth receive would wait for picture 0
+      auto picture = decoder->receive();
+      CHECK(picture.ok());
+      if (!picture.value()) break;
+      got.push_back(std::move(*picture.value()));
+    }
+  }
+  CHECK(got.size() == 3 && held().drops.load() == 0);
+  for (const sensor::DecodedPicture& p : got) CHECK(unset(p.yuv));
+  CHECK(decoder
+            ->send(clip.units[sent].data(), clip.units[sent].size(),
+                   static_cast<std::int64_t>(sent))
+            .ok());
+  held().faulted.store(true);
+  const sensor::YuvImage last = got.back().yuv;
+  Watchdog rescue(5000ms, [&last] {
+    // The semaphore is not const: the decoder hands it out as such.
+    auto& timeline = const_cast<vkc::TimelineSemaphore&>(*last.ready);
+    static_cast<void>(timeline.signal(last.ready_value));
+  });
+  const vkc::Status failed = decoder->receive().status();
+  const bool rescued = rescue.stop();
+  held().faulted.store(false);
+  CHECK(!rescued);
+  CHECK(failed.domain() == vkc::Status::Code::Backend);
+  for (std::size_t k = 0; k < got.size(); ++k) {
+    CHECK(!unset(got[k].yuv));
+    CHECK(prepared_words(gpu, prep, frames.of(got[k].yuv)) ==
+          clip.want[k].words);
+  }
+  return 0;
+}
+
 // --- nvJPEG ------------------------------------------------------------------
 
 std::vector<std::uint8_t> read_file(const char* path) {
@@ -688,6 +885,8 @@ int gpu_main(Gpu& gpu) {
   if (test_destroy_held(gpu, **flag, prep.value(), frames, clip) != 0) {
     return 1;
   }
+  if (test_error_settles(gpu, prep.value(), frames, clip) != 0) return 1;
+  if (test_wait_sees_fault(gpu, prep.value(), frames, clip) != 0) return 1;
   if (test_jpeg(gpu, **flag) != 0) return 1;
   std::puts("sensor_video_handover: OK");
   return 0;

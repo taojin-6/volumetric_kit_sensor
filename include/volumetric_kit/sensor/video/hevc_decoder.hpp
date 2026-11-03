@@ -111,7 +111,11 @@ class VS_VIDEO_API HevcDecoder {
   /// the picture carries the value CUDA sets once it is done
   /// (`YuvImage::ready`). The decoder keeps the frame FFmpeg copied NVDEC's
   /// output into until then, whoever holds the picture, and waits on the
-  /// host only when CUDA is three pictures behind.
+  /// host only when CUDA is three pictures behind. Every error but
+  /// `Status::Code::InvalidArgument` from @ref send or receive returns once
+  /// every value handed out is set, from the host where a failed GPU dropped
+  /// CUDA's signal, so no reader waits for good; a picture whose copy failed
+  /// holds what it left.
   /// @return The picture; empty when the decoder needs more input or has
   ///         drained; `Status::Code::Unsupported`, as from @ref send, once the
   ///         pictures decoded before a refusal are taken;

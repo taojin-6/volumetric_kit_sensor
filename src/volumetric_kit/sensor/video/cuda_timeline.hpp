@@ -47,7 +47,8 @@ class CudaTimeline {
   // Whether the counter has reached @p value; a failed read is not reached.
   bool reached(std::uint64_t value) const;
 
-  // Wait on the host until the counter reaches @p value.
+  // Wait on the host until the counter reaches @p value, or the stream fails
+  // (its error), after which it sets no more values: settle() then.
   core::Status wait(std::uint64_t value) const;
 
   // After a CUDA failure, and before the import goes: wait for the stream,
