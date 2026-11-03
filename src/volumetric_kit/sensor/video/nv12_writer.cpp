@@ -189,20 +189,19 @@ core::Result<Nv12Writer> Nv12Writer::create(const core::Device& device) try {
   const VkDescriptorPoolSize sizes[2] = {
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * kSets},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * kSets}};
-  VKC_ASSIGN(impl->pool, core::DescriptorPool::create(device.handle(), sizes,
-                                                      2, 2 * kSets));
-  VKC_TRY(build(device, impl->pool, "write_nv12", vs_write_nv12_comp_spv,
-                vs_write_nv12_comp_spv_size,
-                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
-                sizeof(Params), impl->images));
-  VKC_TRY(build(device, impl->pool, "write_nv12_buffer",
-                vs_write_nv12_buffer_comp_spv,
-                vs_write_nv12_buffer_comp_spv_size,
-                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-                sizeof(BufferParams), impl->buffer));
+  VKC_ASSIGN(impl->pool, core::DescriptorPool::create(device.handle(), sizes, 2,
+                                                      2 * kSets));
+  VKC_TRY(build(
+      device, impl->pool, "write_nv12", vs_write_nv12_comp_spv,
+      vs_write_nv12_comp_spv_size,
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+      sizeof(Params), impl->images));
+  VKC_TRY(build(
+      device, impl->pool, "write_nv12_buffer", vs_write_nv12_buffer_comp_spv,
+      vs_write_nv12_buffer_comp_spv_size,
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+      sizeof(BufferParams), impl->buffer));
   VkPhysicalDeviceProperties props{};
   vkGetPhysicalDeviceProperties(device.physical_device(), &props);
   impl->max_groups = props.limits.maxComputeWorkGroupCount[0];

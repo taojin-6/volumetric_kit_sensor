@@ -106,9 +106,9 @@ core::Result<FfmpegCudaDevice> FfmpegCudaDevice::open(
   hw->free = &release_cuda_session;
   const int err = av_hwdevice_ctx_init(out.device.get());
   if (err < 0) {
-    return core::Status::unsupported(std::string(who) + ": " + path +
-                                     ": no device opens: " +
-                                     ffmpeg_message(err));
+    return core::Status::unsupported(
+        std::string(who) + ": " + path +
+        ": no device opens: " + ffmpeg_message(err));
   }
   return out;
 }

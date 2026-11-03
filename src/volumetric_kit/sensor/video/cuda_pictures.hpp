@@ -65,9 +65,8 @@ struct FfmpegCudaDevice {
   // errors. Unsupported where CUDA does not reach @p device's GPU or FFmpeg's
   // device does not open; OutOfMemory if FFmpeg cannot allocate.
   static core::Result<FfmpegCudaDevice> open(const core::Device& device,
-                                             const char* who,
-                                             const char* path);
-  BufferRef device;                // AV_HWDEVICE_TYPE_CUDA, initialized
+                                             const char* who, const char* path);
+  BufferRef device;                   // AV_HWDEVICE_TYPE_CUDA, initialized
   const CudaSession* cuda = nullptr;  // owned by device's context
 };
 

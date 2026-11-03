@@ -108,7 +108,8 @@ struct HevcEncoderCase {
 ///          in `GENERAL` of the session's size, on the device's queue
 ///          family; on NVENC, NV12 rows of that size in a storage buffer,
 ///          the chroma's after the luma's, one stride apart, and a target
-///          taken again at once another buffer; one taken twice before a
+///          given up handed out again two targets later at the soonest; one
+///          taken twice before a
 ///          send gives up the first, and one access unit follows; a send
 ///          with no target taken is refused;
 ///        - C10 the settings line is the backend's pinned one;

@@ -65,15 +65,15 @@ endif()
 # --- sensor_video: the video coders ------------------------------------------
 # HEVC and JPEG decoders on the GPU's hardware, handing out pictures on the
 # device only, and the HEVC encoder: VideoToolbox's on every Apple platform,
-# with no FFmpeg, and NVDEC, nvJPEG and NVENC through CUDA elsewhere, built
-# only with VS_WITH_FFMPEG (see cmake/vs_ffmpeg.cmake). Camera-neutral: it links
+# with no FFmpeg, and NVDEC, nvJPEG and NVENC through CUDA elsewhere, built only
+# with VS_WITH_FFMPEG (see cmake/vs_ffmpeg.cmake). Camera-neutral: it links
 # sensor_frame and, on Apple, sensor_apple, and no camera tier, so a capture
-# driver links it. No FFmpeg type
-# reaches the public headers, and a platform type only Apple's encoder entry
-# (video/hevc_encoder_apple.hpp, CVPixelBufferRef); ffmpeg.hpp is FFmpeg's one
-# include and videotoolbox.hpp the one home of VideoToolbox's sessions.
-# hevc_encoder.cpp holds the encoder's rules and coding thread for every
-# backend, its session the backend's (hevc_encode_session.hpp).
+# driver links it. No FFmpeg type reaches the public headers, and a platform
+# type only Apple's encoder entry (video/hevc_encoder_apple.hpp,
+# CVPixelBufferRef); ffmpeg.hpp is FFmpeg's one include and videotoolbox.hpp the
+# one home of VideoToolbox's sessions. hevc_encoder.cpp holds the encoder's
+# rules and coding thread for every backend, its session the backend's
+# (hevc_encode_session.hpp).
 add_library(sensor_video)
 add_library(volumetric_kit::sensor_video ALIAS sensor_video)
 

@@ -142,8 +142,8 @@ struct NvencTarget {
 
   // FFmpeg's frame of it let go: NVENC has read it.
   static void release(void* self, std::uint8_t* /*data*/) noexcept {
-    static_cast<NvencTarget*>(self)->in_ffmpeg.store(
-        false, std::memory_order_release);
+    static_cast<NvencTarget*>(self)->in_ffmpeg.store(false,
+                                                     std::memory_order_release);
   }
 
   std::shared_ptr<core::Buffer> buffer;  // a target's YuvImage::device
@@ -172,8 +172,8 @@ struct NvencTargets {
 };
 
 core::Result<std::unique_ptr<NvencTargets>> NvencTargets::create(
-    const core::Device& device, core::Allocator& allocator,
-    std::uint32_t width, std::uint32_t height) {
+    const core::Device& device, core::Allocator& allocator, std::uint32_t width,
+    std::uint32_t height) {
   if (!device.exports_memory()) {
     return unsupported(
         "the device exports no memory (VK_KHR_external_memory_fd), through "
@@ -256,8 +256,8 @@ core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
     return ffmpeg_alloc_error(kWho, "opening NVENC");
   }
   const bool strips = options.height >= kStripRows;
-  if (strips && av_opt_find(s.codec->priv_data, "split_encode_mode", nullptr,
-                            0, 0) == nullptr) {
+  if (strips && av_opt_find(s.codec->priv_data, "split_encode_mode", nullptr, 0,
+                            0) == nullptr) {
     return unsupported(
         "a picture of " + std::to_string(kStripRows) +
         " rows or more is coded in strips, which this FFmpeg cannot ask "
@@ -270,8 +270,7 @@ core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
   Impl* before = previous != nullptr ? previous->impl_.get() : nullptr;
   if (before != nullptr) before->codec.reset();
   std::unique_ptr<NvencTargets> made;
-  NvencTargets* targets =
-      before != nullptr ? before->targets.get() : nullptr;
+  NvencTargets* targets = before != nullptr ? before->targets.get() : nullptr;
   if (targets == nullptr) {
     VKC_ASSIGN(made, NvencTargets::create(*options.device, *options.allocator,
                                           options.width, options.height));
@@ -296,10 +295,9 @@ core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
   for (const auto& [name, value] : applied) {
     const int err = av_opt_set(codec->priv_data, name, value.c_str(), 0);
     if (err < 0) {
-      return ffmpeg_error(kWho,
-                          std::string("setting hevc_nvenc's ") + name +
-                              " to " + value,
-                          err);
+      return ffmpeg_error(
+          kWho, std::string("setting hevc_nvenc's ") + name + " to " + value,
+          err);
     }
   }
   const int err = avcodec_open2(codec, nvenc, nullptr);
@@ -311,8 +309,8 @@ core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
   read.color = options.color;
   read.effort = options.effort;
   read.strips = strips ? 3 : 0;
-  read.settings = "hevc_nvenc " + size_text(options.width, options.height) +
-                  ":";
+  read.settings =
+      "hevc_nvenc " + size_text(options.width, options.height) + ":";
   for (const auto& [name, value] : applied) {
     read.settings.append(" ").append(name).append("=").append(value);
   }

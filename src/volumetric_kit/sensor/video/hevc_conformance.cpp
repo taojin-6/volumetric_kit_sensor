@@ -216,8 +216,7 @@ std::string pinned_settings(const Encoder::Options& o) {
   const std::string qp = std::to_string(o.qp);
   return "hevc_nvenc " + std::to_string(o.width) + "x" +
          std::to_string(o.height) + ": preset=p" + std::to_string(o.effort) +
-         " tune=ll profile=main rc=constqp init_qpP=" + qp +
-         " init_qpB=" + qp +
+         " tune=ll profile=main rc=constqp init_qpP=" + qp + " init_qpB=" + qp +
          " init_qpI=" + std::to_string(o.key_qp.value_or(o.qp)) +
          " forced-idr=1 no-scenecut=1 rc-lookahead=0 delay=0 zerolatency=1 "
          "multipass=disabled" +
@@ -407,7 +406,8 @@ core::Result<std::string> Run::refusals() {
     bad.push_back({"key QP 0", with([](auto& o) { o.key_qp = 0; }), uns});
   } else {
     // NVENC codes only the targets a device writes, and writes no siting.
-    bad.push_back({"no device", with([](auto& o) { o.device = nullptr; }), inv});
+    bad.push_back(
+        {"no device", with([](auto& o) { o.device = nullptr; }), inv});
     bad.push_back(
         {"no allocator", with([](auto& o) { o.allocator = nullptr; }), inv});
     bad.push_back(
@@ -1049,10 +1049,12 @@ core::Result<std::string> Run::retake(Encoder& e) {
   // What a target is on NVENC: NV12 rows of the session's size in a storage
   // buffer, the luma's from its start and the chroma's after them, one
   // stride of at least the width apart; the crossing to CUDA is the batch's.
-  // And one taken while another is held is another buffer.
+  // And one taken while another is held is another buffer, as is the one
+  // after: a target given up comes back two targets later at the soonest.
   {
     VKC_ASSIGN(const YuvImage t, e.target(batch));
     VKC_ASSIGN(const YuvImage next, e.target(batch));
+    VKC_ASSIGN(const YuvImage third, e.target(batch));
     const std::shared_ptr<const core::Buffer>& b = t.device;
     const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -1073,6 +1075,11 @@ core::Result<std::string> Run::retake(Encoder& e) {
     if (next.device == nullptr || next.device == b) {
       return std::string(
           "C9: a target taken again at once is the buffer it gave up");
+    }
+    if (third.device == nullptr || third.device == b ||
+        third.device == next.device) {
+      return std::string(
+          "C9: the target after the next is the buffer given up before");
     }
   }
 #else

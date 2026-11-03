@@ -50,7 +50,8 @@ ColorCodes color_codes(const AVFrame& frame) noexcept {
 
 void set_color(AVCodecContext& context, const ColorCodes& codes) noexcept {
   context.colorspace = static_cast<AVColorSpace>(codes.matrix);
-  context.color_trc = static_cast<AVColorTransferCharacteristic>(codes.transfer);
+  context.color_trc =
+      static_cast<AVColorTransferCharacteristic>(codes.transfer);
   context.color_primaries = static_cast<AVColorPrimaries>(codes.primaries);
   context.color_range = codes.full_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
   context.chroma_sample_location =

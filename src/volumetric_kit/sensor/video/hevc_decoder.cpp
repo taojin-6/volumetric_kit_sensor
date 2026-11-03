@@ -223,9 +223,8 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   impl->hw_device = std::move(hw.device);
   // The pictures' ready values, which CUDA sets on the decoder's stream after
   // each copy.
-  VKC_ASSIGN(impl->timeline,
-             video::CudaTimeline::create(*options.device, cuda_context, stream,
-                                         kWho));
+  VKC_ASSIGN(impl->timeline, video::CudaTimeline::create(
+                                 *options.device, cuda_context, stream, kWho));
   VKC_ASSIGN(impl->pictures,
              video::CudaPlanePictures::create(
                  *options.device, *options.allocator, cuda_context, stream,

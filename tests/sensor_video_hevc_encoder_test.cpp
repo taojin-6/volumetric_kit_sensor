@@ -268,9 +268,8 @@ int breach(const char* what, testing::HevcEncoderCase c, Gpu& gpu,
   c.pixel_buffers = in == In::PixelBuffers;
   using Rules = testing::HevcEncoderCase::Rules;
   const std::string name =
-      std::to_string(c.options.width) + "x" +
-      std::to_string(c.options.height) + " " + what +
-      (c.pixel_buffers ? ", pixel buffers" : ", targets") +
+      std::to_string(c.options.width) + "x" + std::to_string(c.options.height) +
+      " " + what + (c.pixel_buffers ? ", pixel buffers" : ", targets") +
       (c.rules == Rules::All      ? ", every rule"
        : c.rules == Rules::Stream ? ", the stream's rules"
                                   : ", the sequence's rules");
@@ -691,8 +690,19 @@ double psnr(const std::vector<std::uint8_t>& a,
   return mse == 0 ? 99.0 : 10.0 * std::log10(255.0 * 255.0 / mse);
 }
 
-// The pattern coded at QP 22 and decoded back: PSNR at least 45 dB in each
-// plane, square 0's 255 and square 1's 0 exact, and each picture's index.
+// The least PSNR a plane of the pattern decodes to at QP 22. NVENC codes the
+// pattern's sharp chroma edges at 43-47 dB (RTX 4090 and 5090), VideoToolbox
+// above 45 dB; a picture read at the wrong stride or range is far below
+// either.
+#if defined(__APPLE__)
+constexpr double kLeastPsnr = 45;
+#else
+constexpr double kLeastPsnr = 40;
+#endif
+
+// The pattern coded at QP 22 and decoded back: PSNR at least kLeastPsnr in
+// each plane, square 0's 255 and square 1's 0 exact, and each picture's
+// index.
 // Through targets, the device writes each picture (testing::Nv12Writer), and
 // picture kHeld's batch runs only once the test sets a value, after its send
 // has returned and a receive held ten pictures' time found nothing: it
@@ -805,7 +815,8 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
               color.full_range ? "full" : "video",
               targets ? "targets" : "pixel buffers", worst[0], worst[1],
               worst[2]);
-  CHECK(worst[0] >= 45 && worst[1] >= 45 && worst[2] >= 45);
+  CHECK(worst[0] >= kLeastPsnr && worst[1] >= kLeastPsnr &&
+        worst[2] >= kLeastPsnr);
   return 0;
 }
 
