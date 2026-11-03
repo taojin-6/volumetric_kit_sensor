@@ -22,8 +22,10 @@ namespace {
 
 using nlohmann::json;
 
-// The JSON both of the tier's files read and write (calibration_json.hpp).
+// The JSON the tier's files read and write (calibration_json.hpp).
 using detail::bad;
+using detail::camera_calibration;
+using detail::camera_text;
 using detail::check_world_kind;
 using detail::is_utf8;
 using detail::number;
@@ -46,7 +48,6 @@ constexpr std::string_view kFormat = "volumetric_kit.array_calibration";
 // run it uncorrected.
 constexpr std::uint64_t kVersion = 2;
 constexpr std::uint64_t kCorrectedVersion = 3;
-constexpr std::string_view kRational = "rational";
 // The largest depth offset either way, in metres: a sensor's depth error is
 // millimetres, so more is a unit or sign mistake.
 constexpr double kMaxDepthOffset = 0.05;
@@ -54,72 +55,7 @@ constexpr double kMaxDepthOffset = 0.05;
 // exactly, so this absorbs only the Rodrigues round trip.
 constexpr double kOriginTolerance = 1e-9;
 
-const char* to_string(IntrinsicsSource source) {
-  return source == IntrinsicsSource::Calibrated ? "calibrated" : "factory";
-}
-
 // --- reading -----------------------------------------------------------------
-
-core::Result<PinholeIntrinsics> pinhole(const json& block,
-                                        const std::string& where) {
-  PinholeIntrinsics k;
-  VKC_ASSIGN(k.fx, number(block, "fx", where));
-  VKC_ASSIGN(k.fy, number(block, "fy", where));
-  VKC_ASSIGN(k.cx, number(block, "cx", where));
-  VKC_ASSIGN(k.cy, number(block, "cy", where));
-  return k;
-}
-
-core::Result<RationalDistortion> rational(const json& block,
-                                          const std::string& where) {
-  const auto model = block.find("model");
-  if (model == block.end() || !model->is_string()) {
-    return bad(where + "missing string \"model\"");
-  }
-  if (model->get<std::string>() != kRational) {
-    return unsupported(where + "model \"" + model->get<std::string>() +
-                       "\"; this reader knows \"rational\"");
-  }
-  RationalDistortion d;
-  VKC_ASSIGN(d.k1, number(block, "k1", where));
-  VKC_ASSIGN(d.k2, number(block, "k2", where));
-  VKC_ASSIGN(d.p1, number(block, "p1", where));
-  VKC_ASSIGN(d.p2, number(block, "p2", where));
-  VKC_ASSIGN(d.k3, number(block, "k3", where));
-  VKC_ASSIGN(d.k4, number(block, "k4", where));
-  VKC_ASSIGN(d.k5, number(block, "k5", where));
-  VKC_ASSIGN(d.k6, number(block, "k6", where));
-  return d;
-}
-
-core::Result<CameraCalibration> camera_v2(const json& block,
-                                          const std::string& where) {
-  CameraCalibration camera;
-  const auto source = block.find("source");
-  if (source == block.end() || !source->is_string()) {
-    return bad(where + "missing string \"source\"");
-  }
-  if (*source == "factory") {
-    camera.source = IntrinsicsSource::Factory;
-  } else if (*source == "calibrated") {
-    camera.source = IntrinsicsSource::Calibrated;
-  } else {
-    return bad(where + "\"source\" is \"" + source->get<std::string>() +
-               "\", not \"factory\" or \"calibrated\"");
-  }
-  VKC_ASSIGN(camera.model.size.width, whole_number(block, "width", where));
-  VKC_ASSIGN(camera.model.size.height, whole_number(block, "height", where));
-  VKC_ASSIGN(const json* intrinsics, object_at(block, "intrinsics", where));
-  if (intrinsics == nullptr) return bad(where + "no \"intrinsics\" object");
-  VKC_ASSIGN(camera.model.intrinsics,
-             pinhole(*intrinsics, where + "intrinsics "));
-  VKC_ASSIGN(const json* distortion, object_at(block, "distortion", where));
-  if (distortion != nullptr) {
-    VKC_ASSIGN(camera.model.distortion,
-               rational(*distortion, where + "distortion "));
-  }
-  return camera;
-}
 
 core::Result<SensorCalibration> sensor_v2(const std::string& id,
                                           const json& block,
@@ -137,7 +73,7 @@ core::Result<SensorCalibration> sensor_v2(const std::string& id,
        {std::pair{"color", &sensor.color}, std::pair{"depth", &sensor.depth}}) {
     VKC_ASSIGN(const json* camera, object_at(block, key, where));
     if (camera != nullptr) {
-      VKC_ASSIGN(*field, camera_v2(*camera, where + key + " "));
+      VKC_ASSIGN(*field, camera_calibration(*camera, where + key + " "));
     }
   }
   VKC_ASSIGN(const json* depth_to_color,
@@ -218,25 +154,7 @@ core::Result<ArrayCalibration> parse_v1(const json& doc) {
   return array;
 }
 
-// --- writing -----------------------------------------------------------------
-
-std::string camera_text(const CameraCalibration& camera,
-                        const std::string& indent) {
-  const CameraModel& m = camera.model;
-  const RationalDistortion& d = m.distortion;
-  return std::string("{\"source\": \"") + to_string(camera.source) +
-         "\", \"width\": " + text(std::uint64_t{m.size.width}) +
-         ", \"height\": " + text(std::uint64_t{m.size.height}) + ",\n" +
-         indent + "  \"intrinsics\": {\"fx\": " + text(m.intrinsics.fx) +
-         ", \"fy\": " + text(m.intrinsics.fy) +
-         ", \"cx\": " + text(m.intrinsics.cx) +
-         ", \"cy\": " + text(m.intrinsics.cy) + "},\n" + indent +
-         "  \"distortion\": {\"model\": \"rational\", \"k1\": " + text(d.k1) +
-         ", \"k2\": " + text(d.k2) + ", \"p1\": " + text(d.p1) +
-         ", \"p2\": " + text(d.p2) + ", \"k3\": " + text(d.k3) +
-         ", \"k4\": " + text(d.k4) + ", \"k5\": " + text(d.k5) +
-         ", \"k6\": " + text(d.k6) + "}}";
-}
+// --- checking ----------------------------------------------------------------
 
 core::Status check_sensor(const SensorCalibration& sensor) {
   const std::string who = "sensor " + sensor.id + ": ";

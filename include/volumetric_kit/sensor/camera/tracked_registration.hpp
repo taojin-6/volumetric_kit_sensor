@@ -40,9 +40,8 @@
 /// - `world` is the array file's world block: one sensor or one tag
 ///   (@ref WorldFrame).
 /// - `fit` is how well the solve held, as the solver states it: the tag
-///   fit's RMS reprojection error, the stills it used, and the tag's mean
-///   edge as those stills placed it. Against the tag's `size_m`, the edge
-///   shows the tracking's scale error.
+///   fit's RMS reprojection error, the stills it used, and the tag's edge
+///   the solve fitted the corners to.
 /// - Every number is written in a form that reads back to the same double.
 ///   Keys this reader does not know are ignored, and a later `version` is
 ///   refused.
@@ -85,7 +84,8 @@ struct TrackedRegistration {
   double rms_px = 0.0;
   /// The stills the fit used: at least 1.
   std::uint32_t views = 0;
-  /// The tag's mean edge as the stills placed it, in metres: finite, above 0.
+  /// The tag's edge the solve fitted the corners to, in metres: finite,
+  /// above 0.
   double edge_m = 0.0;
 };
 

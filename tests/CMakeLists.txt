@@ -56,6 +56,19 @@ vs_target_warnings(sensor_camera_tracked_registration_test)
 add_test(NAME sensor_camera_tracked_registration
          COMMAND sensor_camera_tracked_registration_test)
 
+# A tracked sensor's stills, each posed by its tracking: a golden document (the
+# pose's direction, the session's byte order, either case of hex), written and
+# read back, each refusal, unknown keys, a later version, and through
+# write_file. Host-only, so camera-only builds run it too.
+add_executable(sensor_camera_tracked_stills_test camera_tracked_stills_test.cpp)
+target_link_libraries(sensor_camera_tracked_stills_test
+                      PRIVATE volumetric_kit::sensor_camera)
+target_include_directories(sensor_camera_tracked_stills_test SYSTEM
+                           PRIVATE "${VS_JSON_INCLUDE_DIR}")
+vs_target_warnings(sensor_camera_tracked_stills_test)
+add_test(NAME sensor_camera_tracked_stills
+         COMMAND sensor_camera_tracked_stills_test)
+
 # The camera tier's stereo pair: a pair from two entries of a calibration file
 # (stereo_calibration), its rectification on the host (rectify_stereo: rows
 # aligned within 1e-9 px, R2 the right camera's own, OpenCV's numbers as

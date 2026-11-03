@@ -4,11 +4,11 @@
 # --- sensor_camera: the family's camera vocabulary ---------------------------
 # The camera model (image size, intrinsics, OpenCV's rational lens), the lens as
 # a scalar template, rigid transforms, the sensor array's calibration file (the
-# 2026-10-06 decisions) and a tracked sensor's registration into it, which share
-# their JSON (calibration_json); a stereo pair, from two entries of that file,
-# its rectification and a lens's fold, on the host (the 2026-11-01 host
-# rectification decision); and the package's version, which a camera-only build
-# has too.
+# 2026-10-06 decisions), a tracked sensor's registration into it and its posed
+# stills, which share their JSON (calibration_json); a stereo pair, from two
+# entries of that file, its rectification and a lens's fold, on the host (the
+# 2026-11-01 host rectification decision); and the package's version, which a
+# camera-only build has too.
 #
 # It links volumetric_kit_core's base tier and GLM and nothing else -- no Vulkan
 # and no other sensor tier -- so a driver can report its factory calibration in
@@ -34,6 +34,7 @@ target_sources(
           stereo_calibration.cpp
           stereo_rectification.cpp
           tracked_registration.cpp
+          tracked_stills.cpp
           version.cpp)
 
 generate_export_header(
