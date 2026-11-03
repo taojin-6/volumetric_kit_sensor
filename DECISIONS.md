@@ -426,6 +426,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   hands out raw pairs, and the rectifier refuses it. *Amended the same day
   (the host rectification entry):* "no calibration", both cameras 0 x 0, is
   `StereoInfo`'s rule for every source, checked for every driver.
+  *Amended 2026-11-02:* the SDK's headers CI builds against are this
+  repository's, behind `.github/actions/decklink-sdk`.
 - [**2026-11-01**](#2026-11-01--a-stereo-pairs-rectification-and-a-lenss-fold-are-the-camera-tiers-on-the-host-rectify_stereo-and-fold_radius2-public-and-the-rectifiers-own-stereo_calibration-moves-there-too-and-both-cameras-0-x-0-is-every-sources-no-calibration-amends-the-2026-10-29-stereo-and-the-2026-11-01-stereo-sync-and-decklink-entries) —
   A stereo pair's rectification and a lens's fold are the camera tier's,
   on the host: `rectify_stereo` (Bouguet's, returning the rig and OpenCV's
@@ -5854,6 +5856,14 @@ SDK user. How each part works is DESIGN.md's (`decklink`).
   *Amended the same day:* the owner judged the licence fine; the 24.04 leg
   builds the SDK's part against the headers the core keeps, checked out at
   the core pin, and runs its smoke test.
+  *Amended 2026-11-02:* the headers moved from the core into this repository
+  (`tools/ci/decklink-sdk-16.0`, unmodified, with their SHA256 test, which
+  lint runs), at the owner's call: a camera vendor's SDK is a sensor's, not
+  the foundation's, and the headers then version with the driver, so a
+  consumer no longer builds sensor's driver against headers from its core
+  pin, and an SDK bump is one sensor PR. `.github/actions/decklink-sdk`
+  checks them and exports `DeckLinkSDK_ROOT`, here and in a consumer's CI
+  at its sensor pin.
 
 **Tests.** `sensor_decklink_pairing` (host, every leg): the connectors,
 modes, rows and the mode fix; each option refused, named, lenses only when

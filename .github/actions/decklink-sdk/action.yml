@@ -1,0 +1,25 @@
+name: DeckLink SDK headers
+description: >-
+  The DeckLink SDK's Linux headers this repository keeps
+  (tools/ci/decklink-sdk-16.0), held to their SHA256SUMS, their directory
+  exported as DeckLinkSDK_ROOT.
+
+# No job can download the SDK (its download sits behind a form), so the
+# package keeps its headers as Blackmagic ships them
+# (tools/ci/decklink-sdk-16.0/README.md). Every leg that builds
+# VS_WITH_DECKLINK, here or in a consumer's CI (by commit, at its sensor pin),
+# takes them through this action, so a leg builds the driver against the
+# headers of the sensor commit it builds. The headers come with the action:
+# GITHUB_ACTION_PATH is this directory in this repository's tree at that
+# commit, so a consumer checks nothing out. Needs sha256sum (GNU coreutils);
+# the driver builds on Linux x86-64 only.
+runs:
+  using: composite
+  steps:
+    - name: DeckLink SDK headers
+      shell: bash
+      run: |
+        sdk="${GITHUB_ACTION_PATH}/../../../tools/ci/decklink-sdk-16.0"
+        sdk=$(cd "${sdk}" && pwd)
+        (cd "${sdk}" && sha256sum --quiet --strict -c SHA256SUMS)
+        echo "DeckLinkSDK_ROOT=${sdk}" >> "${GITHUB_ENV}"

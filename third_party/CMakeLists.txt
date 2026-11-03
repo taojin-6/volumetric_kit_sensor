@@ -26,10 +26,8 @@ include(FetchContent)
 # The pin is core 0.41.0 (712d30a, core #88's merge): its exported timeline
 # (create_exported_timeline, Device::exports_semaphores), which NVIDIA's
 # decoders signal, and fwd.hpp's TimelineSemaphore; 0.38.0's
-# create_imported_host_buffer, which the DeckLink driver's pages are; and the
-# DeckLink SDK's headers in tools/ci/decklink-sdk-16.0 the 24.04 leg builds
-# against, checked out at this pin (.github/workflows/_build.yml). The tests are
-# main()s of their own on the core's test support, whose Vulkan-free part a
+# create_imported_host_buffer, which the DeckLink driver's pages are. The tests
+# are main()s of their own on the core's test support, whose Vulkan-free part a
 # camera-only build's tests use too.
 FetchContent_Declare(
   volumetric_kit_core

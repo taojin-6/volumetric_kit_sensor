@@ -68,8 +68,9 @@ on:
         default: false
       decklink:
         description: >-
-          Build with VS_WITH_DECKLINK=ON, on the DeckLink SDK headers the core
-          keeps (checked out below), so this leg builds sensor_decklink and
+          Build with VS_WITH_DECKLINK=ON, on the DeckLink SDK headers this
+          repository keeps (tools/ci/decklink-sdk-16.0, through
+          .github/actions/decklink-sdk), so this leg builds sensor_decklink and
           decklink_skew_report and runs the SDK smoke test, which checks the
           refusal where Desktop Video is missing, as on every runner.
         required: false
@@ -164,31 +165,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # The DeckLink SDK's headers, for VS_WITH_DECKLINK: no job can download
-      # the SDK, so the core keeps a copy (its tools/ci/decklink-sdk-16.0).
-      # Checked out at the core pin in third_party/CMakeLists.txt and held to
-      # its SHA256SUMS.
+      # The DeckLink SDK's headers, for VS_WITH_DECKLINK: the copy this
+      # repository keeps, held to its SHA256SUMS (see the action).
       - name: DeckLink SDK headers
         if: inputs.decklink
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: taojin-6/volumetric_kit_core
-          ref: 712d30a501a03a22779d56eff231f09d23b85db2
-          path: _decklink_sdk
-          persist-credentials: false
-          sparse-checkout: tools/ci/decklink-sdk-16.0
-
-      - name: DeckLink SDK root
-        if: inputs.decklink
-        run: |
-          sdk="${GITHUB_WORKSPACE}/_decklink_sdk/tools/ci/decklink-sdk-16.0"
-          pin=$(git -C _decklink_sdk rev-parse HEAD)
-          grep -q "GIT_TAG ${pin})" third_party/CMakeLists.txt || {
-            echo "::error::the DeckLink SDK checkout (${pin}) is not at the core pin in third_party/CMakeLists.txt"
-            exit 1
-          }
-          (cd "${sdk}" && sha256sum --quiet --strict -c SHA256SUMS)
-          echo "DeckLinkSDK_ROOT=${sdk}" >> "${GITHUB_ENV}"
+        uses: ./.github/actions/decklink-sdk
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
