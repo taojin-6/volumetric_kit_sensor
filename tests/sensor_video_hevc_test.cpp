@@ -5,18 +5,16 @@
 // on this machine's hardware onto the device, as NV12's two plane images, and
 // read back: the pattern the clip was made from, libavcodec's pictures to the
 // bit, VideoToolbox's encoder's clip (tools/vt_pattern_clip) to the bit and
-// its pattern's index, the colour an unlabelled stream takes, a reset
-// mid-stream and after
-// the end, a display window off the coded picture's corner, a held picture
-// never reused, many pictures held at once, each with its ready value on
-// NVDEC, frame prep from the images as from the same samples in a
-// buffer, a stream the hardware refuses, the decoders create refuses, the
-// images shared across queue families, NVDEC's decoders sharing the GPU's
-// primary CUDA context, NVDEC's pictures changing size within one decoder,
-// the argument checks, and moves. On VideoToolbox also:
-// pictures under NVDEC's smallest to the bit at either range and cropped,
-// parameter sets that change mid-stream, Main 10 refused, and a skipped
-// access unit reported.
+// its pattern's index, also read on the GPU, the colour an unlabelled stream
+// takes, a reset mid-stream and after the end, a display window off the coded
+// picture's corner, a held picture never reused, many pictures held at once,
+// each with its ready value on NVDEC, frame prep from the images as from the
+// same samples in a buffer, a stream the hardware refuses, the decoders create
+// refuses, the images shared across queue families, NVDEC's decoders sharing
+// the GPU's primary CUDA context, NVDEC's pictures changing size within one
+// decoder, the argument checks, and moves. On VideoToolbox also: pictures under
+// NVDEC's smallest to the bit at either range and cropped, parameter sets that
+// change mid-stream, Main 10 refused, and a skipped access unit reported.
 //
 // Where no device path opens the test skips; VS_TEST_HEVC_BACKEND, which CI
 // sets on the legs that promise one (NVDEC on the NVIDIA containers,
@@ -49,6 +47,7 @@
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/sensor/testing/hevc_clip.hpp"
 #include "volumetric_kit/sensor/testing/nv12_pattern.hpp"
+#include "volumetric_kit/sensor/testing/pattern_reader.hpp"
 #include "volumetric_kit/sensor/video/hevc_decoder.hpp"
 #include "volumetric_kit/sensor/video/hevc_syntax.hpp"
 #include "yuv_reference.hpp"
@@ -514,7 +513,8 @@ int test_reference_md5(const Gpu& gpu) {
 // camera's pictures are sent: on NVDEC and VideoToolbox alike its 12
 // pictures decode to libavcodec's MD5, 1920x1440, BT.601 full range, sited
 // left, primaries no ColorEncoding names (SMPTE 170M), and each picture's
-// index band names its picture; its keys are units 0 and 6.
+// index band names its picture, read back and on the GPU (PatternReader, the
+// check tools'); its keys are units 0 and 6.
 int test_vt_clip(const Gpu& gpu) {
   constexpr std::uint32_t kW = 1920;
   constexpr std::uint32_t kH = 1440;
@@ -533,6 +533,9 @@ int test_vt_clip(const Gpu& gpu) {
     std::fprintf(stderr, "%s\n", decoded.status.message().c_str());
   }
   CHECK(decoded.status.ok() && decoded.pictures.size() == 12);
+  auto reader =
+      sensor::testing::PatternReader::create(gpu.device, gpu.allocator);
+  CHECK(reader.ok());
   vs_test::Md5 sum;
   for (std::size_t i = 0; i < decoded.pictures.size(); ++i) {
     const Picture& p = decoded.pictures[i];
@@ -545,6 +548,9 @@ int test_vt_clip(const Gpu& gpu) {
     CHECK(!p.meta.encoding.has_value());
     CHECK(sensor::testing::pattern_index(p.planes[0].data(), kW) ==
           static_cast<long>(i));
+    sensor::YuvImage yuv = p.meta.yuv;
+    const auto index = (*reader)->read(yuv);
+    CHECK(index.ok() && *index == static_cast<std::uint32_t>(i));
     for (const std::vector<std::uint8_t>& plane : p.planes) {
       sum.update(plane.data(), plane.size());
     }
