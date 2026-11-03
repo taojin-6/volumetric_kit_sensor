@@ -149,11 +149,17 @@ vs_target_warnings(sensor_video)
 # --- sensor_video_testing: the encoder rules, for any runner -----------------
 # hevc_encoder_breach (testing/hevc_conformance.hpp): the rules every backend's
 # HevcEncoder keeps, checked with sensor's syntax readers and decoder, for the
-# package's tests and an application's on a device. Static, with no test
-# framework and no core test support, so it builds wherever sensor_video does;
-# the test pattern is testing/nv12_pattern.hpp's.
-add_library(sensor_video_testing STATIC hevc_conformance.cpp)
+# package's tests and an application's on a device; and Nv12Writer
+# (testing/nv12_writer.hpp), the compute kernel that writes a test picture into
+# an encoder's target as a producer's kernel would (shaders/write_nv12.comp,
+# embedded). Static, with no test framework and no core test support, so it
+# builds wherever sensor_video does; the test pattern is
+# testing/nv12_pattern.hpp's.
+add_library(sensor_video_testing STATIC hevc_conformance.cpp nv12_writer.cpp)
 add_library(volumetric_kit::sensor_video_testing ALIAS sensor_video_testing)
+include(vs_embed)
+vs_embed_shaders(sensor_video_testing SHADERS
+                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/write_nv12.comp")
 
 generate_export_header(
   sensor_video_testing

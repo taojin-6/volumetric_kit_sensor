@@ -6,7 +6,8 @@
 // failing to open, one that takes no QP a picture; and outputs that are
 // dropped, missing (then handed over as the session is torn down), a
 // P-picture where an IDR was asked, or two for one picture; a loss while a
-// picture codes; and the coding thread's quality of service. This executable
+// picture codes; the coding thread's quality of service; and, on the device,
+// a session the system reclaims unseen under its targets. This executable
 // compiles the encoder's sources so its VideoToolbox replacements also work in
 // a shared build; no fault-injection API is added to the library. Otherwise the
 // calls are the real hardware encoder's.
@@ -23,8 +24,10 @@
 #include <string>
 #include <thread>
 
+#include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/testing/vulkan_policy.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/sensor/testing/hevc_clip.hpp"
 #include "volumetric_kit/sensor/testing/nv12_pattern.hpp"
 #include "volumetric_kit/sensor/testing/nv12_pixel_buffer.hpp"
@@ -53,6 +56,9 @@ constexpr auto kSlow = std::chrono::milliseconds(50);
 std::atomic<int> encode_qos{QOS_CLASS_UNSPECIFIED};
 
 VTCompressionOutputCallback real_callback = nullptr;
+// The session last opened, which a test invalidates as the system reclaims
+// one, unseen by the encoder.
+VTCompressionSessionRef last_session = nullptr;
 
 // The missing output, held back and handed to the callback inside the
 // session's Invalidate, as VideoToolbox hands over an output still pending
@@ -112,8 +118,11 @@ extern "C" OSStatus VTCompressionSessionCreate(
   real_callback = callback;
   const auto real = reinterpret_cast<decltype(&VTCompressionSessionCreate)>(
       dlsym(RTLD_NEXT, "VTCompressionSessionCreate"));
-  return real(allocator, width, height, codec, specification, source_attributes,
-              data_allocator, &on_output, refcon, session);
+  const OSStatus made =
+      real(allocator, width, height, codec, specification, source_attributes,
+           data_allocator, &on_output, refcon, session);
+  if (made == noErr) last_session = *session;
+  return made;
 }
 
 extern "C" OSStatus VTCompressionSessionEncodeFrame(
@@ -281,6 +290,54 @@ int test_reopen_while_coding() {
   return 0;
 }
 
+// A session the system reclaims unseen (its Invalidate, called here, which
+// leaves it no pool) under targets: the next target is IoError and loses
+// the session, a key owed, and keeps the target taken before, whose send
+// opens the session again and codes it as the key; after a second
+// reclaim, the target after the failed one opens it again.
+int test_target_reclaimed(vkc::test::GpuContext& gpu) {
+  HevcEncoder::Options o = options();
+  o.device = &gpu.device;
+  o.allocator = &gpu.allocator;
+  auto e = HevcEncoder::create(o);
+  CHECK(e.ok());
+  const auto reclaimed_target = [&] {
+    VTCompressionSessionInvalidate(last_session);
+    if (e->lost()) return false;
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    const auto t = e->target(batch);
+    return !t.ok() && t.status().domain() == Code::IoError &&
+           t.status().message().find("no picture pool") != std::string::npos &&
+           e->lost() && e->key_owed();
+  };
+  HevcEncoder::CodedPicture coded;
+  {
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    CHECK(e->target(batch).ok());
+  }
+  CHECK(reclaimed_target());
+  CHECK(e->send(true, 0, {}).ok());  // the first target, kept
+  CHECK(!e->lost());
+  auto r = e->receive(coded);
+  CHECK(r.ok() && *r && coded.key && coded.pts == 0);
+  CHECK(reclaimed_target());
+  {
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    CHECK(e->target(batch).ok());
+  }
+  CHECK(!e->lost());
+  CHECK(e->send(true, 1, {}).ok());
+  r = e->receive(coded);
+  CHECK(r.ok() && *r && coded.key && coded.pts == 1);
+  return 0;
+}
+
+int gpu_main(vkc::test::GpuContext& gpu) {
+  if (test_target_reclaimed(gpu) != 0) return 1;
+  std::puts("sensor_video_vt_encode_error: OK");
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -295,6 +352,6 @@ int main() {
   if (test_open_failures() != 0) return 1;
   if (test_output_failures() != 0) return 1;
   if (test_reopen_while_coding() != 0) return 1;
-  std::puts("sensor_video_vt_encode_error: OK");
-  return 0;
+  return vkc::test::run_on_gpu(sensor::hevc_encoder_device_requirements(),
+                               gpu_main);
 }

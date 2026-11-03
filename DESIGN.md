@@ -545,10 +545,36 @@ only, no reordering, every NAL unit in temporal layer 0, a slice QP for
 P-pictures and one for IDRs fixed for the session, keys only when asked,
 the VUI from `Options::color` normalized and checked against one code set),
 or says what is missing (`Unsupported`); a build with no encoder (Linux,
-until NVENC) refuses there. On Apple the way in is
+until NVENC) refuses there. There are two ways in. With `Options::device`
+(a device with `hevc_encoder_device_requirements()`, `device_requirements()`
+plus `shaderStorageImageExtendedFormats`, which `create` checks),
+`target(batch)` hands out the next picture on the device: on VideoToolbox a
+picture of the session's pool, tagged with the session's siting, its planes
+R8 and R8G8 storage images in `GENERAL` through `PixelBufferImporter`'s
+`Access::Write`, described by the session's colour (the matrix's weights,
+range and siting), with nothing to record into the batch since the planes
+stay on the device's family. The caller's kernel writes them in that batch,
+submits it, and `send(key, pts, written)` hands over the value it sets: the
+coding thread waits for it on the host (`vkWaitSemaphores`, which allocates
+nothing), then codes the picture, so neither host waits for the device and
+the picture never crosses to the host. A second `target` gives up the
+first once it succeeds; a refused send keeps it. The targets' images stay
+with the encoder, a lost session's passing to the next, since a batch may
+still be writing one; the coding thread waits for each sent target's writer
+whatever comes of the picture, and so does the destructor, with no limit,
+as a pending batch does. The importer readies a surface new to it with a
+host-waited submit, behind the device's earlier work, so `create` readies
+the targets' surfaces first: it codes one throwaway picture, as the session
+replaces its pool at its first (it picks the level then), and imports
+`kInFlight + 2` pictures of the pool it keeps, which a producer with two in
+flight, or one target given up, cycles through. A target on a surface new
+to the session (after a reopen, or one more the pool makes) waits so,
+without the encoder's lock; a session whose pool is gone, as after the
+system reclaims it, fails the target and is lost. On Apple the other way in is
 `send_pixel_buffer(encoder, pixels, key, pts)` (`hevc_encoder_apple.hpp`):
 an NV12 IOSurface buffer of the session's size and range, its tags agreeing
-with the session's colour, coded as it is. A send returns at once; a coding
+with the session's colour, coded as it is, refused while a target is taken.
+A send returns at once; a coding
 thread of the encoder's own codes each picture, since VideoToolbox's
 low-latency mode codes inside `VTCompressionSessionEncodeFrame`; and
 `receive` hands back each Annex B access unit in the order sent, its buffer
@@ -577,8 +603,12 @@ Apple build, iOS included, with no FFmpeg) hands an 8-bit NV12
 Metal texture imported as an image (`VK_EXT_metal_objects`), with a view and
 `SAMPLED` and `TRANSFER_SRC` usage, so `GpuFramePrep` samples it and
 `PictureReadback` copies it, made once per
-surface and kept while pictures keep arriving on it, the images holding the
-pixel buffer. The Metal device the textures are made on is read once, in
+surface and kept while pictures keep arriving on it (one no picture arrived
+on in 64 is let go), the images holding the
+pixel buffer. Made for `Access::Write`, the images also have `STORAGE` and
+`TRANSFER_DST` usage and the textures are written as well as read, so a
+compute shader stores into the surface in place (`r8`, `rg8`): the
+encoder's targets, on a device with R8 and R8G8 storage images. The Metal device the textures are made on is read once, in
 `create`, off a 1x1 probe image's exported texture (internal
 `metal_device.mm`, which the importer's test reads Metal's allocations
 through too). The images are EXCLUSIVE unless `create` is given the queue
@@ -1236,9 +1266,15 @@ type and QP and each SPS's profile and sub-layers, through the parsers'
 own walks (internal `hevc_syntax_detail.hpp`); no decode path calls it.
 `hevc_conformance.hpp`'s `hevc_encoder_breach` (`sensor_video_testing`,
 static, built wherever `sensor_video` is, with no core test support) runs
-the encoder rules C1 to C13 on one case through the public calls and names
-the first one broken; sensor's encoder test runs it on the public sizes and
-every code in the set, and an app's device test can run it as it is.
+the encoder rules C1 to C13b on one case through the public calls, on pixel
+buffers or on targets, and names the first one broken; sensor's encoder
+test runs it on the public sizes and every code in the set, and an app's
+device test can run it as it is. `nv12_writer.hpp`'s `Nv12Writer` (the same
+target) writes a test picture into plane images from one compute kernel
+(`write_nv12.comp`, embedded), recorded into the caller's batch, as a
+producer's kernel writes a target; the rules' C13b needs the write inside a
+batch a timeline value orders, and the target's `STORAGE` planes need a
+kernel's stores, which a copy would not show.
 
 `rgbd_pattern.hpp` (standard library alone; camera-only builds run its
 test) is that test depth, as a tracked sensor delivers it:
