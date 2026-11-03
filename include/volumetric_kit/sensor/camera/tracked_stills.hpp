@@ -5,8 +5,8 @@
 
 /// @file camera/tracked_stills.hpp
 /// @brief A tracked sensor's stills of one capture session, each with the
-///        pose its tracking gave it: what the sensor's recorder writes beside
-///        the session and calib's `register_tracked` reads.
+///        pose its session records for it: what the sensor's recorder writes
+///        beside the session and calib's `register_tracked` reads.
 ///
 /// Version 1, in the directory of the stills it names:
 ///
@@ -23,18 +23,21 @@
 ///                         "tvec": [0.1, 0.2, 1.4]}}]}
 /// @endcode
 ///
-/// - Each still is one frame's picture's luma: an 8-bit grey PNG at the
-///   picture's size, full range. `image` is its file's name, in this file's
-///   directory, unique.
+/// - Each still is one of the session's recorded frames: its picture's luma,
+///   an 8-bit grey PNG at the picture's size, full range. `image` is its
+///   file's name, in this file's directory, unique as bytes.
 /// - `camera` is the array file's camera block (camera/array_calibration.hpp):
 ///   the picture's model, `distortion` absent for a pinhole. The writer
 ///   writes the block as the array file does, `distortion` included, and
-///   `source` as `"factory"`, a tracked sensor's model being its SDK's; the
-///   reader reads either source and keeps the model.
-/// - `cam_to_tracking` has the array file's `depth_to_color` form:
-///   `x_tracking = R(rvec) x_camera + tvec`, the camera in this package's
-///   axes (+Z forward, +Y down; ARKit's poses through `cv_from_gl_camera`
-///   first).
+///   `source` as `"factory"`: version 1 keeps no source, its stills' models
+///   being their SDK's. The reader reads either source and keeps the model.
+/// - `cam_to_tracking` is the frame's pose as its session's records carry it
+///   (its `RgbdFrame::color_to_world`, after any correction the recorder
+///   makes to every pose it records), so the registration solved from these
+///   stills places that session's frames. It has the array file's
+///   `depth_to_color` form: `x_tracking = R(rvec) x_camera + tvec`, the
+///   camera in this package's axes (+Z forward, +Y down; ARKit's poses
+///   through `cv_from_gl_camera` first).
 /// - `session` and `world_epoch` are camera/tracked_registration.hpp's: the
 ///   capture session the frames came in, as 32 hex digits, byte 0 first,
 ///   and the device's world within it.
@@ -63,7 +66,7 @@ struct TrackedStill {
   std::string image;
   std::uint64_t timestamp_ns = 0;      ///< Its frame's time.
   CameraModel model;                   ///< The picture's model.
-  Mat4d cam_to_tracking = Mat4d(1.0);  ///< Rigid.
+  Mat4d cam_to_tracking = Mat4d(1.0);  ///< Its frame's recorded pose; rigid.
 };
 
 /// @brief A tracked sensor's stills of one session's world epoch.

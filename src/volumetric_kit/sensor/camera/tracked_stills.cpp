@@ -164,7 +164,7 @@ core::Result<std::string> format_tracked_stills(
   const std::string indent = kIndent;
   for (std::size_t i = 0; i < stills.stills.size(); ++i) {
     const TrackedStill& s = stills.stills[i];
-    // A tracked sensor's model is its SDK's (the header).
+    // Version 1 keeps no source (the header).
     const CameraCalibration camera{s.model, IntrinsicsSource::Factory};
     out += (i == 0 ? "\n" : ",\n") + indent + "{\"image\": " + text(s.image) +
            ", \"timestamp_ns\": " + text(s.timestamp_ns) + ",\n" + indent +

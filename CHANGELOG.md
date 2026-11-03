@@ -12,10 +12,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `sensor_camera`, every build, camera-only included): `TrackedStills`, a
   tracked sensor's stills of one capture session's world epoch, each a
   `TrackedStill` with its image's file name (beside the file), its frame's
-  time, its `CameraModel` and the rigid `cam_to_tracking` its tracking gave
-  it. `validate_`, `parse_`, `read_`, `format_` and `write_tracked_stills`
-  read and write the file, `"volumetric_kit.tracked_stills"` version 1:
-  the registration's `sensor`, `session` and `world_epoch`, and the array
+  time, its `CameraModel` and its rigid `cam_to_tracking`, the pose the
+  session records for that frame. `validate_`, `parse_`, `read_`,
+  `format_` and `write_tracked_stills` read and write the file,
+  `"volumetric_kit.tracked_stills"` version 1: the registration's `sensor`, `session` and `world_epoch`, and the array
   file's camera block and transform form for each still. A tracked
   sensor's recorder writes it beside the session's images; calib's
   `register_tracked` reads it. DECISIONS.md, the 2026-11-03 tracked stills

@@ -271,14 +271,18 @@ int test_round_trip() {
   if (!read) std::fprintf(stderr, "%s\n", read.status().message().c_str());
   CHECK(read.ok());
   if (check_same(read.value(), s, 1e-12) != 0) return 1;
-  // A second trip writes the same document.
+  // A second trip writes the same document, but for each `rvec`, which
+  // carries the Rodrigues round-off.
   const auto again = cam::format_tracked_stills(read.value());
   CHECK(again.ok());
-  const json first = json::parse(text.value());
-  const json second = json::parse(again.value());
-  CHECK(first.at("session") == second.at("session"));
-  CHECK(first.at("stills")[0].at("camera") ==
-        second.at("stills")[0].at("camera"));
+  json first = json::parse(text.value());
+  json second = json::parse(again.value());
+  for (json* doc : {&first, &second}) {
+    for (json& still : (*doc)["stills"]) {
+      CHECK(still["cam_to_tracking"].erase("rvec") == 1);
+    }
+  }
+  CHECK(first == second);
 
   // The golden stills the same way.
   const auto golden_text = cam::format_tracked_stills(golden());
@@ -334,6 +338,10 @@ int test_refusals() {
   CHECK(refused(with("version", 0), bad, "version 0; versions start at 1"));
   CHECK(refused(with("version", 2), Code::Unsupported,
                 "version 2; this reader knows version 1"));
+  // A later version is refused before its body is read.
+  json v2 = with("version", 2);
+  v2.erase("stills");
+  CHECK(refused(v2, Code::Unsupported, "version 2"));
 
   // The sensor, the session and its epoch.
   CHECK(refused(with("sensor", ""), bad, "\"sensor\" is empty"));

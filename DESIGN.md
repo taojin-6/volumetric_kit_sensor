@@ -249,13 +249,17 @@ decision): unprojection and rescaling come with their first caller.
   one internal place (`calibration_json.{hpp,cpp}`); each file's public
   functions prefix its refusals with its name.
 - **`camera/tracked_stills.hpp`** — a tracked sensor's stills of one
-  session's world epoch, each with the pose its tracking gave it: what a
-  recorder writes beside the session (ios) and calib's `register_tracked`
-  reads. `TrackedStills` is the sensor's id, the session and the epoch as
-  the registration names them, and at least one `TrackedStill` in time
-  order: its image's file name in the stills file's directory (unique, no
-  '/', not `.` or `..`), its frame's time (each after the one before), its
-  `CameraModel` and its rigid `cam_to_tracking` in `depth_to_color`'s form.
+  session's world epoch, each with the pose its session records for it:
+  what a recorder writes beside the session (ios) and calib's
+  `register_tracked` reads. `TrackedStills` is the sensor's id, the session
+  and the epoch as the registration names them, and at least one
+  `TrackedStill` in time order, each one of the session's recorded frames:
+  its image's file name in the stills file's directory (the header names
+  the names it refuses), its frame's time (each after the one before), its
+  `CameraModel` and its rigid `cam_to_tracking` in `depth_to_color`'s form,
+  the frame's pose as the session's records carry it (after any correction
+  the recorder makes to every pose), so the registration solved from the
+  stills places the session's frames.
   Each image is the picture's 8-bit luma as a grey PNG, which the recorder
   writes. A still's `camera` is the array file's camera block, written
   `"factory"` and read with either source, which is not kept. The file is

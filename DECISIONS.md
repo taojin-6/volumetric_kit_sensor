@@ -552,10 +552,10 @@ entries relevant to your task; later amendments supersede earlier rules.
 
 - [**2026-11-03**](#2026-11-03--a-tracked-sensors-posed-stills-are-a-file-of-their-own-cameratracked_stillshpp-with-one-reader-and-one-writer-that-the-recorder-and-calibs-solve-share-built-from-the-registrations-and-the-array-files-blocks-the-registrations-edge_m-is-the-edge-the-solve-fitted-the-corners-to-amends-the-2026-11-02-tracked-registration-entry) —
   A tracked sensor's stills of one session's world epoch, each with its
-  image's name, its frame's time, its model and the pose its tracking gave
-  it, are a file of their own (`camera/tracked_stills.hpp`), with one
-  reader and one writer in sensor that the recorder and calib's solve
-  share. Its session is the registration's, each still's camera the array
+  image's name, its frame's time, its model and the pose its session
+  records for it, are a file of their own (`camera/tracked_stills.hpp`),
+  with one reader and one writer in sensor that the recorder and calib's
+  solve share. Its session is the registration's, each still's camera the array
   file's block. The registration's `edge_m` is the edge the solve fitted
   the corners to.
 
@@ -7221,15 +7221,17 @@ tracked sensor's stills of one session's world epoch live in:
 `"volumetric_kit.tracked_stills"`, version 1, in the directory of the
 images it names. `TrackedStills` holds the sensor's id, the session and
 the epoch, written and checked as the registration's, and at least one
-`TrackedStill` in time order: its image's file name, its frame's time,
-its `CameraModel` and its rigid `cam_to_tracking`, in the array file's
-`depth_to_color` form and this package's camera axes. Each image is the
-frame's picture's luma, an 8-bit grey PNG at the picture's size, full
+`TrackedStill` in time order, each one of the session's recorded frames:
+its image's file name, its frame's time, its `CameraModel` and its rigid
+`cam_to_tracking`, the frame's pose as the session's records carry it
+(after any correction the recorder makes to every pose), in the array
+file's `depth_to_color` form and this package's camera axes. Each image is
+the frame's picture's luma, an 8-bit grey PNG at the picture's size, full
 range, which the recorder writes. A name is non-empty UTF-8, not `.` or
-`..`, with no '/' or NUL, and unique; each time is after the one before. A
-still's `camera` is the array file's camera block, read and written by
-the same code: the writer writes the lens (zero for a pinhole) and the
-source `"factory"`, since a tracked sensor's model is its SDK's, and the
+`..`, with no '/' or NUL, and unique as bytes; each time is after the one
+before. A still's `camera` is the array file's camera block, read and
+written by the same code: the writer writes the lens (zero for a pinhole) and the
+source `"factory"`, version 1's stills carrying their SDK's model, and the
 reader takes either source and an absent lens, as the array file's does,
 and keeps the model alone. It is read, checked and written as the
 registration is: validate, parse, read, format and write, numbers that
@@ -7248,8 +7250,13 @@ fitted the corners to.
   (owner, 2026-11-03).
 - **The array file's camera block.** A still's model is a camera's, so
   it is written as the array file writes one and read by the same code; a
-  source field would say what every tracked still says, so the struct
-  keeps the model alone.
+  source field would say what every version-1 still says, so the struct
+  keeps the model alone. A recorder that writes solved models adds the
+  field in a later version.
+- **The recorded pose, not the tracker's.** The registration is applied
+  to the poses the session's frames carry, so the stills carry those
+  poses: a recorder that corrects its tracker's poses writes the corrected
+  pose here too, or every frame after a correction is placed off by it.
 - **Names that stay in the directory.** The reader joins each name to the
   file's directory, so a name with a '/' or a NUL, or `.` or `..`, would
   name another file or none.
@@ -7265,12 +7272,14 @@ fitted the corners to.
 no grey PNG today.
 
 **Validation.** Apple M5 Max, Release with warnings as errors: the whole
-suite passes (56 tests), and the camera-only build's 10, its consumer
+suite passes (57 tests), and the camera-only build's 10, its consumer
 including the new header. The array file's and the registration's suites
 print byte for byte what `main`'s build prints, refusals and the
 registration's document included. The stills suite takes 0.03 s, 0.21 s
 under ThreadSanitizer. Planted bugs, each failing
 `sensor_camera_tracked_stills`: the writer writing the pose's inverse (the
-golden writer's direction), a repeated name accepted and an equal time
-accepted (their refusals). The shared camera block dropping the lens it
-read fails the stills' suite and the array file's.
+golden writer's direction), a repeated name accepted, an equal time
+accepted (their refusals) and the version checked after the stills (a
+later version without them refused as InvalidArgument). The shared camera
+block dropping the lens it read fails the stills' suite and the array
+file's.
