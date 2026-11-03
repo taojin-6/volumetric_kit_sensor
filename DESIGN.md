@@ -597,9 +597,10 @@ low-latency mode codes inside `VTCompressionSessionEncodeFrame`; and
 `receive` hands back each Annex B access unit in the order sent, its buffer
 swapped with the caller's, at most `kInFlight` (2) pictures in flight; a
 finite wait sleeps even with none in flight, so a receive thread of its own
-does not spin. The coding thread allocates nothing and never throws (fixed
-rings, reserved buffers), and on Apple runs at user-interactive quality of
-service. The first picture is a key, and so is the next after a failure (`key_owed`): a
+does not spin. The coding thread never throws: its rings and buffers are
+made at `create`, and each allocation left in it, the backend's, fails as
+that picture's `OutOfMemory`. On Apple it runs at user-interactive quality
+of service. The first picture is a key, and so is the next after a failure (`key_owed`): a
 dropped picture keeps the session, any other failure loses it, a failed
 picture fails those already sent behind it, and the next send opens a lost
 session again. `inject` drives a drop or a loss through the backend's own
@@ -612,31 +613,20 @@ codes QP 1 to 51 (0 as 1, so 0 is refused there) and writes the stream's
 chroma siting from the buffer's tag, which `send_pixel_buffer` adds to a
 buffer that lacks it. The session is torn down before what its callback
 uses, since VideoToolbox hands a pending output to the callback inside the
-teardown. NVENC (FFmpeg's `hevc_nvenc` on FFmpeg's CUDA device, the
-Vulkan device's GPU's primary context, which NVDEC opens alike) codes
-targets alone, so it needs `Options::device` and `Options::allocator`, a
-device that exports memory, and its GPU reached by CUDA. Its targets are
-`kInFlight + 1` exported buffers made at `create`, each mapped into CUDA
-once, which FFmpeg registers with NVENC once, by pointer, and NVENC reads
-with no copy: one coding, one the device writes, and one for a target taken
-while the one before it is held. The free one handed out longest ago goes
-next, so a target given up comes back two targets later at the soonest. A
-target is NV12 rows, the luma's from 0 and the chroma's after them, at a
-stride of the width rounded up to the GPU's texture alignment, as FFmpeg
-pads its own CUDA frames; `target` records the buffer's crossing from
-outside Vulkan before the batch's commands and back after them
-(`video/cuda_interop.hpp`). The coding thread codes with `delay` 0, so
-FFmpeg's send waits for the whole picture: NVENC on Linux is synchronous.
-The session sets every QP from the options (P, B and the IDR's), so FFmpeg
-chooses none, forces IDRs, and asks for 3 strips from 4096 rows (the
-driver's choice below); an FFmpeg that cannot ask for them (before 7.1, or
-built without nv-codec-headers 12.1) refuses such a picture in `create`.
-It writes the VUI's codes as FFmpeg numbers them, H.273's, and no siting, so
-sitings 1 to 5 are refused; it codes QP 0 to 51. A lost session is closed,
-and its buffers pass to the session that opens again. `facts().settings` is
-the configuration as the session reports it, one line, which the rules pin.
-The first coder that opens on NVIDIA sets FFmpeg's log level to ERROR, once
-a process. `video_backend()` (`backend.hpp`) names the build's backend.
+teardown. NVENC (FFmpeg's `hevc_nvenc` on FFmpeg's CUDA device, the GPU's
+primary context, opened by the helper NVDEC shares) codes targets alone:
+the target, its refusals and what it codes are `hevc_encoder.hpp`'s, its
+configuration the 2026-11-03 NVENC decision's. Its `kInFlight + 1` exported
+buffers are each mapped into CUDA once, which FFmpeg registers with NVENC
+once, by pointer, so a picture crosses with no copy. A buffer is free once
+no picture holds it, so the coding thread lets go of a picture's target
+only once its writer is done and NVENC has read it, a picture that fails
+uncoded too; the free one handed out longest ago goes next. The coding
+thread codes with `delay` 0, so FFmpeg's send waits for the whole picture:
+NVENC on Linux is synchronous. A lost session is closed, and its buffers
+pass to the session that opens again once it has; one that fails to open
+leaves them with the lost one. `video_backend()` (`backend.hpp`) names the
+build's backend.
 **`apple/`'s `PixelBufferImporter`** (`sensor_apple`, on every
 Apple build, iOS included, with no FFmpeg) hands an 8-bit NV12
 `CVPixelBuffer` on an IOSurface to Vulkan in place: each plane becomes a

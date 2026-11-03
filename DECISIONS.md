@@ -560,8 +560,11 @@ entries relevant to your task; later amendments supersede earlier rules.
   The encoder codes on NVENC too, through FFmpeg's `hevc_nvenc`: targets
   only, `kInFlight + 1` exported buffers a session, which NVENC reads through
   CUDA with no copy, the free one handed out longest ago next; every QP set
-  from the options; 3 strips from 4096 rows, which an FFmpeg before 7.1
-  refuses. FFmpeg's log level is sensor's to set, once.
+  from the options; 3 strips asked from 4096 rows, which an FFmpeg before
+  7.1 refuses. FFmpeg's log level is sensor's to set, once. *Amended
+  2026-11-03:* a failed reopen keeps the lost session's buffers; the facts,
+  `receive`'s limit and the open failures say what NVENC does; C13 holds
+  the dropped picture's writer on NVENC.
 
 ## Decision record
 
@@ -6321,7 +6324,9 @@ and is now a test:
   failure's message that cannot be allocated becomes `OutOfMemory`. Before,
   one failed allocation in its loop aborted the process; now every
   allocation in it can fail, and each failure is that picture's
-  `OutOfMemory`.
+  `OutOfMemory`. *Amended 2026-11-03:* the rings and buffers allocate
+  nothing; a backend's encode may (NVENC's makes a frame reference and a
+  packet a picture), each such failure that picture's `OutOfMemory`.
 - The compression session is the last member of the backend's state, so
   it is torn down first. VideoToolbox hands an output still pending to the
   callback inside `VTCompressionSessionInvalidate` (all 6 outputs of a
@@ -6343,7 +6348,9 @@ and is now a test:
   after one that failed. C13's drop in flight retries, up to 5 rounds, the
   race it needs. With the test thread held 1, 2 or 5 ms at C8's loss, no
   run broke a rule (before: 3 of 5 runs at 1 ms). With it held 2 ms on 4
-  of C13's 5 rounds, no run broke one either.
+  of C13's 5 rounds, no run broke one either. *Amended 2026-11-03:* on
+  NVENC the dropped picture's writer is held instead (the 2026-11-03 NVENC
+  entry).
 - `CodedPicture::key` is the key VideoToolbox marked, not the one asked
   for. Each picture's options are made once, at `create`. The siting tag
   is added on the caller's thread, in `send_pixel_buffer`.
@@ -7331,10 +7338,12 @@ same API, rules and coding thread as VideoToolbox.
   session's buffers pass to the session that opens again.
 - **One configuration**: preset `p<effort>`, `tune ll`, `rc constqp` with
   `init_qpP`, `init_qpB` and `init_qpI` all set from the options, forced
-  IDRs, no scene cut, no look-ahead, `delay` 0, zero latency, no multipass,
-  no B-frames, an endless GOP. From 4096 rows, `split_encode_mode` 3; below,
-  the driver's choice. An FFmpeg without that option refuses a picture of
-  4096 rows or more in `create`, naming FFmpeg 7.1 and nv-codec-headers 12.1.
+  IDRs, `delay` 0, which keeps look-ahead off (`no-scenecut` and
+  `rc-lookahead` 0 pin what it gives), zero latency, no multipass, no
+  B-frames, an endless GOP. From 4096 rows, `split_encode_mode` 3, which
+  asks for 3 strips; below, the driver's choice. An FFmpeg without that
+  option refuses a picture of 4096 rows or more in `create`, naming FFmpeg
+  7.1 and nv-codec-headers 12.1.
 - **Colour and QP.** The VUI's codes go in as FFmpeg numbers them, H.273's;
   FFmpeg writes no siting, so sitings 1 to 5 are refused. QP 0 to 51.
 - **FFmpeg's CUDA device** is opened by one helper (`FfmpegCudaDevice`) for
@@ -7353,8 +7362,7 @@ same API, rules and coding thread as VideoToolbox.
   until the new one is handed out, so a target taken while one picture
   codes and one target is held needs a third. Handing out the oldest free
   one makes a target given up the last to come back.
-- **Every QP set.** A QP left unset is FFmpeg's to choose, and the
-  session's QPs are the caller's.
+- **Every QP set.** The session's QPs are the caller's.
 - **Strips by rows, not by GPU.** FFmpeg reports no engine count, and 3
   strips equal `auto` on a GPU of 2 engines, so the rule needs no GPU name.
 - **No version floor below 4096 rows.** FFmpeg 6.1 (24.04's) keeps every
@@ -7375,7 +7383,39 @@ encoder test on a quiet GPU, the 4096-row picture refused as the option is
 missing. The lab RTX 5090 (FFmpeg 8): the full suite under the validation
 layer, the encoder test under synchronization validation too, the 4096-row
 picture coded in strips. The M5 Max (VideoToolbox): the full suite, 55
-tests. Planted bugs, each failing its test: an unset `init_qpI` and an
-unset `init_qpB` (C5), `forced-idr` not set (C2), strips
-from 4094 rows (the strips case), the oldest-free hand-out dropped (C9), and
-a target described at another stride than NVENC reads (the quality case).
+tests. Planted bugs, each failing its test: `forced-idr` not set (C2),
+strips from 4094 rows (the strips case), the oldest-free hand-out dropped
+(C9), and a target described at another stride than NVENC reads (the
+quality case).
+
+*Amended 2026-11-03 (the post-merge review):*
+- **A failed reopen keeps the lost session's buffers.** `open` made the
+  session after taking the lost one's buffers, so an allocation failing
+  there destroyed them while a batch could still write one, and left the
+  next reopen with none. The session is now made first.
+- **What the facts and the failures say.** `Facts::strips` is the strips
+  asked for: `split_encode_mode` 3 codes one strip an engine on a GPU of
+  fewer than 3 (an RTX 4090 two). `receive`'s 2 s without an access unit is
+  VideoToolbox's: NVENC returns only once the hardware has. NVENC's access
+  units carry a picture-timing SEI, and its SPS an HRD at FFmpeg's default
+  bit rate, which constant-QP pictures do not keep (`CodedPicture`). An
+  open NVENC refuses says which refusal it is (`nvenc_open_failure`,
+  tested on the host): the session limit, a busy engine or memory, which
+  another session closing clears, alike with a parameter this GPU does not
+  take, as FFmpeg's codes do not tell them apart; a GPU and driver that
+  code no such picture; NVIDIA's encode library missing. `create` can
+  return `IoError` too. A session retains the GPU's primary CUDA context,
+  whose rebuild `CudaContext` says the cost of.
+- **The rules hold whatever the timing on NVENC too.** NVENC codes a
+  picture faster than the next target is written, so C13's drop in flight
+  lost all 5 rounds in 12 of 30 runs under AddressSanitizer; there the
+  dropped picture's writer now waits for a value the run sets once the next
+  is sent. `Rules::Sequence` reads no picture count.
+- **Tests for what held untested.** A picture that fails uncoded keeps its
+  target until its writer is done (every backend); NVENC hands out no
+  buffer a sent picture holds, and its buffers pass to the session that
+  opens again; the quality case at 258x146 too, so a chroma placed after
+  an aligned luma height fails; the colour sweep on Apple back to the
+  stream's rules (C6 and C11 on every code); the writer's other row
+  refusals. That a device CUDA does not reach is refused (lavapipe) is
+  checked by hand, as no CI leg has both ICDs.

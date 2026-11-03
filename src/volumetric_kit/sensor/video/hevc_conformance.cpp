@@ -290,6 +290,12 @@ class Run {
 #endif
   core::Result<std::string> move(Encoder& e);
   core::Result<std::string> in_flight(Encoder& e);
+  // Picture @p first sent, its writer waiting for a value of gate_ the run
+  // holds, then @p second, its send's status into @p next; the value set
+  // once that send returns. Empty when no call waited for the held writer.
+  core::Result<std::string> send_behind_held(Encoder& e, std::uint32_t first,
+                                             std::uint32_t second,
+                                             core::Status& next);
   core::Result<std::string> retake(Encoder& e);
   core::Result<std::string> waits(Encoder& e);
 
@@ -901,6 +907,43 @@ core::Result<std::string> Run::move(Encoder& e) {
   return std::string();
 }
 
+core::Result<std::string> Run::send_behind_held(Encoder& e, std::uint32_t first,
+                                                std::uint32_t second,
+                                                core::Status& next) {
+  const std::uint64_t gate = ++gate_value_;
+  VKC_TRY(write_target(e, first, {&gate_, gate}).status());
+  // Should a call wait for the held writer, a watchdog sets the value, so
+  // the run fails rather than hangs.
+  std::mutex mutex;
+  std::condition_variable released;
+  bool set = false;
+  bool fired = false;
+  core::Status signalled;
+  std::thread watchdog([&] {
+    std::unique_lock<std::mutex> lock(mutex);
+    if (released.wait_for(lock, kWatchdog, [&] { return set; })) return;
+    signalled = gate_.signal(gate);
+    set = fired = true;
+  });
+  const core::Status sent = e.send(false, pts_of(first), written());
+  if (sent.ok()) next = send(e, second, false);
+  {
+    const std::lock_guard<std::mutex> lock(mutex);
+    if (!set) signalled = gate_.signal(gate);
+    set = true;
+  }
+  released.notify_all();
+  watchdog.join();
+  VKC_TRY(signalled);
+  if (fired) {
+    return std::string(
+        "C13: a send or target waited for the writer of a picture sent "
+        "before it");
+  }
+  VKC_TRY(sent);
+  return std::string();
+}
+
 core::Result<std::string> Run::in_flight(Encoder& e) {
   Encoder::CodedPicture coded;
   // Two in flight, in order, a third refused.
@@ -934,7 +977,17 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
   // A drop fails the one sent after it, and a key is owed. That one is sent
   // at once, while the drop codes; a loaded machine may finish the drop
   // first, which owes the key before it is sent, so it is refused: a race
-  // the test lost, tried again, and at least one round must send it.
+  // the test lost, tried again, and at least one round must send it. NVENC
+  // codes a picture faster than the next target is written, so there the
+  // dropped picture's writer waits for a value the run sets once the next is
+  // sent: it is behind the drop, whatever the timing. (VideoToolbox readies
+  // a surface new to it behind the device's earlier work, so no target is
+  // taken there while a writer is held.)
+#if defined(__APPLE__)
+  const bool hold = false;
+#else
+  const bool hold = targets();
+#endif
   constexpr int kRounds = 5;
   bool behind = false;
   for (int round = 0; round < kRounds && !behind; ++round) {
@@ -944,8 +997,14 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
       if (!got || !coded.key) return std::string("C13: the key before a drop");
     }
     e.inject(Encoder::Fault::Drop);
-    VKC_TRY(send(e, 12, false));
-    const core::Status next = send(e, 13, false);
+    core::Status next;
+    if (hold) {
+      VKC_ASSIGN(const std::string waited, send_behind_held(e, 12, 13, next));
+      if (!waited.empty()) return waited;
+    } else {
+      VKC_TRY(send(e, 12, false));
+      next = send(e, 13, false);
+    }
     if (!next.ok() &&
         (next.domain() != Code::InvalidArgument || !e.key_owed())) {
       return "C13: the picture sent after a drop gave " + said(next);
@@ -1235,7 +1294,7 @@ core::Result<std::string> Run::all() {
 }  // namespace
 
 core::Result<std::string> hevc_encoder_breach(const HevcEncoderCase& c) try {
-  if (c.pictures < 4) {
+  if (c.rules != HevcEncoderCase::Rules::Sequence && c.pictures < 4) {
     return core::Status::invalid_argument(
         "hevc_encoder_breach: a case of fewer than 4 pictures");
   }

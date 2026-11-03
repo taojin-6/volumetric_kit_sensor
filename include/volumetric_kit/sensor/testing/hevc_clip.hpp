@@ -79,8 +79,8 @@ inline bool hevc_decoder_promised() noexcept {
 
 /// @return Whether this run promises a hardware HEVC encoder:
 ///         `VS_TEST_HEVC_ENCODER` set and not empty, as CI sets it on every
-///         leg that has one (`videotoolbox`). A test whose encoder opens no
-///         hardware path then fails rather than skips.
+///         leg that has one (`nvenc`, `videotoolbox`). A test whose encoder
+///         opens no hardware path then fails rather than skips.
 inline bool hevc_encoder_promised() noexcept {
   const char* promise = std::getenv("VS_TEST_HEVC_ENCODER");
   return promise != nullptr && *promise != '\0';

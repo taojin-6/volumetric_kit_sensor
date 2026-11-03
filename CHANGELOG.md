@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.38.0] - 2026-11-03
+## [0.40.0] - 2026-11-03
 
 ### Added
 
@@ -51,6 +51,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it, and links it, and an app's calls to open ARKit's camera, against
   ARKit and AVFoundation. The ThreadSanitizer step runs the ARKit tests.
 
+## [0.39.0] - 2026-11-03
+
+### Fixed
+
+- **A failed NVENC reopen keeps the lost session's buffers**
+  (`HevcEncoder`): an allocation failing as the session was made destroyed
+  them while a batch could still write one, and the next target crashed.
+- **NVENC's open failures say which refusal it is**: the session limit, a
+  busy engine or memory, which another session closing clears, alike with a
+  parameter the GPU does not take (a picture too small, for one); a GPU and
+  driver that code no such picture; NVIDIA's encode library missing. No
+  retry advice for a refusal that stays. `create` documents `IoError` too.
+- **C13 on NVENC holds whatever the timing**
+  (`testing/hevc_conformance.hpp`): the dropped picture's writer waits for a
+  value the run sets once the next picture is sent, where a fast encode lost
+  all 5 rounds under AddressSanitizer. `Rules::Sequence` reads no picture
+  count, as documented, and lists C5.
+
+### Changed
+
+- **Docs say what NVENC does**: `Facts::strips` is the strips asked for (a
+  GPU of fewer than 3 encoders codes one on each); `receive`'s 2 s without
+  an access unit is VideoToolbox's; NVENC's access units carry a
+  picture-timing SEI and its SPS an HRD it does not keep (`CodedPicture`);
+  `CudaContext` says what rebuilding the primary context costs, which
+  `HevcEncoder::create` and `HevcDecoder::create` point to.
+- **`sensor_video_hevc_encoder` tests what held untested**: a picture that
+  fails uncoded keeps its target until its writer is done; NVENC hands out
+  no buffer a sent picture holds and passes its buffers to the session that
+  opens again; the quality case at 258x146 too; the colour sweep on Apple
+  runs the stream's rules again (C6 and C11 on every code); the writer's
+  other row refusals. `sensor_video_ffmpeg` tests NVENC's open-failure map.
+
 ## [0.37.0] - 2026-11-03
 
 ### Added
@@ -85,7 +118,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   texture alignment), which NVENC reads through CUDA with no copy; `target`
   records the buffer's crossing into the batch. Effort is the preset (p1 to
   p7), every QP is set from the options, QP 0 to 51 is coded, sitings 1 to 5
-  are refused, and a picture of 4096 rows or more is coded in 3 strips
+  are refused, and a picture of 4096 rows or more is asked for in 3 strips
   (`Facts::strips`), which an FFmpeg before 7.1 refuses in `create`.
 - **`HevcEncoderCase::Rules::Sequence`** (`testing/hevc_conformance.hpp`):
   what the sequence says on one key picture (C3-C5, C10), for a sweep over

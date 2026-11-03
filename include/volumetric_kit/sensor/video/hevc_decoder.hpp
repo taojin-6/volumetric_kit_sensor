@@ -82,6 +82,9 @@ class VS_VIDEO_API HevcDecoder {
   ///         `Status::Code::IoError`,
   ///         `Status::Code::OutOfMemory` or `Status::Code::Backend` if FFmpeg
   ///         or CUDA fails.
+  ///
+  /// On NVDEC the decoder retains the GPU's primary CUDA context, which
+  /// costs what @ref CudaContext says where nothing else holds it.
   static core::Result<HevcDecoder> create(const Options& options);
 
   HevcDecoder(HevcDecoder&& other) noexcept;

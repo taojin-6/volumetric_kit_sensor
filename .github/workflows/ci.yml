@@ -31,8 +31,9 @@ jobs:
       # macOS runs natively on a self-hosted Mac (label `mac`) — macOS can't be
       # containerised. _build.yml keys its install steps off `runner.os`, so
       # only the Ubuntu legs use a container; NVIDIA_DRIVER_CAPABILITIES=all
-      # makes the toolkit mount the Vulkan ICD for those (and libcuda and
-      # libnvcuvid for the decoders). See the core's tools/runners/README.md.
+      # makes the toolkit mount the Vulkan ICD for those (and libcuda,
+      # libnvcuvid for the decoders and libnvidia-encode for the encoder). See
+      # the core's tools/runners/README.md.
       #
       # The build and test fan-out is set in the container env, too: a runner's
       # .env reaches jobs run directly on it (the Mac) but not a job container,
