@@ -3,7 +3,8 @@
 
 // HevcEncoder's rules, every backend's: the argument checks, the colour set,
 // the key owed after a failure, the lost session opened again, the faults,
-// and the coding thread with its send and receive. The backend's session is
+// the target's description, and the coding thread, which waits for each
+// target's writer, with its sends and receive. The backend's session is
 // hevc_encode_session.hpp's.
 
 #include "volumetric_kit/sensor/video/hevc_encoder.hpp"
@@ -15,6 +16,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -31,7 +33,12 @@
 #include "hevc_encoder_access.hpp"
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/exception_status.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
+#include "volumetric_kit/core/vulkan/vk_result.hpp"
+#include "volumetric_kit/core/vulkan/vulkan.hpp"
+#include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "volumetric_kit/sensor/video/backend.hpp"
+#include "volumetric_kit/sensor/video/frame_color.hpp"
 
 namespace volumetric_kit::sensor {
 namespace {
@@ -87,6 +94,26 @@ core::Status io_failure(const char* why) noexcept {
   }
 }
 
+// Waits on the host for @p written, with no limit, as a pending batch does:
+// OK once it is reached, or for a null semaphore; else the wait's failure, as
+// for a lost device. Vulkan's own call: the coding thread allocates nothing
+// but that failure's message.
+core::Status wait_for_writer(const core::TimelinePoint& written) noexcept {
+  if (written.semaphore == nullptr) return {};
+  const VkSemaphore semaphore = written.semaphore->handle();
+  VkSemaphoreWaitInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+  info.semaphoreCount = 1;
+  info.pSemaphores = &semaphore;
+  info.pValues = &written.value;
+  const VkResult waited =
+      vkWaitSemaphores(written.semaphore->device(), &info, UINT64_MAX);
+  if (waited == VK_SUCCESS) return {};
+  return core::vk_error(waited,
+                        "HevcEncoder: waiting for a target's writer "
+                        "(vkWaitSemaphores)");
+}
+
 // First in, first out, held in place: at most HevcEncoder::kInFlight
 // entries, which the in-flight count bounds, and no allocation.
 template <typename T>
@@ -117,6 +144,13 @@ class Ring {
 
 }  // namespace
 
+core::DeviceRequirements hevc_encoder_device_requirements() {
+  core::DeviceRequirements reqs = device_requirements();
+  // r8 and rg8 storage images: the target's planes, as a kernel writes them.
+  reqs.features.shaderStorageImageExtendedFormats = VK_TRUE;
+  return reqs;
+}
+
 VideoBackend video_backend() noexcept {
 #if defined(__APPLE__)
   return VideoBackend::VideoToolbox;
@@ -133,7 +167,8 @@ struct HevcEncodeSession::Impl {};
 const bool HevcEncodeSession::kWritesSiting = false;
 
 core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
-    const HevcEncoder::Options& /*options*/, HevcEncoder::Facts& /*facts*/) {
+    const HevcEncoder::Options& /*options*/, HevcEncoder::Facts& /*facts*/,
+    HevcEncodeSession* /*previous*/) {
   return core::Status::unsupported(
       std::string(kWho) +
       ": this build has no HEVC encoder (NVENC is not "
@@ -150,6 +185,12 @@ core::Result<bool> HevcEncodeSession::encode(
   return core::Status::unsupported(std::string(kWho) + ": no session");
 } catch (...) {
   return core::exception_status(kWho, core::Status::Code::OutOfMemory);
+}
+
+core::Status HevcEncodeSession::target(core::CommandBatch& /*batch*/,
+                                       EncodePicture& /*picture*/,
+                                       YuvImage& /*out*/, bool& /*gone*/) {
+  return core::Status::unsupported(std::string(kWho) + ": no session");
 }
 
 void HevcEncodeSession::lose() noexcept {}
@@ -177,15 +218,18 @@ struct HevcEncoder::Impl {
   Options options;  // as create was given them, colour normalized
   Facts facts;
   // The coding thread codes on it; the sender replaces it, and inject loses
-  // it, only while the thread is not coding (coding false, under mutex).
+  // it, only while the thread is not coding (coding false, under mutex). The
+  // sender's target reaches it unlocked.
   std::unique_ptr<video::HevcEncodeSession> session;
 
   std::mutex mutex;
   std::condition_variable work;  // the coding thread waits for a picture
   std::condition_variable done;  // receive waits for a picture coded
   std::condition_variable idle;  // a reopen waits for coding to end
-  Ring<Sent> sent;               // sent, not yet taken by the thread
-  Ring<Coded> coded;             // coded or failed, not yet received
+  // The target last handed out and not yet sent: the sender's alone.
+  std::optional<video::EncodePicture> taken;
+  Ring<Sent> sent;    // sent, not yet taken by the thread
+  Ring<Coded> coded;  // coded or failed, not yet received
   // Buffers to code into: at most kInFlight, as each is in a picture
   // coding, coded or here, so create reserves them and nothing allocates.
   std::vector<std::vector<std::uint8_t>> spare;
@@ -208,7 +252,8 @@ struct HevcEncoder::Impl {
     key_owed = true;
     fail_through = next_seq - 1;
   }
-  core::Status send(video::EncodePicture picture, bool key, std::int64_t pts);
+  // @p picture queued for the coding thread, moved from only once it is.
+  core::Status send(video::EncodePicture&& picture, bool key, std::int64_t pts);
   // A lost session closed and opened afresh. Under mutex, through @p lock,
   // which it lets go while the backend opens.
   core::Status reopen(std::unique_lock<std::mutex>& lock);
@@ -225,7 +270,19 @@ void HevcEncoder::Impl::run() noexcept {
   std::unique_lock<std::mutex> lock(mutex);
   for (;;) {
     work.wait(lock, [this] { return stop || !sent.empty(); });
-    if (stop) return;
+    if (stop) {
+      // Each picture still sent is dropped uncoded, once its writer is done:
+      // a batch may still be writing its target, whose images the session
+      // holds.
+      while (!sent.empty()) {
+        Sent s = sent.take();
+        lock.unlock();
+        static_cast<void>(wait_for_writer(s.picture.written));
+        s = Sent{};
+        lock.lock();
+      }
+      return;
+    }
     Sent s = sent.take();
     Coded c;
     c.seq = s.seq;
@@ -234,10 +291,22 @@ void HevcEncoder::Impl::run() noexcept {
       c.bytes = std::move(spare.back());
       spare.pop_back();
     }
+    // A target's writer first, unlocked, whatever comes of the picture: a
+    // loss or a reopen meanwhile fails it below, and a stop drops it.
+    core::Status writer;
+    if (s.picture.written.semaphore != nullptr) {
+      lock.unlock();
+      writer = wait_for_writer(s.picture.written);
+      lock.lock();
+      if (stop) continue;  // dropped, the rest once their writers are done
+    }
     if (s.seq <= fail_through) {
       c.status = io_failure(
           "a picture sent before this one failed, or the session was lost, "
           "so this one would follow a gap");
+    } else if (!writer.ok()) {
+      c.status = std::move(writer);
+      fail();
     } else {
       if (lose_pending) {
         lose_pending = false;
@@ -275,12 +344,15 @@ core::Status HevcEncoder::Impl::reopen(std::unique_lock<std::mutex>& lock) {
   fail_through = next_seq - 1;
   lose_pending = false;
   idle.wait(lock, [this] { return !coding; });
-  std::unique_ptr<video::HevcEncodeSession> old = std::move(session);
+  // Unlocked, the coding thread does not touch the session: it codes only
+  // what is sent after this. The new one closes the old one's hardware
+  // session first, and takes over its targets' images once it opens: a
+  // batch may still be writing one. Failing, it leaves the old one, closed,
+  // with them, for the next try.
   lock.unlock();
-  old.reset();
   Facts opened;
   core::Result<std::unique_ptr<video::HevcEncodeSession>> made =
-      video::HevcEncodeSession::open(options, opened);
+      video::HevcEncodeSession::open(options, opened, session.get());
   lock.lock();
   VKC_TRY(made.status());
   session = std::move(made).value();
@@ -289,7 +361,7 @@ core::Status HevcEncoder::Impl::reopen(std::unique_lock<std::mutex>& lock) {
   return {};
 }
 
-core::Status HevcEncoder::Impl::send(video::EncodePicture picture, bool key,
+core::Status HevcEncoder::Impl::send(video::EncodePicture&& picture, bool key,
                                      std::int64_t pts) {
   std::unique_lock<std::mutex> lock(mutex);
   if (in_flight >= kInFlight) {
@@ -329,6 +401,10 @@ core::Result<HevcEncoder> HevcEncoder::create(const Options& options) try {
         std::string(kWho) + ": " + outside +
         " is not one this encoder codes (HevcEncoder::Options::color)");
   }
+  if (options.device != nullptr) {
+    VKC_TRY(options.device->check_enabled(hevc_encoder_device_requirements())
+                .with_context("HevcEncoder::create"));
+  }
   VKC_ASSIGN(impl->session,
              video::HevcEncodeSession::open(impl->options, impl->facts));
   Impl* const self = impl.get();
@@ -359,6 +435,72 @@ HevcEncoder::~HevcEncoder() {
   }
   impl_->work.notify_all();
   if (impl_->thread.joinable()) impl_->thread.join();
+}
+
+core::Result<YuvImage> HevcEncoder::target(core::CommandBatch& batch) try {
+  if (impl_ == nullptr) return moved_from();
+  Impl& m = *impl_;
+  if (m.options.device == nullptr) {
+    return invalid(
+        "target: the session was opened with no device (Options::device)");
+  }
+  std::unique_lock<std::mutex> lock(m.mutex);
+  if (m.in_flight >= kInFlight) {
+    return invalid("target: " + std::to_string(kInFlight) +
+                   " pictures are in flight already: receive first");
+  }
+  if (m.lost) VKC_TRY(m.reopen(lock));
+  // Unlocked: a picture new to the session waits on the host for the
+  // device's earlier work, which must hold up neither receive nor the coding
+  // thread. Only this thread replaces the session or loses it here: a loss
+  // still pending for the coding thread (lose_pending) came with lost, and
+  // the reopen above ended it.
+  video::HevcEncodeSession& session = *m.session;
+  lock.unlock();
+  video::EncodePicture picture;
+  YuvImage out;
+  bool gone = false;
+  if (core::Status made = session.target(batch, picture, out, gone);
+      !made.ok()) {
+    if (gone) {
+      // As when a picture's coding finds it lost: the next target reopens.
+      lock.lock();
+      m.lost = true;
+      m.key_owed = true;
+    }
+    return made;  // a target taken before is kept
+  }
+  // Coded by the session's colour, which the VUI states.
+  const ColorCodes& color = m.facts.color;
+  const YcbcrWeights weights =
+      ycbcr_weights(resolve_matrix(color.matrix, m.options.height));
+  out.kr = weights.kr;
+  out.kb = weights.kb;
+  out.full_range = color.full_range;
+  out.chroma_location = resolve_chroma_location(color.chroma_location);
+  out.queue_family = kQueueFamilyIgnored;
+  m.taken = std::move(picture);  // a second call gives up the first
+  return out;
+} catch (...) {
+  return core::exception_status("HevcEncoder::target",
+                                core::Status::Code::OutOfMemory);
+}
+
+core::Status HevcEncoder::send(bool key, std::int64_t pts,
+                               core::TimelinePoint written) try {
+  if (impl_ == nullptr) return moved_from();
+  Impl& m = *impl_;
+  if (!m.taken) return invalid("send: no target taken (target() first)");
+  if (written.semaphore != nullptr && !written.semaphore->valid()) {
+    return invalid("send: an empty semaphore for the writer's value");
+  }
+  m.taken->written = written;
+  VKC_TRY(m.send(std::move(*m.taken), key, pts));
+  m.taken.reset();
+  return {};
+} catch (...) {
+  return core::exception_status("HevcEncoder: send",
+                                core::Status::Code::OutOfMemory);
 }
 
 core::Result<bool> HevcEncoder::receive(CodedPicture& picture,
@@ -446,6 +588,9 @@ core::Status HevcEncoderAccess::send(HevcEncoder& encoder,
                                      video::EncodePicture picture, bool key,
                                      std::int64_t pts) try {
   if (encoder.impl_ == nullptr) return moved_from();
+  if (encoder.impl_->taken) {
+    return invalid("a target is taken and not sent: send() it first");
+  }
   return encoder.impl_->send(std::move(picture), key, pts);
 } catch (...) {
   return core::exception_status("HevcEncoder: send",

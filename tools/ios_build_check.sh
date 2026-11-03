@@ -38,7 +38,8 @@ ios += ["-std=c++17", "-Wall", "-Wextra", "-Wpedantic", "-Werror"]
 importer = b'#include "volumetric_kit/sensor/apple/pixel_buffer_importer.hpp"\n'
 headers = ["apple/core_video_color.hpp", "video/hevc_encoder_apple.hpp",
            "video/backend.hpp", "testing/hevc_conformance.hpp",
-           "testing/hevc_slices.hpp", "testing/nv12_pixel_buffer.hpp"]
+           "testing/hevc_slices.hpp", "testing/nv12_pixel_buffer.hpp",
+           "testing/nv12_writer.hpp"]
 targets = ("sensor_apple", "sensor_video", "sensor_video_syntax",
            "sensor_video_testing", "sensor_wire")
 objects = []
