@@ -105,6 +105,18 @@ target_link_libraries(my_app PRIVATE volumetric_kit::sensor_array)
 A consumer with no GPU work, such as calib's solver, sets `VS_CAMERA_ONLY`
 ON and links `volumetric_kit::sensor_camera`, with no Vulkan SDK.
 
+A consumer's CI installs what the `VS_WITH_` options find through this
+package's composite actions, at the sensor pin, so each pin lives here:
+`install-orbbec-sdk`, `install-librealsense` (Ubuntu) and `install-cuda`
+(Ubuntu x86-64, as root or through sudo; `tensorrt: true` for
+`VS_WITH_FFS`):
+
+```yaml
+- uses: taojin-6/volumetric_kit_sensor/.github/actions/install-cuda@<commit>
+  with:
+    tensorrt: true
+```
+
 A consumer's kernels include the exported pinhole through the core's
 `INCLUDE_TARGETS`, as recon's do:
 

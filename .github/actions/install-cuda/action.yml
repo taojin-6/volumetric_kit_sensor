@@ -1,0 +1,91 @@
+name: Install the CUDA toolkit
+description: >-
+  The pinned CUDA toolkit packages from NVIDIA's Ubuntu repository, its
+  keyring checked against a pinned SHA256 first, the toolkit's root exported
+  as CUDAToolkit_ROOT; with `tensorrt`, the pinned TensorRT from the same
+  repository too. Linux x86-64 only.
+
+# The build finds the toolkit and TensorRT and never fetches them
+# (cmake/vs_cuda.cmake, cmake/vs_ffs.cmake), so CI installs them the way a
+# developer does. Every leg that builds VS_WITH_CUDA or VS_WITH_FFS, here or
+# in a consumer's CI (by commit), installs them through this action, so the
+# pins live here alone. It runs as root or through sudo, so a bare container
+# needs no sudo, and installs curl where the image lacks it.
+inputs:
+  tensorrt:
+    description: >-
+      'true' to install TensorRT too, for VS_WITH_FFS (2.6 GB).
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Install the CUDA toolkit
+      shell: bash
+      env:
+        TENSORRT: ${{ inputs.tensorrt }}
+      run: |
+        set -euo pipefail
+        case "${TENSORRT}" in
+          true | false) ;;
+          *)
+            echo "::error::tensorrt is 'true' or 'false', not '${TENSORRT}'"
+            exit 1
+            ;;
+        esac
+        platform="${RUNNER_OS}-$(uname -m)"
+        if [ "${platform}" != "Linux-x86_64" ]; then
+          echo "::error::no CUDA toolkit pinned for ${platform}"
+          exit 1
+        fi
+        as_root() {
+          if [ "$(id -u)" = 0 ]; then
+            "$@"
+          else
+            sudo "$@"
+          fi
+        }
+        # NVIDIA's repository key comes as a .deb that dpkg installs as root,
+        # so only the file pinned here is installed: per repository, the
+        # SHA256 its signed package index lists for it. Any other file, or a
+        # repository with no pin, fails the step.
+        . /etc/os-release
+        repo="ubuntu$(echo "${VERSION_ID}" | tr -d .)"
+        case "${repo}" in
+          ubuntu2404) keyring_sha256=d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba ;;
+          ubuntu2604) keyring_sha256=f7f474b5f6a4adf987aa587920df00e713285958ef6a913dda1945a544a3099e ;;
+          *)
+            echo "::error::no pinned SHA256 for ${repo}'s cuda-keyring_1.1-1_all.deb"
+            exit 1
+            ;;
+        esac
+        if ! command -v curl > /dev/null ||
+           [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
+          as_root apt-get update
+          as_root apt-get install -y --no-install-recommends ca-certificates curl
+        fi
+        keyring="${RUNNER_TEMP}/cuda-keyring_1.1-1_all.deb"
+        curl -fsSL --retry 3 -o "${keyring}" \
+          "https://developer.download.nvidia.com/compute/cuda/repos/${repo}/x86_64/cuda-keyring_1.1-1_all.deb"
+        if ! echo "${keyring_sha256}  ${keyring}" | sha256sum -c -; then
+          echo "::error::${repo}'s cuda-keyring_1.1-1_all.deb does not match its pinned SHA256"
+          exit 1
+        fi
+        as_root dpkg -i "${keyring}"
+        as_root apt-get update
+        # For VS_WITH_CUDA: cuda.h, nvjpeg.h and the nvcc FindCUDAToolkit
+        # locates the toolkit by. libcuda comes from the driver at run time
+        # (in a container, from the container toolkit), libnvjpeg from here.
+        as_root apt-get install -y --no-install-recommends cuda-nvcc-13-4 \
+          cuda-cudart-dev-13-4 cuda-driver-dev-13-4 libnvjpeg-dev-13-4
+        echo "CUDAToolkit_ROOT=/usr/local/cuda-13.4" >> "${GITHUB_ENV}"
+        # TensorRT for VS_WITH_FFS, at the version built for this CUDA, every
+        # package of it pinned so apt takes no newer one. nvcc above compiles
+        # sensor_ffs's kernels.
+        if [ "${TENSORRT}" = true ]; then
+          trt=11.4.0.106-1+cuda13.4
+          as_root apt-get install -y --no-install-recommends \
+            "libnvinfer11=${trt}" "libnvinfer-headers-dev=${trt}" \
+            "libnvinfer-safe-headers-dev=${trt}" "libnvinfer-dev=${trt}" \
+            "libnvonnxparsers11=${trt}" "libnvonnxparsers-dev=${trt}"
+        fi

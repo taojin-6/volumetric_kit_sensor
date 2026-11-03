@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- CI: **`.github/actions/install-cuda`**, the CUDA 13.4 toolkit's packages
+  from NVIDIA's Ubuntu repository, its keyring held to a pinned SHA256 per
+  release, and `CUDAToolkit_ROOT` set; with `tensorrt: true`, TensorRT
+  11.4 from the same repository, every package pinned. It runs as root or
+  through sudo and downloads under `RUNNER_TEMP`. The 24.04 leg installs
+  through it. A consumer's CI that copies this install takes the action at
+  its next sensor re-pin (README, "Consuming the package"); nothing changes
+  for a build.
+
 ## [0.29.0] - 2026-11-02
 
 ### Added
