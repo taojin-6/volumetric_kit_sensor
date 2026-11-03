@@ -5,7 +5,8 @@
 // host, so camera-only builds run it too:
 //   - stereo_calibration: a pair from two entries of a calibration file, the
 //     left camera's point in the right one, to round-off, named either way
-//     round, and each refusal, named;
+//     round, the same with the cameras' colour responses, and each refusal,
+//     named;
 //   - rectify_stereo is OpenCV's stereoRectify (Bouguet's, zero disparity),
 //     to the numbers tools/stereo_rectify_reference.py pinned
 //     (stereo_rectify_reference.hpp): R1, R2, the camera and the baseline,
@@ -151,6 +152,19 @@ int test_calibration() {
   std::printf("  left_to_right %.1e from the pair's, %.1e named back\n",
               forward, back);
   CHECK(forward < 1e-12 && back < 1e-12);
+  // The cameras' colour responses (a version-4 file) leave the pair as it
+  // was: the rectifier applies none, the pass that prepares its view does.
+  camera::ArrayCalibration responded = file;
+  responded.color_controls = camera::ColorControls{167, 60};
+  for (camera::SensorCalibration& s : responded.sensors) {
+    s.color_response.gain = {0.9, 1.0, 1.1};
+    s.color_response.a = -0.3;
+    s.color_response.r_max = 0.6;
+  }
+  auto same = sensor::stereo_calibration(responded, "bm-1", "bm-2");
+  CHECK(same.ok() && same_model(same->left, made->left) &&
+        same_model(same->right, made->right) &&
+        worst_difference(same->left_to_right, made->left_to_right) == 0.0);
 
   CHECK(refused(
       sensor::stereo_calibration(camera::ArrayCalibration{}, "bm-1", "bm-2"),

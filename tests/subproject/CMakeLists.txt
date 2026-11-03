@@ -77,10 +77,11 @@ if(NOT _image_io_links STREQUAL "volumetric_kit::core_base")
 endif()
 
 # What a project whose kernels include the package's exported GLSL does: compile
-# through the core's INCLUDE_TARGETS, with vkc_compile_shaders, a kernel that
-# includes frame/shaders/pinhole.glsl (volumetric_kit::sensor_frame;
-# ../shaders/pinhole_cases.comp). The root holds exactly the GLSL sensor_frame
-# exports: none of the package's own.
+# through the core's INCLUDE_TARGETS, with vkc_compile_shaders, kernels that
+# include frame/shaders/pinhole.glsl and srgb.glsl
+# (volumetric_kit::sensor_frame; ../shaders/pinhole_cases.comp,
+# srgb_cases.comp). The root holds exactly the GLSL sensor_frame exports: none
+# of the package's own.
 get_target_property(_roots volumetric_kit::sensor_frame VKC_SHADER_INCLUDE_DIRS)
 set(_held "")
 foreach(_root IN LISTS _roots)
@@ -91,11 +92,15 @@ foreach(_root IN LISTS _roots)
     "${_root}/*")
   list(APPEND _held ${_files})
 endforeach()
-if(NOT _held STREQUAL "volumetric_kit/sensor/frame/shaders/pinhole.glsl")
+list(SORT _held)
+set(_exported "volumetric_kit/sensor/frame/shaders/pinhole.glsl"
+              "volumetric_kit/sensor/frame/shaders/srgb.glsl")
+if(NOT "${_held}" STREQUAL "${_exported}")
   message(FATAL_ERROR "sensor_frame's GLSL include root holds [${_held}], "
-                      "not exactly what it exports, [pinhole.glsl]")
+                      "not exactly what it exports, [pinhole.glsl;srgb.glsl]")
 endif()
 add_custom_target(vs_glsl_consumer)
 vkc_compile_shaders(
   vs_glsl_consumer INCLUDE_TARGETS volumetric_kit::sensor_frame SHADERS
-  "${CMAKE_CURRENT_LIST_DIR}/../shaders/pinhole_cases.comp")
+  "${CMAKE_CURRENT_LIST_DIR}/../shaders/pinhole_cases.comp"
+  "${CMAKE_CURRENT_LIST_DIR}/../shaders/srgb_cases.comp")

@@ -30,6 +30,7 @@ target_sources(
   PRIVATE array_calibration.cpp
           calibration_json.cpp
           camera_model.cpp
+          color_response.cpp
           geometry.cpp
           stereo_calibration.cpp
           stereo_rectification.cpp

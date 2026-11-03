@@ -11,16 +11,21 @@
 // the captured size. The high byte is the pixel's coverage: 0xFF where the
 // lens maps inside the captured picture, 0 where it maps outside, which is
 // black and which fusion then skips (ColorFrame::coverage_in_alpha) rather
-// than fusing as colour. The stereo rectifier's kernel
+// than fusing as colour. The entries multiply the R'G'B' by the camera's
+// colour response (responded_word) unless it is the identity, when they write
+// ycbcr_word's words, today's. The stereo rectifier's kernel
 // (stereo/shaders/rectify.comp) samples and converts through the same
 // functions, from a buffer, where its own rays put each pixel, and averages
-// the samples before converting where its view shrinks the picture.
+// the samples before converting where its view shrinks the picture. It calls
+// ycbcr_word and ycbcr_to_word alone, so its views get no response
+// (DESIGN.md, GpuFramePrep's color_response).
 
 #ifndef VS_PREP_UNDISTORT_COLOR_GLSL
 #define VS_PREP_UNDISTORT_COLOR_GLSL
 
 #extension GL_GOOGLE_include_directive : require
 #include "lens.glsl"
+#include "volumetric_kit/sensor/frame/shaders/srgb.glsl"
 
 layout(local_size_x = 256) in;
 
@@ -99,6 +104,11 @@ float luma_level(float y) {
   return pc.full_range != 0u ? y / 255.0 : (y - 16.0) / 219.0;
 }
 
+// R'G'B' as a word with full coverage, each channel clamped and coded.
+uint rgb_word(vec3 rgb) {
+  return code(rgb.r) | (code(rgb.g) << 8) | (code(rgb.b) << 16) | 0xFF000000u;
+}
+
 // The picture's Y', Cb and Cr codes at `s`, each sampled bilinearly at its
 // own siting; luma alone reads no chroma, and its Cb and Cr are 0.
 vec3 ycbcr_sample(vec2 s) {
@@ -127,13 +137,12 @@ vec3 ycbcr_sample(vec2 s) {
 }
 
 // Y', Cb and Cr codes (ycbcr_sample's, or an average of them) converted by
-// the picture's matrix and range, as an R'G'B' word with full coverage; luma
-// alone is grey.
-uint ycbcr_to_word(vec3 ycc) {
+// the picture's matrix and range to R'G'B', which the matrix can take past
+// [0, 1]; luma alone is grey.
+vec3 ycbcr_to_rgb(vec3 ycc) {
   float luma = luma_level(ycc.x);
   if (pc.luma_only != 0u) {
-    uint grey = code(luma);
-    return grey | (grey << 8) | (grey << 16) | 0xFF000000u;
+    return vec3(luma);
   }
   vec2 cbcr = ycc.yz;
   float pb;
@@ -149,11 +158,32 @@ uint ycbcr_to_word(vec3 ycc) {
   float r = luma + 2.0 * (1.0 - pc.kr) * pr;
   float b = luma + 2.0 * (1.0 - pc.kb) * pb;
   float g = (luma - pc.kr * r - pc.kb * b) / kg;
-  return code(r) | (code(g) << 8) | (code(b) << 16) | 0xFF000000u;
+  return vec3(r, g, b);
 }
+
+// ycbcr_to_rgb's R'G'B' as a word with full coverage; luma alone is grey.
+uint ycbcr_to_word(vec3 ycc) { return rgb_word(ycbcr_to_rgb(ycc)); }
 
 // The picture's Y'CbCr at `s`, converted, as an R'G'B' word with full
 // coverage; luma alone is grey.
 uint ycbcr_word(vec2 s) { return ycbcr_to_word(ycbcr_sample(s)); }
+
+// The picture's Y'CbCr at `s` as R'G'B', unclamped: ycbcr_word's before it
+// is coded.
+vec3 ycbcr_rgb(vec2 s) { return ycbcr_to_rgb(ycbcr_sample(s)); }
+
+// R'G'B' `rgb` at pinhole pixel `pixel`, times the camera's colour response
+// in linear light (camera::ColorResponse), as a word: clamped to [0, 1], since
+// the matrix can leave it, decoded, times gain * F(r), F = 1 + a q + b q^2,
+// q = min(r, r_max)^2 at the pixel's normalised radius r, encoded, and coded,
+// which clamps again.
+uint responded_word(vec3 rgb, vec2 pixel, vec3 gain, float a, float b,
+                    float r_max) {
+  vec2 n = (pixel - vec2(pc.cam.cx, pc.cam.cy)) / vec2(pc.cam.fx, pc.cam.fy);
+  float q = min(dot(n, n), r_max * r_max);
+  float f = 1.0 + a * q + b * q * q;
+  vec3 linear = vs_srgb_to_linear(clamp(rgb, 0.0, 1.0)) * (gain * f);
+  return rgb_word(vs_linear_to_srgb(linear));
+}
 
 #endif  // VS_PREP_UNDISTORT_COLOR_GLSL

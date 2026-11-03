@@ -129,9 +129,11 @@ class VS_ARRAY_API SensorArray {
     /// and the grouping holds after; enough that every sensor still holds a
     /// trigger's frame when a slow poll comes to group it.
     std::size_t queue_depth = 4;
-    /// Each sensor's pose, by id, stamped on its frames, and its depth
-    /// offset, which its pass subtracts (`SensorCalibration::depth_offset_m`,
-    /// `GpuFramePrepConfig::depth_offset_m`). Every sensor of the array must
+    /// Each sensor's pose, by id, stamped on its frames, its depth offset,
+    /// which its pass subtracts (`SensorCalibration::depth_offset_m`,
+    /// `GpuFramePrepConfig::depth_offset_m`), and its colour response, which
+    /// its pass applies (`SensorCalibration::color_response`,
+    /// `GpuFramePrepConfig::color_response`). Every sensor of the array must
     /// be posed in it (`SensorCalibration::color_to_world`); no sensors leaves
     /// each frame where its driver put it, and its depth as read. Where it
     /// names the colour cameras' exposure
@@ -147,8 +149,9 @@ class VS_ARRAY_API SensorArray {
     core::Allocator* allocator = nullptr;
     /// Every pass's options, whatever the array's size: the queue families
     /// sharing its colour and its depth, and the depth-outlier filter
-    /// (`GpuFramePrepConfig`). Its `depth_offset_m` stays 0: each pass takes
-    /// its sensor's from @ref calibration, the one source of it.
+    /// (`GpuFramePrepConfig`). Its `depth_offset_m` stays 0 and its
+    /// `color_response` the identity: each pass takes its sensor's from
+    /// @ref calibration, the one source of them.
     GpuFramePrepConfig prep{};
   };
 
