@@ -7,7 +7,8 @@
 /// @brief Test support for 8-bit NV12 pictures on the host, with no test
 ///        framework, codec or GPU: a picture's planes, and the family's
 ///        test pattern, whose index a reader recovers after lossy coding.
-///        Header-only, on the standard library alone.
+///        Header-only, on the standard library alone; its band's layout is
+///        testing/index_band.hpp's.
 ///
 /// testing/nv12_picture.hpp puts a picture on the device.
 ///
@@ -22,6 +23,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "volumetric_kit/sensor/testing/index_band.hpp"
+
 namespace volumetric_kit::sensor::testing {
 
 /// @brief An 8-bit NV12 picture on the host: its luma rows, then its chroma
@@ -35,13 +38,6 @@ struct HostNv12 {
   /// first: 2 x (@ref width + 1) / 2 bytes a row.
   std::vector<std::uint8_t> chroma;
 };
-
-/// @brief The side of one square of @ref test_pattern's index band, in luma
-///        pixels: 16, a coding block's, so each square is whole blocks.
-inline constexpr std::uint32_t kIndexSquare = 16;
-/// @brief The bits of the index @ref test_pattern's band holds: 14, so it
-///        names `index % 16384`.
-inline constexpr std::uint32_t kIndexBits = 14;
 
 /// @return Picture @p index of the family's test pattern, @p width x
 ///         @p height: 8-bit codes, with 0 and 255 in them where the picture

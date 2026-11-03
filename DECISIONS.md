@@ -480,6 +480,16 @@ entries relevant to your task; later amendments supersede earlier rules.
   registers into and the tag fit that solved it. The array file's world
   block and transforms are read and written in one internal place that
   both files call.
+- [**2026-11-02**](#2026-11-02--every-rgb-d-driver-keeps-one-frame-contract-same-capture-whole-frames-loss-read-off-the-sequence-checked-by-rgbd_breach-in-every-drivers-fake-the-colour-camera-derives-from-registered-depth-and-test-depth-carries-the-pictures-index-band) —
+  Every RGB-D driver keeps one frame contract, stated in `IRgbdSensor`'s
+  doc: same capture, whole frames, the sizes `SensorInfo` names, loss read
+  off the sequence, a time of 0 being none, a confidence plane as frame prep
+  takes it.
+  `testing/rgbd_contract.hpp` checks it, incrementally or over a vector,
+  and every driver's fake runs it under injected faults.
+  `color_from_registered_depth` derives the colour camera from registered
+  depth; `testing/rgbd_pattern.hpp`'s depth carries the picture's index
+  band.
 
 ## Decision record
 
@@ -6471,3 +6481,99 @@ kind accepted (its refusal). The shared world check accepting a tag's
 negative id fails both files' suites, and accepting both kinds fails each
 suite for its own file. The array file's parse refusals without its name
 fail `sensor_camera_array_calibration`.
+
+### 2026-11-02 — Every RGB-D driver keeps one frame contract (same capture, whole frames, loss read off the sequence), checked by `rgbd_breach` in every driver's fake; the colour camera derives from registered depth, and test depth carries the picture's index band.
+
+**The rule.** `IRgbdSensor`'s doc states the frame contract every driver
+keeps: a frame's colour is the picture of the capture its depth is from; a
+sensor whose `SensorInfo` names a depth camera hands out a frame only with
+depth, and one that names a colour camera only with its own picture (one
+that names none, no colour), and a frame whose picture is lost or fails
+to decode is dropped and counted in `SensorStats::failed`; a frame's
+cameras are the sizes `SensorInfo` names, its picture its colour camera's;
+a gap in `RgbdFrame::sequence` is a frame lost after the sensor numbered
+it, and frames a rate gate never chose leave no gap. Within one start,
+sequences increase, and so do the timestamps a sensor reports (non-zero:
+0 is none), a confidence plane comes beside host depth at a floor of 1 or
+more and a floor only with one (the confidence plane entry above, as
+`GpuFramePrep` takes it), and the counters keep `SensorStats`' rule.
+`testing/rgbd_contract.hpp` checks it on what a source handed out:
+`RgbdContract` frame by frame, one checker a start, `rgbd_breach` over a
+vector, and the rules they share with the stereo contract,
+`sequence_breach`, `order_breach` and `stats_breach`.
+`color_from_registered_depth` (`camera_conventions.hpp`) derives the
+colour camera from the depth camera it is registered to, a
+`camera::CameraModel` in and out. `testing/rgbd_pattern.hpp` makes test
+depth, u16 millimetres and a confidence plane, that carries the test
+picture's index band, whose layout moves to the standard-library-only
+`testing/index_band.hpp`.
+
+**Why.**
+- **One contract for every source.** A receiver of a phone's stream, a
+  rig's frames and a recording's must each know which picture belongs to
+  which depth and when a frame went missing. Stated once, in the
+  interface, and checked by one checker, each driver proves it rather than
+  a test of its own (the same robustness rule for every driver).
+- **Incremental.** A long soak (an hour is 36,000 frames at 10 Hz) cannot
+  keep its frames: each holds its decoder's picture. `RgbdContract` keeps
+  only counts and the last frame's place; `rgbd_breach` is the class over
+  a vector, as driver tests use it.
+- **0 is no time.** `RgbdFrame::timestamp_ns` is 0 when a sensor reports
+  none: recon's Replica source sets none, and the Orbbec driver on the
+  host clock hands out 0 until it has one. So the checker orders the times
+  a sensor reports, each against the last non-zero one, and the sequence
+  alone where a frame has none. The stereo contract counts every time, 0
+  included, as before; whether it skips a 0 too is the owner's call.
+- **The plane as prep takes it.** A tracked source (the iPad's pattern
+  source) hands out a confidence plane, which `GpuFramePrep` refuses beside
+  device depth or at a floor of 0, as it refuses a floor without one; the
+  checker names such a frame where the source hands it out.
+- **A stand-in for each camera's mailbox.** The Orbbec camera stub stands
+  in for `CameraStream`'s mailbox, take and read, playing a script of
+  captures with counts of its own, so `OrbbecSensor`'s poll, drain (its
+  discards after a refusal) and stats (failed plus lost) run under a
+  dropped frame, a lost one, a skipped one and a refusal mid-poll and
+  mid-drain. The RealSense camera stub stands in for `camera.cpp`, its SDK
+  callback's received count and `stats()` among it, and sends
+  librealsense software-device framesets into the driver's frame queue, so
+  `RealSenseSensor`'s conversion, poll, drain, its delivered and failed
+  counts and the queue's drops run under the same faults.
+  `CameraStream`'s and `camera.cpp`'s own counting (`take`'s drops,
+  `read`'s refusals and skips, the callback's received and failed counts)
+  is checked only on a camera. `StereoDepthSensor`'s test checks its frames
+  beside the stereo contract.
+- **The type its caller holds.** A receiver of tracked depth holds the
+  depth camera's `CameraModel` (`RgbdFrame::depth_camera`) and fills the
+  colour camera's: the colour camera comes back as one, through
+  `depth_from_registered_color`'s own per-axis rescale, rather than a
+  `DepthCameraParams` with a range and pose it does not need.
+- **One band.** The depth carries the picture's index band at the same
+  pixels, so a frame's depth and picture name one index; a source that
+  makes the depth (an iPad's pattern source) builds on the standard
+  library alone. The depth's reader needs every sample of a square's
+  central half to hold its value, which a lossless depth record keeps, so
+  torn depth is no index rather than a wrong one.
+
+**Not here.** Reading the picture's index (`picture_index`) lands with its
+first caller, the stream checks: whether a check reads the band back to
+the host or a GPU kernel means it is the owner's open choice. Until then
+`sensor_testing_support`'s own square-mean reader stays.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer, `VS_TEST_HEVC_BACKEND=videotoolbox` and the
+Orbbec driver: the whole suite passes, 62 tests on 0.25.0's main (60
+before it). The M4 Mac mini, the same
+with the RealSense driver (librealsense 2.59.1): 55 tests pass, the
+RealSense contract test among them. `test_pattern`'s bytes are pinned by
+MD5 to sensor 0.23.0's. Planted bugs, each failing its test:
+`stats_breach` refusing counters that sum to exactly what was received
+(`sensor_rgbd_contract`, `sensor_orbbec_contract`, `sensor_stereo_sensor`);
+the half-pixel term dropped from the shared rescale and from
+`color_from_registered_depth` alone (`sensor_conventions`); `depth_index`
+reading each square's centre sample alone (`sensor_rgbd_pattern`); and
+`OrbbecSensor::drain` leaving one pair after a refusal uncounted
+(`sensor_orbbec_contract`); a size match on width or height alone, a
+picture refused only when both differ, a time of 0 ordered as a time,
+a 0 kept as the last time, and a confidence plane taken beside device
+depth or at a floor of 0, or a floor of 1 without one
+(`sensor_rgbd_contract`).

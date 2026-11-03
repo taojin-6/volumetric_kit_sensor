@@ -324,10 +324,16 @@ and asked `exhausted()` after an empty poll, since "nothing this tick" from
 a live device and "nothing, ever" from a replay are the same empty optional
 (2026-09-14; non-pure, `false` by default, so a live driver overrides
 nothing) — plus the boundary math that is silently wrong when guessed —
-`cv_from_gl_camera`, `depth_from_registered_color`, `to_canonical`, which
+`cv_from_gl_camera`, `depth_from_registered_color` and its inverse
+`color_from_registered_depth` (a `camera::CameraModel` in and out, through
+the one per-axis rescale, the lens kept), `to_canonical`, which
 only the iOS scanner and the tests call until the scanner moves onto the
-interface (2026-10-07). Links `sensor_camera` and `sensor_frame` alone;
-drivers live with the platform that can build *and* test them. The
+interface (2026-10-07). Every driver keeps **the frame contract**, stated
+in `IRgbdSensor`'s doc (the 2026-11-02 frame contract entry): same
+capture, whole frames, the sizes `SensorInfo` names, loss read off the
+sequence. `testing/rgbd_contract.hpp` checks it (below, under test
+support). Links `sensor_camera` and `sensor_frame` alone; drivers live
+with the platform that can build *and* test them. The
 implementer every recon dataset example runs is
 recon's `examples/common/replica_sensor.hpp`, which plays a Replica sequence back
 through the interface, its frames prepared on the GPU as a camera's.
@@ -1165,10 +1171,12 @@ to 15 and columns 0 to 255, is 16 squares of 16 x 16: a 255 and a 0
 reference, then bits 0 to 13 of the index, each square 255 or 0, so a
 reader recovers the index from square means after lossy coding; elsewhere
 the planes are smooth triangle waves that move with the index.
-`nv12_picture.hpp`'s `device_picture` writes a picture into R8 and R8G8
-plane images in `GENERAL` through the core's `write_image`, padded past the
-planes where a test asks, as VideoToolbox's images can be; on Apple
-`nv12_pixel_buffer.hpp`'s `pixel_buffer` makes it an IOSurface
+The band's layout, `kIndexSquare` and `kIndexBits`, is `index_band.hpp`'s
+(the standard library alone), which the pattern and the test depth both
+include. `nv12_picture.hpp`'s `device_picture` writes a picture into R8 and
+R8G8 plane images in `GENERAL` through the core's `write_image`, padded
+past the planes where a test asks, as VideoToolbox's images can be; on
+Apple `nv12_pixel_buffer.hpp`'s `pixel_buffer` makes it an IOSurface
 `CVPixelBuffer`, tagged, as a camera's. `hevc_slices.hpp`'s `SliceReader`
 (in `sensor_video_syntax`, test use only) reads each picture's first slice
 type and QP and each SPS's profile and sub-layers, through the parsers'
@@ -1178,6 +1186,41 @@ static, built wherever `sensor_video` is, with no core test support) runs
 the encoder rules C1 to C13 on one case through the public calls and names
 the first one broken; sensor's encoder test runs it on the public sizes and
 every code in the set, and an app's device test can run it as it is.
+
+`rgbd_pattern.hpp` (standard library alone; camera-only builds run its
+test) is that test depth, as a tracked sensor delivers it:
+`pattern_depth(width, height, index)` writes u16 millimetres, the band at
+the same pixels as the picture's luma, a set square 1000 and a clear one
+2000, the plane at 2000 and no return across the left half of the bottom
+eighth, beside a confidence plane of ARKit's levels, 2 on every square and
+0, 1, 2 by column elsewhere. `depth_index` reads it back only where every
+sample of each square's central half holds the square's one value and the
+references are 1000 and 2000, so torn depth is no index rather than a wrong
+one.
+
+`rgbd_contract.hpp` checks the frame contract on what an `IRgbdSensor`
+handed out. `RgbdContract` takes each frame as it is handed out and keeps
+none, for a run of any length, one checker a start, and its
+`breach(stats)` names the first rule broken with its frame's place: with
+`SensorInfo::depth`, depth present and its camera that size; a confidence
+plane only beside host depth at a floor of 1 or more, and a floor only with
+one; with `SensorInfo::color`, colour present, its camera that size and the picture
+its camera's, without it no colour; then `order_breach` (sequences
+increase, and times where both are reported: 0 is no time) and
+`stats_breach` (`delivered` the frames taken, `delivered + dropped +
+failed <= received`), which the stereo contract
+(`tests/stereo_contract.hpp`) calls too, a time of 0 counted as one
+there. `rgbd_breach` runs it over a vector. The Orbbec, RealSense and FFS depth
+sensors' tests run it under injected faults. The Orbbec camera stub stands
+in for `CameraStream`'s mailbox, take and read, and plays a script of
+captures with counts of its own, so `OrbbecSensor`'s poll, drain (its
+discards after a refusal) and stats (failed plus lost) run on it. The
+RealSense camera stub (`tests/realsense_camera_stub.cpp`, in place of
+`camera.cpp`, the SDK callback's received count and `stats()` included)
+sends librealsense software-device framesets into the driver's frame
+queue, so `RealSenseSensor`'s conversion, poll, drain, its delivered and
+failed counts and the queue's drops run. `CameraStream`'s and
+`camera.cpp`'s own counting is checked only on a camera.
 
 ## Next work
 

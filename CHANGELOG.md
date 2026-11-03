@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.26.0] - 2026-11-02
+## [0.27.0] - 2026-11-02
 
 ### Added
 
@@ -48,13 +48,59 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `sensor_video` links CoreVideo PUBLIC on Apple (the encoder's Apple entry
   names `CVPixelBufferRef`).
 - `testing/nv12_picture.hpp` includes `testing/nv12_pattern.hpp`, where
-  `HostNv12`, `kIndexSquare`, `kIndexBits` and `test_pattern` now live,
-  unchanged.
+  `HostNv12` and `test_pattern` now live, unchanged, with the band's layout
+  from `testing/index_band.hpp`.
 - The H.265 parsers read through internal walks the slice reader shares;
   what they read and refuse is unchanged.
 - The iOS build check also compiles `sensor_video_testing` and the Apple
   headers as plain C++, and links an app's encoder calls into an iOS
   executable.
+
+## [0.26.0] - 2026-11-02
+
+### Added
+
+- **The frame contract**, in `IRgbdSensor`'s doc (`rgbd_sensor.hpp`): a
+  frame's colour is its own capture's picture; a sensor that names a depth
+  or colour camera hands out whole frames only, a lost or undecoded picture
+  counted in `SensorStats::failed`; a frame's cameras are the sizes
+  `SensorInfo` names; a gap in `RgbdFrame::sequence` is a frame lost after
+  the sensor numbered it, and a rate gate's skips leave none
+  (`RgbdFrame::sequence`'s doc says so too); a timestamp of 0 is none, so
+  only reported times increase; a confidence plane comes beside host depth
+  at a floor of 1 or more, and a floor only with one, as `GpuFramePrep`
+  takes it (0.24.0's plane). DECISIONS.md, the 2026-11-02 frame contract
+  entry.
+- **`color_from_registered_depth(depth, width, height)`**
+  (`camera_conventions.hpp`, `sensor_interface`): the colour camera a depth
+  image is registered to, a `camera::CameraModel` in and out, the inverse
+  of `depth_from_registered_color`'s rescale through the same per-axis
+  code, the lens kept; `InvalidArgument` for a zero size or a depth camera
+  `check_camera_model` refuses.
+- **Test support** (`testing/`, header-only):
+  - `testing/rgbd_contract.hpp`: `RgbdContract`, which checks a source's
+    frames one at a time, one start each, and keeps none, `rgbd_breach`
+    over a vector, and the rules they share with the stereo contract,
+    `sequence_breach`, `order_breach` and `stats_breach`.
+  - `testing/rgbd_pattern.hpp` (standard library alone): `PatternDepth`,
+    `pattern_depth(width, height, index)`, u16 millimetres carrying the
+    index band at the picture's pixels and a confidence plane, and
+    `depth_index`, which reads it back; `kPatternNearMm`, `kPatternFarMm`.
+  - `testing/index_band.hpp` (standard library alone): `kIndexSquare` and
+    `kIndexBits`, moved from `nv12_picture.hpp`, which includes it;
+    `test_pattern`'s bytes are unchanged.
+
+### Changed
+
+- `tests/stereo_contract.hpp` calls `order_breach` and `stats_breach`; the
+  stereo suites are unchanged.
+- The Orbbec camera stub stands in for `CameraStream`'s mailbox, take and
+  read, playing a script of captures with counts of its own, and
+  `tests/realsense_camera_stub.cpp` stands in for the RealSense camera
+  (`camera.cpp`) with librealsense's software device: the Orbbec,
+  RealSense and FFS depth sensors' tests run `rgbd_breach` under injected
+  faults through each sensor's poll, drain and stats. The cameras' own
+  counting is checked only on a camera.
 
 ## [0.25.0] - 2026-11-02
 

@@ -180,8 +180,10 @@ struct RgbdFrame {
   /// reports none.
   std::uint64_t timestamp_ns = 0;
   /// The sensor's own count of its frames: a gap is a lost frame, which a
-  /// timestamp cannot tell from a late one. Like @ref timestamp_ns, it
-  /// counts within one capture session; it may begin again at a restart.
+  /// timestamp cannot tell from a late one. Frames the sensor chose not to
+  /// take, such as a rate gate's, are not counted, so they leave no gap. Like
+  /// @ref timestamp_ns, it counts within one capture session, and it may
+  /// begin again at a restart.
   std::uint64_t sequence = 0;
   /// When the host received the frame, on `std::chrono::system_clock`, in
   /// nanoseconds since its epoch: what a sender's latency counts from. 0 when

@@ -6,8 +6,9 @@
 // codes, bytes before the first left out, and a committed clip's from its
 // file; the decoder and encoder promises as VS_TEST_HEVC_BACKEND and
 // VS_TEST_HEVC_ENCODER set them; the test pattern's planes, its 0 and 255,
-// its index band read back by pattern_index for indices across its span, and
-// a different picture at each index; and,
+// its index band read back by pattern_index for indices across its span, a
+// different picture at each index, its bytes pinned by MD5, and the test
+// depth's band at the same pixels; and,
 // on the GPU, its device picture's two plane images, their usage, layout and
 // size, each plane at their corner with 0xEE past it, and the refusals. The
 // host parts run without a device.
@@ -18,6 +19,7 @@
 #include <cstdio>
 #include <vector>
 
+#include "md5.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
@@ -31,6 +33,7 @@
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "volumetric_kit/sensor/testing/hevc_clip.hpp"
 #include "volumetric_kit/sensor/testing/nv12_picture.hpp"
+#include "volumetric_kit/sensor/testing/rgbd_pattern.hpp"
 #include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace sensor = volumetric_kit::sensor;
@@ -149,6 +152,35 @@ int test_pattern() {
   // A flat picture is not the pattern.
   const Bytes grey(std::size_t{256} * 16, 128);
   CHECK(testing::pattern_index(grey.data(), 256) == -1);
+  // The bytes are the ones the band's constants were written with, before
+  // they moved to index_band.hpp (sensor 0.23.0's).
+  struct Pinned {
+    std::uint32_t w, h, index;
+    const char* md5;  // of the luma, then the chroma
+  };
+  for (const Pinned& pin :
+       {Pinned{256, 144, 0, "cb5721796bf623b92b4fc22f768bf280"},
+        Pinned{256, 144, 12345, "2d2b6cbab77b5585307b31076b605cf5"},
+        Pinned{37, 21, 9, "b70cbfa67f31b1e068a7472691e527ac"},
+        Pinned{1920, 1440, 70000, "f45e7232dbfccd7b3647c75dc676fbc5"}}) {
+    const testing::HostNv12 p = testing::test_pattern(pin.w, pin.h, pin.index);
+    vs_test::Md5 md5;
+    md5.update(p.luma.data(), p.luma.size());
+    md5.update(p.chroma.data(), p.chroma.size());
+    CHECK(md5.hex() == pin.md5);
+  }
+  // The test depth carries the band at the same pixels: a square is near
+  // where the picture's is 255, far where it is 0.
+  for (const std::uint32_t i : {5u, 12345u}) {
+    const testing::HostNv12 p = testing::test_pattern(256, 192, i);
+    const testing::PatternDepth d = testing::pattern_depth(256, 192, i);
+    for (std::size_t k = 0; k < std::size_t{testing::kIndexSquare} * 256; ++k) {
+      CHECK(d.depth[k] == (p.luma[k] == 255 ? testing::kPatternNearMm
+                                            : testing::kPatternFarMm));
+    }
+    CHECK(read_index(p) == static_cast<long>(i) &&
+          testing::depth_index(d.depth.data(), 256, 192) == i);
+  }
   const testing::HostNv12 a = testing::test_pattern(256, 144, 7);
   const testing::HostNv12 b = testing::test_pattern(256, 144, 8);
   const testing::HostNv12 again = testing::test_pattern(256, 144, 7);

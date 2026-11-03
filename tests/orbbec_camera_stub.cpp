@@ -20,16 +20,49 @@ std::map<std::string, FakeCamera> cameras;
 int lookups = 0;
 int open_streams = 0;
 
-void reset() {
-  cameras.clear();
-  lookups = 0;
-  open_streams = 0;
-}
-
 namespace {
 
 // The serial open_camera found, for CameraStream::create, which is not told.
 std::string opening;
+
+// The captures landed and not yet read, by the SDK frame set that stands for
+// each in the camera's mailbox.
+std::map<const ob::FrameSet*, FakeCapture> held;
+
+// The next of `fake`'s batches landed in `box`, as the SDK's thread lands
+// captures: each counted received, a lost one counted lost and never held,
+// and the oldest pushed out of a full queue counted dropped.
+void land(volumetric_kit::sensor::orbbec::Mailbox& box, FakeCamera& fake) {
+  if (fake.batches.empty()) return;
+  std::vector<FakeCapture> batch = std::move(fake.batches.front());
+  fake.batches.pop_front();
+  for (FakeCapture& capture : batch) {
+    box.received.fetch_add(1);
+    if (capture.kind == FakeCapture::Kind::Lost) {
+      ++fake.lost;
+      continue;
+    }
+    std::shared_ptr<ob::FrameSet> set = ob::FrameFactory::createFrameSet();
+    held[set.get()] = std::move(capture);
+    box.pending.push_back(std::move(set));
+    while (box.pending.size() > box.depth) {
+      held.erase(box.pending.front().get());
+      box.pending.pop_front();
+      box.dropped.fetch_add(1);
+    }
+  }
+}
+
+}  // namespace
+
+void reset() {
+  cameras.clear();
+  lookups = 0;
+  open_streams = 0;
+  held.clear();
+}
+
+namespace {
 
 // A fake camera's colour properties, as the SDK's device would be read and
 // written.
@@ -108,6 +141,8 @@ core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
   stream->who_ = who + ": camera " + orbbec_stub::opening;
   stream->sync_settings_ = fake.stored;
   stream->info_.sync_mode = fake.stored.mode;
+  stream->depth_camera_ = fake.depth_camera;
+  stream->color_camera_ = fake.color_camera;
   stream->fps_ = streams.fps;
   ++orbbec_stub::open_streams;
   return stream;
@@ -160,25 +195,91 @@ core::Status CameraStream::use_host_clock() {
   return {};
 }
 
-// The remaining methods are needed to link the public sensor implementation;
-// the tests only open sensors, never start or poll them.
 core::Status CameraStream::sync_clock_to_host() { return {}; }
-core::Status CameraStream::start() { return {}; }
-void CameraStream::stop() noexcept {}
-void CameraStream::set_queue_depth(std::size_t) {}
-void CameraStream::set_frame_notify(std::function<void()>) {}
-OrbbecStreamStats CameraStream::stats() const noexcept { return {}; }
-void CameraStream::discard() noexcept {}
-core::Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
-  return std::shared_ptr<ob::FrameSet>{};
-}
-core::Status CameraStream::take_all(
-    std::vector<std::shared_ptr<ob::FrameSet>>*) {
+
+// Running, the camera plays its script: the counters restart, as the
+// driver's do, and the batches land one a take.
+core::Status CameraStream::start() {
+  if (running_) return {};
+  mailbox_->pending.clear();
+  mailbox_->received = 0;
+  mailbox_->dropped = 0;
+  delivered_ = 0;
+  failed_ = 0;
+  discarded_ = 0;
+  orbbec_stub::cameras.at(info_.serial).lost = 0;
+  running_ = true;
   return {};
 }
+
+void CameraStream::stop() noexcept {
+  running_ = false;
+  mailbox_->pending.clear();
+}
+
+void CameraStream::set_queue_depth(std::size_t depth) {
+  mailbox_->depth = depth;
+}
+void CameraStream::set_frame_notify(std::function<void()>) {}
+
+OrbbecStreamStats CameraStream::stats() const noexcept {
+  OrbbecStreamStats s;
+  s.received = mailbox_->received.load();
+  s.delivered = delivered_;
+  s.dropped = mailbox_->dropped.load() + discarded_;
+  s.failed = failed_;
+  s.lost = orbbec_stub::cameras.at(info_.serial).lost;
+  return s;
+}
+
+void CameraStream::discard() noexcept { ++discarded_; }
+
+core::Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
+  orbbec_stub::land(*mailbox_, orbbec_stub::cameras.at(info_.serial));
+  Mailbox& box = *mailbox_;
+  if (!running_ || box.pending.empty()) return std::shared_ptr<ob::FrameSet>{};
+  std::shared_ptr<ob::FrameSet> newest = std::move(box.pending.back());
+  box.pending.pop_back();
+  for (const auto& older : box.pending) orbbec_stub::held.erase(older.get());
+  box.dropped.fetch_add(box.pending.size());
+  box.pending.clear();
+  return newest;
+}
+
+core::Status CameraStream::take_all(
+    std::vector<std::shared_ptr<ob::FrameSet>>* out) {
+  orbbec_stub::land(*mailbox_, orbbec_stub::cameras.at(info_.serial));
+  if (!running_) return {};
+  for (auto& set : mailbox_->pending) out->push_back(std::move(set));
+  mailbox_->pending.clear();
+  return {};
+}
+
+// A held capture as its script says: the frame, which holds the frame set as
+// a driver's frame holds the SDK's, or a skip or a refusal, each counted.
 core::Result<std::optional<RgbdFrame>> CameraStream::read(
-    const std::shared_ptr<ob::FrameSet>&) {
-  return std::optional<RgbdFrame>{};
+    const std::shared_ptr<ob::FrameSet>& set) {
+  const auto it = orbbec_stub::held.find(set.get());
+  if (it == orbbec_stub::held.end()) {
+    ++failed_;
+    return core::Status::io_error(who_ + ": a frame set the script never sent");
+  }
+  orbbec_stub::FakeCapture scripted = std::move(it->second);
+  orbbec_stub::held.erase(it);
+  switch (scripted.kind) {
+    case orbbec_stub::FakeCapture::Kind::Frame:
+      scripted.frame.pixels = set;
+      ++delivered_;
+      return std::optional<RgbdFrame>(std::move(scripted.frame));
+    case orbbec_stub::FakeCapture::Kind::Skipped:
+      ++failed_;
+      return std::optional<RgbdFrame>();
+    case orbbec_stub::FakeCapture::Kind::Refused:
+    case orbbec_stub::FakeCapture::Kind::Lost:
+      break;
+  }
+  ++failed_;
+  return core::Status::io_error(who_ + ": a capture contradicts its modes");
 }
 
 }  // namespace volumetric_kit::sensor::orbbec
