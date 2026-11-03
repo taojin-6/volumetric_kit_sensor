@@ -284,16 +284,16 @@ core::Status Run::ready_targets() {
 core::Result<YuvImage> Run::write_target(Encoder& e, std::uint32_t i,
                                          core::TimelinePoint gate) {
   const std::uint64_t v = value_ + 1;
-  core::PendingBatch& slot = pending_[v % kRing];
+  core::PendingBatch& kept = pending_[v % kRing];
   // The batch kRing writes ago, whose descriptor set the writer takes next:
   // done, as its picture was coded or given up long since.
-  VKC_TRY(slot.wait());
+  VKC_TRY(kept.wait());
   core::CommandBatch batch(*c_.device, *c_.allocator);
   VKC_ASSIGN(YuvImage t, e.target(batch));
   VKC_TRY(writer_->record(batch, planes_[i % kRing], t));
   std::vector<core::TimelinePoint> waits;
   if (gate.semaphore != nullptr) waits.push_back(gate);
-  VKC_ASSIGN(slot, batch.submit_async(waits, {{&written_, v}}));
+  VKC_ASSIGN(kept, batch.submit_async(waits, {{&written_, v}}));
   value_ = v;
   if (!described_) {
     described_ = Described{t.kr, t.kb, t.full_range, t.chroma_location};

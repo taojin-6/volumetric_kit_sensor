@@ -531,15 +531,15 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
 // throughout, in GENERAL.
 vkc::Result<std::shared_ptr<const vkc::Image>> plane_image(
     Gpu& gpu, std::uint32_t columns, std::uint32_t rows, VkFormat format,
-    std::uint32_t texel, VkImageUsageFlags usage) {
+    std::uint32_t sample_bytes, VkImageUsageFlags usage) {
   vkc::ImageDesc desc;
   desc.extent = {columns, rows};
   desc.format = format;
   desc.usage = usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   VKC_ASSIGN(vkc::Image image, gpu.allocator.create_image(desc));
-  const std::vector<std::uint8_t> filled(std::size_t{columns} * rows * texel,
-                                         0xEE);
+  const std::vector<std::uint8_t> filled(
+      std::size_t{columns} * rows * sample_bytes, 0xEE);
   VKC_TRY(vkc::test::write_image(gpu.device, gpu.allocator, image,
                                  filled.data(), filled.size(),
                                  VK_IMAGE_LAYOUT_GENERAL));
