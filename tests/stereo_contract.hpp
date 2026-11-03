@@ -7,13 +7,14 @@
 // handed out since its start: its calibration says how it was opened
 // (StereoInfo::calibration: both cameras 0 x 0 without one, neither camera
 // with a side 0 with one), each frame's skew within its info's bound
-// (StereoInfo::max_skew_ns),
-// sequences and times increasing, and the counters' rule (SensorStats:
-// delivered + dropped + failed <= received, and delivered the frames taken),
-// the last two the RGB-D contract's own (testing/rgbd_contract.hpp). One
-// check for every source, a test camera's and each driver's own unit, so a
-// driver proves the rule rather than a test of its own (the same robustness
-// rule for every driver).
+// (StereoInfo::max_skew_ns), sequences increasing and the times a source
+// reports increasing on the last one reported (0 is no time, as
+// StereoFrame::timestamp_ns is RgbdFrame's), and the counters' rule
+// (SensorStats: delivered + dropped + failed <= received, and delivered the
+// frames taken), the last two the RGB-D contract's own
+// (testing/rgbd_contract.hpp). One check for every source, a test camera's
+// and each driver's own unit, so a driver proves the rule rather than a test
+// of its own (the same robustness rule for every driver).
 
 #include <cstdint>
 #include <string>
@@ -61,6 +62,7 @@ inline std::string breach(const sensor::StereoInfo& info, Opened opened,
                           const sensor::SensorStats& stats) {
   const std::string calibration = calibration_breach(info, opened);
   if (!calibration.empty()) return calibration;
+  std::uint64_t last_time = 0;  // the last non-zero time; 0 before one
   for (std::size_t i = 0; i < frames.size(); ++i) {
     const sensor::StereoFrame& f = frames[i];
     const std::string at = "frame " + std::to_string(i) + ": ";
@@ -71,11 +73,12 @@ inline std::string breach(const sensor::StereoInfo& info, Opened opened,
       return at + "skew " + std::to_string(f.skew_ns) + " ns past the bound " +
              std::to_string(info.max_skew_ns);
     }
-    if (i == 0) continue;
-    const sensor::StereoFrame& before = frames[i - 1];
-    const std::string order = sensor::testing::order_breach(
-        before.sequence, before.timestamp_ns, f.sequence, f.timestamp_ns);
-    if (!order.empty()) return at + order;
+    if (i > 0) {
+      const std::string order = sensor::testing::order_breach(
+          frames[i - 1].sequence, last_time, f.sequence, f.timestamp_ns);
+      if (!order.empty()) return at + order;
+    }
+    if (f.timestamp_ns != 0) last_time = f.timestamp_ns;
   }
   return sensor::testing::stats_breach(stats, frames.size());
 }

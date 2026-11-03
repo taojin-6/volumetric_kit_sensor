@@ -106,6 +106,14 @@ struct HevcDecoder::Impl {
   // the device path cannot take.
   core::Result<DecodedPicture> picture(const AVFrame& frame);
 
+  // An error send or receive returns once the stream has finished or failed
+  // and every ready value handed out is set: a stream that failed drops the
+  // signals queued on it, which readers would otherwise wait for for good.
+  core::Status failed(core::Status status) {
+    timeline->settle();
+    return status;
+  }
+
   // Let go of the kept frames whose copy is done, oldest first.
   void release_copied() noexcept {
     while (kept_count > 0 && timeline->reached(kept[first].value)) {
@@ -280,35 +288,44 @@ core::Status HevcDecoder::send(const std::uint8_t* data, std::size_t size,
     return core::Status::invalid_argument(std::string(kWho) + ": moved from");
   }
 #if VS_VIDEO_WITH_CUDA
-  if (!impl_->refusal.empty()) return core::Status::unsupported(impl_->refusal);
-  if (impl_->ended) {
+  Impl& d = *impl_;
+  if (!d.refusal.empty()) {
+    return d.failed(core::Status::unsupported(d.refusal));
+  }
+  if (d.ended) {
     return core::Status::invalid_argument(
         std::string(kWho) + ": data sent after the end of the stream");
   }
-  AVCodecContext* context = impl_->codec.get();
+  AVCodecContext* context = d.codec.get();
   if (size == 0) {
-    impl_->ended = true;
+    d.ended = true;
     const int err = avcodec_send_packet(context, nullptr);
-    if (err < 0) return video::ffmpeg_error(kWho, "ending the stream", err);
+    if (err < 0) {
+      return d.failed(video::ffmpeg_error(kWho, "ending the stream", err));
+    }
     return {};
   }
   if (data == nullptr || size > static_cast<std::size_t>(INT_MAX)) {
     return core::Status::invalid_argument(
         std::string(kWho) + ": an access unit needs data and under 2 GiB");
   }
-  AVPacket* packet = impl_->packet.get();
+  AVPacket* packet = d.packet.get();
   av_packet_unref(packet);
   int err = av_new_packet(packet, static_cast<int>(size));
-  if (err < 0) return video::ffmpeg_error(kWho, "allocating a packet", err);
+  if (err < 0) {
+    return d.failed(video::ffmpeg_error(kWho, "allocating a packet", err));
+  }
   std::memcpy(packet->data, data, size);
   packet->pts = pts;
   err = avcodec_send_packet(context, packet);
-  if (!impl_->refusal.empty()) return core::Status::unsupported(impl_->refusal);
+  if (!d.refusal.empty()) {
+    return d.failed(core::Status::unsupported(d.refusal));
+  }
   if (err == AVERROR(EAGAIN)) {
     return core::Status::invalid_argument(
         std::string(kWho) + ": take the pictures waiting before sending more");
   }
-  if (err < 0) return video::ffmpeg_error(kWho, "decoding", err);
+  if (err < 0) return d.failed(video::ffmpeg_error(kWho, "decoding", err));
   return {};
 #else
   return impl_->vt->send(data, size, pts);
@@ -327,7 +344,10 @@ core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
   // picture, harmless while CUDA keeps up with the stream's rate.
   d.release_copied();
   if (d.kept_count == d.kept.size()) {
-    VKC_TRY(d.timeline->wait(d.kept[d.first].value));
+    if (core::Status waited = d.timeline->wait(d.kept[d.first].value);
+        !waited.ok()) {
+      return d.failed(std::move(waited));
+    }
     d.release_copied();
   }
   AVFrame* decoded = d.decoded.get();
@@ -335,12 +355,13 @@ core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
   const int err = avcodec_receive_frame(d.codec.get(), decoded);
   if (err < 0) {
     // Pictures decoded before a refusal still come out; then the refusal.
-    if (!impl_->refusal.empty())
-      return core::Status::unsupported(impl_->refusal);
+    if (!d.refusal.empty()) {
+      return d.failed(core::Status::unsupported(d.refusal));
+    }
     if (err == AVERROR(EAGAIN) || err == AVERROR_EOF) {
       return std::optional<DecodedPicture>();
     }
-    return video::ffmpeg_error(kWho, "decoding", err);
+    return d.failed(video::ffmpeg_error(kWho, "decoding", err));
   }
   core::Result<DecodedPicture> picture = d.picture(*decoded);
   if (!picture) {

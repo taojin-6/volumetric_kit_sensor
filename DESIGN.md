@@ -507,10 +507,15 @@ one wait a timeline at its highest value (`frame/ready_points.hpp`'s
 timeline made on another device before it records anything. A caller of
 `GpuFramePrep::record` passes `ready_points(frame)` among its `submit_async`
 waits, one of `record_set` or `SensorArray::record_process`
-`ready_points(frames)` (`set.frames`). On a CUDA failure a decoder synchronizes its stream, then sets the
-last value it handed out from the host if the counter is below it, so no
-batch waits for good; its destructor does the same before CUDA's import
-goes. VideoToolbox's pictures, a camera's and host planes carry none.
+`ready_points(frames)` (`set.frames`). After a CUDA failure, before NVDEC's
+`send` or `receive` returns any error but `InvalidArgument`, and in its
+destructor before CUDA's import goes, a decoder settles: it synchronizes its
+stream, then sets the last value it handed out from the host if the counter
+is below it, so no batch waits for good on a signal a failed stream dropped.
+NVDEC's host wait for the oldest of three kept pictures asks the stream
+between 10 ms slices, so a failed one, or one run dry short of the value,
+returns an error, settled (the
+2026-11-03 fault decision). VideoToolbox's pictures, a camera's and host planes carry none.
 **`video/`'s H.265 syntax** (`hevc_syntax.hpp`, target
 `sensor_video_syntax`) is public and builds on every platform: host
 code on the family core's base tier, with no codec, GPU or FFmpeg (the
@@ -957,8 +962,9 @@ consumer of depth never sees it: a depth source built on a stereo camera
   (`TODO(sensor)`: remove once the family includes the camera header).
 - **The contract** every stereo source keeps is checked by one test helper
   (`tests/stereo_contract.hpp`): the calibration as the source was opened
-  (`StereoInfo`'s rule, above), skew within the bound, sequences and times
-  increasing, and the counters' rule, on a test camera's pairs and on each driver's own unit
+  (`StereoInfo`'s rule, above), skew within the bound, sequences increasing
+  and the times reported too (0 is no time, as for an `RgbdFrame`), and
+  the counters' rule, on a test camera's pairs and on each driver's own unit
   (DeckLink's opened both ways, RealSense's factory calibration), not by a
   check of each driver's own.
 - **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` checks
@@ -1295,11 +1301,12 @@ none, for a run of any length, one checker a start, and its
 plane only beside host depth at a floor of 1 or more, and a floor only with
 one; with `SensorInfo::color`, colour present, its camera that size and the picture
 its camera's, without it no colour; then `order_breach` (sequences
-increase, and times where both are reported: 0 is no time) and
+increase, and times where both are reported, each on the last one
+reported: 0 is no time) and
 `stats_breach` (`delivered` the frames taken, `delivered + dropped +
 failed <= received`), which the stereo contract
-(`tests/stereo_contract.hpp`) calls too, a time of 0 counted as one
-there. `rgbd_breach` runs it over a vector. The Orbbec, RealSense and FFS depth
+(`tests/stereo_contract.hpp`) calls too, the same way. `rgbd_breach` runs
+it over a vector. The Orbbec, RealSense and FFS depth
 sensors' tests run it under injected faults. The Orbbec camera stub stands
 in for `CameraStream`'s mailbox, take and read, and plays a script of
 captures with counts of its own, so `OrbbecSensor`'s poll, drain (its
