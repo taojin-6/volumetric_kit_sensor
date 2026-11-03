@@ -66,26 +66,6 @@ core::Status io_error(const std::string& why) {
   return core::Status::io_error(std::string(kWho) + ": " + why);
 }
 
-// What an open that failed says. NVENC refuses a session past its limit, a
-// busy engine, memory it lacks and a parameter this GPU does not take alike,
-// with EINVAL or ENOMEM.
-core::Status open_failure(const std::string& what, int err) {
-  if (err == AVERROR(EINVAL) || err == AVERROR(ENOMEM)) {
-    return unsupported(
-        "NVENC is busy, at its session limit, out of memory, or does not take "
-        "a parameter of " +
-        what + " on this GPU: it did not open (" + ffmpeg_message(err) +
-        "); try again once another session closes");
-  }
-  if (err == AVERROR(ENOSYS) || err == AVERROR(ENOENT) || err == -1) {
-    return unsupported(
-        "no hardware NVENC here opens " + what +
-        " (NVIDIA's driver with its encode library, on a GPU with NVENC): " +
-        ffmpeg_message(err));
-  }
-  return ffmpeg_error(kWho, "opening " + what, err);
-}
-
 // The rows of a target, in bytes: the width rounded up to the GPU's texture
 // alignment, as FFmpeg pads its own CUDA frames, whose row stride NVENC
 // registers.
@@ -106,9 +86,9 @@ core::Result<std::uint32_t> target_stride(const core::Device& device,
   return static_cast<std::uint32_t>(round_up(width, std::uint64_t(alignment)));
 }
 
-// hevc_nvenc's options for @p o: one configuration, every QP set from the
-// options (the P-picture's, the B-picture's, which no picture uses, and the
-// IDR's), so FFmpeg chooses no QP of its own.
+// hevc_nvenc's options for @p o: one configuration, every rate-control QP
+// option set from the options. `delay` 0 is what keeps look-ahead off;
+// `no-scenecut` and `rc-lookahead` 0 pin what it already gives.
 std::vector<std::pair<const char*, std::string>> codec_options(
     const HevcEncoder::Options& o, bool strips) {
   const std::string qp = std::to_string(o.qp);
@@ -302,7 +282,7 @@ core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
     }
   }
   const int err = avcodec_open2(codec, nvenc, nullptr);
-  if (err < 0) return open_failure(what, err);
+  if (err < 0) return nvenc_open_failure(what, err);
 
   HevcEncoder::Facts read;
   read.encoder = std::string("hevc_nvenc on ") +
@@ -327,10 +307,13 @@ core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
       .append(std::to_string(codec->color_primaries))
       .append(codec->color_range == AVCOL_RANGE_JPEG ? " full range"
                                                      : " video range");
-  s.targets = before != nullptr ? std::move(before->targets) : std::move(made);
-  facts = std::move(read);
-  return std::unique_ptr<HevcEncodeSession>(
+  // The session made before the lost one's targets pass to it, so a failure
+  // to make it leaves them with @p previous: nothing after throws.
+  std::unique_ptr<HevcEncodeSession> opened(
       new HevcEncodeSession(std::move(impl)));
+  s.targets = made != nullptr ? std::move(made) : std::move(before->targets);
+  facts = std::move(read);
+  return opened;
 } catch (...) {
   return core::exception_status("HevcEncoder::create",
                                 core::Status::Code::OutOfMemory);

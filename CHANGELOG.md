@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.40.0] - 2026-11-03
+## [0.41.0] - 2026-11-03
 
 ### Added
 
@@ -36,6 +36,86 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A camera-only build with tests configures on Apple: it no longer adds the
   VideoToolbox clip's maker (`tools/vt_pattern_clip`), which needs the video
   tier.
+
+## [0.40.0] - 2026-11-03
+
+### Added
+
+- **`ArkitSensor`** (`arkit/arkit_sensor.hpp`, new target
+  `sensor_arkit`, every Apple build): ARKit as an `IRgbdSensor`. `open`
+  runs the session (the back wide camera's format at the size and rate
+  asked for, one depth map, HDR off, gravity-aligned) and waits for its
+  first frame with depth, whose cameras `info()` names. Each frame's depth
+  is copied once out of ARKit's buffer as u16 millimetres
+  (`arkit_depth_mm`) with ARKit's u8 confidence levels beside it, gated on
+  the GPU at `Options::min_confidence` (2 by default); its picture is
+  ARKit's `capturedImage`, imported as NV12 plane images at `poll` with no
+  copy and described from its own tags (an untagged matrix BT.601). Pose
+  through `cv_from_gl_camera`, the depth camera through
+  `depth_from_registered_color`, times on the host's `system_clock`,
+  frames ARKit did not track normally withheld, one world for the sensor
+  (relocalisation, never a reset). `ArkitStatus` (`status()`): tracking,
+  interruption, withheld, refused, missed periods, the last refusal and
+  the session's error. `ArkitSource::Pattern` runs the same driver with no
+  camera, on every Apple platform: `testing::pattern_depth` and
+  `testing::test_pattern` coding each frame's sequence. ARKit's camera
+  runs on iOS and iPadOS; elsewhere `open` refuses it. DECISIONS.md, the
+  2026-11-03 ARKit entry.
+- **`kArkitDepthNoise`** `{8.58e-3, -7.67e-3, 3.79e-3}`, which every
+  `ArkitSensor` frame states.
+- **`pixel_buffer_of(picture)`** (`apple/pixel_buffer_importer.hpp`,
+  `sensor_apple`): the `CVPixelBuffer` whose planes a picture's images are,
+  where `PixelBufferImporter` made them, to code it as it is
+  (`send_pixel_buffer`); null for any other picture.
+
+### Changed
+
+- **`DepthNoise::known()`** takes a negative b where sigma(z) stays above
+  0 for every z above 0 (b^2 < 4ac), a and c at least 0 as before: a
+  LiDAR's curve, least noisy past the camera. Every model it took before
+  it still takes.
+- `kMaxColorQueueFamilies` moves from `orbbec/orbbec_stream.hpp` to
+  `yuv_image.hpp`, the same name and value; `orbbec_stream.hpp` includes
+  it from there.
+- `PixelBufferImporter`'s images hold their buffer through a deleter of
+  its own, which `pixel_buffer_of` finds; what they hold, and for how long,
+  is unchanged.
+- The iOS build check also compiles `sensor_arkit`, ARKit's feed among
+  it, and links it, and an app's calls to open ARKit's camera, against
+  ARKit and AVFoundation. The ThreadSanitizer step runs the ARKit tests.
+
+## [0.39.0] - 2026-11-03
+
+### Fixed
+
+- **A failed NVENC reopen keeps the lost session's buffers**
+  (`HevcEncoder`): an allocation failing as the session was made destroyed
+  them while a batch could still write one, and the next target crashed.
+- **NVENC's open failures say which refusal it is**: the session limit, a
+  busy engine or memory, which another session closing clears, alike with a
+  parameter the GPU does not take (a picture too small, for one); a GPU and
+  driver that code no such picture; NVIDIA's encode library missing. No
+  retry advice for a refusal that stays. `create` documents `IoError` too.
+- **C13 on NVENC holds whatever the timing**
+  (`testing/hevc_conformance.hpp`): the dropped picture's writer waits for a
+  value the run sets once the next picture is sent, where a fast encode lost
+  all 5 rounds under AddressSanitizer. `Rules::Sequence` reads no picture
+  count, as documented, and lists C5.
+
+### Changed
+
+- **Docs say what NVENC does**: `Facts::strips` is the strips asked for (a
+  GPU of fewer than 3 encoders codes one on each); `receive`'s 2 s without
+  an access unit is VideoToolbox's; NVENC's access units carry a
+  picture-timing SEI and its SPS an HRD it does not keep (`CodedPicture`);
+  `CudaContext` says what rebuilding the primary context costs, which
+  `HevcEncoder::create` and `HevcDecoder::create` point to.
+- **`sensor_video_hevc_encoder` tests what held untested**: a picture that
+  fails uncoded keeps its target until its writer is done; NVENC hands out
+  no buffer a sent picture holds and passes its buffers to the session that
+  opens again; the quality case at 258x146 too; the colour sweep on Apple
+  runs the stream's rules again (C6 and C11 on every code); the writer's
+  other row refusals. `sensor_video_ffmpeg` tests NVENC's open-failure map.
 
 ## [0.37.0] - 2026-11-03
 
@@ -71,7 +151,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   texture alignment), which NVENC reads through CUDA with no copy; `target`
   records the buffer's crossing into the batch. Effort is the preset (p1 to
   p7), every QP is set from the options, QP 0 to 51 is coded, sitings 1 to 5
-  are refused, and a picture of 4096 rows or more is coded in 3 strips
+  are refused, and a picture of 4096 rows or more is asked for in 3 strips
   (`Facts::strips`), which an FFmpeg before 7.1 refuses in `create`.
 - **`HevcEncoderCase::Rules::Sequence`** (`testing/hevc_conformance.hpp`):
   what the sequence says on one key picture (C3-C5, C10), for a sweep over

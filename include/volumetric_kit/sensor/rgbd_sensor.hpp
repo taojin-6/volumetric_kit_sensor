@@ -16,9 +16,9 @@
 /// sensors in order and group their frames.
 ///
 /// A driver ships in this package only if the package can build and test it
-/// (the 2026-08-02 decision); a platform-bound one (ARKit) implements this
-/// from its application's repository. Like the frame, this header reaches no
-/// Vulkan.
+/// (the 2026-08-02 decision). ARKit's (`arkit/arkit_sensor.hpp`) does: CI's
+/// iOS check compiles it, and the Mac's tests run it over a fake feed and its
+/// test pattern. Like the frame, this header reaches no Vulkan.
 
 #include <cstddef>
 #include <cstdint>

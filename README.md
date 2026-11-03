@@ -5,8 +5,9 @@
 Cameras, capture and the device-frame contract of the `volumetric_kit`
 family: the camera vocabulary and the rig's calibration file, the RGB-D
 sensor interface, GPU frame preparation, the sensor array, the hardware video
-decoders, Apple's pixel-buffer importer, the Orbbec and RealSense drivers,
-the audio source interface and a microphone driver, and image files.
+decoders, Apple's pixel-buffer importer, the Orbbec, RealSense and ARKit
+drivers, the audio source interface and a microphone driver, and image
+files.
 A camera stack is anything that produces `DeviceFrame`s, the posed,
 undistorted RGB-D frames on the device that fusion reads.
 
@@ -43,7 +44,8 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, `HevcEncoder` (VideoToolbox: a device target or, on Apple, `send_pixel_buffer`), `video_backend()`, what H.273 colour codes mean (`frame_color.hpp`), CUDA interop | frame, video_syntax |
 | `sensor_video_testing` | `testing/hevc_conformance.hpp`, `testing/nv12_writer.hpp` | `hevc_encoder_breach`, the encoder rules for any runner, and `Nv12Writer`, a test picture written into a target by a kernel; static | video |
 | `sensor_wire` | `wire/` | An RGB-D sensor's frames as bytes for a recording or a live link (`rgbd_wire.hpp`): the sensor once, each frame's depth and colour halves, read back in place; every build, iOS included | interface, video_syntax |
-| `sensor_apple` | `apple/` | `PixelBufferImporter`, `color_codes_of`, every Apple build | frame, video_syntax |
+| `sensor_apple` | `apple/` | `PixelBufferImporter`, `pixel_buffer_of`, `color_codes_of`, every Apple build | frame, video_syntax |
+| `sensor_arkit` | `arkit/` | `ArkitSensor` (ARKit's camera on iOS and iPadOS, its test pattern on every Apple build), `kArkitDepthNoise` | interface; apple and video, privately |
 | `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video, video_syntax |
 | `sensor_realsense` | `realsense/` | `RealSenseSensor`, `RealSenseStereo` | interface, stereo |
 | `sensor_ffs` | `ffs/` | `FfsStereo` (Fast-FoundationStereo on TensorRT), `StereoDepthSensor` (any stereo camera as an `IRgbdSensor`); NVIDIA only | stereo; video, privately |
@@ -328,6 +330,34 @@ built and tested on every leg, and its SDK part on the 24.04 leg, against
 the SDK's headers the core keeps
 (`tools/ci/decklink-sdk-16.0`, at the core pin).
 
+## ARKit driver
+
+`ArkitSensor` (`arkit/arkit_sensor.hpp`, `volumetric_kit::sensor_arkit`)
+is a LiDAR iPad's or iPhone's camera as an `IRgbdSensor`, built on every
+Apple build with the system's frameworks alone. Each frame is one
+`ARFrame`: ARKit's depth map copied once as u16 millimetres with its
+confidence levels beside it, which `GpuFramePrep` gates on the GPU, and
+ARKit's own picture as NV12 plane images, with no copy. The pose is
+ARKit's, in this package's camera axes, in one world for the sensor's
+life; frames ARKit did not track normally are withheld; times are on the
+host's `system_clock`. `pixel_buffer_of(frame.color)` gives the picture's
+own buffer back, to code it as it is.
+
+```cpp
+sensor::ArkitSensor::Options options;  // 1920x1440 at 60 Hz, smoothed depth
+options.device = &device;              // where the pictures become images
+VKC_ASSIGN(sensor::ArkitSensor camera, sensor::ArkitSensor::open(options));
+VKC_TRY(camera.start());  // then as any IRgbdSensor; camera.status() for a read-out
+```
+
+ARKit's camera runs on iOS and iPadOS: `open` runs the session off the
+main thread and asks for the camera the first time. With
+`options.source = ArkitSource::Pattern` it runs the same driver with no
+camera on any Apple platform, each frame's sequence coded in its depth and
+its picture, as the Mac's tests run it. CI compiles and links the camera's
+part for iOS (`tools/ios_build_check.sh`); the camera itself is checked by
+hand on an iPad.
+
 ## Video coders
 
 The HEVC and JPEG decoders (`volumetric_kit::sensor_video`) decode on the
@@ -425,7 +455,7 @@ pixel buffers or on targets, which `testing/nv12_writer.hpp`'s
 
 ## Versions
 
-The version is `project()`'s (0.40.0), carried by the umbrella as
+The version is `project()`'s (0.41.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

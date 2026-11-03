@@ -25,7 +25,9 @@ namespace volumetric_kit::sensor {
 /// - time of flight: b (the Femto Mega: 0.95 mm per metre);
 /// - rectified stereo: c = sigma_d / (f B), from the disparity's sigma_d (px),
 ///   the focal length f (px) and the baseline B (m); see @ref stereo;
-/// - a constant: a.
+/// - a constant: a;
+/// - a phone's LiDAR (ARKit): all three, b negative, as fitted
+///   (`kArkitDepthNoise`).
 ///
 /// All zero, the default, means the producer does not know its noise. A
 /// consumer that needs a model refuses such a frame rather than guess one.
@@ -43,11 +45,20 @@ struct DepthNoise {
   /// @return The standard deviation at a depth of @p z metres, in metres.
   constexpr float sigma(float z) const noexcept { return a + z * (b + z * c); }
 
-  /// @return Whether this states a model: every term finite and at least 0,
-  ///         and at least one above 0.
+  /// @return Whether this states a model: every term finite, a and c at
+  ///         least 0, and sigma(z) above 0 at every depth above 0 -- so b may
+  ///         be negative while b^2 < 4ac (a curve with its least noise past
+  ///         the camera, as LiDAR's).
   bool known() const noexcept {
-    const auto term = [](float x) { return std::isfinite(x) && x >= 0.0f; };
-    return term(a) && term(b) && term(c) && (a > 0.0f || b > 0.0f || c > 0.0f);
+    if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c) ||
+        a < 0.0f || c < 0.0f) {
+      return false;
+    }
+    if (b >= 0.0f) return a > 0.0f || b > 0.0f || c > 0.0f;
+    // sigma's least value past 0 is a - b^2 / 4c, at z = -b / 2c; in double,
+    // where neither side overflows.
+    const double bb = double{b} * b;
+    return bb < 4.0 * double{a} * c;
   }
 
   /// @brief Rectified stereo's model: `c = disparity_sigma / (focal *

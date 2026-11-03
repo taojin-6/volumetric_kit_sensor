@@ -51,8 +51,8 @@ recon's examples assemble the rest.
   depends on **`camera` and `frame` alone** — it sits beside recon's fusion tiers,
   not on top of them — and bundles **no drivers**: one ships here only if this package can build
   *and* test it (the 2026-08-02 decision). The ones that do, Orbbec,
-  RealSense and DeckLink, are targets of their own (`orbbec/`, `realsense/`,
-  `decklink/`), so
+  RealSense, DeckLink and ARKit, are targets of their own (`orbbec/`,
+  `realsense/`, `decklink/`, `arkit/`), so
   `sensor_interface` never links a vendor SDK. The HEVC and JPEG decoders and the HEVC encoder are another target of
   their own (`video/`, on the GPU's hardware) and link no camera tier:
   `frame` and, on Apple, the Apple importer (`apple/`), which links
@@ -74,6 +74,10 @@ recon's examples assemble the rest.
   (`DecklinkStereo`, `VS_WITH_DECKLINK`, Linux x86-64). On `stereo`; its
   SDK-free units are a static target of their own, built and tested on
   every leg.
+- **`arkit`** — ARKit as an `IRgbdSensor` (`ArkitSensor`, every Apple
+  build): its camera on iOS and iPadOS, its test pattern everywhere. On the
+  interface; its units (the conversion and the driver over any feed, a
+  static target of their own, tested on the Mac) link `apple` and `video`.
 - **`ffs`** — stereo depth on NVIDIA's GPUs (`VS_WITH_FFS`): `FfsStereo`,
   Fast-FoundationStereo on TensorRT with CUDA kernels either side, and
   `StereoDepthSensor`, a stereo camera as an `IRgbdSensor`. On `stereo`; it
@@ -298,7 +302,10 @@ Every producer also states its depth's noise, `DeviceFrame::depth_noise`
 `sigma(z) = a + b z + c z^2` metres. It is temporal, so an error that
 repeats every frame (calibration, a matcher's fixed pattern) is not in it.
 All zero, the default, means unknown, and a consumer that needs a model
-refuses such a frame (`DepthNoise::known`); nothing defaults it.
+refuses such a frame (`DepthNoise::known`); nothing defaults it. A model is
+known when every term is finite, a and c are at least 0, and sigma(z) is
+above 0 at every z above 0, so b may be negative while b^2 < 4ac (the
+2026-11-03 ARKit entry): a LiDAR's curve, least noisy past the camera.
 `DepthNoise::stereo(sigma_d, f, B)` is rectified stereo's model, `c =
 sigma_d / (f B)`. A driver states it on `RgbdFrame::depth_noise` for each
 frame, as it states its depth range, and `GpuFramePrep::finish` copies it
@@ -318,6 +325,10 @@ the prepared one. The producers, each its own value:
   made at `create`, which refuses a `disparity_sigma` that is not finite and
   at least 0; it defaults to 0, unknown, since it is the camera's and the
   model's, so whoever opens a camera states it.
+- `ArkitSensor`: `kArkitDepthNoise`, `{8.58e-3, -7.67e-3, 3.79e-3}`,
+  ARKit's smoothed depth at high confidence, fitted on one take against
+  ARKit's own poses: 4.7 mm at 1 m, 8.4 mm at 2 m, 38.5 mm at 4 m. Samples
+  kept at a lower confidence are noisier.
 
 No per-pixel sigma, no `SensorInfo` field and no calibration-file key: no
 producer has a per-pixel confidence that sets a noise (a phone's confidence
@@ -357,8 +368,9 @@ interface (2026-10-07). Every driver keeps **the frame contract**, stated
 in `IRgbdSensor`'s doc (the 2026-11-02 frame contract entry): same
 capture, whole frames, the sizes `SensorInfo` names, loss read off the
 sequence. `testing/rgbd_contract.hpp` checks it (below, under test
-support). Links `sensor_camera` and `sensor_frame` alone; drivers live
-with the platform that can build *and* test them. The
+support). Links `sensor_camera` and `sensor_frame` alone; a driver ships
+here only where this package can build *and* test it, as ARKit's does
+(`arkit/`, below). The
 implementer every recon dataset example runs is
 recon's `examples/common/replica_sensor.hpp`, which plays a Replica sequence back
 through the interface, its frames prepared on the GPU as a camera's.
@@ -604,9 +616,10 @@ low-latency mode codes inside `VTCompressionSessionEncodeFrame`; and
 `receive` hands back each Annex B access unit in the order sent, its buffer
 swapped with the caller's, at most `kInFlight` (2) pictures in flight; a
 finite wait sleeps even with none in flight, so a receive thread of its own
-does not spin. The coding thread allocates nothing and never throws (fixed
-rings, reserved buffers), and on Apple runs at user-interactive quality of
-service. The first picture is a key, and so is the next after a failure (`key_owed`): a
+does not spin. The coding thread never throws: its rings and buffers are
+made at `create`, and each allocation left in it, the backend's, fails as
+that picture's `OutOfMemory`. On Apple it runs at user-interactive quality
+of service. The first picture is a key, and so is the next after a failure (`key_owed`): a
 dropped picture keeps the session, any other failure loses it, a failed
 picture fails those already sent behind it, and the next send opens a lost
 session again. `inject` drives a drop or a loss through the backend's own
@@ -619,31 +632,20 @@ codes QP 1 to 51 (0 as 1, so 0 is refused there) and writes the stream's
 chroma siting from the buffer's tag, which `send_pixel_buffer` adds to a
 buffer that lacks it. The session is torn down before what its callback
 uses, since VideoToolbox hands a pending output to the callback inside the
-teardown. NVENC (FFmpeg's `hevc_nvenc` on FFmpeg's CUDA device, the
-Vulkan device's GPU's primary context, which NVDEC opens alike) codes
-targets alone, so it needs `Options::device` and `Options::allocator`, a
-device that exports memory, and its GPU reached by CUDA. Its targets are
-`kInFlight + 1` exported buffers made at `create`, each mapped into CUDA
-once, which FFmpeg registers with NVENC once, by pointer, and NVENC reads
-with no copy: one coding, one the device writes, and one for a target taken
-while the one before it is held. The free one handed out longest ago goes
-next, so a target given up comes back two targets later at the soonest. A
-target is NV12 rows, the luma's from 0 and the chroma's after them, at a
-stride of the width rounded up to the GPU's texture alignment, as FFmpeg
-pads its own CUDA frames; `target` records the buffer's crossing from
-outside Vulkan before the batch's commands and back after them
-(`video/cuda_interop.hpp`). The coding thread codes with `delay` 0, so
-FFmpeg's send waits for the whole picture: NVENC on Linux is synchronous.
-The session sets every QP from the options (P, B and the IDR's), so FFmpeg
-chooses none, forces IDRs, and asks for 3 strips from 4096 rows (the
-driver's choice below); an FFmpeg that cannot ask for them (before 7.1, or
-built without nv-codec-headers 12.1) refuses such a picture in `create`.
-It writes the VUI's codes as FFmpeg numbers them, H.273's, and no siting, so
-sitings 1 to 5 are refused; it codes QP 0 to 51. A lost session is closed,
-and its buffers pass to the session that opens again. `facts().settings` is
-the configuration as the session reports it, one line, which the rules pin.
-The first coder that opens on NVIDIA sets FFmpeg's log level to ERROR, once
-a process. `video_backend()` (`backend.hpp`) names the build's backend.
+teardown. NVENC (FFmpeg's `hevc_nvenc` on FFmpeg's CUDA device, the GPU's
+primary context, opened by the helper NVDEC shares) codes targets alone:
+the target, its refusals and what it codes are `hevc_encoder.hpp`'s, its
+configuration the 2026-11-03 NVENC decision's. Its `kInFlight + 1` exported
+buffers are each mapped into CUDA once, which FFmpeg registers with NVENC
+once, by pointer, so a picture crosses with no copy. A buffer is free once
+no picture holds it, so the coding thread lets go of a picture's target
+only once its writer is done and NVENC has read it, a picture that fails
+uncoded too; the free one handed out longest ago goes next. The coding
+thread codes with `delay` 0, so FFmpeg's send waits for the whole picture:
+NVENC on Linux is synchronous. A lost session is closed, and its buffers
+pass to the session that opens again once it has; one that fails to open
+leaves them with the lost one. `video_backend()` (`backend.hpp`) names the
+build's backend.
 **`apple/`'s `PixelBufferImporter`** (`sensor_apple`, on every
 Apple build, iOS included, with no FFmpeg) hands an 8-bit NV12
 `CVPixelBuffer` on an IOSurface to Vulkan in place: each plane becomes a
@@ -669,8 +671,12 @@ NVDEC's plane images take them by the same rule (one check,
 from `kQueueFamilyExternal`. It sets a `YuvImage`'s planes and leaves the
 matrix, range and chroma siting to its caller, who alone knows how the
 samples are coded (a stream's unlabelled colour, say). An iOS camera's
-pictures, such as ARKit's `capturedImage`, can come through it with no
-conversion on the host. **`color_codes_of`** (`core_video_color.hpp`,
+pictures, such as ARKit's `capturedImage`, come through it with no
+conversion on the host. **`pixel_buffer_of`** gives a picture's buffer back
+from its images, to code it as it is: the images hold it through a deleter
+of the importer's own, which `std::get_deleter` finds (the package builds
+with RTTI), so a picture another producer made, or one in host or buffer
+planes, gives null, and nothing is cast. **`color_codes_of`** (`core_video_color.hpp`,
 the same target) reads what a buffer's tags state as H.273 codes, through
 Core Video's own mapping and the six chroma-location strings (internal
 `core_video_tags.hpp`, which the encoder shares); a tag Core Video maps to
@@ -730,6 +736,48 @@ disconnect watch, the frame queue and the counters. A frameset is one moment
 (`realsense::together`) when it holds a frame of every mode opened, every
 two within half a frame in the whole-nanosecond stamps the frames carry, so
 the stereo frames keep their bound exactly; any other is counted failed.
+**`arkit/`** (`sensor_arkit`, every Apple build, the system's frameworks
+alone) is **`ArkitSensor`**, a LiDAR iPad's or iPhone's camera as ARKit
+tracks it (the 2026-11-03 ARKit decision). `open` checks the options,
+makes the picture importer, runs the session and waits for its first
+frame with the requested depth map, whose picture size, pinhole and depth
+size are `SensorInfo`'s: the colour camera ARKit's pinhole with no lens,
+the depth camera `depth_from_registered_color`'s at the map's size, the
+identity extrinsic, free running on the host's clock, tracked. The session
+is ARKit's world tracking on the back wide camera's format at the size and
+rate asked for (the binned one where two have them), one depth map
+(smoothed by default, or raw), HDR off, gravity-aligned; the first run
+resets the world and none after it, relocalisation is allowed, and after
+an interruption it runs again only while started. Each `ARFrame` is one
+capture on the sensor's serial queue: its period after the one before
+counts `missed` where ARKit skipped some; a frame without the map takes no
+number; the rest are numbered and received, then withheld where ARKit did
+not track them normally, refused where a map or the picture is not of a
+format or size the sensor takes or its colour tags `ColorEncoding` cannot
+name, or held: the depth copied once, in one pass, into a pooled buffer as
+u16 millimetres (`arkit_depth_mm`) and the levels as ARKit gave them, the
+picture retained as it is, the pose through `cv_from_gl_camera`, the time
+on the host's clock by an offset measured at each start and again when an
+interruption ends, never smaller. `poll` and `drain` import the picture
+on the caller's thread (`PixelBufferImporter`, its images holding
+ARKit's buffer) and describe it from its tags (`color_codes_of`, then
+`frame_color.hpp`; an untagged matrix BT.601); the frame holds the buffer,
+which goes back to the pool with its last copy. Every frame states
+`kArkitDepthNoise` and its exposure (`RgbdFrame::color_exposure`: ARKit's
+duration and offset, the ISO from the frame's EXIF). The frames wait in
+RealSense's internal queue (`realsense/frame_queue.hpp`). Behind the class
+are an internal driver over any feed (`arkit/driver.hpp`, with the
+conversions in `conversion.hpp`: the static `sensor_arkit_units`, no ARKit
+type), ARKit's feed (`arkit_feed.mm`, iOS and iPadOS; elsewhere `open`
+refuses the camera) and the pattern's (`pattern_feed.mm`):
+`ArkitSource::Pattern` delivers, on a timer on the same queue, frame n's
+`testing::pattern_depth` as float metres and its `testing::test_pattern`
+in one of four IOSurface '420f' buffers tagged as ARKit tags its own, a
+tick finding all four held skipped. CI compiles and links ARKit's feed for
+iOS (`tools/ios_build_check.sh`); the Mac runs the driver over scripted
+captures and the pattern, under ThreadSanitizer too. No person mask: the
+scene is kept static while capturing, and a later mask writes level 0 in
+the same copy.
 **`IRgbdSensor`** (`rgbd_sensor.hpp`) is one sensor: its
 `SensorInfo` from when it opens (id, the cameras' factory models at the
 opened modes, `depth_to_color`, rig role, clock, pose source, rate, the
@@ -1385,10 +1433,10 @@ landed; the stack continues:
    `OrbbecSensor`, and `OrbbecCapture` and the SDK's host path are gone. The
    Replica source is an `IRgbdSensor` too, its colour packed host words
    (`RgbdFrame::color_packed`), and `ICameraCapture` and `CapturedFrame`
-   are gone (2026-10-07). The frame gains no float depth: the iOS scanner,
-   which still calls the host-depth and convention entry points kept for
-   it, quantises ARKit's float depth to 16 bits when it moves onto the
-   interface.
+   are gone (2026-10-07). The frame gains no float depth: ARKit's driver,
+   `ArkitSensor` (2026-11-03), copies ARKit's float metres to 16-bit
+   millimetres, and the iOS scanner, which still calls the host-depth and
+   convention entry points kept for it, moves onto it at its next re-pin.
 2. **`SensorArray`**, vendor-neutral, has landed: start order from the sync
    roles, trigger grouping, poses from the calibration file
    (nearest-frame and tracked members later), and `process(set)`, every

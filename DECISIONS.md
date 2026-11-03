@@ -23,7 +23,8 @@ entries relevant to your task; later amendments supersede earlier rules.
 
 - [**2026-08-02**](#2026-08-02--the-sensor-tier-is-a-contract-not-a-driver-collection-a-capture-driver-lives-here-only-if-this-repo-can-build) —
   The `sensor` tier is a *contract*, not a driver collection: a capture driver
-  lives here only if this repo can build (`ICameraCapture` went 2026-10-07)
+  lives here only if this repo can build (`ICameraCapture` went 2026-10-07).
+  *Amended 2026-11-03:* ARKit's driver now can be, and is: `sensor_arkit`.
 - [**2026-08-02**](#2026-08-02--one-color-space-rule-and-a-named-working-space-8-bit-color-is-encoded-float-color-is-linear-converted-once-at-the-sensor-boundary-and-encoded-once-at-presentation) —
   One color-space rule, and a *named* working space: 8-bit color is encoded,
   float color is linear, converted once at the sensor boundary and encoded once
@@ -363,6 +364,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   Femto Mega b = 0.95 mm/m in every mode, a RealSense's own depth stereo's
   model at 0.13 px, and FFS the disparity sigma its caller states
   (`FfsStereo::Options::disparity_sigma`, 0 unknown by default).
+  *Amended 2026-11-03:* `known()` takes a negative b where sigma stays above
+  0 (b^2 < 4ac), for ARKit's curve.
 - [**2026-10-30**](#2026-10-30--audio-sources-are-the-sensor-packages-iaudiosensor-on-the-interface-tier-microphone-over-portaudio-behind-vs_with_portaudio-and-audio-is-host-io) —
   Audio sources are the sensor package's: `IAudioSensor` in
   `sensor_interface`, polled, chunks of 16-bit PCM each stamped on the host
@@ -536,6 +539,17 @@ entries relevant to your task; later amendments supersede earlier rules.
   frames is no index; depth as `depth_index` reads it. One batch a read,
   the picture's ready value among its waits.
 
+- [**2026-11-03**](#2026-11-03--arkit-is-an-irgbdsensor-here-arkitsensor-in-sensor_arkit-its-depth-copied-once-as-u16-millimetres-beside-its-confidence-levels-its-picture-imported-where-arkit-left-it-and-handed-back-by-pixel_buffer_of-one-world-for-the-sensor-and-a-test-pattern-on-the-same-driver-depthnoiseknown-takes-a-negative-linear-term-where-sigma-stays-above-0-amends-the-2026-08-02-sensor-tier-and-2026-10-30-depth-noise-entries) —
+  ARKit is an `IRgbdSensor` in this package: `ArkitSensor`
+  (`sensor_arkit`, every Apple build; the camera on iOS and iPadOS). One
+  copy of the depth as u16 millimetres beside ARKit's confidence levels,
+  gated on the GPU; the picture imported where ARKit left it, described
+  from its tags, and handed back by `pixel_buffer_of` (`sensor_apple`) to
+  code as it is; the pose through `cv_from_gl_camera`, one world for the
+  sensor, untracked frames withheld; times on the host's clock; a test
+  pattern on the same driver. `kArkitDepthNoise` is ARKit's curve as
+  measured, and `DepthNoise::known()` takes its negative linear term.
+
 - [**2026-11-03**](#2026-11-03--a-gpu-fault-leaves-no-reader-waiting-for-good-every-error-nvdecs-decoder-returns-but-invalidargument-comes-back-with-each-ready-value-it-handed-out-set-and-its-wait-for-the-oldest-of-three-kept-pictures-sees-a-failed-stream-amends-the-2026-11-02-hand-over-entry) —
   A GPU fault leaves no reader waiting for good: NVDEC's decoder settles
   its timeline before it returns any error from `send` or `receive` but
@@ -547,8 +561,11 @@ entries relevant to your task; later amendments supersede earlier rules.
   The encoder codes on NVENC too, through FFmpeg's `hevc_nvenc`: targets
   only, `kInFlight + 1` exported buffers a session, which NVENC reads through
   CUDA with no copy, the free one handed out longest ago next; every QP set
-  from the options; 3 strips from 4096 rows, which an FFmpeg before 7.1
-  refuses. FFmpeg's log level is sensor's to set, once.
+  from the options; 3 strips asked from 4096 rows, which an FFmpeg before
+  7.1 refuses. FFmpeg's log level is sensor's to set, once. *Amended
+  2026-11-03:* a failed reopen keeps the lost session's buffers; the facts,
+  `receive`'s limit and the open failures say what NVENC does; C13 holds
+  the dropped picture's writer on NVENC.
 
 - [**2026-11-03**](#2026-11-03--a-tracked-sensors-posed-stills-are-a-file-of-their-own-cameratracked_stillshpp-with-one-reader-and-one-writer-that-the-recorder-and-calibs-solve-share-built-from-the-registrations-and-the-array-files-blocks-the-registrations-edge_m-is-the-edge-the-solve-fitted-the-corners-to-amends-the-2026-11-02-tracked-registration-entry) —
   A tracked sensor's stills of one session's world epoch, each with its
@@ -568,7 +585,11 @@ tier's first slice is platform-neutral C++ — an `ICameraCapture` interface, a
 `CapturedFrame` POD, and the coordinate/intrinsics conversion helpers — with
 **no** driver implementations bundled in. (*Amended 2026-10-07 (below):* the
 interface is `IRgbdSensor`, handing out `RgbdFrame`s; `ICameraCapture`,
-`CapturedFrame` and the conventions test's `FakeCapture` are gone.) The
+`CapturedFrame` and the conventions test's `FakeCapture` are gone.
+*Amended 2026-11-03 (the ARKit entry):* the rule below now places ARKit
+here, as `sensor_arkit`: CI's iOS check compiles and links its camera's
+feed, and the Mac's tests run its driver over a fake feed and its test
+pattern.) The
 first real source, **ARKit,
 lives in `volumetric_kit_ios`**, not here. The rule that places it: a driver
 belongs in this repo when this repo's CI can compile and exercise it (a
@@ -5225,7 +5246,9 @@ link alone, this changes only `DeviceFrame::color`'s comment; recon's
 so recon's libraries, which link `sensor_frame` alone, read it) is the
 frame-to-frame standard deviation of one depth sample, `sigma(z) = a + b z +
 c z^2` metres at z metres. `known()` is a model: every term finite and at
-least 0, one above 0. `DepthNoise::stereo(sigma_d, f, B)` is rectified
+least 0, one above 0. (*Amended 2026-11-03, the ARKit entry:* b may be
+negative where sigma stays above 0 at every depth above 0, b^2 < 4ac, a and
+c at least 0.) `DepthNoise::stereo(sigma_d, f, B)` is rectified
 stereo's, `c = sigma_d / (f B)`, unknown unless all three are finite and
 above 0. A driver states it on each `RgbdFrame::depth_noise`, as it states
 `min_depth`; `GpuFramePrep::finish` copies it to `DeviceFrame::depth_noise`
@@ -6311,7 +6334,9 @@ and is now a test:
   failure's message that cannot be allocated becomes `OutOfMemory`. Before,
   one failed allocation in its loop aborted the process; now every
   allocation in it can fail, and each failure is that picture's
-  `OutOfMemory`.
+  `OutOfMemory`. *Amended 2026-11-03:* the rings and buffers allocate
+  nothing; a backend's encode may (NVENC's makes a frame reference and a
+  packet a picture), each such failure that picture's `OutOfMemory`.
 - The compression session is the last member of the backend's state, so
   it is torn down first. VideoToolbox hands an output still pending to the
   callback inside `VTCompressionSessionInvalidate` (all 6 outputs of a
@@ -6333,7 +6358,9 @@ and is now a test:
   after one that failed. C13's drop in flight retries, up to 5 rounds, the
   race it needs. With the test thread held 1, 2 or 5 ms at C8's loss, no
   run broke a rule (before: 3 of 5 runs at 1 ms). With it held 2 ms on 4
-  of C13's 5 rounds, no run broke one either.
+  of C13's 5 rounds, no run broke one either. *Amended 2026-11-03:* on
+  NVENC the dropped picture's writer is held instead (the 2026-11-03 NVENC
+  entry).
 - `CodedPicture::key` is the key VideoToolbox marked, not the one asked
   for. Each picture's options are made once, at `create`. The siting tag
   is added on the caller's thread, in `send_pixel_buffer`.
@@ -7086,6 +7113,166 @@ index on the GPU on VideoToolbox. Planted bugs, each failing its test: the
 margin dropped for the midpoint (the blend), the ready wait dropped (the
 ready case), and depth read from one sample of each square (torn depth).
 
+### 2026-11-03 — ARKit is an `IRgbdSensor` here, `ArkitSensor` in `sensor_arkit`: its depth copied once as u16 millimetres beside its confidence levels, its picture imported where ARKit left it and handed back by `pixel_buffer_of`, one world for the sensor, and a test pattern on the same driver; `DepthNoise::known()` takes a negative linear term where sigma stays above 0 (amends the 2026-08-02 sensor-tier and 2026-10-30 depth-noise entries).
+
+**The rule.** `ArkitSensor` (`arkit/arkit_sensor.hpp`, target
+`sensor_arkit`, every Apple build, on the system's frameworks alone) is
+ARKit's capture as an `IRgbdSensor`, so an iPad's or iPhone's app holds the
+public frame every camera hands out.
+- **Shape.** `open` returns a move-only value, as `RealSenseSensor::open`
+  and `OrbbecSensor::open` do; the pimpl keeps the address ARKit's delegate
+  holds stable across a move. `Options` follows Orbbec's (`device`,
+  `color_queue_families` with a count); `kMaxColorQueueFamilies` moves to
+  `yuv_image.hpp` so both drivers share it. `open` runs the session and
+  waits for its first frame with the requested map: ARKit states its
+  pinhole only on a frame, and `SensorInfo` is known from the open. The
+  session keeps running; frames go out from `start`, those before it let
+  go uncounted.
+- **`SensorInfo`.** The options' id; "ARKit, " and the device's model id;
+  the first frame's pinhole at the format's size with no lens; the depth
+  camera registered to it (`depth_from_registered_color`) at the map's
+  size; the identity extrinsic; `FreeRun`, `Host`, `Tracked`; the format's
+  rate; no colour controls.
+- **Depth.** u16 millimetres by `arkit_depth_mm` and the u8 levels as ARKit
+  gave them, packed in one pass on ARKit's queue into a pooled buffer the
+  frame holds: the driver's only host work on the depth. The gate is the
+  confidence plane's, on the GPU, at `Options::min_confidence` (2 by
+  default; 0 hands out no plane). One map for each open, smoothed by
+  default or raw, with no fallback.
+- **Colour.** `capturedImage` as it is: NV12 plane images made by
+  `PixelBufferImporter` at `poll`, on the caller's thread, described from
+  its own tags (`color_codes_of`, then `frame_color.hpp`; an untagged
+  matrix BT.601, ARKit's). Tags `ColorEncoding` cannot name (HLG) refuse the
+  frame. HDR is off: 8-bit '420f'. **`pixel_buffer_of`** (`sensor_apple`)
+  gives the picture's own buffer back: the importer's images hold it
+  through a deleter type of the importer's own, which `std::get_deleter`
+  finds (the package builds with RTTI; `make_shared` became a `shared_ptr`
+  with that deleter, since `get_deleter` finds none in `make_shared`'s
+  block), so nothing is cast and a picture another producer made gives
+  null. `send_pixel_buffer` takes it as it is; there is no frame-level
+  variant.
+- **Pose and cameras**, per frame: `cv_from_gl_camera(ARCamera.transform)`,
+  that frame's pinhole, and the depth camera registered to it; the
+  conversions are sensor's own, reused, not copied.
+- **One world for the sensor.** The first run resets tracking and none
+  after it does; relocalisation is allowed, so ARKit finds its world again
+  after an interruption; frames ARKit did not track normally are withheld
+  (`failed`, `ArkitStatus::withheld`). A writer therefore writes tracking
+  Normal and world epoch 0 on every record. The sensor owns its
+  `ARSession`: the configuration, the LiDAR check, the camera prompt,
+  start and pause, and a re-run after an interruption only while started.
+- **Clocks.** `timestamp_ns` is `ARFrame.timestamp`, on the uptime clock,
+  plus an offset to `system_clock` measured at each start and again when an
+  interruption ends, never smaller, so times increase within a start;
+  `arrival_ns` the system clock in ARKit's callback; `sequence` counts,
+  from 0 at each start, the frames carrying the map.
+- **Counters.** A full queue drops its oldest (`dropped`); withheld and
+  refused frames and pictures that fail to import are `failed`, which
+  `ArkitStatus` splits; `ArkitStatus::missed` counts ARKit's skipped
+  periods from each frame's time after the one before. `status()` is
+  readable from any thread.
+- **Noise.** Every frame states `kArkitDepthNoise`, `{8.58e-3, -7.67e-3,
+  3.79e-3}`, ARKit's smoothed depth at high confidence fitted on one take
+  against ARKit's own poses, public so a tool replaying ARKit's metres
+  states it too. `DepthNoise::known()` takes it: every term finite, a and c
+  at least 0, and sigma(z) above 0 at every z above 0, so b may be negative
+  while b^2 < 4ac (here 5.9e-5 < 1.3e-4).
+- **The test pattern** is `Options::source = ArkitSource::Pattern`, not a
+  second class: the same driver, queue, import and counters, so a dry run
+  tests the camera's path. Frame n's depth is `pattern_depth(256, 192, n)`
+  handed over as float metres (1 m and 2 m, exact) through the same copy,
+  with its plane; its picture `test_pattern`, written whole each frame into
+  one of 4 IOSurface '420f' buffers tagged as ARKit tags its own (BT.601
+  matrix, BT.709 transfer and primaries); n the frame's sequence; the
+  identity pose, a centred pinhole of focal 0.75 times the width, and a
+  timer on the sensor's queue at `fps`. A tick finding all 4 held is
+  skipped, which counts `missed` when the next frame arrives. No camera
+  opens and no prompt appears, on every Apple platform.
+- **Behind the class**, as DeckLink's driver runs over any capture: an
+  internal driver over any feed (`driver.hpp` with `conversion.hpp`, the
+  static `sensor_arkit_units`, plain C++ on Core Video), ARKit's feed
+  (`arkit_feed.mm`, iOS and iPadOS; elsewhere `open` refuses the camera,
+  `Unsupported`) and the pattern's (`pattern_feed.mm`), Objective-C++ with
+  ARC. The frames wait in RealSense's internal `FrameQueue`, not a fourth
+  copy of the holding rule.
+
+**Why.**
+- **One public type.** The owner (2026-11-02): "so we need to make sure we
+  are using the unified API for sensor/ for the iPad, so we are inheriting
+  the same public sensor type". The scanner's own frame and source types,
+  and the session writer's, give way to `RgbdFrame` and `IRgbdSensor`.
+- **The 2026-08-02 rule now places it here.** "a driver belongs in this
+  repo when this repo's CI can compile and exercise it": CI's iOS check
+  compiles and links ARKit's feed against ARKit for iOS, and the Mac runs
+  the driver over scripted captures and the pattern, under ThreadSanitizer
+  too. The entry's own revisit clause holds as well: a second consumer,
+  the session writer, beside the scanner's fusion.
+- **u16 mm and u8 confidence** (owner 2026-11-02: "yeah u16 mm, and u8
+  confidence is good"), made in the one copy out of ARKit's buffer: 18.0 /
+  20.1 µs p50/p95 on the M5 Max, measured in the efficiency review.
+- **One map per open.** The scanner today falls back to the raw map for the
+  smoother's first frames, which mixes two maps in one stream, while a
+  track's params name one.
+- **No person mask.** The owner (2026-11-02): "we can just make sure env is
+  static". Confidence 0 already means never integrated, so a later mask
+  writes 0 in this copy with no API change.
+- **Withheld, not flagged.** A pose ARKit does not trust fuses a surface
+  nothing later removes, so the frame carries no tracking field; a "new
+  world" control adds `RgbdFrame::world_epoch` when one is first used.
+- **The curve as measured** (the owner, 2026-11-03, agreeing with the
+  draft's choices: relax `known()` and state ARKit's curve as is). The best
+  non-negative refit is -30 % to +22 % off it between 0.5 and 5 m; the
+  relaxed rule is one predicate, it takes every model it took before, and
+  every consumer evaluates sigma(z) as before.
+- **An offset never smaller.** The uptime clock stops while the device
+  sleeps, so a lock grows the offset; a system clock set back would shrink
+  it and send times back.
+
+**Not here.** The scanner on the sensor (ios's next re-pin: `GpuFramePrep`
+and recon's device overloads in place of its host path, the old capture
+deleted); the session writer (ios); an AR view's `session()` accessor and a
+new-world control, until one is used; a person mask. A map step hidden in a
+loss gap needs no field here: its consumer splits its windows at any
+reported loss span of 100 ms or more (the owner, 2026-11-03).
+
+**Validation.** Apple M5 Max, macOS 27.2, MoltenVK, Release with warnings
+as errors, under the validation layer, VideoToolbox required: the whole
+suite passes, 58 tests (55 on main), among them
+`sensor_arkit_conversion` (host: `arkit_depth_mm`, the copy out of rows
+padded to 1088 bytes and its four named refusals, the picture's checks,
+its colour from 601, 709 and untagged tags, the range, the siting and HLG
+refused, the pinhole read column-major and its registered depth camera,
+a pose yawed 90 degrees, the clock's offset across an interruption's
+re-measure, the missed periods), `sensor_arkit_sensor` (the driver over
+scripted captures on the device: `rgbd_breach` empty over 120 frames with
+a withheld frame, two refused pictures, a frame without the map, drops at
+depths 1 and 3 and drain oldest first; `failed` = withheld + refused;
+`delivered + dropped + failed + held = received`; a 3-period gap counted
+as 2 missed; the sequences' gaps and restarts; each frame's colour, depth,
+levels, cameras, pose, exposure and noise; `pixel_buffer_of` the fed
+buffer, held while any copy of the frame is, past three polls; the clock;
+a feeding thread against a notified consumer; ARKit's failure; the
+option checks) and `sensor_arkit_pattern` (`ArkitSensor` itself: 300
+frames whose depth band and luma, read back by `PictureReadback`, name
+their sequence, `rgbd_breach` empty and none failed; skipped ticks with
+all 4 pictures held, counted missed, no gap; restarts; the refusals; moves).
+`sensor_frame_depth_noise` takes ARKit's curve and refuses b^2 >= 4ac and
+a negative a or c; `sensor_apple_pixel_buffer_importer` finds the buffer
+and null for an empty picture, host planes and another producer's images.
+Both ARKit device tests pass under ThreadSanitizer (Debug), as the macOS
+CI step runs them; it found the pattern test's waker torn down while the
+sensor still notified it, which the test's notification now owns. The iOS
+build check compiles `sensor_arkit` and its units for iOS 26, ARKit's
+feed among them, and links them and an app's calls to open ARKit's camera
+into an iOS executable against ARKit and AVFoundation. recon's suite on
+this checkout (recon `fc153a47`), 45 tests, passes. Planted bugs, each
+failing its test: the copy stepping rows by the packed 1024 bytes
+(`sensor_arkit_conversion`); the pose without `cv_from_gl_camera`
+(`sensor_arkit_conversion`, `sensor_arkit_sensor`); the tracking gate
+passing limited frames (`sensor_arkit_sensor`); `known()` taking b^2 = 4ac
+(`sensor_frame_depth_noise`). No camera was opened: ARKit's camera is
+checked by hand on an iPad.
+
 ### 2026-11-03 — A GPU fault leaves no reader waiting for good: every error NVDEC's decoder returns but `InvalidArgument` comes back with each ready value it handed out set, and its wait for the oldest of three kept pictures sees a failed stream (amends the 2026-11-02 hand-over entry).
 
 **The rule.** A stream that fails after a picture's signal was queued drops
@@ -7165,10 +7352,12 @@ same API, rules and coding thread as VideoToolbox.
   session's buffers pass to the session that opens again.
 - **One configuration**: preset `p<effort>`, `tune ll`, `rc constqp` with
   `init_qpP`, `init_qpB` and `init_qpI` all set from the options, forced
-  IDRs, no scene cut, no look-ahead, `delay` 0, zero latency, no multipass,
-  no B-frames, an endless GOP. From 4096 rows, `split_encode_mode` 3; below,
-  the driver's choice. An FFmpeg without that option refuses a picture of
-  4096 rows or more in `create`, naming FFmpeg 7.1 and nv-codec-headers 12.1.
+  IDRs, `delay` 0, which keeps look-ahead off (`no-scenecut` and
+  `rc-lookahead` 0 pin what it gives), zero latency, no multipass, no
+  B-frames, an endless GOP. From 4096 rows, `split_encode_mode` 3, which
+  asks for 3 strips; below, the driver's choice. An FFmpeg without that
+  option refuses a picture of 4096 rows or more in `create`, naming FFmpeg
+  7.1 and nv-codec-headers 12.1.
 - **Colour and QP.** The VUI's codes go in as FFmpeg numbers them, H.273's;
   FFmpeg writes no siting, so sitings 1 to 5 are refused. QP 0 to 51.
 - **FFmpeg's CUDA device** is opened by one helper (`FfmpegCudaDevice`) for
@@ -7187,8 +7376,7 @@ same API, rules and coding thread as VideoToolbox.
   until the new one is handed out, so a target taken while one picture
   codes and one target is held needs a third. Handing out the oldest free
   one makes a target given up the last to come back.
-- **Every QP set.** A QP left unset is FFmpeg's to choose, and the
-  session's QPs are the caller's.
+- **Every QP set.** The session's QPs are the caller's.
 - **Strips by rows, not by GPU.** FFmpeg reports no engine count, and 3
   strips equal `auto` on a GPU of 2 engines, so the rule needs no GPU name.
 - **No version floor below 4096 rows.** FFmpeg 6.1 (24.04's) keeps every
@@ -7209,10 +7397,42 @@ encoder test on a quiet GPU, the 4096-row picture refused as the option is
 missing. The lab RTX 5090 (FFmpeg 8): the full suite under the validation
 layer, the encoder test under synchronization validation too, the 4096-row
 picture coded in strips. The M5 Max (VideoToolbox): the full suite, 55
-tests. Planted bugs, each failing its test: an unset `init_qpI` and an
-unset `init_qpB` (C5), `forced-idr` not set (C2), strips
-from 4094 rows (the strips case), the oldest-free hand-out dropped (C9), and
-a target described at another stride than NVENC reads (the quality case).
+tests. Planted bugs, each failing its test: `forced-idr` not set (C2),
+strips from 4094 rows (the strips case), the oldest-free hand-out dropped
+(C9), and a target described at another stride than NVENC reads (the
+quality case).
+
+*Amended 2026-11-03 (the post-merge review):*
+- **A failed reopen keeps the lost session's buffers.** `open` made the
+  session after taking the lost one's buffers, so an allocation failing
+  there destroyed them while a batch could still write one, and left the
+  next reopen with none. The session is now made first.
+- **What the facts and the failures say.** `Facts::strips` is the strips
+  asked for: `split_encode_mode` 3 codes one strip an engine on a GPU of
+  fewer than 3 (an RTX 4090 two). `receive`'s 2 s without an access unit is
+  VideoToolbox's: NVENC returns only once the hardware has. NVENC's access
+  units carry a picture-timing SEI, and its SPS an HRD at FFmpeg's default
+  bit rate, which constant-QP pictures do not keep (`CodedPicture`). An
+  open NVENC refuses says which refusal it is (`nvenc_open_failure`,
+  tested on the host): the session limit, a busy engine or memory, which
+  another session closing clears, alike with a parameter this GPU does not
+  take, as FFmpeg's codes do not tell them apart; a GPU and driver that
+  code no such picture; NVIDIA's encode library missing. `create` can
+  return `IoError` too. A session retains the GPU's primary CUDA context,
+  whose rebuild `CudaContext` says the cost of.
+- **The rules hold whatever the timing on NVENC too.** NVENC codes a
+  picture faster than the next target is written, so C13's drop in flight
+  lost all 5 rounds in 12 of 30 runs under AddressSanitizer; there the
+  dropped picture's writer now waits for a value the run sets once the next
+  is sent. `Rules::Sequence` reads no picture count.
+- **Tests for what held untested.** A picture that fails uncoded keeps its
+  target until its writer is done (every backend); NVENC hands out no
+  buffer a sent picture holds, and its buffers pass to the session that
+  opens again; the quality case at 258x146 too, so a chroma placed after
+  an aligned luma height fails; the colour sweep on Apple back to the
+  stream's rules (C6 and C11 on every code); the writer's other row
+  refusals. That a device CUDA does not reach is refused (lavapipe) is
+  checked by hand, as no CI leg has both ICDs.
 
 ### 2026-11-03 — A tracked sensor's posed stills are a file of their own (`camera/tracked_stills.hpp`), with one reader and one writer that the recorder and calib's solve share, built from the registration's and the array file's blocks; the registration's `edge_m` is the edge the solve fitted the corners to (amends the 2026-11-02 tracked registration entry).
 
