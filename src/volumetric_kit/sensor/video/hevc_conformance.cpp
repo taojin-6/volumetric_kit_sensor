@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -229,6 +230,7 @@ core::Result<std::string> Run::refusals() {
   const Code inv = Code::InvalidArgument;
   const Code uns = Code::Unsupported;
   bad.push_back({"an odd width", with([](auto& o) { o.width += 1; }), inv});
+  bad.push_back({"an odd height", with([](auto& o) { o.height += 1; }), inv});
   bad.push_back({"a width of 0", with([](auto& o) { o.width = 0; }), inv});
   bad.push_back({"a height of 0", with([](auto& o) { o.height = 0; }), inv});
   bad.push_back({"a side past kMaxSide", with([](auto& o) {
@@ -482,22 +484,64 @@ core::Result<std::string> Run::lose(Encoder& e) {
   if (!reopened || !coded.key) {
     return std::string("C8: the reopened session's key");
   }
-  // Lost with pictures in flight: the one behind the one coding fails.
+  // Lost with two in flight: each comes back coded or failed, as the loss
+  // finds it, and none coded after one that failed (it would follow a gap).
   VKC_TRY(send(e, 5, false));
   VKC_TRY(send(e, 6, false));
   e.inject(Encoder::Fault::Lose);
-  const core::Result<bool> a = e.receive(coded);
-  const core::Result<bool> b = e.receive(coded);
-  if (b.ok() || b.status().domain() == Code::InvalidArgument) {
-    return std::string("C8: a picture sent before the loss came back ") +
-           (b.ok() ? "coded" : said(b.status()));
+  bool gap = false;
+  for (const std::uint32_t i : {5U, 6U}) {
+    const core::Result<bool> r = e.receive(coded);
+    if (r.ok() && !*r) return std::string("C8: a picture vanished");
+    if (!r.ok()) {
+      if (r.status().domain() == Code::InvalidArgument) {
+        return "C8: picture " + std::to_string(i) +
+               ", sent before the loss, gave " + said(r.status());
+      }
+      gap = true;
+    } else if (gap || coded.pts != pts_of(i)) {
+      return "C8: picture " + std::to_string(i) +
+             (gap ? " came back coded after one that failed"
+                  : " came back out of order");
+    }
   }
-  if (a.ok() && !*a) return std::string("C8: a picture vanished");
-  if (!e.key_owed()) return std::string("C8: no key owed after a loss");
+  if (!e.lost() || !e.key_owed()) {
+    return std::string("C8: lost in flight, the encoder says ") +
+           (e.lost() ? "no key is owed" : "it is not lost");
+  }
   VKC_TRY(send(e, 7, true));
   VKC_ASSIGN(const bool again, e.receive(coded));
   if (!again || !coded.key || e.lost()) {
     return std::string("C8: the session did not reopen at a key");
+  }
+  // Lost while a picture codes, and a key sent at once: the reopen waits for
+  // that picture, which comes back coded or failed, and the key comes back
+  // coded on the new session. A round waits no time before the loss and one
+  // half a picture's, so one likely finds the picture coding at any size;
+  // what is checked holds whatever each finds.
+  const auto start = std::chrono::steady_clock::now();
+  VKC_TRY(send(e, 5, false));
+  VKC_ASSIGN(const bool timed, e.receive(coded));
+  if (!timed) return std::string("C8: a picture vanished");
+  const auto half = (std::chrono::steady_clock::now() - start) / 2;
+  for (const auto wait : {decltype(half)::zero(), half}) {
+    VKC_TRY(send(e, 5, false));
+    std::this_thread::sleep_for(wait);
+    e.inject(Encoder::Fault::Lose);
+    VKC_TRY(send(e, 6, true));
+    if (e.lost()) return std::string("C8: a key did not reopen the session");
+    const core::Result<bool> before = e.receive(coded);
+    if (before.ok() ? !*before || coded.pts != pts_of(5) || coded.key
+                    : before.status().domain() == Code::InvalidArgument) {
+      return "C8: the picture coding at the loss came back " +
+             (before.ok() ? std::string(*before ? "mislabelled" : "nothing")
+                          : said(before.status()));
+    }
+    const core::Result<bool> key = e.receive(coded);
+    if (!key.ok() || !*key || !coded.key || coded.pts != pts_of(6)) {
+      return "C8: the key sent while the lost session coded came back " +
+             (key.ok() ? std::string("wrong") : said(key.status()));
+    }
   }
   return std::string();
 }
@@ -559,6 +603,36 @@ core::Result<std::string> Run::buffers(Encoder& e) {
       }
     }
   }
+  {
+    // A buffer with no colour tags is the session's colour, which the VUI
+    // states as for any other.
+    ColorCodes none = o_.color;
+    none.matrix = 2;
+    none.transfer = 2;
+    none.primaries = 2;
+    VKC_ASSIGN(Pixels bare, make_pixels(o_.width, o_.height, 0, none));
+    const core::Status sent = send_pixel_buffer(e, bare.get(), true, 0);
+    if (!sent.ok())
+      return "C11: a buffer with no colour tags gave " + said(sent);
+    Encoder::CodedPicture coded;
+    const core::Result<bool> got = e.receive(coded);
+    if (!got.ok() || !*got) {
+      return "C11: a buffer with no colour tags came back " +
+             (got.ok() ? std::string("nothing") : said(got.status()));
+    }
+    SliceReader reader;
+    const core::Result<SliceReader::Picture> p =
+        reader.read(coded.access_unit.data(), coded.access_unit.size());
+    if (!p.ok() || !reader.sequence()) {
+      return std::string("C11: the untagged buffer's IDR does not parse");
+    }
+    const ColorCodes want = normalized(o_.color);
+    if (!same(reader.sequence()->sps.color, want)) {
+      return "C11: a buffer with no colour tags is coded as " +
+             codes_text(reader.sequence()->sps.color) + ", not " +
+             codes_text(want);
+    }
+  }
   return std::string();
 }
 
@@ -602,43 +676,85 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
   if (e.in_flight() != 0) return std::string("C13: in_flight after both");
   VKC_ASSIGN(const bool none, e.receive(coded, 0));
   if (none) return std::string("C13: a picture from nowhere");
-  // A drop fails the one sent after it, and a key is owed.
-  e.inject(Encoder::Fault::Drop);
-  VKC_TRY(send(e, 12, false));
-  VKC_TRY(send(e, 13, false));
-  const core::Result<bool> a = e.receive(coded);
-  const core::Result<bool> b = e.receive(coded);
-  if (a.ok() || b.ok()) {
-    return std::string("C13: after a drop, the picture sent next came back");
+  // A drop fails the one sent after it, and a key is owed. That one is sent
+  // at once, while the drop codes; a loaded machine may finish the drop
+  // first, which owes the key before it is sent, so it is refused: a race
+  // the test lost, tried again, and at least one round must send it.
+  constexpr int kRounds = 5;
+  bool behind = false;
+  for (int round = 0; round < kRounds && !behind; ++round) {
+    if (e.key_owed()) {
+      VKC_TRY(send(e, 11, true));
+      VKC_ASSIGN(const bool got, e.receive(coded));
+      if (!got || !coded.key) return std::string("C13: the key before a drop");
+    }
+    e.inject(Encoder::Fault::Drop);
+    VKC_TRY(send(e, 12, false));
+    const core::Status next = send(e, 13, false);
+    if (!next.ok() &&
+        (next.domain() != Code::InvalidArgument || !e.key_owed())) {
+      return "C13: the picture sent after a drop gave " + said(next);
+    }
+    behind = next.ok();
+    const core::Result<bool> dropped = e.receive(coded);
+    if (dropped.ok() || dropped.status().domain() != Code::IoError) {
+      return "C13: a dropped picture in flight came back " +
+             (dropped.ok() ? std::string("coded") : said(dropped.status()));
+    }
+    if (behind) {
+      const core::Result<bool> after = e.receive(coded);
+      if (after.ok() || after.status().domain() != Code::IoError) {
+        return "C13: after a drop, the picture sent next came back " +
+               (after.ok() ? std::string("coded") : said(after.status()));
+      }
+    }
+    if (!e.key_owed() || e.lost()) {
+      return std::string("C13: after a drop in flight, ") +
+             (e.lost() ? "the session is lost" : "no key is owed");
+    }
   }
-  if (!e.key_owed() || e.lost()) {
-    return std::string("C13: after a drop in flight, ") +
-           (e.lost() ? "the session is lost" : "no key is owed");
+  if (!behind) {
+    return "C13: in " + std::to_string(kRounds) +
+           " rounds no picture was sent before the drop ahead of it coded";
   }
-  // Sent on this thread, received on another.
+  // Sent on this thread, received on another, which waits a finite time:
+  // it must sleep, not spin, while nothing is in flight, so the sender
+  // starts after a few waits. Each false return takes a whole wait, so
+  // they number at most the receiver's time over the wait.
   constexpr std::uint32_t kPictures = 30;
+  constexpr auto kWait = std::chrono::milliseconds(5);
   for (std::uint32_t i = 0; i < kRing; ++i) VKC_TRY(picture(i).status());
   std::atomic<std::uint32_t> back{0};
   std::atomic<bool> stopped{false};  // the receiver failed, or was let go
   // Written by the receiver, read once it has joined.
   std::string order;
   core::Status failed;
+  std::int64_t empty = 0;
+  std::chrono::steady_clock::duration took{};
   std::thread receiver([&] {
     Encoder::CodedPicture got;
+    const auto from = std::chrono::steady_clock::now();
     while (back < kPictures && !stopped) {
-      const core::Result<bool> r = e.receive(got, 1'000'000);
+      const core::Result<bool> r = e.receive(
+          got,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(kWait).count());
       if (!r.ok()) {
         failed = r.status();
         stopped = true;
         return;
       }
-      if (!*r) continue;
+      if (!*r) {
+        ++empty;
+        continue;
+      }
       if (got.pts != pts_of(100 + back) && order.empty()) {
         order = "out of order";
       }
       ++back;
     }
+    took = std::chrono::steady_clock::now() - from;
   });
+  std::this_thread::sleep_for(3 * kWait);
   core::Status sent;
   for (std::uint32_t i = 0; i < kPictures && sent.ok() && !stopped;) {
     if (e.in_flight() == Encoder::kInFlight) {
@@ -655,6 +771,15 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
   if (!failed.ok())
     return "C13: two threads, a picture failed: " + said(failed);
   if (!order.empty()) return "C13: two threads, " + order;
+  if (empty * kWait > took + kWait) {
+    return "C13: two threads, a receive waiting " +
+           std::to_string(kWait.count()) +
+           " ms returned at once: " + std::to_string(empty) + " empty in " +
+           std::to_string(
+               std::chrono::duration_cast<std::chrono::milliseconds>(took)
+                   .count()) +
+           " ms";
+  }
   return std::string();
 }
 

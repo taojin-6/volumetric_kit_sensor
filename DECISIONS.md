@@ -6218,6 +6218,46 @@ probes of the bare session on synthetic buffers):
   15 not at all): `color_codes_of` reads what Core Video keeps, refusing a
   string it maps to no code.
 
+**The coding thread, after the review.** Each point was found by a probe
+and is now a test:
+- A finite `receive` waits even with nothing in flight. A receive thread
+  of its own, waiting 50 ms beside a 30 Hz sender, returned at once 291
+  million times in 2 s and used 81% of a core; it now sleeps (60 calls, no
+  CPU). `UINT64_MAX` with nothing in flight still returns at once, so one
+  thread never waits for ever. C13 bounds a receive thread's empty returns
+  by its time over the wait.
+- The coding thread allocates nothing and never throws. Its queues are
+  rings of `kInFlight`, the spare buffers are reserved at `create`, and a
+  failure's message that cannot be allocated becomes `OutOfMemory`. Before,
+  one failed allocation in its loop aborted the process; now every
+  allocation in it can fail, and each failure is that picture's
+  `OutOfMemory`.
+- The compression session is the last member of the backend's state, so
+  it is torn down first. VideoToolbox hands an output still pending to the
+  callback inside `VTCompressionSessionInvalidate` (all 6 outputs of a
+  default-mode session came that way). After a stuck picture's 2 s wait,
+  the old order made the callback lock a destroyed mutex: `std::terminate`.
+- A reopen waits for the picture coding at the loss. A test holds that
+  picture in `VTCompressionSessionEncodeFrame` for 50 ms, so the wait is
+  checked whatever the timing. Without the wait the old session is closed
+  under the picture: a crash.
+- The coding thread runs at user-interactive quality of service, as a
+  camera's queue does. A `std::thread` gets DEFAULT, and VideoToolbox's work
+  runs on it. With every core of the M5 Max busy at user-interactive QoS,
+  send to access unit at 1920x1440 and 30 Hz was 16.6-17.6 ms p95 with the
+  thread at user-interactive QoS and 19.6-21.1 ms at DEFAULT. With 12 or 24
+  busy threads, the DEFAULT thread's worst picture took 15-21 ms and the
+  user-interactive thread's at most 5.9 ms.
+- What the rules check holds whatever the timing. C8 accepts each picture
+  in flight at a loss coming back coded or failed, but never one coded
+  after one that failed. C13's drop in flight retries, up to 5 rounds, the
+  race it needs. With the test thread held 1, 2 or 5 ms at C8's loss, no
+  run broke a rule (before: 3 of 5 runs at 1 ms). With it held 2 ms on 4
+  of C13's 5 rounds, no run broke one either.
+- `CodedPicture::key` is the key VideoToolbox marked, not the one asked
+  for. Each picture's options are made once, at `create`. The siting tag
+  is added on the caller's thread, in `send_pixel_buffer`.
+
 **Why `HevcEncoderAccess` is a friend.** The Apple entry is a free function
 in a header of its own, so `hevc_encoder.hpp` names no Core Video type; it
 reaches the pimpl through one internal struct the class befriends. No test
@@ -6240,8 +6280,10 @@ reverse, and every code of the set, 4 pictures each; the pattern at QP 22
 decoded back, its worst PSNR 52.9 dB luma and 48.5 dB chroma, its 0 and
 255 exact, each picture's index read; `color_codes_of` on every string
 Core Video names. `sensor_video_vt_encode_error`: the busy, absent and
-failing opens and no base QP, through `create`'s text and code, and a
-dropped, missing, wrongly keyed and doubled output, through `receive`.
+failing opens and no base QP, through `create`'s text and code; a
+dropped, missing (then handed over at the teardown), wrongly keyed and
+doubled output, through `receive`; a loss while a picture codes; and the
+coding thread's quality of service.
 `sensor_video_hevc_syntax`: the slice reader's types and QPs on every
 committed clip, as FFmpeg's `trace_headers` reads them.
 `sensor_video_hevc`: a clip VideoToolbox's encoder coded
@@ -6252,14 +6294,20 @@ no FFmpeg or CUDA symbol.
 
 **Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
 under the validation layer, `VS_TEST_HEVC_BACKEND` and
-`VS_TEST_HEVC_ENCODER` set to videotoolbox: the whole suite passes, 50
-tests; the encoder test passes under ThreadSanitizer (Debug). Each of these
+`VS_TEST_HEVC_ENCODER` set to videotoolbox: the whole suite passes, 52
+tests; the encoder tests pass under ThreadSanitizer (Debug). Each of these
 fails a test: `ForceKeyFrame` never set (C3), the session's source format
 always video range (C10) and the buffer's range not checked (C11), a drop
 neither failing the picture behind it nor owing a key (C7) and one owing a
 key but not failing it (C13), the IDR coded at the P-pictures' QP (C5), the
-siting tag not added (C4), and a lost session not reopened (C8). The
-encoder's timings ran on battery, the bare session's on AC power.
+siting tag not added (C4), and a lost session not reopened (C8). So does
+each of the review round's: `receive` returning at once with nothing in
+flight (C13), a reopen not waiting for the picture coding, and the session
+torn down after its callback's state (`sensor_video_vt_encode_error`, a
+crash and `std::terminate`). The encoder's first timings ran on battery and
+the bare session's on AC power. After the review round, on AC power, one
+picture in flight at 1920x1440 took 5.32 ms p50 from send to access unit,
+and 14.82 ms at 3840x2160.
 
 ### 2026-11-02 — Host depth may carry a confidence plane, which frame prep gates on the GPU per raw sample before anything else reads it; level 0 is never integrated, and a frame without a plane is prepared bit for bit as before (amends the 2026-09-28 GPU pre-processing entry).
 

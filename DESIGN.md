@@ -508,8 +508,11 @@ with the session's colour, coded as it is. A send returns at once; a coding
 thread of the encoder's own codes each picture, since VideoToolbox's
 low-latency mode codes inside `VTCompressionSessionEncodeFrame`; and
 `receive` hands back each Annex B access unit in the order sent, its buffer
-swapped with the caller's, at most `kInFlight` (2) pictures in flight. The
-first picture is a key, and so is the next after a failure (`key_owed`): a
+swapped with the caller's, at most `kInFlight` (2) pictures in flight; a
+finite wait sleeps even with none in flight, so a receive thread of its own
+does not spin. The coding thread allocates nothing and never throws (fixed
+rings, reserved buffers), and on Apple runs at user-interactive quality of
+service. The first picture is a key, and so is the next after a failure (`key_owed`): a
 dropped picture keeps the session, any other failure loses it, a failed
 picture fails those already sent behind it, and the next send opens a lost
 session again. `inject` drives a drop or a loss through the backend's own
@@ -518,8 +521,10 @@ path, for tests. The rules and the thread are every backend's
 (`hevc_encode_session.hpp`; VideoToolbox's `vt_hevc_encode.cpp`). Its
 colour goes to VideoToolbox as Core Video names each code; VideoToolbox
 codes QP 1 to 51 (0 as 1, so 0 is refused there) and writes the stream's
-chroma siting from the buffer's tag, which the encoder adds to a buffer
-that lacks it. `facts().settings` is the configuration as the session
+chroma siting from the buffer's tag, which `send_pixel_buffer` adds to a
+buffer that lacks it. The session is torn down before what its callback
+uses, since VideoToolbox hands a pending output to the callback inside the
+teardown. `facts().settings` is the configuration as the session
 reports it, one line, which the rules pin. `video_backend()`
 (`backend.hpp`) names the build's backend.
 **`apple/`'s `PixelBufferImporter`** (`sensor_apple`, on every

@@ -79,6 +79,17 @@ core::Status send_pixel_buffer(HevcEncoder& encoder, CVPixelBufferRef pixels,
                 o->color.chroma_location)}) {
     if (!d.empty()) return refused(d);
   }
+  // VideoToolbox writes the stream's siting from the buffer's tag, so one
+  // that lacks it is tagged with the session's: here, on the caller's
+  // thread, before the encoder holds it.
+  if (!tags.chroma_location && o->color.chroma_location != 0) {
+    const CFStringRef location =
+        detail::chroma_location_string(o->color.chroma_location);
+    CVBufferSetAttachment(pixels, kCVImageBufferChromaLocationTopFieldKey,
+                          location, kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(pixels, kCVImageBufferChromaLocationBottomFieldKey,
+                          location, kCVAttachmentMode_ShouldPropagate);
+  }
   video::EncodePicture picture;
   picture.pixels.reset(CVPixelBufferRetain(pixels));
   return HevcEncoderAccess::send(encoder, std::move(picture), key, pts);

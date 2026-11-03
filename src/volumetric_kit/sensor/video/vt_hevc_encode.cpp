@@ -48,6 +48,20 @@ CfPtr<CFNumberRef> number(std::int32_t value) {
       CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &value));
 }
 
+// The options a picture is coded with: base QP @p qp, a key forced or not.
+// Null if Core Foundation cannot make them.
+CfPtr<CFDictionaryRef> frame_options(int qp, bool key) {
+  const CfPtr<CFNumberRef> frame_qp = number(qp);
+  if (frame_qp == nullptr) return nullptr;
+  std::array<const void*, 2> keys = {kVTEncodeFrameOptionKey_BaseFrameQP,
+                                     kVTEncodeFrameOptionKey_ForceKeyFrame};
+  std::array<const void*, 2> values = {frame_qp.get(),
+                                       key ? kCFBooleanTrue : kCFBooleanFalse};
+  return CfPtr<CFDictionaryRef>(CFDictionaryCreate(
+      kCFAllocatorDefault, keys.data(), values.data(), 2,
+      &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
+}
+
 std::string fourcc(OSType type) {
   std::string out = "'";
   for (int shift = 24; shift >= 0; shift -= 8) {
@@ -85,9 +99,12 @@ const bool HevcEncodeSession::kWritesSiting = true;
 
 struct HevcEncodeSession::Impl {
   HevcEncoder::Options options;
-  CompressionPtr session;
   std::uint64_t frames = 0;  // handed to the encoder
   std::vector<std::uint8_t> scratch;
+  // Each picture's options, made once: an IDR's, a key forced at the key QP,
+  // and a P-picture's.
+  CfPtr<CFDictionaryRef> key_options;
+  CfPtr<CFDictionaryRef> p_options;
 
   // The picture encode waits for, written on VideoToolbox's thread.
   std::mutex mutex;
@@ -100,12 +117,18 @@ struct HevcEncodeSession::Impl {
   bool extra = false;  // an output for a frame already done, or none waited
   OSStatus status = noErr;
   bool dropped = false;
+  bool marked_key = false;  // the output marked a key (sync)
   core::Status failure;
+
+  // Last, so it is torn down first: VideoToolbox hands an output still
+  // pending (as after the 2 s wait) to on_output inside the teardown's
+  // Invalidate, and on_output locks the members above.
+  CompressionPtr session;
 
   static void on_output(void* self, void* frame_ref, OSStatus status,
                         VTEncodeInfoFlags flags, CMSampleBufferRef sample);
   // @p sample's length-prefixed NAL units as Annex B into @p out, a key's
-  // parameter sets first.
+  // parameter sets first, and whether it is a key into marked_key.
   core::Status annex_b(CMSampleBufferRef sample, bool want_key,
                        std::vector<std::uint8_t>& out);
   // Sets session property @p key, or says the session refuses it.
@@ -167,6 +190,7 @@ core::Status HevcEncodeSession::Impl::annex_b(CMSampleBufferRef sample,
         std::string(kWho) +
         ": asked for an IDR, the encoder coded a P-picture");
   }
+  marked_key = sync;
   CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sample);
   std::size_t sets = 0;
   int header = 0;
@@ -265,6 +289,12 @@ core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
   auto impl = std::make_unique<Impl>();
   Impl& s = *impl;
   s.options = options;
+  s.key_options = frame_options(key_qp, true);
+  s.p_options = frame_options(options.qp, false);
+  if (s.key_options == nullptr || s.p_options == nullptr) {
+    return core::Status::out_of_memory(std::string(kWho) +
+                                       ": a picture's options");
+  }
 
   // Hardware only, low latency: P-pictures only, with no reordering or
   // look-ahead.
@@ -390,38 +420,15 @@ core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
 
 core::Result<bool> HevcEncodeSession::encode(
     EncodePicture& picture, bool key, bool drop,
-    std::vector<std::uint8_t>& access_unit) try {
+    std::vector<std::uint8_t>& access_unit, bool& idr) noexcept try {
   Impl& s = *impl_;
   access_unit.clear();
+  idr = false;
+  // The buffer carries its siting tag already (send_pixel_buffer), which
+  // VideoToolbox writes as the stream's.
   CVPixelBufferRef pixels = picture.pixels.get();
-  // VideoToolbox writes the stream's siting from the buffer's tag.
-  const int siting = s.options.color.chroma_location;
-  if (siting != 0) {
-    CFTypeRef tagged = CVBufferCopyAttachment(
-        pixels, kCVImageBufferChromaLocationTopFieldKey, nullptr);
-    if (tagged != nullptr) {
-      CFRelease(tagged);
-    } else {
-      CFStringRef location = sensor::detail::chroma_location_string(siting);
-      CVBufferSetAttachment(pixels, kCVImageBufferChromaLocationTopFieldKey,
-                            location, kCVAttachmentMode_ShouldPropagate);
-      CVBufferSetAttachment(pixels, kCVImageBufferChromaLocationBottomFieldKey,
-                            location, kCVAttachmentMode_ShouldPropagate);
-    }
-  }
-  const int qp = key ? s.options.key_qp.value_or(s.options.qp) : s.options.qp;
-  const CfPtr<CFNumberRef> frame_qp = number(qp);
-  std::array<const void*, 2> keys = {kVTEncodeFrameOptionKey_BaseFrameQP,
-                                     kVTEncodeFrameOptionKey_ForceKeyFrame};
-  std::array<const void*, 2> values = {frame_qp.get(),
-                                       key ? kCFBooleanTrue : kCFBooleanFalse};
-  const CfPtr<CFDictionaryRef> frame_options(CFDictionaryCreate(
-      kCFAllocatorDefault, keys.data(), values.data(), 2,
-      &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
-  if (frame_qp == nullptr || frame_options == nullptr) {
-    return core::Status::out_of_memory(std::string(kWho) +
-                                       ": a picture's options");
-  }
+  const CFDictionaryRef frame_options =
+      key ? s.key_options.get() : s.p_options.get();
   const std::uint64_t frame = ++s.frames;
   {
     const std::lock_guard<std::mutex> lock(s.mutex);
@@ -438,13 +445,14 @@ core::Result<bool> HevcEncodeSession::encode(
     s.done = false;
     s.status = noErr;
     s.dropped = false;
+    s.marked_key = false;
     s.failure = {};
   }
   // Not under the lock: the output may come on this thread.
   VTEncodeInfoFlags info = 0;
   const OSStatus submitted = VTCompressionSessionEncodeFrame(
       s.session.get(), pixels, CMTimeMake(static_cast<std::int64_t>(frame), 30),
-      kCMTimeInvalid, frame_options.get(),
+      kCMTimeInvalid, frame_options,
       reinterpret_cast<void*>(static_cast<std::uintptr_t>(frame)), &info);
   std::unique_lock<std::mutex> lock(s.mutex);
   const bool came =
@@ -464,7 +472,8 @@ core::Result<bool> HevcEncodeSession::encode(
     access_unit.clear();
     return false;
   }
-  if (!s.failure.ok()) return s.failure;
+  if (!s.failure.ok()) return std::move(s.failure);
+  idr = s.marked_key;
   return true;
 } catch (...) {
   return core::exception_status("HevcEncoder: coding a picture",

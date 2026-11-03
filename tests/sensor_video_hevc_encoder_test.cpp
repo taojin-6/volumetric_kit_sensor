@@ -256,8 +256,8 @@ int test_cases(Gpu& gpu) {
     return 1;
   }
   auto narrow = make(1922, 1082, kBt709Video);
-  narrow.options.key_qp = 18;
-  if (breach("1922x1082 BT.709 video, key QP 18", narrow, gpu) != 0) return 1;
+  narrow.options.key_qp = 26;
+  if (breach("1922x1082 BT.709 video, key QP 26", narrow, gpu) != 0) return 1;
   auto tall = make(3840, 4096, kBt709Full, 30);
   tall.pictures = 8;
   if (breach("3840x4096 BT.709 full", tall, gpu) != 0) return 1;

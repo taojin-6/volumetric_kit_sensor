@@ -9,20 +9,27 @@
 #include "volumetric_kit/sensor/video/hevc_encoder.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <pthread.h>
+#include <pthread/qos.h>
+#endif
 
 #include "frame_color.hpp"
 #include "hevc_encode_session.hpp"
 #include "hevc_encoder_access.hpp"
+#include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/exception_status.hpp"
 #include "volumetric_kit/sensor/video/backend.hpp"
 
@@ -70,6 +77,44 @@ std::string bad_options(const HevcEncoder::Options& o) {
   return {};
 }
 
+// A picture's failure: IoError saying @p why, or OutOfMemory where the
+// message cannot be made, so the coding thread never throws.
+core::Status io_failure(const char* why) noexcept {
+  try {
+    return core::Status::io_error(std::string(kWho) + ": " + why);
+  } catch (...) {
+    return core::exception_status(kWho, core::Status::Code::OutOfMemory);
+  }
+}
+
+// First in, first out, held in place: at most HevcEncoder::kInFlight
+// entries, which the in-flight count bounds, and no allocation.
+template <typename T>
+class Ring {
+  static_assert(std::is_nothrow_move_constructible_v<T> &&
+                std::is_nothrow_move_assignable_v<T>);
+
+ public:
+  bool empty() const noexcept { return size_ == 0; }
+  void push(T&& entry) noexcept {
+    VKC_CHECK(size_ < kSlots, "HevcEncoder: more than kInFlight queued");
+    slots_[(head_ + size_) % kSlots] = std::move(entry);
+    ++size_;
+  }
+  T take() noexcept {
+    T entry = std::move(slots_[head_]);
+    head_ = (head_ + 1) % kSlots;
+    --size_;
+    return entry;
+  }
+
+ private:
+  static constexpr std::uint32_t kSlots = HevcEncoder::kInFlight;
+  std::array<T, kSlots> slots_{};
+  std::uint32_t head_ = 0;
+  std::uint32_t size_ = 0;
+};
+
 }  // namespace
 
 VideoBackend video_backend() noexcept {
@@ -101,8 +146,10 @@ HevcEncodeSession::~HevcEncodeSession() = default;
 
 core::Result<bool> HevcEncodeSession::encode(
     EncodePicture& /*picture*/, bool /*key*/, bool /*drop*/,
-    std::vector<std::uint8_t>& /*access_unit*/) {
+    std::vector<std::uint8_t>& /*access_unit*/, bool& /*idr*/) noexcept try {
   return core::Status::unsupported(std::string(kWho) + ": no session");
+} catch (...) {
+  return core::exception_status(kWho, core::Status::Code::OutOfMemory);
 }
 
 void HevcEncodeSession::lose() noexcept {}
@@ -137,9 +184,11 @@ struct HevcEncoder::Impl {
   std::condition_variable work;  // the coding thread waits for a picture
   std::condition_variable done;  // receive waits for a picture coded
   std::condition_variable idle;  // a reopen waits for coding to end
-  std::deque<Sent> sent;         // sent, not yet taken by the thread
-  std::deque<Coded> coded;       // coded or failed, not yet received
-  std::vector<std::vector<std::uint8_t>> spare;  // buffers to code into
+  Ring<Sent> sent;               // sent, not yet taken by the thread
+  Ring<Coded> coded;             // coded or failed, not yet received
+  // Buffers to code into: at most kInFlight, as each is in a picture
+  // coding, coded or here, so create reserves them and nothing allocates.
+  std::vector<std::vector<std::uint8_t>> spare;
   bool coding = false;  // the thread is inside the session
   bool stop = false;
   bool drop_next = false;     // Fault::Drop, for the next picture coded
@@ -151,7 +200,8 @@ struct HevcEncoder::Impl {
   std::atomic<bool> lost{false};
   std::thread thread;
 
-  void run();
+  // The coding thread: it allocates nothing and never throws.
+  void run() noexcept;
   // A picture failed or was lost: a key is owed, and each picture sent so
   // far, which would follow the gap, fails too. Under mutex.
   void fail() {
@@ -164,26 +214,30 @@ struct HevcEncoder::Impl {
   core::Status reopen(std::unique_lock<std::mutex>& lock);
 };
 
-void HevcEncoder::Impl::run() {
+void HevcEncoder::Impl::run() noexcept {
+#if defined(__APPLE__)
+  // The hardware's work runs on this thread, and it is on the live path: at
+  // user-interactive quality of service, as a camera's delivery queue, not
+  // the DEFAULT a std::thread gets, which a busy device runs behind.
+  pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+  pthread_setname_np("HevcEncoder");
+#endif
   std::unique_lock<std::mutex> lock(mutex);
   for (;;) {
     work.wait(lock, [this] { return stop || !sent.empty(); });
     if (stop) return;
-    Sent s = std::move(sent.front());
-    sent.pop_front();
+    Sent s = sent.take();
     Coded c;
     c.seq = s.seq;
     c.pts = s.pts;
-    c.key = s.key;
     if (!spare.empty()) {
       c.bytes = std::move(spare.back());
       spare.pop_back();
     }
     if (s.seq <= fail_through) {
-      c.status = core::Status::io_error(
-          std::string(kWho) +
-          ": a picture sent before this one failed, or the session was "
-          "lost, so this one would follow a gap");
+      c.status = io_failure(
+          "a picture sent before this one failed, or the session was lost, "
+          "so this one would follow a gap");
     } else {
       if (lose_pending) {
         lose_pending = false;
@@ -192,23 +246,26 @@ void HevcEncoder::Impl::run() {
       const bool drop = std::exchange(drop_next, false);
       coding = true;
       lock.unlock();
-      core::Result<bool> got = session->encode(s.picture, s.key, drop, c.bytes);
+      bool idr = false;
+      core::Result<bool> got =
+          session->encode(s.picture, s.key, drop, c.bytes, idr);
       s.picture = video::EncodePicture{};  // the buffer let go, unlocked
       lock.lock();
       coding = false;
       idle.notify_all();
       if (!got.ok()) {
-        c.status = got.status();
+        c.status = std::move(got).status();
         lost = true;
         fail();
       } else if (!*got) {
-        c.status = core::Status::io_error(
-            std::string(kWho) + ": the hardware encoder dropped the picture");
+        c.status = io_failure("the hardware encoder dropped the picture");
         fail();
+      } else {
+        c.key = idr;
       }
     }
     if (!c.status.ok()) c.bytes.clear();
-    coded.push_back(std::move(c));
+    coded.push(std::move(c));
     done.notify_all();
   }
 }
@@ -250,7 +307,7 @@ core::Status HevcEncoder::Impl::send(video::EncodePicture picture, bool key,
   s.picture = std::move(picture);
   s.key = key;
   s.pts = pts;
-  sent.push_back(std::move(s));
+  sent.push(std::move(s));
   ++in_flight;
   if (key) key_owed = false;
   work.notify_one();
@@ -262,6 +319,7 @@ core::Result<HevcEncoder> HevcEncoder::create(const Options& options) try {
     return invalid(bad);
   }
   auto impl = std::make_unique<Impl>();
+  impl->spare.reserve(kInFlight);
   impl->options = options;
   impl->options.color = video::normalize_codes(options.color);
   if (const std::string outside = video::outside_code_set(
@@ -309,7 +367,12 @@ core::Result<bool> HevcEncoder::receive(CodedPicture& picture,
   Impl& m = *impl_;
   std::unique_lock<std::mutex> lock(m.mutex);
   if (m.coded.empty()) {
-    if (m.in_flight == 0 || timeout_ns == 0) return false;
+    // A poll returns at once, and so does a wait with no end with nothing in
+    // flight, which on one thread would never end. A finite wait waits even
+    // then, for a picture another thread sends meanwhile.
+    if (timeout_ns == 0 || (timeout_ns == UINT64_MAX && m.in_flight == 0)) {
+      return false;
+    }
     const auto ready = [&m] { return !m.coded.empty(); };
     if (timeout_ns == UINT64_MAX) {
       m.done.wait(lock, ready);
@@ -320,12 +383,12 @@ core::Result<bool> HevcEncoder::receive(CodedPicture& picture,
     }
     if (m.coded.empty()) return false;
   }
-  Impl::Coded c = std::move(m.coded.front());
-  m.coded.pop_front();
+  Impl::Coded c = m.coded.take();
   --m.in_flight;
+  // Each buffer goes back within the capacity create reserved.
   if (!c.status.ok()) {
     m.spare.push_back(std::move(c.bytes));
-    return c.status;
+    return std::move(c.status);
   }
   picture.access_unit.swap(c.bytes);
   picture.pts = c.pts;

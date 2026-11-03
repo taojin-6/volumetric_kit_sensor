@@ -51,11 +51,14 @@ class HevcEncodeSession {
 
   // @p picture coded, an IDR at the key QP when @p key, else a P-picture,
   // into @p access_unit (replaced; Annex B as CodedPicture says), before
-  // this returns. True once coded; false if dropped, the hardware's drop
-  // or @p drop (a test's fault, through the same path), @p access_unit
-  // then empty; or the failure, which loses the session.
+  // this returns, and into @p idr whether the hardware marked it a key,
+  // which CodedPicture::key reports. True once coded; false if dropped, the
+  // hardware's drop or @p drop (a test's fault, through the same path),
+  // @p access_unit then empty; or the failure, which loses the session.
+  // Never throws: a failure inside is its Status.
   core::Result<bool> encode(EncodePicture& picture, bool key, bool drop,
-                            std::vector<std::uint8_t>& access_unit);
+                            std::vector<std::uint8_t>& access_unit,
+                            bool& idr) noexcept;
 
   // The session lost, as when the system reclaims it: every later encode
   // fails through the backend's own path.

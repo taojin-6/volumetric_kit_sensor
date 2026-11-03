@@ -40,8 +40,9 @@ namespace volumetric_kit::sensor {
 /// order sent. A coding thread of the encoder's own codes each picture.
 /// The hardware holds a thread for the whole encode in this configuration
 /// (VideoToolbox's low-latency mode codes inside its call), and this keeps
-/// that thread off the caller's. Encoders on separate threads code side by
-/// side where the hardware has the engines.
+/// that thread off the caller's. On Apple it runs at user-interactive
+/// quality of service, as a camera's delivery does. Encoders on separate
+/// threads code side by side where the hardware has the engines.
 ///
 /// The way in, on Apple, is send_pixel_buffer
 /// (video/hevc_encoder_apple.hpp): a `CVPixelBuffer` sent as it is, such as
@@ -64,9 +65,9 @@ namespace volumetric_kit::sensor {
 /// VKC_ASSIGN(const bool got, encoder.receive(coded));  // waits for it
 /// @endcode
 ///
-/// @warning Send and @ref inject from one thread; @ref receive from one
-///          thread, which may be another. @ref in_flight, @ref key_owed and
-///          @ref lost from any.
+/// @warning Send, @ref inject and @ref facts from one thread; @ref receive
+///          from one thread, which may be another. @ref in_flight,
+///          @ref key_owed and @ref lost from any.
 class VS_VIDEO_API HevcEncoder {
  public:
   /// The longest side, in luma samples.
@@ -126,7 +127,7 @@ class VS_VIDEO_API HevcEncoder {
     /// first.
     std::vector<std::uint8_t> access_unit;
     std::int64_t pts = 0;  ///< The one sent with it.
-    bool key = false;      ///< An IDR.
+    bool key = false;      ///< An IDR, as the hardware marked it.
   };
 
   /// @brief A failure for tests to inject, through the backend's own path.
@@ -160,9 +161,14 @@ class VS_VIDEO_API HevcEncoder {
   ///        access unit's buffer is swapped with the encoder's, so neither
   ///        side allocates once both have grown.
   /// @param picture     Filled when this returns true.
-  /// @param timeout_ns  How long to wait for it; 0 polls.
-  /// @return true with @p picture filled. false when nothing is in flight,
-  ///         or the oldest is not coded within @p timeout_ns.
+  /// @param timeout_ns  How long to wait for it; 0 polls. A finite wait
+  ///                    waits even with nothing in flight, for a picture
+  ///                    another thread sends meanwhile, so a receive thread
+  ///                    of its own sleeps between pictures. The default,
+  ///                    `UINT64_MAX`, waits for the oldest in flight, and
+  ///                    with none returns false at once.
+  /// @return true with @p picture filled. false when no picture is coded
+  ///         within @p timeout_ns, or at once as @p timeout_ns says.
   ///         `Status::Code::IoError` for a picture the hardware dropped,
   ///         which keeps the session. Or the backend's failure, which loses
   ///         it: `Status::Code::IoError` for no access unit within 2 s, a
@@ -185,7 +191,8 @@ class VS_VIDEO_API HevcEncoder {
   ///         False on a moved-from encoder, which has none.
   bool lost() const noexcept;
   /// @return What the session said when it last opened; empty on a
-  ///         moved-from encoder.
+  ///         moved-from encoder. Read it on the sending thread: the send
+  ///         that reopens a lost session rewrites it.
   const Facts& facts() const noexcept;
   /// @brief For tests: a failure through the backend's own path. Does
   ///        nothing on a moved-from encoder.

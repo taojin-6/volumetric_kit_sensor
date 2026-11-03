@@ -76,14 +76,22 @@ struct HevcEncoderCase {
 ///          from the middle key after a reset (with @ref HevcEncoderCase::
 ///          device);
 ///        - C7 a dropped picture fails alone and owes a key;
-///        - C8 a lost session fails what it had, and the next picture,
-///          a key, opens it again;
+///        - C8 a lost session fails what it had, never one picture coded
+///          after one that failed, and the next picture, a key, opens it
+///          again, once a picture coding at the loss is done;
 ///        - C10 the settings line is the backend's pinned one;
-///        - C11 pixel buffers of another size, format or tag are refused;
+///        - C11 pixel buffers of another size, format or tag are refused,
+///          and one with no colour tags codes as the session's colour;
 ///        - C12 a picture sent before a move comes back after it;
 ///        - C13 pictures in flight come back in order, at most
 ///          `HevcEncoder::kInFlight` of them, a dropped one failing the one
-///          sent after it, and sent on one thread and received on another.
+///          sent after it, and sent on one thread and received on another,
+///          whose finite waits sleep while nothing is in flight.
+///
+///        What each rule checks holds whatever the timing: a loaded machine
+///        changes which path a picture takes, not whether the rule holds.
+///        C13's drop in flight needs one picture sent while the drop codes,
+///        and tries up to 5 rounds for it.
 /// @return Empty when the encoder keeps every rule; else the first rule it
 ///         breaks, named ("C5: ..."). `HevcEncoder::create`'s status where
 ///         @p c's session does not open (`Status::Code::Unsupported` where

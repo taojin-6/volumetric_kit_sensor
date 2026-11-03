@@ -13,9 +13,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   configuration, a slice QP for P-pictures and one for IDRs fixed for the
   session, keys only when asked, the VUI from `Options::color` normalized
   and checked against one code set. Pipelined: a send returns at once, a
-  coding thread of its own codes, and `receive(picture, timeout_ns)` hands
+  coding thread of its own codes (allocating nothing; user-interactive
+  quality of service on Apple), and `receive(picture, timeout_ns)` hands
   back each Annex B access unit in the order sent, swapping buffers, at most
-  `kInFlight` (2) in flight. `key_owed()`, `lost()`, `facts()` and
+  `kInFlight` (2) in flight; a finite wait sleeps even with none in flight.
+  `key_owed()`, `lost()`, `facts()` and
   `inject(Fault)` as the header says. On VideoToolbox in every Apple build;
   `create` refuses on Linux until NVENC lands. DECISIONS.md, the
   2026-11-02 encoder entry.
