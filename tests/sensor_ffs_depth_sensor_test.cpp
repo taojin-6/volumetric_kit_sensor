@@ -468,6 +468,22 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
   s.stop();
   std::puts("a camera failure: reported by poll and drain, after a notice");
 
+  // It ends that run only: the next start forgets it, and frames come again.
+  {
+    const std::lock_guard<std::mutex> lock(log->mutex);
+    log->fault.reset();
+  }
+  CHECK(s.start().ok());
+  push(*log, pair_frame(13, 12));
+  CHECK(notes.wait_for(12));
+  auto again = s.poll();
+  CHECK(again.ok() && again->has_value() && (*again)->sequence == 12);
+  CHECK(s.drain(&none).ok() && none.empty());
+  st = s.stats();
+  CHECK(st.received == 1 && st.delivered == 1);
+  s.stop();
+  std::puts("a restart after the failure: forgotten, the next pair made");
+
   // The camera was polled on the thread alone, started and stopped here, and
   // never called from two threads at once.
   CHECK(log->polls > 0 && log->polled_off_main);

@@ -187,39 +187,14 @@ class DeviceProperties final : public CameraProperties {
 
 }  // namespace
 
-void Mailbox::post(std::shared_ptr<ob::FrameSet> frameset) {
-  std::function<void()> wake;
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    if (frameset != nullptr) {
-      pending.push_back(std::move(frameset));
-      while (pending.size() > depth) {
-        pending.pop_front();
-        dropped.fetch_add(1, std::memory_order_relaxed);
-      }
-    }
-    wake = notify;
-  }
-  // After the lock, so the poll it wakes finds the pair and no lock is held
-  // across the two.
-  if (wake) wake();
-}
-
 void Mailbox::on_devices_changed(const std::string& serial,
                                  const ob::DeviceList& removed) {
   try {
     for (std::uint32_t i = 0; i < removed.getCount(); ++i) {
       if (serial == or_empty(removed.getSerialNumber(i))) {
-        std::function<void()> wake;
-        {
-          std::lock_guard<std::mutex> lock(mutex);
-          fault =
-              "camera " + serial + " disconnected; reopen it to use it again";
-          disconnected.store(true, std::memory_order_release);
-          wake = notify;
-        }
         // A consumer blocked for the next pair polls now, and is told.
-        if (wake) wake();
+        queue.fail(core::Status::io_error(
+            "camera " + serial + " disconnected; reopen it to use it again"));
         return;
       }
     }
@@ -375,45 +350,43 @@ CameraStream::~CameraStream() {
 }
 
 OrbbecStreamStats CameraStream::stats() const noexcept {
+  // `received` last: each count before it is made after the arrival it
+  // covers, and read with acquire, so they never sum past it.
   OrbbecStreamStats s;
-  s.received = mailbox_->received.load(std::memory_order_relaxed);
   s.delivered = delivered_;
-  s.dropped = mailbox_->dropped.load(std::memory_order_relaxed) + discarded_;
   s.failed = failed_;
+  s.dropped = mailbox_->queue.dropped();
   if (hevc_ != nullptr) s.lost = hevc_->lost();
   if (jpeg_ != nullptr) {
     s.dropped += jpeg_->dropped();
     s.lost = jpeg_->lost();
   }
+  s.received = mailbox_->received.load(std::memory_order_acquire);
   return s;
 }
 
 core::Status CameraStream::start() {
   Mailbox& box = *mailbox_;
-  {
-    std::lock_guard<std::mutex> lock(box.mutex);
-    // Checked before `running`: a camera that went away while streaming is
-    // not "already started".
-    if (!box.fault.empty()) return core::Status::io_error(box.fault);
-    if (running_) return {};
-    box.pending.clear();
-  }
+  // Checked before `running`: a camera that went away while streaming is not
+  // "already started".
+  VKC_TRY(box.queue.failure());
+  if (running_) return {};
+  box.queue.clear();
   box.received = 0;
-  box.dropped = 0;
+  box.queue.reset_dropped();
   delivered_ = 0;
   failed_ = 0;
-  discarded_ = 0;
   failed_in_a_row_ = 0;
   // The colour decoder: every pair goes through it, H.265 in order, and on to
-  // the mailbox decoded.
+  // the mailbox decoded, uncounted: the SDK's callback counted it received.
   hevc_.reset();
   jpeg_.reset();
   const auto post = [mailbox = mailbox_](std::shared_ptr<ob::FrameSet> fs) {
-    mailbox->post(std::move(fs));
+    mailbox->queue.push(std::move(fs));
   };
   // A decoder that stops for good wakes the consumer with no pair: its next
   // take reports why.
-  const auto failed = [mailbox = mailbox_] { mailbox->post(nullptr); };
+  const auto failed = [mailbox = mailbox_] { mailbox->queue.wake(); };
   if (color_codec_ == OrbbecColorCodec::Hevc) {
     HevcColorDecoder::Options decoding;
     decoding.on_failure = failed;
@@ -430,10 +403,7 @@ core::Status CameraStream::start() {
     hevc_ = std::move(decoder);
   } else {
     JpegColorDecoder::Options decoding;
-    {
-      std::lock_guard<std::mutex> lock(box.mutex);
-      decoding.depth = box.depth;
-    }
+    decoding.depth = box.queue.depth();
     decoding.device = vulkan_device_;
     decoding.allocator = vulkan_allocator_;
     decoding.queue_families = color_queue_families_;
@@ -503,18 +473,15 @@ void CameraStream::stop() noexcept {
   // cleared, so nothing more is posted.
   if (hevc_ != nullptr) hevc_->stop();
   if (jpeg_ != nullptr) jpeg_->stop();
-  std::lock_guard<std::mutex> lock(mailbox_->mutex);
-  mailbox_->pending.clear();
+  mailbox_->queue.clear();
 }
 
 void CameraStream::set_queue_depth(std::size_t depth) {
-  std::lock_guard<std::mutex> lock(mailbox_->mutex);
-  mailbox_->depth = depth > 0 ? depth : 1;
+  mailbox_->queue.set_depth(depth);
 }
 
 void CameraStream::set_frame_notify(std::function<void()> notify) {
-  std::lock_guard<std::mutex> lock(mailbox_->mutex);
-  mailbox_->notify = std::move(notify);
+  mailbox_->queue.set_notify(std::move(notify));
 }
 
 core::Status CameraStream::decoder_failure() const {
@@ -523,32 +490,27 @@ core::Status CameraStream::decoder_failure() const {
   return {};
 }
 
+// The decoder's failure first, then the disconnect; stopped, nothing else,
+// the queue left as it is.
 core::Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
   VKC_TRY(decoder_failure());
-  std::lock_guard<std::mutex> lock(mailbox_->mutex);
-  if (!mailbox_->fault.empty()) return core::Status::io_error(mailbox_->fault);
-  if (!running_ || mailbox_->pending.empty()) {
+  if (!running_) {
+    VKC_TRY(mailbox_->queue.failure());
     return std::shared_ptr<ob::FrameSet>{};
   }
-  std::shared_ptr<ob::FrameSet> pair = std::move(mailbox_->pending.back());
-  mailbox_->dropped.fetch_add(mailbox_->pending.size() - 1,
-                              std::memory_order_relaxed);
-  mailbox_->pending.clear();
-  return pair;
+  VKC_ASSIGN(std::optional<std::shared_ptr<ob::FrameSet>> pair,
+             mailbox_->queue.take_newest());
+  return pair ? std::move(*pair) : std::shared_ptr<ob::FrameSet>{};
 }
 
 core::Status CameraStream::take_all(
     std::vector<std::shared_ptr<ob::FrameSet>>* out) {
   VKC_TRY(decoder_failure());
-  std::lock_guard<std::mutex> lock(mailbox_->mutex);
-  if (!mailbox_->fault.empty()) return core::Status::io_error(mailbox_->fault);
-  if (!running_) return {};
-  for (auto& pair : mailbox_->pending) out->push_back(std::move(pair));
-  mailbox_->pending.clear();
-  return {};
+  if (!running_) return mailbox_->queue.failure();
+  return mailbox_->queue.take_all(out);
 }
 
-void CameraStream::discard() noexcept { ++discarded_; }
+void CameraStream::discard() noexcept { mailbox_->queue.discard(); }
 
 core::Status CameraStream::apply_sync(const OrbbecSyncSettings& settings) {
   if (running_) {

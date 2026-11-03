@@ -3,9 +3,10 @@
 
 #include "volumetric_kit/sensor/ffs/stereo_depth_sensor.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <deque>
+#include <cstdint>
 #include <mutex>
 #include <new>
 #include <string>
@@ -13,6 +14,7 @@
 #include <thread>
 #include <utility>
 
+#include "../frame_queue.hpp"
 #include "volumetric_kit/core/base/check.hpp"
 
 namespace volumetric_kit::sensor {
@@ -50,29 +52,20 @@ struct StereoDepthSensor::Impl {
   // The caller's thread alone.
   std::thread worker;
   bool running = false;
-  // Set before start, read by the worker.
-  std::function<void()> notify;
 
+  // The frames made, their drops and the thread's failure, which ends one
+  // run and is forgotten at the next start; and whom each wakes.
+  detail::FrameQueue<RgbdFrame> held;
+  // Frames handed out, pairs refused here: each counted after what the
+  // camera's counts last said of it.
+  std::atomic<std::uint64_t> delivered{0};
+  std::atomic<std::uint64_t> failed{0};
   std::mutex mutex;
-  std::deque<RgbdFrame> held;  // guarded by mutex; oldest first
-  std::size_t depth = 1;       // guarded by mutex
-  core::Status failure;        // guarded by mutex
-  // Frames delivered and dropped here, pairs refused here.
-  SensorStats counts;  // guarded by mutex
   // The camera's own, as the thread last read them.
   SensorStats camera_counts;  // guarded by mutex
 
   void run();
-  void fail(core::Status status);
 };
-
-void StereoDepthSensor::Impl::fail(core::Status status) {
-  {
-    const std::lock_guard<std::mutex> lock(mutex);
-    failure = std::move(status);
-  }
-  if (notify) notify();
-}
 
 void StereoDepthSensor::Impl::run() {
   for (;;) {
@@ -84,7 +77,7 @@ void StereoDepthSensor::Impl::run() {
     }
     core::Result<std::optional<StereoFrame>> polled = camera->poll();
     if (!polled) {
-      fail(polled.status().with_context(kWho));
+      held.fail(polled.status().with_context(kWho));
       return;
     }
     // On this thread, as the poll: the camera is called from one at a time.
@@ -112,27 +105,16 @@ void StereoDepthSensor::Impl::run() {
       return ffs->depth(pair);
     }();
     if (!made) {
-      const bool refused =
-          made.status().domain() == core::Status::Code::InvalidArgument;
-      {
-        const std::lock_guard<std::mutex> lock(mutex);
-        ++counts.failed;
+      failed.fetch_add(1, std::memory_order_release);
+      // This pair; the next may do.
+      if (made.status().domain() == core::Status::Code::InvalidArgument) {
+        continue;
       }
-      if (refused) continue;  // this pair; the next may do
       // The GPU failed, and the rectifier or FFS refuses every pair now.
-      fail(made.status().with_context(kWho));
+      held.fail(made.status().with_context(kWho));
       return;
     }
-    {
-      const std::lock_guard<std::mutex> lock(mutex);
-      held.push_back(std::move(made).value());
-      while (held.size() > depth) {
-        held.pop_front();
-        ++counts.dropped;
-      }
-    }
-    // After the lock, so the poll it wakes finds the frame.
-    if (notify) notify();
+    held.push(std::move(made).value());
   }
 }
 
@@ -182,8 +164,7 @@ core::Status StereoDepthSensor::set_queue_depth(std::size_t frames) {
         std::string(kWho) +
         ": set_queue_depth needs at least 1 frame, before start");
   }
-  const std::lock_guard<std::mutex> lock(impl_->mutex);
-  impl_->depth = frames;
+  impl_->held.set_depth(frames);
   return {};
 }
 
@@ -192,18 +173,21 @@ core::Status StereoDepthSensor::set_frame_notify(std::function<void()> notify) {
     return core::Status::invalid_argument(std::string(kWho) +
                                           ": set_frame_notify once started");
   }
-  impl_->notify = std::move(notify);
+  impl_->held.set_notify(std::move(notify));
   return {};
 }
 
 core::Status StereoDepthSensor::start() {
   Impl& s = *impl_;
   if (s.running) return {};
+  // Before the thread, so nothing races these.
+  s.held.clear();
+  s.held.reset_dropped();
+  s.held.reset_failure();
+  s.delivered.store(0, std::memory_order_relaxed);
+  s.failed.store(0, std::memory_order_relaxed);
   {
     const std::lock_guard<std::mutex> lock(s.mutex);
-    s.held.clear();
-    s.failure = {};
-    s.counts = {};
     s.camera_counts = {};
   }
   {
@@ -238,45 +222,41 @@ void StereoDepthSensor::stop() noexcept {
     // Not joinable: it never ran.
   }
   s.camera->stop();
-  {
-    // Let go uncounted, as any sensor's stop does: the counters' gap.
-    const std::lock_guard<std::mutex> lock(s.mutex);
-    s.held.clear();
-  }
+  // Let go uncounted, as any sensor's stop does: the counters' gap.
+  s.held.clear();
   s.running = false;
 }
 
 core::Result<std::optional<RgbdFrame>> StereoDepthSensor::poll() {
   Impl& s = *impl_;
-  const std::lock_guard<std::mutex> lock(s.mutex);
-  if (!s.failure.ok()) return s.failure;
-  if (s.held.empty()) return no_frame();
-  s.counts.dropped += s.held.size() - 1;
-  RgbdFrame frame = std::move(s.held.back());
-  s.held.clear();
-  ++s.counts.delivered;
-  return some_frame(std::move(frame));
+  VKC_ASSIGN(std::optional<RgbdFrame> frame, s.held.take_newest());
+  if (!frame) return no_frame();
+  s.delivered.fetch_add(1, std::memory_order_release);
+  return some_frame(std::move(*frame));
 }
 
 core::Status StereoDepthSensor::drain(std::vector<RgbdFrame>* out) {
   VKC_CHECK(out != nullptr,
             "StereoDepthSensor::drain needs somewhere to put them");
   Impl& s = *impl_;
-  const std::lock_guard<std::mutex> lock(s.mutex);
-  if (!s.failure.ok()) return s.failure;
-  for (RgbdFrame& frame : s.held) out->push_back(std::move(frame));
-  s.counts.delivered += s.held.size();
-  s.held.clear();
+  const std::size_t before = out->size();
+  VKC_TRY(s.held.take_all(out));
+  s.delivered.fetch_add(out->size() - before, std::memory_order_release);
   return {};
 }
 
 SensorStats StereoDepthSensor::stats() const noexcept {
-  const std::lock_guard<std::mutex> lock(impl_->mutex);
-  const SensorStats& camera = impl_->camera_counts;
-  SensorStats out = impl_->counts;
-  out.received = camera.received;
-  out.dropped += camera.dropped;
-  out.failed += camera.failed;
+  Impl& s = *impl_;
+  // The camera's counts last: each of these was counted after the camera's
+  // counts said of its pair, so they never sum past what it received.
+  SensorStats out;
+  out.delivered = s.delivered.load(std::memory_order_acquire);
+  out.dropped = s.held.dropped();
+  out.failed = s.failed.load(std::memory_order_acquire);
+  const std::lock_guard<std::mutex> lock(s.mutex);
+  out.received = s.camera_counts.received;
+  out.dropped += s.camera_counts.dropped;
+  out.failed += s.camera_counts.failed;
   return out;
 }
 

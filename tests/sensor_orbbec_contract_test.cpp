@@ -3,9 +3,10 @@
 
 // OrbbecSensor keeps the frame contract (testing/rgbd_contract.hpp) under
 // injected faults, its own poll, drain and stats running on a camera stub
-// (orbbec_camera_stub.hpp) that stands in for CameraStream's mailbox, take
-// and read, with counts of its own, and plays a script of captures: captures
-// pushed out of a full queue and passed over by a poll, a colour frame lost
+// (orbbec_camera_stub.hpp) that stands in for CameraStream's take and read,
+// with counts of its own, and plays a script of captures into the driver's
+// own mailbox and queue: captures pushed out of a full queue and passed over
+// by a poll (at depths 1 and 2), a colour frame lost
 // (a gap in the sequences, counted failed), a capture the SDK failed on
 // skipped and counted, one refused mid-poll, and IoError mid-drain with the
 // frames before it handed out and the rest counted dropped. Every frame
@@ -140,6 +141,26 @@ int test_contract() {
   std::vector<sensor::RgbdFrame> twice = drained;
   twice.push_back(drained.back());
   CHECK(!testing::rgbd_breach(s.info(), twice, s.stats()).empty());
+
+  // Polled from a two-frame queue: each poll passes over the older frame
+  // held, counted dropped, as is the one pushed out of the full queue.
+  s.stop();
+  CHECK(s.set_queue_depth(2).ok());
+  fake.batches = {{capture(fake, 1), capture(fake, 2)},
+                  {capture(fake, 3), capture(fake, 4), capture(fake, 5)}};
+  CHECK(s.start().ok());
+  std::vector<sensor::RgbdFrame> newest;
+  for (int i = 0; i < 2; ++i) {
+    auto frame = s.poll();
+    CHECK(frame.ok() && *frame);
+    newest.push_back(std::move(**frame));
+  }
+  CHECK(newest[0].sequence == 2 && newest[1].sequence == 5);
+  st = s.stats();
+  CHECK(st.received == 5 && st.delivered == 2 && st.dropped == 3 &&
+        st.failed == 0);  // 1 and 4 passed over, 3 pushed out
+  CHECK(keeps(s, newest));
+  std::puts("poll at depth 2: the frames passed over counted dropped");
   s.stop();
   return 0;
 }

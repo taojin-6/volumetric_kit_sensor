@@ -654,9 +654,8 @@ exposure the colour runs out of step with the depth, up to half a frame. The
 counters restart at `start`, not at `stop`. The projector is
 on by default (`Options::emitter`); `Options::color_controls` writes a
 manual exposure, checked against the camera's ranges first and read back,
-as Orbbec's. The frames wait in an internal queue (`realsense/frame_queue.hpp`)
-that keeps the `IRgbdSensor` contract: newest wins, a deeper queue drains
-oldest first, every frame passed over or pushed out counted dropped. Each
+as Orbbec's. The frames wait in the drivers' frame queue (`IRgbdSensor`,
+below), whose one failure is the camera's disconnect. Each
 frame holds its frameset, so librealsense's bounded frame pool is the limit
 on how many a consumer may keep.
 **`RealSenseStereo`** (`realsense/realsense_stereo.hpp`) is the same camera's
@@ -688,7 +687,15 @@ the stereo frames keep their bound exactly; any other is counted failed.
 opened modes, `depth_to_color`, rig role, clock, pose source, rate, the
 colour exposure as read back), and
 frames held up to `set_queue_depth`, the newest taken by `poll` or all,
-oldest first, by `drain`. **`OrbbecSensor`** implements it: `open` refuses
+oldest first, by `drain`. A driver whose frames come on a thread of its own
+(RealSense's camera, the Orbbec mailbox, `StereoDepthSensor`) holds them in
+one internal queue (`frame_queue.hpp`, `sensor::detail::FrameQueue`) that
+keeps that rule: newest wins, a deeper queue drains oldest first, every
+frame passed over or pushed out counted dropped, the consumer woken after
+the lock by a frame, a failure or a bare `wake()`, and the first failure, a
+`core::Status`, reported to every later take; a disconnect, the RealSense
+and Orbbec queues' only failure, is final. Each driver's `stats` reads
+`received` after the drops. **`OrbbecSensor`** implements it: `open` refuses
 a `min_depth` of 0, which the GPU pass would, a camera in a sync mode the
 driver does not know, and one whose sync settings differ from
 `Options::sync` without `apply_sync`; `sync_clock_to_host` stamps each frame
@@ -1165,8 +1172,9 @@ loads libcuda at run time) are private.
   nothing is new, sleeps until the camera's `set_frame_notify` (set at
   `create`) wakes it, or 1 ms for a camera that notifies nothing; then
   rectifies, letting the camera's frame go once rectified, runs FFS, and
-  holds the frame (`set_queue_depth`, oldest let go), then calls the frame
-  notification. The camera's notification may
+  holds the frame in the drivers' frame queue (`IRgbdSensor`, above;
+  `set_queue_depth`), which calls the frame notification.
+  The camera's notification may
   run on its own thread after the camera let it go, so it owns what it
   touches (a shared wake-up). The camera is called from one thread at a
   time: `start` and `stop` on the caller's, `poll` and `stats` on the
@@ -1179,7 +1187,8 @@ loads libcuda at run time) are private.
   (`InvalidArgument`) is counted `failed` and passed over; any other
   failure -- the camera's poll, a GPU or CUDA failure, after which the
   rectifier and FFS refuse every pair, so it takes a new sensor -- ends the
-  thread and is what `poll` and `drain` return until `stop` and `start`. The thread's Vulkan submits share the queue with the caller's
+  thread and is what `poll` and `drain` return until `stop` and `start`,
+  which forgets it (`FrameQueue::reset_failure`). The thread's Vulkan submits share the queue with the caller's
   (`GpuFramePrep`): `core::Device` gives every submit a pool of its own and
   serialises `vkQueueSubmit` under its queue's mutex, and the allocator
   locks its own state.
@@ -1301,9 +1310,11 @@ failed <= received`), which the stereo contract
 (`tests/stereo_contract.hpp`) calls too, a time of 0 counted as one
 there. `rgbd_breach` runs it over a vector. The Orbbec, RealSense and FFS depth
 sensors' tests run it under injected faults. The Orbbec camera stub stands
-in for `CameraStream`'s mailbox, take and read, and plays a script of
-captures with counts of its own, so `OrbbecSensor`'s poll, drain (its
-discards after a refusal) and stats (failed plus lost) run on it. The
+in for `CameraStream`'s take and read, and plays a script of captures into
+the driver's own mailbox and queue with counts of its own, so
+`OrbbecSensor`'s poll, drain (its discards after a refusal) and stats
+(failed plus lost, the queue's drops) run on it. The queue itself is
+`sensor_frame_queue`'s, on every leg and under ThreadSanitizer. The
 RealSense camera stub (`tests/realsense_camera_stub.cpp`, in place of
 `camera.cpp`, the SDK callback's received count and `stats()` included)
 sends librealsense software-device framesets into the driver's frame
