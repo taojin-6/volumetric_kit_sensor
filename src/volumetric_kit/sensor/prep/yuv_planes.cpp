@@ -3,10 +3,12 @@
 
 #include "yuv_planes.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <string>
 
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 
 namespace volumetric_kit::sensor::detail {
@@ -173,6 +175,31 @@ core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
     }
   }
   return out;
+}
+
+core::Status check_ready(const YuvImage& image, const core::Device& device,
+                         const char* who) {
+  if (image.ready == nullptr) return {};
+  if (!image.ready->valid()) {
+    return refuse(who, "the picture's ready timeline is an empty semaphore");
+  }
+  if (image.ready->device() != device.handle()) {
+    return refuse(who,
+                  "the picture's ready timeline was made on another device");
+  }
+  return {};
+}
+
+void add_ready_point(const YuvImage& image,
+                     std::vector<core::TimelinePoint>& points) {
+  if (image.ready == nullptr) return;
+  for (core::TimelinePoint& point : points) {
+    if (point.semaphore == image.ready.get()) {
+      point.value = std::max(point.value, image.ready_value);
+      return;
+    }
+  }
+  points.push_back({image.ready.get(), image.ready_value});
 }
 
 }  // namespace volumetric_kit::sensor::detail

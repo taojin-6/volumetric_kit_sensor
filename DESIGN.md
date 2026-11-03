@@ -299,8 +299,9 @@ plane only gates samples, `RgbdFrame::min_confidence`), recon's libraries
 cannot read `SensorInfo`, and no unit has been measured to differ from its
 model.
 `device_requirements()` names what the package's kernels and decoders need
-(`scalarBlockLayout`; `VK_KHR_external_memory_fd` and `VK_EXT_metal_objects`
-where offered); an application opening one device for recon and this package
+(`scalarBlockLayout`; `VK_KHR_external_memory_fd`,
+`VK_KHR_external_semaphore_fd`, `VK_EXT_metal_objects` and
+`VK_EXT_external_memory_host` where offered); an application opening one device for recon and this package
 merges the two lists with `core::merge`.
 
 `frame/shaders/pinhole.glsl` is the package's GLSL pinhole: the rigid
@@ -389,11 +390,16 @@ the stream's pts and its transfer and primaries as an optional
 `ColorEncoding` (empty when that type cannot name them) beside it.
 **`HevcDecoder`** decodes H.265 access units on the hardware. Off Apple,
 through FFmpeg's hardware decoding: NVDEC's picture copied device to device,
-by one CUDA copy, into two plane images CUDA imported, an R8 luma and an
-R8G8 chroma of the picture's size (`core`'s `create_exported_image`, on a
-device that `exports_memory`), handed out as NV12's `YuvImage::image`, as
-VideoToolbox's are, with `kQueueFamilyExternal` (the 2026-10-26 plane-image
-decision). A set of images is made, mapped and handed over to CUDA in
+by one CUDA copy from NVDEC's mapped output surface (FFmpeg's own copy into a
+pool frame dropped, `AV_HWACCEL_FLAG_UNSAFE_OUTPUT`), into two plane images
+CUDA imported, an R8 luma and an R8G8 chroma of the picture's size (`core`'s
+`create_exported_image`, on a device that `exports_memory`), handed out as
+NV12's `YuvImage::image`, as VideoToolbox's are, with `kQueueFamilyExternal`
+(the 2026-10-26 plane-image decision). The copy is queued, not waited on: the
+picture carries its ready value (below), and the decoder keeps the frame NVDEC
+mapped until that value is reached, never as long as a holder keeps the
+picture, so held pictures hold no surface of NVDEC's; with three kept, the
+next `receive` waits on the host for the oldest. A set of images is made, mapped and handed over to CUDA in
 `GENERAL` once, and reused only once no picture holds either image; a
 reader takes each picture back from outside Vulkan, and none hands it back.
 The images are shared with `Options::queue_families` as
@@ -433,7 +439,9 @@ VideoToolbox's decoder sessions for both decoders open in one place
 decoder or not at all.
 **`JpegDecoder`** decodes a baseline 8-bit 4:2:0 JPEG, BT.601 full
 range as JFIF defines it, with no FFmpeg: on nvJPEG's hardware JPEG engine
-into the same kind of buffer, I420, or through VideoToolbox's hardware
+into the same kind of buffer, I420, handed out with its ready value once the
+decode is queued (the next decode waits for the last one's work before it
+rewrites nvJPEG's buffers), or through VideoToolbox's hardware
 decoder (`vt_jpeg.cpp`) into the same images. Another subsampling, or a
 JPEG larger than the hardware takes (16384 a side on nvJPEG's engine, the
 device's image extent on Apple), is `Unsupported`, as is every JPEG on a GPU
@@ -470,7 +478,29 @@ flagged as a colour attachment where its usage makes it one, as CUDA
 requires. The one crossing it documents is CUDA writes, Vulkan reads: the writing stream
 or an event is synchronized, then the reader acquires the buffer or image
 from `VK_QUEUE_FAMILY_EXTERNAL`, an image once handed over to CUDA in
-`GENERAL` before its first write.
+`GENERAL` before its first write; or, with no host wait, CUDA signals a
+timeline it imported after the writes and the reader's batch waits for that
+value on the device.
+**A picture's ready value** (`YuvImage::ready`, `ready_value`; the 2026-11-02
+hand-over decision) is that second form, for NVIDIA's decoders: each
+decoder's `core::create_exported_timeline` (on a device that
+`exports_semaphores`, else `create` is `Unsupported`), imported into its CUDA
+context once (internal `cuda_timeline.cpp`), and each picture the next value,
+signalled on the decoder's stream after its copy or decode
+(`cuSignalExternalSemaphoresAsync`), in place of the stream synchronize. A
+slot of either decoder's ring that no picture holds is let go only once its
+last write's value is reached, since a holder may drop a picture CUDA has not
+yet written. Every reader here waits for the value on the device in the
+submission that reads the picture: `GpuFramePrep::prepare` and
+`prepare_batch`, `PictureReadback`, `LumaPass` and `StereoRectifier`, each
+one wait a timeline at its highest value (internal `add_ready_point`), and
+each refuses a timeline made on another device before it records anything.
+A caller of `GpuFramePrep::record` or `record_set` (`SensorArray::
+record_process`) passes `ready_points(frame)` among its `submit_async`
+waits. On a CUDA failure a decoder synchronizes its stream, then sets the
+last value it handed out from the host if the counter is below it, so no
+batch waits for good; its destructor does the same before CUDA's import
+goes. VideoToolbox's pictures, a camera's and host planes carry none.
 **`video/`'s H.265 syntax** (`hevc_syntax.hpp`, target
 `sensor_video_syntax`) is public and builds on every platform: host
 code on the family core's base tier, with no codec, GPU or FFmpeg (the

@@ -12,6 +12,7 @@
 #include <optional>
 
 #include "cuda_pictures.hpp"
+#include "cuda_timeline.hpp"
 #include "nvjpeg.hpp"
 #elif defined(__APPLE__)
 #include "vt_jpeg.hpp"
@@ -123,9 +124,15 @@ struct NvjpegDecoder {
                                       std::size_t size);
 
   std::unique_ptr<video::CudaSession> cuda;  // let go last
-  // A picture waits on an event made to block, not spin: CUDA's default wait
-  // bills the whole wait as CPU.
+  // Set on the stream after each JPEG's work, and waited on at the next
+  // decode, before nvJPEG's pinned, device and state buffers are rewritten:
+  // the last JPEG's work is long done by then, so the wait seldom blocks. Made
+  // to block, not spin: CUDA's default wait bills the whole wait as CPU.
   CUevent done = nullptr;
+  bool queued = false;  // `done` recorded and not yet waited on
+  // The pictures' ready values, which CUDA sets after each decode; after the
+  // session, whose context and stream it uses.
+  std::unique_ptr<video::CudaTimeline> timeline;
   nvjpegHandle_t handle = nullptr;
   nvjpegBufferPinned_t pinned = nullptr;
   nvjpegBufferDevice_t staging = nullptr;
@@ -181,8 +188,12 @@ core::Result<std::unique_ptr<NvjpegDecoder>> NvjpegDecoder::open(
       !ok(s = n->nvjpegStateAttachDeviceBuffer(d->state, d->staging))) {
     return video::nvjpeg_error(kWho, s, "opening nvJPEG");
   }
-  VKC_ASSIGN(d->pictures, video::CudaPictures::create(device, allocator,
-                                                      *d->cuda->context, kWho));
+  VKC_ASSIGN(d->timeline,
+             video::CudaTimeline::create(device, *d->cuda->context,
+                                         d->cuda->stream->handle(), kWho));
+  VKC_ASSIGN(d->pictures,
+             video::CudaPictures::create(device, allocator, *d->cuda->context,
+                                         *d->timeline, kWho));
   return d;
 }
 
@@ -191,6 +202,9 @@ NvjpegDecoder::~NvjpegDecoder() {
   const video::CudaDriver* cu = video::cuda_driver();
   const Nvjpeg* n = nvjpeg();
   const video::CudaContextScope scope(cuda->context->handle());
+  // The stream's work done first: it writes the pictures' buffers and reads
+  // nvJPEG's.
+  timeline.reset();
   pictures.reset();  // its imports go with the context
   if (state != nullptr) n->nvjpegJpegStateDestroy(state);
   if (decoder != nullptr) n->nvjpegDecoderDestroy(decoder);
@@ -208,6 +222,17 @@ core::Result<DecodedPicture> NvjpegDecoder::decode(const std::uint8_t* data,
   if (!scope.ok()) {
     return video::cuda_error(kWho, scope.result(),
                              "making the CUDA context current");
+  }
+  const video::CudaDriver* cu = video::cuda_driver();
+  // The last JPEG's queued work, which reads nvJPEG's buffers, done before
+  // they are rewritten; a failing GPU fails here.
+  if (queued) {
+    queued = false;
+    const CUresult r = cu->cuEventSynchronize(done);
+    if (r != CUDA_SUCCESS) {
+      timeline->settle();
+      return video::cuda_error(kWho, r, "decoding a JPEG");
+    }
   }
   // nvJPEG's last status: corrupt bytes lose this JPEG, one it does not take
   // is Unsupported, any other fails the device path.
@@ -282,15 +307,19 @@ core::Result<DecodedPicture> NvjpegDecoder::decode(const std::uint8_t* data,
                                                cuda->stream->handle())) &&
       step(n->nvjpegDecodeJpegDevice(handle, decoder, state, &out,
                                      cuda->stream->handle()));
-  // What was queued finishes either way, so the buffers are free for the
-  // next JPEG, and a failing GPU fails here.
-  const video::CudaDriver* cu = video::cuda_driver();
-  CUresult r = cu->cuEventRecord(done, cuda->stream->handle());
-  if (r == CUDA_SUCCESS) r = cu->cuEventSynchronize(done);
-  if (r != CUDA_SUCCESS) return video::cuda_error(kWho, r, "decoding a JPEG");
+  // The picture's ready value after its decode, and the event after both,
+  // which the next decode waits on; what was queued runs either way.
+  DecodedPicture picture;
+  const core::Status marked =
+      decoded ? pictures->mark(target, picture.yuv) : core::Status();
+  const CUresult r = cu->cuEventRecord(done, cuda->stream->handle());
+  if (!marked.ok() || r != CUDA_SUCCESS) {
+    timeline->settle();
+    return marked.ok() ? video::cuda_error(kWho, r, "decoding a JPEG") : marked;
+  }
+  queued = true;
   if (!decoded) return failed("decoding a JPEG");
 
-  DecodedPicture picture;
   picture.yuv.width = width;
   picture.yuv.height = height;
   picture.yuv.layout = YuvLayout::I420;

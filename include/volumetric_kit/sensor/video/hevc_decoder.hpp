@@ -55,9 +55,9 @@ class VS_VIDEO_API HevcDecoder {
     /// logger.
     bool configure_ffmpeg_logging = true;
     /// The device the pictures are handed out on, whose GPU decodes them: one
-    /// that imports Metal textures on Apple, one that exports memory and is a
-    /// CUDA device elsewhere. Required. Borrowed: it must outlive the decoder
-    /// and every picture on it.
+    /// that imports Metal textures on Apple, one that exports memory and
+    /// semaphores and is a CUDA device elsewhere. Required. Borrowed: it must
+    /// outlive the decoder and every picture on it.
     const core::Device* device = nullptr;
     /// The allocator NVDEC's picture images are made through: exported
     /// device-only memory, counted against its heap's budget like any other
@@ -75,8 +75,9 @@ class VS_VIDEO_API HevcDecoder {
   /// @return The decoder; `Status::Code::Unsupported` if there is no device
   ///         path: no @ref Options::device (or, for NVDEC, no
   ///         @ref Options::allocator), a device whose GPU this build's
-  ///         hardware path cannot reach, an FFmpeg without NVDEC, or on
-  ///         Apple no hardware HEVC decoder;
+  ///         hardware path cannot reach, for NVDEC one that does not export
+  ///         semaphores (`VK_KHR_external_semaphore_fd`), an FFmpeg without
+  ///         NVDEC, or on Apple no hardware HEVC decoder;
   ///         `Status::Code::InvalidArgument` for queue families
   ///         @ref PixelBufferImporter::create would refuse; or
   ///         `Status::Code::IoError`,
@@ -105,6 +106,12 @@ class VS_VIDEO_API HevcDecoder {
                     std::int64_t pts);
 
   /// @brief Take the next decoded picture, if one is ready.
+  ///
+  /// On NVDEC the picture's copy into its images is queued, not waited for:
+  /// the picture carries the value CUDA sets once it is done
+  /// (`YuvImage::ready`). The decoder keeps NVDEC's surface mapped until
+  /// then, whoever holds the picture, and waits on the host only when CUDA
+  /// is three pictures behind.
   /// @return The picture; empty when the decoder needs more input or has
   ///         drained; `Status::Code::Unsupported`, as from @ref send, once the
   ///         pictures decoded before a refusal are taken;

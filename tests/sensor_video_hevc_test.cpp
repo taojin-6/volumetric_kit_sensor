@@ -6,7 +6,8 @@
 // read back: the pattern the clip was made from, libavcodec's pictures to the
 // bit, the colour an unlabelled stream takes, a reset mid-stream and after
 // the end, a display window off the coded picture's corner, a held picture
-// never reused, frame prep from the images as from the same samples in a
+// never reused, many pictures held at once, each with its ready value on
+// NVDEC, frame prep from the images as from the same samples in a
 // buffer, a stream the hardware refuses, the decoders create refuses, the
 // images shared across queue families, NVDEC's decoders sharing the GPU's
 // primary CUDA context, NVDEC's pictures changing size within one decoder,
@@ -585,6 +586,69 @@ int test_held_pictures(const Gpu& gpu) {
   return 0;
 }
 
+// Many pictures held at once -- 72, the patch clip 9 times, more than NVDEC
+// has output surfaces -- all come out, each its own frame's pattern once read
+// back: the decoder lets go of NVDEC's surface once a picture's copy is done,
+// never when its holder lets go of the picture. On NVDEC each picture
+// carries a ready value above the last, reached once it is read;
+// VideoToolbox's carry none.
+int test_many_held_pictures(const Gpu& gpu) {
+  constexpr int kRepeats = 9;
+  const AccessUnits clip = sensor::testing::access_units_of_file(kPatches);
+  AccessUnits units;
+  for (int r = 0; r < kRepeats; ++r) {
+    units.insert(units.end(), clip.begin(), clip.end());
+  }
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
+  CHECK(decoder.ok());
+  std::vector<sensor::DecodedPicture> held;
+  for (std::size_t i = 0; i <= units.size(); ++i) {
+    const bool end = i == units.size();
+    const vkc::Status sent =
+        decoder->send(end ? nullptr : units[i].data(),
+                      end ? 0 : units[i].size(), pts_of(static_cast<int>(i)));
+    if (!sent.ok()) {
+      std::fprintf(stderr, "access unit %zu: %s\n", i, sent.message().c_str());
+    }
+    CHECK(sent.ok());
+    for (;;) {
+      auto picture = decoder->receive();
+      if (!picture.ok()) {
+        std::fprintf(stderr, "picture %zu: %s\n", held.size(),
+                     picture.status().message().c_str());
+      }
+      CHECK(picture.ok());
+      if (!picture.value()) break;
+      held.push_back(std::move(*picture.value()));
+    }
+  }
+  CHECK(held.size() == units.size());
+#if !defined(__APPLE__)
+  std::uint64_t last = 0;
+#endif
+  for (std::size_t i = 0; i < held.size(); ++i) {
+    sensor::YuvImage& yuv = held[i].yuv;
+    CHECK(held[i].pts == pts_of(static_cast<int>(i)));
+#if defined(__APPLE__)
+    CHECK(yuv.ready == nullptr);
+#else
+    CHECK(yuv.ready != nullptr && yuv.ready_value > last);
+    last = yuv.ready_value;
+#endif
+    std::vector<std::uint8_t> planes[3];
+    vs_test::read_device_picture(yuv, gpu.device, gpu.allocator, planes);
+    CHECK(planes[0].size() == static_cast<std::size_t>(kWidth * kHeight));
+    const std::size_t y = 36 * kWidth + 16;  // patch (0, 0)'s centre
+    const int f = static_cast<int>(i % kFrames);
+    CHECK(std::abs(planes[0][y] - patch_y(patch(0, 0, f))) <= 2);
+#if !defined(__APPLE__)
+    const vkc::Result<std::uint64_t> counter = yuv.ready->value();
+    CHECK(counter.ok() && *counter >= yuv.ready_value);
+#endif
+  }
+  return 0;
+}
+
 // GpuFramePrep reads each decoded picture where the hardware left it, taking
 // NVDEC's over from outside Vulkan, through a lens, to the words the same
 // samples give from NV12 planes in a buffer, bit for bit; and a readback
@@ -872,7 +936,8 @@ int test_refused(const Gpu& gpu) {
 }
 
 // No device, a device the hardware path cannot reach, and on NVDEC no
-// allocator: each Unsupported.
+// allocator or a device that exports memory and not semaphores (the timeline
+// its pictures' ready values are on): each Unsupported.
 int test_create_refusals(const Gpu& gpu) {
   CHECK(HevcDecoder::create({}).status().domain() ==
         vkc::Status::Code::Unsupported);
@@ -887,6 +952,15 @@ int test_create_refusals(const Gpu& gpu) {
   options.allocator = nullptr;
   CHECK(HevcDecoder::create(options).status().domain() ==
         vkc::Status::Code::Unsupported);
+  vkc::Result<vkc::Device> memory_only = vs_test::memory_only_device(gpu);
+  CHECK(memory_only.ok() && memory_only->exports_memory() &&
+        !memory_only->exports_semaphores());
+  options = decoder_options(gpu);
+  options.device = &memory_only.value();
+  const vkc::Status refused = HevcDecoder::create(options).status();
+  CHECK(refused.domain() == vkc::Status::Code::Unsupported);
+  CHECK(refused.message().find("VK_KHR_external_semaphore_fd") !=
+        std::string::npos);
 #endif
   return 0;
 }
@@ -1003,6 +1077,7 @@ int gpu_main(Gpu& gpu) {
   if (test_size_change(gpu) != 0) return 1;
 #endif
   if (test_held_pictures(gpu) != 0) return 1;
+  if (test_many_held_pictures(gpu) != 0) return 1;
   if (test_frame_prep(gpu) != 0) return 1;
 #if defined(__APPLE__)
   if (test_malformed_cropped_sps(gpu) != 0) return 1;

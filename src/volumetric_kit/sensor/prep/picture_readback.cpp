@@ -193,12 +193,17 @@ core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
   std::vector<Plan> plans(count);
   std::vector<bool> takes_over(count, false);
   std::vector<std::pair<VkBuffer, std::uint32_t>> buffers;
+  // What the copies wait for on the device: the values of the pictures'
+  // writers that did not wait for their work (YuvImage::ready).
+  std::vector<core::TimelinePoint> ready;
   VkDeviceSize staged = 0;
   std::uint32_t copies = 0;
   for (std::size_t i = 0; i < count; ++i) {
     if (pictures[i] == nullptr) continue;
     const YuvImage& picture = *pictures[i];
     VKC_ASSIGN(plans[i], plan(picture, planes, staged));
+    VKC_TRY(detail::check_ready(picture, device_, kWho));
+    detail::add_ready_point(picture, ready);
     copies += static_cast<std::uint32_t>(plans[i].count);
     if (picture.device == nullptr) continue;
     const VkBuffer handle = picture.device->handle();
@@ -260,7 +265,9 @@ core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
       }
     }
   }
-  const core::Status submitted = batch.submit();
+  core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
+  const core::Status submitted =
+      pending.ok() ? pending->wait() : pending.status();
   if (!submitted.ok()) {
     // A failed wait may leave the copies running, so the staging is let go
     // rather than freed or rewritten, as GpuFramePrep lets go of its own; and
@@ -273,6 +280,7 @@ core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
     }
     return submitted;
   }
+  if (metrics != nullptr) metrics->merge_device(pending->device_rows());
 
   const auto* base = static_cast<const std::uint8_t*>(staging_.mapped());
   for (std::size_t i = 0; i < count; ++i) {

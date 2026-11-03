@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-11-02
+
+### Added
+
+- **A picture's ready value** (`YuvImage::ready`, `YuvImage::ready_value`):
+  the timeline value a writer that did not wait for its work sets once the
+  picture is written, which a reader's submission waits for on the device.
+  NVDEC's and nvJPEG's pictures carry one; VideoToolbox's, a camera's and
+  host planes none. DECISIONS.md, the 2026-11-02 hand-over entry.
+- **`ready_points(frame)`** (`prep/gpu_frame_prep.hpp`, `sensor_prep`): the
+  values a batch that reads the frame's colour waits for, for a caller of
+  `GpuFramePrep::record` or `record_set` (`SensorArray::record_process`) to
+  pass among its `submit_async` waits.
+- `device_requirements()` names `VK_KHR_external_semaphore_fd` among its
+  optional extensions.
+
+### Changed
+
+- **NVIDIA's decoders hand their pictures over on the GPU.** `HevcDecoder`
+  (NVDEC) and `JpegDecoder` (nvJPEG) queue the copy or decode, signal an
+  exported timeline CUDA imported after it, and hand the picture out with
+  that value, in place of `cuStreamSynchronize` and the event wait.
+  `HevcDecoder` sets `AV_HWACCEL_FLAG_UNSAFE_OUTPUT`, so FFmpeg's own copy of
+  NVDEC's output goes (one device copy a picture, not two), and keeps each
+  mapped frame until its value is reached, whoever holds the picture. On
+  NVIDIA `create` is `Unsupported` on a device that does not export
+  semaphores (`Device::exports_semaphores`).
+- **Every reader here waits for a picture's ready value on the device:**
+  `GpuFramePrep::prepare` and `prepare_batch`, `PictureReadback`,
+  `LumaPass` and `StereoRectifier`; each refuses a ready timeline made on
+  another device (`InvalidArgument`). **A caller that records
+  `GpuFramePrep` into its own batch must pass `ready_points`**, or it reads
+  an NVIDIA picture CUDA may not have written yet.
+- The core is pinned at 0.41.0 (core #88: `create_exported_timeline`,
+  `Device::exports_semaphores`, `fwd.hpp`'s `TimelineSemaphore`), and every
+  build but a camera-only one needs it.
+
 ## [0.26.0] - 2026-11-02
 
 ### Added

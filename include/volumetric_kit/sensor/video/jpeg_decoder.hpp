@@ -24,7 +24,9 @@ namespace volumetric_kit::sensor {
 ///
 /// In a build with VS_WITH_CUDA (Linux), on an NVIDIA GPU with a hardware
 /// JPEG engine, nvJPEG decodes straight into a Vulkan buffer CUDA has
-/// imported: I420 (`Yuv420`). libcuda and libnvjpeg are loaded at run time.
+/// imported: I420 (`Yuv420`), handed out as soon as the decode is queued,
+/// with the timeline value CUDA sets once it is written
+/// (`YuvImage::ready`). libcuda and libnvjpeg are loaded at run time.
 /// On Apple, VideoToolbox's hardware decoder decodes into NV12 on an
 /// IOSurface, whose two planes are handed out as images. The picture is
 /// BT.601 full range as JFIF defines it, its chroma centred.
@@ -35,9 +37,9 @@ class VS_VIDEO_API JpegDecoder {
   /// @brief How @ref create opens a decoder.
   struct Options {
     /// The device the pictures are handed out on, whose GPU decodes them: one
-    /// that imports Metal textures on Apple, one that exports memory and is a
-    /// CUDA device elsewhere. Required. Borrowed: it must outlive the decoder
-    /// and every picture on it.
+    /// that imports Metal textures on Apple, one that exports memory and
+    /// semaphores and is a CUDA device elsewhere. Required. Borrowed: it must
+    /// outlive the decoder and every picture on it.
     const core::Device* device = nullptr;
     /// The allocator nvJPEG's picture buffers are made through: exported
     /// device-only memory, counted against its heap's budget like any other
@@ -55,8 +57,10 @@ class VS_VIDEO_API JpegDecoder {
   /// @return The decoder; `Status::Code::Unsupported` if there is no device
   ///         path: no @ref Options::device (or, for nvJPEG, no
   ///         @ref Options::allocator), a device whose GPU has no hardware JPEG
-  ///         decoder this build reaches, or libcuda or libnvjpeg that do not
-  ///         load; `Status::Code::InvalidArgument` for queue families
+  ///         decoder this build reaches, for nvJPEG one that does not export
+  ///         semaphores (`VK_KHR_external_semaphore_fd`), or libcuda or
+  ///         libnvjpeg that do not load; `Status::Code::InvalidArgument` for
+  ///         queue families
   ///         VideoToolbox's importer refuses; or `Status::Code::Backend` if
   ///         CUDA or nvJPEG fails.
   static core::Result<JpegDecoder> create(const Options& options);
@@ -71,9 +75,9 @@ class VS_VIDEO_API JpegDecoder {
   /// @param data  The JPEG's bytes, SOI to EOI; read during the call only.
   /// @param size  Their count.
   /// @return The picture on the device (@ref DecodedPicture::yuv): I420 in a
-  ///         buffer from nvJPEG, written by CUDA, so a reader takes it over
-  ///         from @ref kQueueFamilyExternal; or NV12 images from
-  ///         VideoToolbox. Or:
+  ///         buffer from nvJPEG, which CUDA writes, so a reader takes it over
+  ///         from @ref kQueueFamilyExternal once its `YuvImage::ready` value
+  ///         is reached; or NV12 images from VideoToolbox, written. Or:
   ///         - `Status::Code::IoError` for bytes that do not decode;
   ///         - `Status::Code::Unsupported` for a JPEG the hardware cannot
   ///           decode: not baseline 8-bit 4:2:0 in three components (4:2:2,

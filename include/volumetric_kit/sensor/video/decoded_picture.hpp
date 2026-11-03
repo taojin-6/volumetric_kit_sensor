@@ -32,8 +32,12 @@ struct DecodedPicture {
   /// `YuvImage::queue_family` is @ref kQueueFamilyExternal, and the decoder
   /// reuses them only once nothing holds either. From nvJPEG (Linux) it is
   /// I420 in a buffer (`YuvImage::device`), which CUDA wrote and the decoder
-  /// reuses on the same terms. Either way the decoder has finished writing
-  /// it; drop it before the device it is on is destroyed.
+  /// reuses on the same terms. VideoToolbox has finished writing its picture
+  /// when the decoder hands it out. NVDEC's and nvJPEG's copy may still be
+  /// queued on the GPU then: the picture carries the timeline value CUDA sets
+  /// once it is written (`YuvImage::ready`), which a reader's batch waits for
+  /// on the device, so neither the decoder nor the reader waits on the host.
+  /// Drop it before the device it is on is destroyed.
   ///
   /// The matrix and range are the ones it is coded in. A stream that declares
   /// no matrix takes the decoder's `Options::unlabelled_color` when it has

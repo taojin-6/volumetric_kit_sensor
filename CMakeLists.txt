@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(
   volumetric_kit_sensor
-  VERSION 0.26.0
+  VERSION 0.27.0
   DESCRIPTION
     "Cameras, capture and the device-frame contract for the volumetric_kit family"
   HOMEPAGE_URL "https://github.com/taojin-6/volumetric_kit_sensor"
@@ -144,14 +144,14 @@ if(VS_WITH_DECKLINK)
 endif()
 
 # The core this package builds with (third_party/ checks the core that arrives):
-# 0.29.0's vulkan/fwd.hpp, with 0.27.0's vkc_export_glsl and 0.28.0's test
-# support. Where the DeckLink driver's units build (VS_WITH_DECKLINK, or the
-# tests), 0.38.0, whose create_imported_host_buffer their pages are. A consumer
-# with neither, such as a decoder-only build at an application's older core,
-# keeps 0.29.0.
-set(VS_CORE_BASE_MIN_VERSION 0.29.0)
-if(VS_WITH_DECKLINK OR VS_BUILD_TESTS)
-  set(VS_CORE_MIN_VERSION 0.38.0)
+# 0.41.0, whose vulkan/fwd.hpp names the TimelineSemaphore a picture's ready
+# value is on (yuv_image.hpp) and whose create_exported_timeline NVIDIA's
+# decoders signal, with 0.38.0's create_imported_host_buffer (the DeckLink
+# driver's pages), 0.27.0's vkc_export_glsl and 0.28.0's test support. A
+# camera-only build (VS_CAMERA_ONLY) names none of them and keeps 0.29.0.
+set(VS_CORE_BASE_MIN_VERSION 0.41.0)
+if(VS_CAMERA_ONLY)
+  set(VS_CORE_MIN_VERSION 0.29.0)
 else()
   set(VS_CORE_MIN_VERSION ${VS_CORE_BASE_MIN_VERSION})
 endif()

@@ -79,7 +79,8 @@ struct DeviceLuma {
 /// leaves it; pass the updated picture on. A first kernel writes each
 /// picture's full luma, a second its half from the full one; every
 /// picture's work is recorded into one `CommandBatch`, submitted once and
-/// waited on.
+/// waited on; it waits on the device for each picture's `YuvImage::ready`
+/// value before it reads.
 ///
 /// The outputs come from the pass's pool of device buffers: each picture
 /// takes the smallest free one that holds it, else a free one too small is
@@ -136,9 +137,10 @@ class VS_PREP_API LumaPass {
   ///        wait.
   /// @param[in,out] pictures  The pictures, each non-null and at least 2 x 2.
   ///                          Host planes are copied here; device planes,
-  ///                          their writer finished, are read before this
-  ///                          returns, and each picture's ownership is
-  ///                          updated on success, as described above.
+  ///                          their writer finished or `YuvImage::ready`
+  ///                          set, are read before this returns, and each
+  ///                          picture's ownership is updated on success, as
+  ///                          described above.
   /// @param metrics  Optional: a `"luma"` row, the call on the host and the
   ///                 copies and kernels on the device. `nullptr` measures
   ///                 nothing.
