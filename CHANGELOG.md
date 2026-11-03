@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- CI: the DeckLink SDK 16.0's Linux headers move here from the core,
+  unmodified (`tools/ci/decklink-sdk-16.0`), with their SHA256 test
+  (`tools/ci/test_decklink_sdk.py`, which lint runs). The action
+  `.github/actions/decklink-sdk` checks them and exports `DeckLinkSDK_ROOT`;
+  the 24.04 leg takes them through it instead of a checkout of the core.
+  Nothing changes for a build: the core pin and the floors are as they were.
+- A consumer's CI that builds the DeckLink driver uses the action at its
+  sensor pin, in place of its checkout of the core's copy, at its next
+  re-pin onto a sensor that has it.
+
 ## [0.29.0] - 2026-11-02
 
 ### Added

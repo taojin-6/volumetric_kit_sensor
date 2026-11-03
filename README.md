@@ -325,8 +325,14 @@ the card clock, and the pairs' skew, right less left, with its drift.
 
 The driver's SDK-free parts (pairing, clock map, upload, skew numbers) are
 built and tested on every leg, and its SDK part on the 24.04 leg, against
-the SDK's headers the core keeps
-(`tools/ci/decklink-sdk-16.0`, at the core pin).
+the SDK's headers this repository keeps, as Blackmagic ships them
+(`tools/ci/decklink-sdk-16.0`). The action `.github/actions/decklink-sdk`
+checks them and exports `DeckLinkSDK_ROOT`; a consumer's CI that builds the
+driver uses it at its sensor pin:
+
+```yaml
+- uses: taojin-6/volumetric_kit_sensor/.github/actions/decklink-sdk@<sensor pin>
+```
 
 ## Video coders
 

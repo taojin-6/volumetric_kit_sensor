@@ -1,5 +1,8 @@
 # Formatting + hygiene hooks. Run once after cloning:
 #   pre-commit install
+# The DeckLink SDK's files, kept as shipped
+# (tools/ci/decklink-sdk-16.0/README.md).
+exclude: ^tools/ci/decklink-sdk-16\.0/include/
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

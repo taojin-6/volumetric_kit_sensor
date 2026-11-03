@@ -19,10 +19,9 @@ set(_vs_found "")
 set(_vs_count 0)
 foreach(_vs_file IN LISTS _vs_all)
   file(RELATIVE_PATH _vs_rel "${SOURCE_DIR}" "${_vs_file}")
-  # The fixtures are binary; the build trees a configure may leave, and the
-  # core's files CI checks out for the DeckLink SDK (_build.yml), are not the
+  # The fixtures are binary; the build trees a configure may leave are not the
   # package's.
-  if(_vs_rel MATCHES "^tests/data/|^build[^/]*/|^\\.git/|^_decklink_sdk/")
+  if(_vs_rel MATCHES "^tests/data/|^build[^/]*/|^\\.git/")
     continue()
   endif()
   math(EXPR _vs_count "${_vs_count} + 1")
