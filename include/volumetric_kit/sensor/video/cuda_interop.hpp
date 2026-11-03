@@ -11,7 +11,8 @@
 /// loaded at run time, so a program built with it starts where no NVIDIA
 /// driver is: there @ref cuda_ordinal_of and @ref CudaContext::open return
 /// `Status::Code::Unsupported`. @ref HevcDecoder (NVDEC) and
-/// @ref JpegDecoder (nvJPEG) hand their pictures over through these.
+/// @ref JpegDecoder (nvJPEG) hand their pictures over through these, and
+/// @ref HevcEncoder (NVENC) reads its targets through them.
 
 #include <cuda.h>
 
@@ -99,6 +100,12 @@ class VS_VIDEO_API CudaStream {
 /// reader's batch, which acquires as before, waits for that value on the
 /// device (`CommandBatch::submit_async`): how the decoders hand their
 /// pictures over (`YuvImage::ready`).
+///
+/// Vulkan writes, CUDA reads: the writing batch acquires the buffer from
+/// `VK_QUEUE_FAMILY_EXTERNAL` before its writes and releases it back after
+/// them (`CommandBatch::release` records after every command), and CUDA
+/// reads once that batch has completed, as the host sees by its fence or a
+/// timeline value it sets: how @ref HevcEncoder's NVENC reads a target.
 ///
 /// @code
 /// VKC_ASSIGN(core::ExportedBuffer exported,

@@ -68,12 +68,11 @@ class CameraStream {
  public:
   // Read the camera's identity and role, check its orientation, find the
   // modes, and read each camera's factory model at them. Does not start.
-  // Messages name `who` and the serial. `configure_logging` sets FFmpeg's log
-  // level at the first start.
+  // Messages name `who` and the serial.
   static core::Result<std::unique_ptr<CameraStream>> create(
       std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
       const OrbbecStreamOptions& streams, const camera::Mat4d& color_to_world,
-      bool configure_logging, const std::string& who);
+      const std::string& who);
 
   CameraStream(const CameraStream&) = delete;
   CameraStream& operator=(const CameraStream&) = delete;
@@ -175,7 +174,6 @@ class CameraStream {
   // camera's.
   std::shared_ptr<ob::StreamProfile> color_profile_;
   std::uint32_t fps_ = 0;
-  bool configure_ffmpeg_logging_ = true;  // cleared by the first start
   // The device the colour is decoded onto (streams.device), the allocator
   // its pictures are made through (streams.allocator), and the queue families
   // that read them (streams.color_queue_families).

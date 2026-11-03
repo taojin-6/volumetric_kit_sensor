@@ -44,8 +44,8 @@ on:
       ffmpeg:
         description: >-
           Install FFmpeg and build with VS_WITH_FFMPEG=ON, so this leg builds
-          the video decoders and runs their tests. Linux only, with cuda:
-          macOS builds them always, with no FFmpeg.
+          the video decoders and the HEVC encoder and runs their tests. Linux
+          only, with cuda: macOS builds them always, with no FFmpeg.
         required: false
         type: boolean
         default: false
@@ -53,8 +53,8 @@ on:
         description: >-
           Install the CUDA 13 toolkit's headers and nvcc from NVIDIA's
           repository and build with VS_WITH_CUDA=ON, so this leg hands NVDEC's
-          and nvJPEG's pictures out on the device and tests them. Needs
-          ffmpeg.
+          and nvJPEG's pictures out on the device, codes NVENC's targets from
+          it, and tests them. Needs ffmpeg.
         required: false
         type: boolean
         default: false
@@ -87,7 +87,7 @@ on:
       hevc_encoder:
         description: >-
           The hardware this leg promises the HEVC encoder codes on
-          (videotoolbox), passed to the tests as VS_TEST_HEVC_ENCODER; the
+          (videotoolbox, nvenc), passed to the tests as VS_TEST_HEVC_ENCODER; the
           encoder tests then fail, rather than skip, where no hardware path
           opens. Empty requires none.
         required: false
@@ -217,9 +217,9 @@ jobs:
           if [ "${{ inputs.realsense_sdk }}" = "true" ]; then
             pkgs="$pkgs gnupg"
           fi
-          # FFmpeg, found through pkg-config (cmake/vs_ffmpeg.cmake). NVDEC
-          # needs nothing more: the toolkit mounts libcuda and libnvcuvid, which
-          # FFmpeg loads at run time.
+          # FFmpeg, found through pkg-config (cmake/vs_ffmpeg.cmake). NVDEC and
+          # NVENC need nothing more: the toolkit mounts libcuda, libnvcuvid and
+          # libnvidia-encode, which FFmpeg loads at run time.
           if [ "${{ inputs.ffmpeg }}" = "true" ]; then
             pkgs="$pkgs pkg-config libavcodec-dev libavutil-dev"
           fi

@@ -20,6 +20,7 @@
 
 #include "cuda_driver.hpp"
 #include "cuda_timeline.hpp"
+#include "ffmpeg.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
@@ -53,6 +54,20 @@ struct CudaSession {
 
   std::unique_ptr<CudaContext> context;
   std::unique_ptr<CudaStream> stream;
+};
+
+// FFmpeg's CUDA device on the GPU of a Vulkan device, as NVDEC and NVENC both
+// open it: a CudaSession of its own, which FFmpeg's device context holds and
+// lets go with its last reference, so a codec context or frames context that
+// refers to it keeps the session alive.
+struct FfmpegCudaDevice {
+  // @p who names the coder and @p path its hardware ("NVDEC", "NVENC") in
+  // errors. Unsupported where CUDA does not reach @p device's GPU or FFmpeg's
+  // device does not open; OutOfMemory if FFmpeg cannot allocate.
+  static core::Result<FfmpegCudaDevice> open(const core::Device& device,
+                                             const char* who, const char* path);
+  BufferRef device;                   // AV_HWDEVICE_TYPE_CUDA, initialized
+  const CudaSession* cuda = nullptr;  // owned by device's context
 };
 
 // nvJPEG's: a ring of exported Vulkan buffers on one device, each mapped into

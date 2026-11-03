@@ -1,0 +1,110 @@
+#version 450
+
+// PatternReader's kernel (pattern_reader.cpp): one read of the index band
+// (testing/index_band.hpp), which the batch has copied into the reader's band
+// buffer, rows packed: a picture's luma band, 256 x 16 bytes, four a word, at
+// word 0; or depth's, 256 x 16 16-bit samples, two a word, at word
+// kDepthWord. The first sample of each word is in its low bits. An invocation
+// takes one square's central half, its middle 8 x 8: a picture's sum, or
+// depth's one value (0, never a square's, where its samples differ). The
+// first then decides the band, as testing/pattern_reader.hpp says, and writes
+// the index, or kNone, to result word `depth`.
+
+#extension GL_EXT_scalar_block_layout : require
+
+// The band's layout, testing/index_band.hpp's (pattern_reader.cpp asserts
+// it): squares of kSquare, 2 references and kBits bits.
+const uint kSquare = 16u;
+const uint kBits = 14u;
+const uint kSquares = 2u + kBits;
+const uint kWidth = kSquare * kSquares;  // 256
+const uint kDepthWord = kWidth * kSquare / 4u;
+const uint kNone = 0xFFFFFFFFu;
+
+layout(local_size_x = 16) in;  // one invocation a square: kSquares
+
+// PatternParams in pattern_reader.cpp.
+layout(push_constant, scalar) uniform Params {
+  uint depth;  // 0 reads the picture's band, 1 the depth's
+  uint near_mm;  // a set depth square's value (kPatternNearMm)
+  uint far_mm;   // a clear one's (kPatternFarMm)
+} pc;
+
+layout(set = 0, binding = 0, scalar) readonly buffer Band { uint band[]; };
+layout(set = 0, binding = 1, scalar) writeonly buffer Found { uint found[]; };
+
+shared uint value[kSquares];
+
+uint luma_at(uint x, uint y) {
+  uint i = y * kWidth + x;
+  return (band[i >> 2] >> ((i & 3u) * 8u)) & 0xFFu;
+}
+
+uint depth_at(uint x, uint y) {
+  uint i = y * kWidth + x;
+  return (band[kDepthWord + (i >> 1)] >> ((i & 1u) * 16u)) & 0xFFFFu;
+}
+
+void main() {
+  const uint lo = kSquare / 4u;
+  const uint hi = kSquare - kSquare / 4u;
+  uint s = gl_LocalInvocationID.x;
+  uint x0 = s * kSquare;
+  if (pc.depth == 0u) {
+    uint sum = 0u;
+    for (uint y = lo; y < hi; ++y) {
+      for (uint x = lo; x < hi; ++x) {
+        sum += luma_at(x0 + x, y);
+      }
+    }
+    value[s] = sum;
+  } else {
+    uint one = depth_at(x0 + lo, lo);
+    for (uint y = lo; y < hi; ++y) {
+      for (uint x = lo; x < hi; ++x) {
+        if (depth_at(x0 + x, y) != one) {
+          one = 0u;
+        }
+      }
+    }
+    value[s] = one;
+  }
+  barrier();
+  if (s != 0u) {
+    return;
+  }
+  uint index = 0u;
+  bool none = false;
+  if (pc.depth == 0u) {
+    // Sums of the 64 samples: the references at least 64 apart in mean, and
+    // each square at three quarters of their span or more (set), a quarter
+    // or less (clear).
+    int set = int(value[0]);
+    int clear = int(value[1]);
+    int span = set - clear;
+    if (span < 64 * 64) {
+      none = true;
+    }
+    for (uint b = 0u; b < kBits; ++b) {
+      int t = 4 * (int(value[2u + b]) - clear);
+      if (t >= 3 * span) {
+        index |= 1u << b;
+      } else if (t > span) {
+        none = true;
+      }
+    }
+  } else {
+    if (value[0] != pc.near_mm || value[1] != pc.far_mm) {
+      none = true;
+    }
+    for (uint b = 0u; b < kBits; ++b) {
+      uint v = value[2u + b];
+      if (v == pc.near_mm) {
+        index |= 1u << b;
+      } else if (v != pc.far_mm) {
+        none = true;
+      }
+    }
+  }
+  found[pc.depth] = none ? kNone : index;
+}

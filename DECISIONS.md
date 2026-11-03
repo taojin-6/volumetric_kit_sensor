@@ -467,7 +467,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   (`send_pixel_buffer`). The encoder rules C1-C13 are one function any
   runner calls (`sensor_video_testing`). *Amended 2026-11-02:* the
   device-written target (`target`, `send` with a timeline value) followed,
-  with C9 and C13b.
+  with C9 and C13b. *Amended 2026-11-03:* NVENC followed (the 2026-11-03
+  NVENC entry).
 - [**2026-11-02**](#2026-11-02--host-depth-may-carry-a-confidence-plane-which-frame-prep-gates-on-the-gpu-per-raw-sample-before-anything-else-reads-it-level-0-is-never-integrated-and-a-frame-without-a-plane-is-prepared-bit-for-bit-as-before-amends-the-2026-09-28-gpu-pre-processing-entry) —
   Host depth may carry a confidence plane (`RgbdFrame::depth_confidence`, a
   byte a sample in the sensor's levels) and a floor (`min_confidence`):
@@ -529,6 +530,14 @@ entries relevant to your task; later amendments supersede earlier rules.
   surfaces (a throwaway picture first), so a producer's targets wait for no
   batch; a surface new to the session waits on the host, unlocked. The test
   picture is written by a kernel (`testing::Nv12Writer`), not a copy.
+- [**2026-11-03**](#2026-11-03--the-test-patterns-index-is-read-on-the-gpu-by-patternreader-one-kernel-over-the-band-decides-it-4-bytes-a-read-come-back-and-a-pictures-squares-are-read-with-a-margin-so-a-blend-is-no-index-amends-the-2026-11-02-frame-contract-entry) —
+  The index a test picture or test depth carries is read on the GPU, where
+  it is, by `testing::PatternReader` (`sensor_prep`): the band copied or
+  uploaded into the reader's buffer, one kernel deciding it, 4 bytes a
+  read back. A picture's squares are read with a margin, so a blend of two
+  frames is no index; depth as `depth_index` reads it. One batch a read,
+  the picture's ready value among its waits.
+
 - [**2026-11-03**](#2026-11-03--arkit-is-an-irgbdsensor-here-arkitsensor-in-sensor_arkit-its-depth-copied-once-as-u16-millimetres-beside-its-confidence-levels-its-picture-imported-where-arkit-left-it-and-handed-back-by-pixel_buffer_of-one-world-for-the-sensor-and-a-test-pattern-on-the-same-driver-depthnoiseknown-takes-a-negative-linear-term-where-sigma-stays-above-0-amends-the-2026-08-02-sensor-tier-and-2026-10-30-depth-noise-entries) —
   ARKit is an `IRgbdSensor` in this package: `ArkitSensor`
   (`sensor_arkit`, every Apple build; the camera on iOS and iPadOS). One
@@ -546,6 +555,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   `InvalidArgument`, and its host wait for the oldest of three kept
   pictures asks the stream between slices, so a failed one returns its
   error, settled.
+
+- [**2026-11-03**](#2026-11-03--the-encoder-codes-on-nvenc-too-kinflight--1-exported-buffers-a-session-as-its-targets-which-nvenc-reads-through-cuda-with-no-copy-every-qp-set-from-the-options-and-strips-from-4096-rows-amends-the-2026-11-02-encoder-entries) —
+  The encoder codes on NVENC too, through FFmpeg's `hevc_nvenc`: targets
+  only, `kInFlight + 1` exported buffers a session, which NVENC reads through
+  CUDA with no copy, the free one handed out longest ago next; every QP set
+  from the options; 3 strips from 4096 rows, which an FFmpeg before 7.1
+  refuses. FFmpeg's log level is sensor's to set, once.
 
 ## Decision record
 
@@ -6257,7 +6273,8 @@ buffer of the session's size and range, its tags agreeing with the
 session's colour, coded as it is, with no Vulkan device. The device-written
 target (`target`, `send` with a timeline value) and NVENC follow in their
 own PRs; until NVENC, a Linux build's `create` refuses. *Amended
-2026-11-02:* the target landed (the 2026-11-02 target entry).
+2026-11-02:* the target landed (the 2026-11-02 target entry). *Amended
+2026-11-03:* NVENC landed (the 2026-11-03 NVENC entry).
 
 **Why a coding thread.** In this mode VideoToolbox codes inside
 `VTCompressionSessionEncodeFrame`: 5.6-5.9 ms at 1920x1440 and 15.2-15.4 ms
@@ -6636,7 +6653,8 @@ picture's index band, whose layout moves to the standard-library-only
 **Not here.** Reading the picture's index (`picture_index`) lands with its
 first caller, the stream checks: whether a check reads the band back to
 the host or a GPU kernel means it is the owner's open choice. Until then
-`sensor_testing_support`'s own square-mean reader stays.
+`sensor_testing_support`'s own square-mean reader stays. *Answered
+2026-11-03:* a GPU kernel, `PatternReader` (the pattern reader entry).
 
 **Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
 under the validation layer, `VS_TEST_HEVC_BACKEND=videotoolbox` and the
@@ -7010,6 +7028,70 @@ losing the session, and a failed second target giving up the first. The suite on
 the M5 Max (Release, validation, both promises) and the threaded tests
 under ThreadSanitizer; the iOS build check links an app's target calls.
 
+### 2026-11-03 — The test pattern's index is read on the GPU by `PatternReader`: one kernel over the band decides it, 4 bytes a read come back, and a picture's squares are read with a margin, so a blend is no index (amends the 2026-11-02 frame contract entry).
+
+**The rule.** `testing/pattern_reader.hpp`'s `PatternReader`, built in
+`sensor_prep`, is how a check tool or a test reads the index a frame's
+picture (`test_pattern`) and depth (`pattern_depth`) carry, wherever they
+are: NV12 plane images, planes or depth in a device buffer, planes or
+depth on the host. The band, 256 x 16 samples, goes into the reader's own
+device buffer, copied on the device or its host rows uploaded, and one
+kernel decides it; only its result word, the index or none, is read back.
+- **A picture:** each square's central-half mean. The references must be
+  at least 64 apart, square 0 the brighter; a square three quarters of the
+  way from square 1's mean to square 0's or more is set, a quarter or less
+  clear, and between them none. A clean or lightly coded picture names
+  what `pattern_index` names; a blend of two frames is none.
+- **Depth:** `depth_index`'s rule, every sample of a square's central half
+  one value, the references 1000 and 2000.
+- **One batch a read**, one submit and its wait, with the picture's ready
+  value among the waits; the inputs' ownership is published after it, as
+  `PictureReadback` publishes it. `read(frame)` reads the picture and the
+  depth in the one batch.
+
+**Why.** The owner's choice, 2026-11-03: check tools read the index with
+a small GPU kernel over the band, 64 bytes back, rather than read the
+whole picture back (2.8 MB a 1920x1440 frame). The kernel applies the
+rule, so less comes back than that: 4 bytes a read.
+- **Not recorded into a caller's batch.** Such a read cannot know when the
+  caller's batch resolves, so it would need a ring of bands, result words
+  and sets (as `Nv12Writer` keeps a ring of sets, for the encoder's
+  batches), could not publish the picture's ownership after success, and
+  every caller would gather the ready values, add the readback and decode
+  the words itself. A check waits a frame, which a check tool can afford.
+- **Host inputs through the same kernel,** so the rule has no host twin
+  and the tests hold the one kernel to `depth_index` for host and device
+  depth alike. `pattern_index`, the host reader with no margin, stays for
+  the decoder and encoder tests, which read their pictures back anyway.
+- **The margin** turns a blend into none, where the midpoint alone names a
+  wrong frame (frames 5 and 10 averaged read as frame 0).
+- **Built in `sensor_prep`,** whose plane checks it shares, as
+  `SliceReader` is built in `sensor_video_syntax`; no new target. Not in
+  `sensor_video_testing` beside `Nv12Writer`: that builds only where the
+  decoders do, and the reader needs none.
+
+**Not here.** YUYV and V210 pictures, which the pattern never is, are
+refused.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer, `VS_TEST_HEVC_BACKEND=videotoolbox`: the whole
+suite passes, 56 tests (55 before). `sensor_pattern_reader`: 286 picture
+reads across the span and past it (a stride of 331, the ends, 16384 and
+70000) as NV12 images padded and not, NV12, I420 and luma alone in a buffer
+and on the host, full and limited range, at 256 x 16, 300 x 21 and
+1920 x 1440, each equal to `pattern_index`; 228 depth reads at 256 x 192
+and 300 x 20, on the host and in a buffer at an even lead, each equal to
+`depth_index`; a frame's two indices apart and alike, and one buffer
+holding both taken over once; none under 256 x 16, for a blend, at each
+side of both margins and of the 64 floor, for a grey picture, torn depth
+and swapped references; the index through +-40 noise and a 4 x 4 blur; a
+read that waits for a ready value the host sets 50 ms later; ownership
+from outside Vulkan published; every refusal, the inputs as they were.
+`sensor_video_hevc`: the 12 VideoToolbox-coded pictures read their own
+index on the GPU on VideoToolbox. Planted bugs, each failing its test: the
+margin dropped for the midpoint (the blend), the ready wait dropped (the
+ready case), and depth read from one sample of each square (torn depth).
+
 ### 2026-11-03 — ARKit is an `IRgbdSensor` here, `ArkitSensor` in `sensor_arkit`: its depth copied once as u16 millimetres beside its confidence levels, its picture imported where ARKit left it and handed back by `pixel_buffer_of`, one world for the sensor, and a test pattern on the same driver; `DepthNoise::known()` takes a negative linear term where sigma stays above 0 (amends the 2026-08-02 sensor-tier and 2026-10-30 depth-noise entries).
 
 **The rule.** `ArkitSensor` (`arkit/arkit_sensor.hpp`, target
@@ -7230,3 +7312,70 @@ error, and of `receive`'s refusal; the wait not sliced. The suite on that
 RTX 4090, on the lab RTX 5090 (FFmpeg 8, the validation layer, the handover
 and decoder tests also under synchronization validation) and on the M5 Max
 (VideoToolbox, unchanged; validation).
+
+### 2026-11-03 — The encoder codes on NVENC too: `kInFlight + 1` exported buffers a session as its targets, which NVENC reads through CUDA with no copy, every QP set from the options, and strips from 4096 rows (amends the 2026-11-02 encoder entries).
+
+**The rule.** A Linux build with `VS_WITH_FFMPEG` and `VS_WITH_CUDA` codes
+on NVENC through FFmpeg's `hevc_nvenc` (`nvenc_session.cpp`), behind the
+same API, rules and coding thread as VideoToolbox.
+- **Targets only.** `create` needs `Options::device` and
+  `Options::allocator` (`InvalidArgument` without), a device that exports
+  memory, on a GPU CUDA reaches (`Unsupported` otherwise).
+- **Targets are `kInFlight + 1` exported buffers**, made at `create`, each
+  mapped into CUDA once; FFmpeg registers each with NVENC once, by pointer,
+  and NVENC reads it with no copy. NV12 rows: the luma's from 0, the chroma's
+  after them, at a stride of the width rounded up to the GPU's texture
+  alignment, as FFmpeg pads its own CUDA frames. `target` records into the
+  batch the buffer's crossing from outside Vulkan before its commands and
+  back after them. The free buffer handed out longest ago goes next. A lost
+  session's buffers pass to the session that opens again.
+- **One configuration**: preset `p<effort>`, `tune ll`, `rc constqp` with
+  `init_qpP`, `init_qpB` and `init_qpI` all set from the options, forced
+  IDRs, no scene cut, no look-ahead, `delay` 0, zero latency, no multipass,
+  no B-frames, an endless GOP. From 4096 rows, `split_encode_mode` 3; below,
+  the driver's choice. An FFmpeg without that option refuses a picture of
+  4096 rows or more in `create`, naming FFmpeg 7.1 and nv-codec-headers 12.1.
+- **Colour and QP.** The VUI's codes go in as FFmpeg numbers them, H.273's;
+  FFmpeg writes no siting, so sitings 1 to 5 are refused. QP 0 to 51.
+- **FFmpeg's CUDA device** is opened by one helper (`FfmpegCudaDevice`) for
+  NVDEC and NVENC alike. `HevcDecoder::Options::configure_ffmpeg_logging` is
+  removed: the first coder that opens on NVIDIA sets FFmpeg's log level to
+  ERROR, once a process.
+- **The rules run on NVENC.** `hevc_encoder_breach` is every backend's; its
+  pixel-buffer parts (C11) stay Apple's. C9 checks NVENC's buffer target and
+  that a target given up comes back two targets later at the soonest; C10
+  pins NVENC's settings line. `Rules::Sequence` runs what the sequence says
+  on one key (C3-C5, C10), for the colour and effort sweeps. `Nv12Writer`
+  writes a buffer's rows.
+
+**Why.**
+- **3 buffers, not the 2 planned.** `target` keeps the target taken before
+  until the new one is handed out, so a target taken while one picture
+  codes and one target is held needs a third. Handing out the oldest free
+  one makes a target given up the last to come back.
+- **Every QP set.** A QP left unset is FFmpeg's to choose, and the
+  session's QPs are the caller's.
+- **Strips by rows, not by GPU.** FFmpeg reports no engine count, and 3
+  strips equal `auto` on a GPU of 2 engines, so the rule needs no GPU name.
+- **No version floor below 4096 rows.** FFmpeg 6.1 (24.04's) keeps every
+  rule there, so `create` checks only the option the strips need.
+- **No GPU-side wait for NVENC's input.** NVENC holds the coding thread
+  through the encode anyway; a device-side wait would save the thread's wake
+  only.
+- **The test's PSNR floor is 40 dB on NVENC.** NVENC codes the pattern's
+  sharp chroma edges at 43-47 dB at QP 22 (RTX 4090 and 5090); a picture read
+  at the wrong stride fails the pattern's exact squares first.
+
+**Validation.** `sensor_video_hevc_encoder` on NVENC: every rule through
+targets, the stream's at both QP ends (0 and 51) and a 4n+2 width, the
+sequence's on every code of the set and at efforts 1 and 7, the quality and
+writer cases, devices refused, strips at 4094 and 4096 rows. A shared RTX
+4090 (FFmpeg 6.1, CUDA 13.4): the full suite, 56 tests, 3.0 s for the
+encoder test on a quiet GPU, the 4096-row picture refused as the option is
+missing. The lab RTX 5090 (FFmpeg 8): the full suite under the validation
+layer, the encoder test under synchronization validation too, the 4096-row
+picture coded in strips. The M5 Max (VideoToolbox): the full suite, 55
+tests. Planted bugs, each failing its test: an unset `init_qpI` and an
+unset `init_qpB` (C5), `forced-idr` not set (C2), strips
+from 4094 rows (the strips case), the oldest-free hand-out dropped (C9), and
+a target described at another stride than NVENC reads (the quality case).

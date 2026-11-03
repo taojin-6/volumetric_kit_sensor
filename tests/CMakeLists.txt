@@ -264,6 +264,18 @@ target_link_libraries(
 vs_target_warnings(sensor_picture_readback_test)
 add_test(NAME sensor_picture_readback COMMAND sensor_picture_readback_test)
 
+# The test pattern's index read on the GPU (testing/pattern_reader.hpp, in
+# sensor_prep): pictures in images, buffers and on the host and depth on the
+# host and the device, across the span, held to pattern_index and depth_index;
+# what reads as none, the ready wait, ownership and the refusals. Skips with no
+# device.
+add_executable(sensor_pattern_reader_test sensor_pattern_reader_test.cpp)
+target_link_libraries(
+  sensor_pattern_reader_test PRIVATE volumetric_kit::sensor_prep
+                                     volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_pattern_reader_test)
+add_test(NAME sensor_pattern_reader COMMAND sensor_pattern_reader_test)
+
 # Allocation failure during creation (including the timer) or a read is an
 # OutOfMemory result, and retry succeeds. Separate allocation overrides.
 add_executable(sensor_picture_readback_oom_test
@@ -610,9 +622,9 @@ if(APPLE OR VS_WITH_FFMPEG)
 
   # The HEVC encoder: the rules (sensor_video_testing's hevc_encoder_breach) on
   # the public cases and every colour code, decoded back and read on the host,
-  # and color_codes_of; where no hardware path opens it skips, unless
-  # VS_TEST_HEVC_ENCODER promises one. A build with no encoder checks the
-  # refusal only.
+  # and color_codes_of on Apple; where no hardware path opens it skips, unless
+  # VS_TEST_HEVC_ENCODER promises one. Off Apple it reads FFmpeg's hevc_nvenc
+  # for whether this FFmpeg can ask NVENC for strips.
   add_executable(sensor_video_hevc_encoder_test
                  sensor_video_hevc_encoder_test.cpp)
   target_link_libraries(
@@ -622,6 +634,9 @@ if(APPLE OR VS_WITH_FFMPEG)
   if(APPLE)
     target_link_libraries(sensor_video_hevc_encoder_test
                           PRIVATE volumetric_kit::sensor_apple)
+  else()
+    target_link_libraries(sensor_video_hevc_encoder_test
+                          PRIVATE PkgConfig::VS_FFMPEG)
   endif()
   vs_target_warnings(sensor_video_hevc_encoder_test)
   add_test(NAME sensor_video_hevc_encoder

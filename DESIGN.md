@@ -561,8 +561,8 @@ opens one hardware session in one configuration (low latency, P-pictures
 only, no reordering, every NAL unit in temporal layer 0, a slice QP for
 P-pictures and one for IDRs fixed for the session, keys only when asked,
 the VUI from `Options::color` normalized and checked against one code set),
-or says what is missing (`Unsupported`); a build with no encoder (Linux,
-until NVENC) refuses there. There are two ways in. With `Options::device`
+or says what is missing (`Unsupported`): VideoToolbox on Apple, NVENC
+elsewhere. There are two ways in. With `Options::device`
 (a device with `hevc_encoder_device_requirements()`, `device_requirements()`
 plus `shaderStorageImageExtendedFormats`, which `create` checks),
 `target(batch)` hands out the next picture on the device: on VideoToolbox a
@@ -605,15 +605,38 @@ picture fails those already sent behind it, and the next send opens a lost
 session again. `inject` drives a drop or a loss through the backend's own
 path, for tests. The rules and the thread are every backend's
 (`hevc_encoder.cpp`); the session is the backend's, one definition a build
-(`hevc_encode_session.hpp`; VideoToolbox's `vt_hevc_encode.cpp`). Its
+(`hevc_encode_session.hpp`; VideoToolbox's `vt_hevc_encode.cpp`, NVENC's
+`nvenc_session.cpp`). Its
 colour goes to VideoToolbox as Core Video names each code; VideoToolbox
 codes QP 1 to 51 (0 as 1, so 0 is refused there) and writes the stream's
 chroma siting from the buffer's tag, which `send_pixel_buffer` adds to a
 buffer that lacks it. The session is torn down before what its callback
 uses, since VideoToolbox hands a pending output to the callback inside the
-teardown. `facts().settings` is the configuration as the session
-reports it, one line, which the rules pin. `video_backend()`
-(`backend.hpp`) names the build's backend.
+teardown. NVENC (FFmpeg's `hevc_nvenc` on FFmpeg's CUDA device, the
+Vulkan device's GPU's primary context, which NVDEC opens alike) codes
+targets alone, so it needs `Options::device` and `Options::allocator`, a
+device that exports memory, and its GPU reached by CUDA. Its targets are
+`kInFlight + 1` exported buffers made at `create`, each mapped into CUDA
+once, which FFmpeg registers with NVENC once, by pointer, and NVENC reads
+with no copy: one coding, one the device writes, and one for a target taken
+while the one before it is held. The free one handed out longest ago goes
+next, so a target given up comes back two targets later at the soonest. A
+target is NV12 rows, the luma's from 0 and the chroma's after them, at a
+stride of the width rounded up to the GPU's texture alignment, as FFmpeg
+pads its own CUDA frames; `target` records the buffer's crossing from
+outside Vulkan before the batch's commands and back after them
+(`video/cuda_interop.hpp`). The coding thread codes with `delay` 0, so
+FFmpeg's send waits for the whole picture: NVENC on Linux is synchronous.
+The session sets every QP from the options (P, B and the IDR's), so FFmpeg
+chooses none, forces IDRs, and asks for 3 strips from 4096 rows (the
+driver's choice below); an FFmpeg that cannot ask for them (before 7.1, or
+built without nv-codec-headers 12.1) refuses such a picture in `create`.
+It writes the VUI's codes as FFmpeg numbers them, H.273's, and no siting, so
+sitings 1 to 5 are refused; it codes QP 0 to 51. A lost session is closed,
+and its buffers pass to the session that opens again. `facts().settings` is
+the configuration as the session reports it, one line, which the rules pin.
+The first coder that opens on NVIDIA sets FFmpeg's log level to ERROR, once
+a process. `video_backend()` (`backend.hpp`) names the build's backend.
 **`apple/`'s `PixelBufferImporter`** (`sensor_apple`, on every
 Apple build, iOS included, with no FFmpeg) hands an 8-bit NV12
 `CVPixelBuffer` on an IOSurface to Vulkan in place: each plane becomes a
@@ -1350,6 +1373,20 @@ eighth, beside a confidence plane of ARKit's levels, 2 on every square and
 sample of each square's central half holds the square's one value and the
 references are 1000 and 2000, so torn depth is no index rather than a wrong
 one.
+
+`pattern_reader.hpp`'s `PatternReader` (built in `sensor_prep`, whose plane
+checks it shares) reads the band of a picture or a frame on the GPU, for
+the check tools (the 2026-11-03 pattern reader entry). The band, 256 x 16
+samples, goes into the reader's own 12 KiB device buffer first: the luma
+image's corner copied, a device buffer's 16 rows copied, or host rows
+uploaded inline. One kernel (`pattern_index.comp`, an invocation a square)
+then takes each square's central half, a picture's sum or depth's one
+value, and decides: a picture's references at least 64 apart in mean, a
+square at three quarters of their span or more set, a quarter or less
+clear, between them none; depth as `depth_index`. Its result word, the
+index or none, is the only read back. A read is one batch, one submit and
+its wait, the picture's ready value among the waits, and publishes the
+inputs' ownership after it as `PictureReadback` does.
 
 `rgbd_contract.hpp` checks the frame contract on what an `IRgbdSensor`
 handed out. `RgbdContract` takes each frame as it is handed out and keeps
