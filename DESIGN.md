@@ -1394,6 +1394,20 @@ sample of each square's central half holds the square's one value and the
 references are 1000 and 2000, so torn depth is no index rather than a wrong
 one.
 
+`pattern_reader.hpp`'s `PatternReader` (built in `sensor_prep`, whose plane
+checks it shares) reads the band of a picture or a frame on the GPU, for
+the check tools (the 2026-11-03 pattern reader entry). The band, 256 x 16
+samples, goes into the reader's own 12 KiB device buffer first: the luma
+image's corner copied, a device buffer's 16 rows copied, or host rows
+uploaded inline. One kernel (`pattern_index.comp`, an invocation a square)
+then takes each square's central half, a picture's sum or depth's one
+value, and decides: a picture's references at least 64 apart in mean, a
+square at three quarters of their span or more set, a quarter or less
+clear, between them none; depth as `depth_index`. Its result word, the
+index or none, is the only read back. A read is one batch, one submit and
+its wait, the picture's ready value among the waits, and publishes the
+inputs' ownership after it as `PictureReadback` does.
+
 `rgbd_contract.hpp` checks the frame contract on what an `IRgbdSensor`
 handed out. `RgbdContract` takes each frame as it is handed out and keeps
 none, for a run of any length, one checker a start, and its
