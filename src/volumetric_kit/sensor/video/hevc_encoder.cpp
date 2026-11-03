@@ -189,7 +189,7 @@ core::Result<bool> HevcEncodeSession::encode(
 
 core::Status HevcEncodeSession::target(core::CommandBatch& /*batch*/,
                                        EncodePicture& /*picture*/,
-                                       YuvImage& /*out*/) {
+                                       YuvImage& /*out*/, bool& /*gone*/) {
   return core::Status::unsupported(std::string(kWho) + ": no session");
 }
 
@@ -218,7 +218,8 @@ struct HevcEncoder::Impl {
   Options options;  // as create was given them, colour normalized
   Facts facts;
   // The coding thread codes on it; the sender replaces it, and inject loses
-  // it, only while the thread is not coding (coding false, under mutex).
+  // it, only while the thread is not coding (coding false, under mutex). The
+  // sender's target reaches it unlocked.
   std::unique_ptr<video::HevcEncodeSession> session;
 
   std::mutex mutex;
@@ -448,11 +449,27 @@ core::Result<YuvImage> HevcEncoder::target(core::CommandBatch& batch) try {
     return invalid("target: " + std::to_string(kInFlight) +
                    " pictures are in flight already: receive first");
   }
-  m.taken.reset();  // a second call gives up the first
   if (m.lost) VKC_TRY(m.reopen(lock));
+  // Unlocked: a picture new to the session waits on the host for the
+  // device's earlier work, which must hold up neither receive nor the coding
+  // thread. Only this thread replaces the session or loses it here: a loss
+  // still pending for the coding thread (lose_pending) came with lost, and
+  // the reopen above ended it.
+  video::HevcEncodeSession& session = *m.session;
+  lock.unlock();
   video::EncodePicture picture;
   YuvImage out;
-  VKC_TRY(m.session->target(batch, picture, out));
+  bool gone = false;
+  if (core::Status made = session.target(batch, picture, out, gone);
+      !made.ok()) {
+    if (gone) {
+      // As when a picture's coding finds it lost: the next target reopens.
+      lock.lock();
+      m.lost = true;
+      m.key_owed = true;
+    }
+    return made;  // a target taken before is kept
+  }
   // Coded by the session's colour, which the VUI states.
   const ColorCodes& color = m.facts.color;
   const YcbcrWeights weights =
@@ -462,7 +479,7 @@ core::Result<YuvImage> HevcEncoder::target(core::CommandBatch& batch) try {
   out.full_range = color.full_range;
   out.chroma_location = resolve_chroma_location(color.chroma_location);
   out.queue_family = kQueueFamilyIgnored;
-  m.taken = std::move(picture);
+  m.taken = std::move(picture);  // a second call gives up the first
   return out;
 } catch (...) {
   return core::exception_status("HevcEncoder::target",

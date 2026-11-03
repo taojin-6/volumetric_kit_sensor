@@ -8,7 +8,10 @@
 // through targets a kernel writes on the device; the pictures it codes
 // decoded back and read on the host, PSNR at QP 22 and the pattern's 0 and
 // 255 and index, one target written only after a helper thread lets its
-// batch run; a device without hevc_encoder_device_requirements() refused;
+// batch run; a target described by each matrix, range and siting; the images
+// a batch still writes kept through the teardown and a reopen, and create's
+// first targets waiting for no batch; a device without
+// hevc_encoder_device_requirements() refused;
 // video_backend(); and on Apple color_codes_of on every string Core Video
 // names. A build with no encoder refuses in create. On every device: the
 // test writer (testing/nv12_writer.hpp) stores a picture into plane images
@@ -388,6 +391,45 @@ int test_code_set(Gpu& gpu) {
   return 0;
 }
 
+// A target's description on each matrix of the set, at either range, and on
+// each siting: the weights H.273 gives the matrix (5 as 6), written here
+// apart from the encoder's table.
+int test_target_described(Gpu& gpu) {
+  const struct {
+    int matrix;
+    float kr, kb;
+  } weights[] = {{1, 0.2126F, 0.0722F},
+                 {5, 0.299F, 0.114F},
+                 {6, 0.299F, 0.114F},
+                 {7, 0.212F, 0.087F},
+                 {9, 0.2627F, 0.0593F}};
+  const sensor::ChromaLocation sited[] = {
+      sensor::ChromaLocation::Left,       sensor::ChromaLocation::Center,
+      sensor::ChromaLocation::TopLeft,    sensor::ChromaLocation::Top,
+      sensor::ChromaLocation::BottomLeft, sensor::ChromaLocation::Bottom};
+  int siting = 0;
+  for (const auto& w : weights) {
+    for (const bool full : {true, false}) {
+      HevcEncoder::Options o;
+      o.width = 512;
+      o.height = 512;
+      o.color = {w.matrix, 1, 1, full, siting};
+      o.device = &gpu.device;
+      o.allocator = &gpu.allocator;
+      auto e = HevcEncoder::create(o);
+      CHECK(e.ok());
+      vkc::CommandBatch batch(gpu.device, gpu.allocator);
+      const auto t = e->target(batch);
+      CHECK(t.ok());
+      CHECK(std::fabs(t->kr - w.kr) < 1e-6F && std::fabs(t->kb - w.kb) < 1e-6F);
+      CHECK(t->full_range == full && t->chroma_location == sited[siting]);
+      siting = (siting + 1) % 6;
+    }
+  }
+  std::puts("targets described by each matrix, range and siting");
+  return 0;
+}
+
 #if defined(__APPLE__)
 // A thread joined as it goes, so a failed check never leaves one running.
 struct Helper {
@@ -525,6 +567,101 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
   CHECK(worst[0] >= 45 && worst[1] >= 45 && worst[2] >= 45);
   return 0;
 }
+
+// A producer's targets wait for no batch, and the images a batch still
+// writes outlive the encoder's teardown and a reopen. Four pictures, two in
+// flight, each batch waiting for a host value a helper thread sets 300 ms
+// after the one before: each target, on a picture create readied, returns
+// before the batch of the picture before it may run; destroyed with the last
+// two sent, the encoder returns only once the last value is set. Lost while
+// a sent target's batch waits, the target after the loss opens the session
+// again, that picture fails uncoded, and the next codes as the key. The
+// validation layer names an image destroyed while a batch still uses it.
+int test_writers_outlive(Gpu& gpu) {
+  constexpr std::uint32_t kSide = 512;
+  constexpr auto kStep = std::chrono::milliseconds(300);
+  auto writer = testing::Nv12Writer::create(gpu.device);
+  CHECK(writer.ok());
+  auto written = vkc::TimelineSemaphore::create(gpu.device);
+  auto gate = vkc::TimelineSemaphore::create(gpu.device);
+  CHECK(written.ok() && gate.ok());
+  std::vector<testing::HostNv12> pictures;
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    pictures.push_back(testing::test_pattern(kSide, kSide, 60 + i));
+  }
+  std::vector<vkc::PendingBatch> pending;  // outlive the encoders
+  std::uint64_t value = 0;                 // written's last
+  // Picture @p i written into a target taken now, by a batch that waits for
+  // gate value @p after (none for 0) and sets written's next.
+  const auto write = [&](HevcEncoder& e, std::uint32_t i,
+                         std::uint64_t after) -> vkc::Status {
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    VKC_ASSIGN(const sensor::YuvImage t, e.target(batch));
+    VKC_TRY(writer->record_upload(batch, gpu.allocator, pictures[i], t));
+    std::vector<vkc::TimelinePoint> waits;
+    if (after != 0) waits.push_back({&*gate, after});
+    VKC_ASSIGN(vkc::PendingBatch p,
+               batch.submit_async(waits, {{&*written, value + 1}}));
+    pending.push_back(std::move(p));
+    ++value;
+    return {};
+  };
+  HevcEncoder::Options o;
+  o.width = kSide;
+  o.height = kSide;
+  o.color = kBt709Full;
+  o.device = &gpu.device;
+  o.allocator = &gpu.allocator;
+  std::atomic<std::uint64_t> opened{0};  // gate's value, once set
+  const auto open_gate = [&](std::uint64_t from, std::uint64_t to) {
+    for (std::uint64_t v = from; v <= to; ++v) {
+      std::this_thread::sleep_for(kStep);
+      opened = v;
+      static_cast<void>(gate->signal(v));
+    }
+  };
+  {
+    auto e = HevcEncoder::create(o);
+    CHECK(e.ok());
+    Helper helper;
+    helper.thread = std::thread(open_gate, 1, 4);
+    HevcEncoder::CodedPicture coded;
+    for (std::uint32_t i = 0; i < 4; ++i) {
+      if (e->in_flight() == HevcEncoder::kInFlight) {
+        const auto got = e->receive(coded);
+        CHECK(got.ok() && *got);
+      }
+      CHECK(write(*e, i, i + 1).ok());
+      // Taken while picture i - 1's batch waits for value i: it did not
+      // wait for that batch.
+      CHECK(opened < i || i == 0);
+      CHECK(e->send(i == 0, i, {&*written, value}).ok());
+    }
+    {
+      const HevcEncoder gone(std::move(*e));
+    }
+    CHECK(opened == 4);  // the last writer's value, waited for
+  }
+  {
+    auto e = HevcEncoder::create(o);
+    CHECK(e.ok());
+    Helper helper;
+    helper.thread = std::thread(open_gate, 5, 5);
+    CHECK(write(*e, 2, 5).ok());
+    CHECK(e->send(true, 2, {&*written, value}).ok());
+    e->inject(HevcEncoder::Fault::Lose);
+    CHECK(write(*e, 3, 0).ok());  // reopens while picture 2 is written
+    CHECK(!e->lost());
+    CHECK(e->send(true, 3, {&*written, value}).ok());
+    HevcEncoder::CodedPicture coded;
+    const auto lost = e->receive(coded);
+    CHECK(!lost.ok() && lost.status().domain() == vkc::Status::Code::IoError);
+    const auto key = e->receive(coded);
+    CHECK(key.ok() && *key && coded.key && coded.pts == 3);
+  }
+  std::puts("a target's images outlive the teardown and a reopen");
+  return 0;
+}
 #endif
 
 // A plane image the writer stores into, or not, as @p usage says: 0xEE
@@ -648,8 +785,10 @@ int gpu_main(Gpu& gpu) {
   if (test_cases(gpu) != 0) return 1;
   if (test_target_cases(gpu) != 0) return 1;
   if (test_code_set(gpu) != 0) return 1;
+  if (test_target_described(gpu) != 0) return 1;
 #if defined(__APPLE__)
   if (test_device_refused(gpu) != 0) return 1;
+  if (test_writers_outlive(gpu) != 0) return 1;
   for (const In in : {In::PixelBuffers, In::Targets}) {
     if (test_quality(gpu, kBt601Full, in) != 0) return 1;
     if (test_quality(gpu, kBt601Video, in) != 0) return 1;

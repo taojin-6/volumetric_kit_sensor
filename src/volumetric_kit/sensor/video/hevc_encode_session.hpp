@@ -39,8 +39,9 @@ struct EncodePicture {
 
 // Not thread-safe: HevcEncoder's coding thread codes on it, and its sender
 // opens, loses and closes it only while the thread is not coding. target()
-// is the one call the sender makes while the thread codes: it reaches only
-// the session's pool and its own state, which encode does not touch.
+// is the one call the sender makes while the thread codes, and without
+// HevcEncoder's lock: it reaches only the session's pool and its own state,
+// which encode does not touch.
 class HevcEncodeSession {
  public:
   // Whether this backend writes a chroma siting other than 0 into the VUI.
@@ -48,12 +49,16 @@ class HevcEncodeSession {
 
   // A session for @p options, checked and with its colour normalized by
   // HevcEncoder::create, and what it says of itself into @p facts; with
-  // Options::device, ready to hand out targets on it. With @p previous, the
-  // lost session it replaces: its hardware session is closed before this
-  // one opens, and the images of the targets it handed out, which a batch
-  // may still be writing, pass to this one once it has opened; if it does
-  // not, @p previous keeps them. Unsupported naming what is missing, or the
-  // backend's failure.
+  // Options::device, ready to hand out targets on it. With no @p previous
+  // (create), the pictures a producer's targets cycle through are readied
+  // here, before any batch of the caller's writes one, so targets on them
+  // wait for nothing (VideoToolbox: a throwaway picture coded first, as the
+  // session replaces its pool at its first). With @p previous, the lost
+  // session it replaces:
+  // its hardware session is closed before this one opens, and the images of
+  // the targets it handed out, which a batch may still be writing, pass to
+  // this one once it has opened; if it does not, @p previous keeps them.
+  // Unsupported naming what is missing, or the backend's failure.
   static core::Result<std::unique_ptr<HevcEncodeSession>> open(
       const HevcEncoder::Options& options, HevcEncoder::Facts& facts,
       HevcEncodeSession* previous = nullptr);
@@ -79,10 +84,13 @@ class HevcEncodeSession {
   // part until it is sent or given up, its planes into @p out (layout,
   // planes and size; HevcEncoder sets the colour description), and what the
   // planes need recorded into @p batch. Only on a session opened with a
-  // device. Its failure, or @p batch's, changes nothing; @p out is then as
-  // it was.
+  // device. A picture whose planes are new to the session (none of those
+  // open readied) waits on the host for the device's earlier work. Its
+  // failure, or @p batch's, changes nothing; @p out is then as it was; and
+  // @p gone is set when the session itself is gone, as after the system
+  // reclaims it (VideoToolbox: no pool).
   core::Status target(core::CommandBatch& batch, EncodePicture& picture,
-                      YuvImage& out);
+                      YuvImage& out, bool& gone);
 
   // The session lost, as when the system reclaims it: every later encode
   // fails through the backend's own path.

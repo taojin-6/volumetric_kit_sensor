@@ -558,11 +558,19 @@ submits it, and `send(key, pts, written)` hands over the value it sets: the
 coding thread waits for it on the host (`vkWaitSemaphores`, which allocates
 nothing), then codes the picture, so neither host waits for the device and
 the picture never crosses to the host. A second `target` gives up the
-first; a refused send keeps it. The targets' images stay with the encoder,
-a lost session's passing to the next, since a batch may still be writing
-one; the coding thread waits for each sent target's writer whatever comes
-of the picture, and so does the destructor, with no limit, as a pending
-batch does. On Apple the other way in is
+first once it succeeds; a refused send keeps it. The targets' images stay
+with the encoder, a lost session's passing to the next, since a batch may
+still be writing one; the coding thread waits for each sent target's writer
+whatever comes of the picture, and so does the destructor, with no limit,
+as a pending batch does. The importer readies a surface new to it with a
+host-waited submit, behind the device's earlier work, so `create` readies
+the targets' surfaces first: it codes one throwaway picture, as the session
+replaces its pool at its first (it picks the level then), and imports
+`kInFlight + 2` pictures of the pool it keeps, which a producer with two in
+flight, or one target given up, cycles through. A target on a surface new
+to the session (after a reopen, or one more the pool makes) waits so,
+without the encoder's lock; a session whose pool is gone, as after the
+system reclaims it, fails the target and is lost. On Apple the other way in is
 `send_pixel_buffer(encoder, pixels, key, pts)` (`hevc_encoder_apple.hpp`):
 an NV12 IOSurface buffer of the session's size and range, its tags agreeing
 with the session's colour, coded as it is, refused while a target is taken.

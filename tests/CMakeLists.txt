@@ -736,7 +736,8 @@ if(APPLE OR VS_WITH_FFMPEG)
              COMMAND sensor_video_vt_jpeg_error_test)
 
     # The encoder's open and output failures, through its public calls, its
-    # VideoToolbox session's calls replaced here as for the JPEG decoder.
+    # VideoToolbox session's calls replaced here as for the JPEG decoder; and on
+    # the device, targets on a session the system reclaims.
     add_executable(
       sensor_video_vt_encode_error_test
       sensor_video_vt_encode_error_test.cpp ${_vs_video_src}/hevc_encoder.cpp

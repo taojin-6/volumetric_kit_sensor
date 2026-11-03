@@ -14,10 +14,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pool, described by the session's colour, for the caller's kernel to write
   in its own batch; `send` hands over the timeline value that batch sets,
   returns at once, and the coding thread waits for that value on the host
-  before it codes. A second `target` before `send` gives up the first; a
-  refused `send` keeps the target. The images are kept for the batch that
-  writes them across a lost session too. DECISIONS.md, the 2026-11-02
-  target entry.
+  before it codes. A second `target` before `send` gives up the first once
+  it succeeds; a refused `send` keeps the target. The images are kept for
+  the batch that writes them across a lost session too. `create` readies
+  the targets' pictures (one throwaway picture coded first, as VideoToolbox
+  replaces its pool at its first), so a producer's targets wait for no
+  batch; one on a picture new to the session, as after a reopen, waits on
+  the host for the device's earlier work, without the encoder's lock. A
+  session whose pool is gone, as after the system reclaims it, fails the
+  target (`IoError`) and is lost. DECISIONS.md, the 2026-11-02 target
+  entry.
 - `HevcEncoder::Options::device` and `Options::allocator`, and
   **`hevc_encoder_device_requirements()`**: `device_requirements()` plus
   `shaderStorageImageExtendedFormats`, which `create` checks of a device it

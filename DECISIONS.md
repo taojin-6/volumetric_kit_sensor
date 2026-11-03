@@ -521,8 +521,10 @@ entries relevant to your task; later amendments supersede earlier rules.
   written)` hands over the value that batch sets, and the coding thread
   waits for it on the host before it codes. The targets' images stay with
   the encoder across a lost session; the writer of every target sent is
-  waited for, the destructor's included. The test picture is written by a
-  kernel (`testing::Nv12Writer`), not a copy.
+  waited for, the destructor's included. `create` readies the targets'
+  surfaces (a throwaway picture first), so a producer's targets wait for no
+  batch; a surface new to the session waits on the host, unlocked. The test
+  picture is written by a kernel (`testing::Nv12Writer`), not a copy.
 
 ## Decision record
 
@@ -6880,7 +6882,38 @@ over the lost one's importer, whose surface cache keeps each picture's
 images until 64 targets have come with none on its surface; the coding
 thread waits for each sent target's writer whatever comes of the picture,
 and the destructor waits for them all with no limit, as a pending batch
-does. The caller destroys the encoder only once its batches have completed.
+does. The caller destroys the encoder only once the batches of the targets
+it gave up have completed.
+
+**Why `create` readies the targets' surfaces.** The importer readies a
+surface new to it (`UNDEFINED` to `GENERAL`) with a single-time submit it
+waits for on the host, and MoltenVK runs the device's one queue in order,
+so that wait runs behind every batch the caller submitted before. A target
+on such a surface held the producer for as long, and the encoder's lock
+with it (receive and the coding thread), and a batch waiting for a value
+the same thread sets only after `target` returns made it endless: Metal's
+GPU timeout lost the device after 5 s. A session cycles through a few
+surfaces, so `create` imports them before any batch of the caller's exists.
+The session replaces its pool as it codes its first picture (it picks the
+level then: with `ProfileLevel` set to `HEVC_Main_AutoLevel` the first
+encode hands out a new pool, without it the old one stays), so surfaces
+taken before that are never handed out again; `create` therefore codes
+one throwaway picture first, sited as the stream (VideoToolbox takes the
+siting from the first picture), and then imports `kInFlight + 2` pictures
+of the pool it keeps. At 1920x1440 and 3840x2160 every target of a fresh
+encoder then returns in 0.007-0.011 ms with one or two in flight, a target
+given up each time, or the images held past `send` (2 to 4 surfaces), where
+the first three were 0.4-0.8 ms before; `create` with a device takes 24 ms
+at 1920x1440 and 33 ms at 3840x2160 (1.4 ms without). A reopen's surfaces
+come as they are handed out, as do any more the pool makes: such a target
+waits behind the caller's earlier batches, now without the encoder's lock
+(299.5 ms behind a batch held 300 ms). Recording the transition into the
+caller's batch would need no host wait at all, but `CommandBatch::acquire`
+refuses a layout change with nothing to transfer: a core call first. A
+session whose pool is gone (VideoToolbox's
+`GetPixelBufferPool` is null once the session is invalidated, as the system
+reclaims one) fails the target (`IoError`) and is lost, so a producer of
+targets alone opens it again with its next target.
 
 **Why a kernel writes the test picture** (`testing::Nv12Writer`,
 `sensor_video_testing`, one compute kernel recorded into the caller's
@@ -6908,14 +6941,26 @@ the helper set it). `sensor_video_hevc_encoder` runs it on 512x512,
 1922x1082, 3840x4096 and 1920x1440 at either range, one sited at the
 centre, through targets beside the pixel-buffer cases; codes the pattern
 through targets with one batch held 300 ms behind a host value, decoding to
-the same PSNR as pixel buffers (52.9 dB luma) and each picture's index; and
-refuses a device without the storage formats. The test writer's own test
-runs on every leg with a device. `sensor_apple_pixel_buffer_importer`:
+the same PSNR as pixel buffers (52.9 dB luma) and each picture's index;
+describes a target by H.273's weights on each matrix of the set, at either
+range and each siting; runs four pictures two in flight, each batch behind
+a host value a helper sets 300 ms after the one before, each target
+returning before the batch before it may run, and the encoder destroyed
+with the last two sent returning only once the last value is set; loses
+the session while a sent target's batch waits, the next target reopening;
+and refuses a device without the storage formats. The test writer's own
+test runs on every leg with a device. `sensor_video_vt_encode_error`
+invalidates the session under targets, as the system reclaims one: the
+next target is `IoError` and loses it, the target taken before kept and
+coded as the key on the reopened session. `sensor_apple_pixel_buffer_importer`:
 written planes read back through the locked IOSurface, byte for byte, the
 bytes past the picture untouched; what written images allocate in Metal;
 a surface let go after 64 pictures. Planted bugs, each failing a test:
 `Access::Write` without `STORAGE`, the surface cache never letting go, the
-target's weights not from the matrix (C6), and the coding thread skipping
-the wait for `written` (C13b, and the held picture's index). The suite on
+target's weights not from the matrix (C6), the coding thread skipping
+the wait for `written` (C13b, and the held picture's index), the
+destructor's drain not waiting for a writer, a reopen with an importer of
+its own, `create` readying no surface or the first pool's, a gone pool not
+losing the session, and a failed second target giving up the first. The suite on
 the M5 Max (Release, validation, both promises) and the threaded tests
 under ThreadSanitizer; the iOS build check links an app's target calls.

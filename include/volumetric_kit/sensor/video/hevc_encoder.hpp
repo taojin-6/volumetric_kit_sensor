@@ -133,8 +133,10 @@ class VS_VIDEO_API HevcEncoder {
     /// The device that writes @ref target's planes, made with
     /// @ref hevc_encoder_device_requirements; on Apple one that imports
     /// Metal textures (`Device::imports_metal_textures`). Null for a session
-    /// that codes `CVPixelBuffer`s only, which has no @ref target. Borrowed:
-    /// it must outlive the encoder and every target.
+    /// that codes `CVPixelBuffer`s only, which has no @ref target. @ref create
+    /// readies the targets' pictures on it (on VideoToolbox coding one
+    /// throwaway picture first), waiting on the host for the device's
+    /// earlier work. Borrowed: it must outlive the encoder and every target.
     const core::Device* device = nullptr;
     /// Allocates the target buffers of a backend that has its own (NVENC,
     /// when it lands). VideoToolbox's pictures come from its own pool and
@@ -216,17 +218,33 @@ class VS_VIDEO_API HevcEncoder {
   /// the caller holds: write it only in @p batch, submit that batch, and
   /// @ref send the timeline value it sets as it completes; then drop
   /// the image, which is valid only until @ref send. A second call before
-  /// @ref send gives up the first target. The encoder keeps a target's
-  /// images for the batch that writes them, a lost session's too: they go
-  /// with the encoder, or once 64 targets have come after the last on the
-  /// same picture. Destroy the encoder only once every batch that wrote a
-  /// target has completed.
+  /// @ref send gives up the first target once it succeeds. The picture
+  /// given up may be the next handed out, so a batch already submitted to
+  /// write it must finish before the next one's writer starts: on
+  /// VideoToolbox it does, as MoltenVK runs the device's one queue in order.
+  /// The encoder keeps a target's images for the batch that writes them, a
+  /// lost session's too: they go with the encoder, or once 64 targets have
+  /// come after the last on the same picture. Destroy the encoder only once
+  /// every batch that wrote a target given up has completed; it waits for a
+  /// sent target's writer itself.
+  ///
+  /// Returns at once on a picture the session has readied: @ref create
+  /// readies `kInFlight + 2`, which a producer with @ref kInFlight in
+  /// flight, or one target given up, cycles through. A picture new to the
+  /// session (the first few after a reopen, or one more the pool makes) is
+  /// readied first, a submit waited for on the host behind the device's
+  /// earlier work, without the encoder's lock, as a reopen is. So where a
+  /// target may reopen, no batch submitted before it may wait for a value
+  /// set only after it returns: it would never return.
   /// @return The target. `Status::Code::InvalidArgument` when
   ///         @ref kInFlight pictures are in flight (receive first), on a
   ///         moved-from encoder, or on one opened with no
-  ///         @ref Options::device. A reopen's failure, as @ref create's. Or
-  ///         @p batch's failure, or the pool's, which leave the session as
-  ///         it was.
+  ///         @ref Options::device. A reopen's failure, as @ref create's.
+  ///         `Status::Code::IoError` for a session with no pictures left,
+  ///         as after the system reclaims it, which loses it (@ref lost):
+  ///         the next target opens it again. Or @p batch's failure, or the
+  ///         pool's, which leave the session as it was. A failure keeps a
+  ///         target taken before.
   core::Result<YuvImage> target(core::CommandBatch& batch);
 
   /// @brief Code the target last handed out (@ref target), an IDR when

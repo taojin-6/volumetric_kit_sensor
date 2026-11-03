@@ -8,7 +8,8 @@
 // HevcEncoder's coding thread calls it and waits for the output here. Its
 // targets are the session's pool pictures, their planes handed to Vulkan in
 // place as storage images (PixelBufferImporter's Access::Write, whose
-// surface cache keeps each pool surface's images).
+// surface cache keeps each pool surface's images; create readies the first
+// ones).
 
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
@@ -46,6 +47,10 @@ constexpr const char* kWho = "HevcEncoder";
 constexpr auto kOutputWait = std::chrono::seconds(2);
 
 constexpr std::array<std::uint8_t, 4> kStartCode = {0, 0, 0, 1};
+
+// The pool pictures create readies for targets: those a producer with
+// kInFlight in flight cycles through, and one more for a target given up.
+constexpr std::size_t kReadied = HevcEncoder::kInFlight + 2;
 
 std::string size_text(std::uint32_t width, std::uint32_t height) {
   return std::to_string(width) + "x" + std::to_string(height);
@@ -99,6 +104,37 @@ std::string property_text(VTCompressionSessionRef session, CFStringRef key) {
     return text;
   }
   return sensor::detail::utf8(value);
+}
+
+// A free picture of @p pool, which must be @p format, tagged with @p color's
+// siting: VideoToolbox writes the stream's siting from the tag of the first
+// picture it codes, as for a buffer sent (send_pixel_buffer). The pool's
+// failure or another format's picture, IoError.
+core::Result<PixelBufferPtr> pool_picture(CVPixelBufferPoolRef pool,
+                                          OSType format,
+                                          const ColorCodes& color) {
+  CVPixelBufferRef made = nullptr;
+  const CVReturn taken =
+      CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &made);
+  if (taken != kCVReturnSuccess || made == nullptr) {
+    return vt_error(kWho, "taking a picture from the session's pool", taken);
+  }
+  PixelBufferPtr pixels(made);
+  if (CVPixelBufferGetPixelFormatType(made) != format) {
+    return core::Status::io_error(
+        std::string(kWho) + ": the pool's picture is " +
+        fourcc(CVPixelBufferGetPixelFormatType(made)) + ", not the session's " +
+        fourcc(format));
+  }
+  if (color.chroma_location != 0) {
+    const CFStringRef location =
+        sensor::detail::chroma_location_string(color.chroma_location);
+    CVBufferSetAttachment(made, kCVImageBufferChromaLocationTopFieldKey,
+                          location, kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(made, kCVImageBufferChromaLocationBottomFieldKey,
+                          location, kCVAttachmentMode_ShouldPropagate);
+  }
+  return pixels;
 }
 
 }  // namespace
@@ -436,13 +472,48 @@ core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
       p(kVTCompressionPropertyKey_ColorPrimaries) + ", " +
       fourcc(pixel_format) + ", siting " +
       std::to_string(color.chroma_location) + " from the buffer";
-  facts = std::move(read);
   if (options.device != nullptr) {
     s.importer = importer ? std::move(importer) : std::move(before->importer);
     if (before != nullptr) before->importer.reset();
   }
-  return std::unique_ptr<HevcEncodeSession>(
+  auto opened = std::unique_ptr<HevcEncodeSession>(
       new HevcEncodeSession(std::move(impl)));
+  // Create's targets' pictures, readied now, before any batch of the
+  // caller's writes one: the importer readies a surface new to it on the
+  // host, behind the device's earlier work, which a batch waiting for a
+  // value set only after the next target would make endless. The session
+  // replaces its pool as it codes its first picture (it picks the level
+  // then, Main_AutoLevel), so a throwaway picture is coded first, sited as
+  // the stream (the siting is the first picture's); then the pictures of the
+  // pool it keeps, as many as a producer with kInFlight in flight, or one
+  // target given up, cycles through. A reopen's come as they are handed out.
+  if (s.importer && before == nullptr) {
+    const auto pool = [&]() -> core::Result<CVPixelBufferPoolRef> {
+      CVPixelBufferPoolRef p =
+          VTCompressionSessionGetPixelBufferPool(s.session.get());
+      if (p != nullptr) return p;
+      return core::Status::io_error(std::string(kWho) + ": " + what +
+                                    " has no picture pool");
+    };
+    {
+      VKC_ASSIGN(CVPixelBufferPoolRef first, pool());
+      EncodePicture throwaway;
+      VKC_ASSIGN(throwaway.pixels, pool_picture(first, pixel_format, color));
+      std::vector<std::uint8_t> unit;
+      bool idr = false;
+      VKC_TRY(opened->encode(throwaway, true, false, unit, idr).status());
+    }
+    VKC_ASSIGN(CVPixelBufferPoolRef kept, pool());
+    std::array<PixelBufferPtr, kReadied> pictures;
+    for (PixelBufferPtr& picture : pictures) {
+      VKC_ASSIGN(picture, pool_picture(kept, pixel_format, color));
+      YuvImage planes;
+      VKC_TRY(s.importer->import(picture.get(), options.width, options.height,
+                                 planes));
+    }
+  }
+  facts = std::move(read);
+  return opened;
 } catch (...) {
   return core::exception_status("HevcEncoder::create",
                                 core::Status::Code::OutOfMemory);
@@ -515,44 +586,32 @@ core::Result<bool> HevcEncodeSession::encode(
 }
 
 core::Status HevcEncodeSession::target(core::CommandBatch& batch,
-                                       EncodePicture& picture,
-                                       YuvImage& out) try {
+                                       EncodePicture& picture, YuvImage& out,
+                                       bool& gone) try {
   Impl& s = *impl_;
   if (!s.importer) {
     return core::Status::invalid_argument(std::string(kWho) +
                                           ": a session with no device");
   }
+  // A session invalidated, as the system reclaims one, has no pool left; a
+  // session closed by a reopen that failed has none either.
   CVPixelBufferPoolRef pool =
       s.session != nullptr
           ? VTCompressionSessionGetPixelBufferPool(s.session.get())
           : nullptr;
   if (pool == nullptr) {
+    gone = true;
     return core::Status::io_error(std::string(kWho) +
                                   ": the session has no picture pool");
   }
-  CVPixelBufferRef made = nullptr;
-  const CVReturn taken =
-      CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &made);
-  if (taken != kCVReturnSuccess || made == nullptr) {
-    return vt_error(kWho, "taking a picture from the session's pool", taken);
-  }
-  PixelBufferPtr pixels(made);
-  if (CVPixelBufferGetPixelFormatType(made) != s.pixel_format) {
-    return core::Status::io_error(
-        std::string(kWho) + ": the pool's picture is " +
-        fourcc(CVPixelBufferGetPixelFormatType(made)) + ", not the session's " +
-        fourcc(s.pixel_format));
-  }
-  // VideoToolbox writes the stream's siting from the picture's tag, as for
-  // a buffer sent (send_pixel_buffer).
-  const int siting = s.options.color.chroma_location;
-  if (siting != 0) {
-    const CFStringRef location = sensor::detail::chroma_location_string(siting);
-    CVBufferSetAttachment(made, kCVImageBufferChromaLocationTopFieldKey,
-                          location, kCVAttachmentMode_ShouldPropagate);
-    CVBufferSetAttachment(made, kCVImageBufferChromaLocationBottomFieldKey,
-                          location, kCVAttachmentMode_ShouldPropagate);
-  }
+  VKC_ASSIGN(PixelBufferPtr pixels,
+             pool_picture(pool, s.pixel_format, s.options.color));
+  CVPixelBufferRef made = pixels.get();
+  // A surface new to the importer (none of those open readied) is readied
+  // with a submit of its own, waited for on the host behind the device's
+  // earlier work. TODO(sensor): record that first transition into @p batch
+  // instead, once the core's CommandBatch has a call for a layout change
+  // with nothing to transfer.
   YuvImage planes = out;
   VKC_TRY(s.importer->import(made, s.options.width, s.options.height, planes));
   // The planes stay on the device's queue family, Metal sharing the surface
