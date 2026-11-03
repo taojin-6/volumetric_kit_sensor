@@ -491,7 +491,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   and every driver's fake runs it under injected faults.
   `color_from_registered_depth` derives the colour camera from registered
   depth; `testing/rgbd_pattern.hpp`'s depth carries the picture's index
-  band.
+  band. *Amended 2026-11-03:* the stereo contract takes a time of 0 as none
+  too, and `order_breach` holds that rule for both.
 - [**2026-11-02**](#2026-11-02--an-rgb-d-sensors-frames-as-bytes-are-the-sensor-packages-sensor_wire-writes-the-sensorinfo-once-and-each-rgbdframes-depth-and-colour-halves-a-record-each-for-any-sensor-a-container-carries-them-unread-the-version-is-in-the-params-and-the-decode-checks-the-layout-not-the-values) —
   An RGB-D sensor's frames as bytes are this package's
   (`wire/rgbd_wire.hpp`, `sensor_wire`): the `SensorInfo` once, as a
@@ -6528,6 +6529,20 @@ fail `sensor_camera_array_calibration`.
 
 ### 2026-11-02 — Every RGB-D driver keeps one frame contract (same capture, whole frames, loss read off the sequence), checked by `rgbd_breach` in every driver's fake; the colour camera derives from registered depth, and test depth carries the picture's index band.
 
+*Amended 2026-11-03 (the owner's call, below under "0 is no time"):* the
+stereo contract (`tests/stereo_contract.hpp`) takes a time of 0 as none
+too, as `StereoFrame::timestamp_ns` is `RgbdFrame::timestamp_ns`: a
+pair's sequence is still checked, and its time, where it has one, on the
+last one reported. The rule is `order_breach`'s own now, the time's
+checked only where both times are non-zero, so `RgbdContract` and the
+stereo contract each pass it the last non-zero time and keep no copy of
+it. A pair that goes back in time past a 0 still breaks it. Planted bugs,
+each failing its test: `order_breach` counting a 0 as a time again
+(`sensor_rgbd_contract`, `sensor_stereo_sensor`), and the stereo contract
+keeping a 0 as the last time, keeping the first time as the last for
+good, or skipping the sequence of a pair with no time
+(`sensor_stereo_sensor`).
+
 **The rule.** `IRgbdSensor`'s doc states the frame contract every driver
 keeps: a frame's colour is the picture of the capture its depth is from; a
 sensor whose `SensorInfo` names a depth camera hands out a frame only with
@@ -6567,7 +6582,8 @@ picture's index band, whose layout moves to the standard-library-only
   host clock hands out 0 until it has one. So the checker orders the times
   a sensor reports, each against the last non-zero one, and the sequence
   alone where a frame has none. The stereo contract counts every time, 0
-  included, as before; whether it skips a 0 too is the owner's call.
+  included, as before; whether it skips a 0 too is the owner's call (it
+  skips it since 2026-11-03, amended above).
 - **The plane as prep takes it.** A tracked source (the iPad's pattern
   source) hands out a confidence plane, which `GpuFramePrep` refuses beside
   device depth or at a floor of 0, as it refuses a floor without one; the

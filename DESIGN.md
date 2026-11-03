@@ -962,8 +962,9 @@ consumer of depth never sees it: a depth source built on a stereo camera
   (`TODO(sensor)`: remove once the family includes the camera header).
 - **The contract** every stereo source keeps is checked by one test helper
   (`tests/stereo_contract.hpp`): the calibration as the source was opened
-  (`StereoInfo`'s rule, above), skew within the bound, sequences and times
-  increasing, and the counters' rule, on a test camera's pairs and on each driver's own unit
+  (`StereoInfo`'s rule, above), skew within the bound, sequences increasing
+  and the times reported too (0 is no time, as for an `RgbdFrame`), and
+  the counters' rule, on a test camera's pairs and on each driver's own unit
   (DeckLink's opened both ways, RealSense's factory calibration), not by a
   check of each driver's own.
 - **`stereo/stereo_rectifier.hpp`** — `StereoRectifier`. `create` checks
@@ -1300,11 +1301,12 @@ none, for a run of any length, one checker a start, and its
 plane only beside host depth at a floor of 1 or more, and a floor only with
 one; with `SensorInfo::color`, colour present, its camera that size and the picture
 its camera's, without it no colour; then `order_breach` (sequences
-increase, and times where both are reported: 0 is no time) and
+increase, and times where both are reported, each on the last one
+reported: 0 is no time) and
 `stats_breach` (`delivered` the frames taken, `delivered + dropped +
 failed <= received`), which the stereo contract
-(`tests/stereo_contract.hpp`) calls too, a time of 0 counted as one
-there. `rgbd_breach` runs it over a vector. The Orbbec, RealSense and FFS depth
+(`tests/stereo_contract.hpp`) calls too, the same way. `rgbd_breach` runs
+it over a vector. The Orbbec, RealSense and FFS depth
 sensors' tests run it under injected faults. The Orbbec camera stub stands
 in for `CameraStream`'s mailbox, take and read, and plays a script of
 captures with counts of its own, so `OrbbecSensor`'s poll, drain (its
