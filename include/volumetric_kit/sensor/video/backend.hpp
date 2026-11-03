@@ -18,9 +18,9 @@ enum class VideoBackend : std::uint8_t {
   /// Apple: @ref HevcDecoder, @ref JpegDecoder and @ref HevcEncoder on
   /// VideoToolbox.
   VideoToolbox,
-  /// Linux with `VS_WITH_CUDA`: @ref HevcDecoder on NVDEC through FFmpeg and
-  /// @ref JpegDecoder on nvJPEG. @ref HevcEncoder::create refuses
-  /// (`Status::Code::Unsupported`) until its NVENC backend lands.
+  /// Linux with `VS_WITH_CUDA`: @ref HevcDecoder on NVDEC and
+  /// @ref HevcEncoder on NVENC, both through FFmpeg, and @ref JpegDecoder on
+  /// nvJPEG.
   Nvidia,
 };
 

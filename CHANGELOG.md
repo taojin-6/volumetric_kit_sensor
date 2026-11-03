@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0] - 2026-11-03
+
+### Fixed
+
+- **NVDEC's wait for the oldest of three kept pictures no longer returns
+  late** (`HevcDecoder::receive`): it reads the counter in place of
+  `vkWaitSemaphores` slices. Its time reaches the scopes
+  (`core::note_blocked`), no longer `DeviceCounters::host_waits`.
+  DECISIONS.md, the 2026-11-03 host-wait entry.
+
+### Changed
+
+- **Docs: wait for a picture's ready value on the device**
+  (`YuvImage::ready` says why, and what a host that must block does).
+  `video/backend.hpp` names NVENC as the encoder's backend on NVIDIA, no
+  longer one to come.
+
 ## [0.41.0] - 2026-11-03
 
 ### Added

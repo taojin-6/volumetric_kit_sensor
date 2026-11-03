@@ -555,7 +555,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   its timeline before it returns any error from `send` or `receive` but
   `InvalidArgument`, and its host wait for the oldest of three kept
   pictures asks the stream between slices, so a failed one returns its
-  error, settled.
+  error, settled. *Amended 2026-11-03:* the wait reads the counter (the
+  host-wait entry).
 
 - [**2026-11-03**](#2026-11-03--the-encoder-codes-on-nvenc-too-kinflight--1-exported-buffers-a-session-as-its-targets-which-nvenc-reads-through-cuda-with-no-copy-every-qp-set-from-the-options-and-strips-from-4096-rows-amends-the-2026-11-02-encoder-entries) —
   The encoder codes on NVENC too, through FFmpeg's `hevc_nvenc`: targets
@@ -575,6 +576,12 @@ entries relevant to your task; later amendments supersede earlier rules.
   solve share. Its session is the registration's, each still's camera the array
   file's block. The registration's `edge_m` is the edge the solve fitted
   the corners to.
+
+- [**2026-11-03**](#2026-11-03--a-host-wait-on-a-value-cuda-sets-wakes-late-on-nvidia-a-pictures-ready-value-is-waited-for-on-the-device-and-nvdecs-own-wait-for-a-kept-picture-reads-the-counter-amends-the-2026-11-03-fault-entry) —
+  A host wait on a value CUDA sets wakes late on NVIDIA, on a tick of the
+  driver's own. A picture's ready value is waited for on the device
+  (`yuv_image.hpp` says so), and NVDEC's own wait for a kept picture reads
+  the counter.
 
 ## Decision record
 
@@ -7291,8 +7298,10 @@ oldest waits in 10 ms slices and asks the stream between them
 wait would never end; a stream found idle with the counter still short a
 slice later returns a Backend error, settled. Each slice that blocks counts
 as one of the device's `host_waits`; `blocked_ns` counts the wait's time
-once. nvJPEG needs neither: its next decode synchronizes
-the last one's event, settling on a failure, and a failed decode queues no
+once. *Amended 2026-11-03:* the wait reads the counter in place of the
+slices, and its time reaches the scopes, not the device's counts (the
+host-wait entry). nvJPEG needs neither: its next decode synchronizes the
+last one's event, settling on a failure, and a failed decode queues no
 signal.
 
 **Not covered.** A caller that waits for a picture's value before it calls
@@ -7503,3 +7512,86 @@ accepted (their refusals) and the version checked after the stills (a
 later version without them refused as InvalidArgument). The shared camera
 block dropping the lens it read fails the stills' suite and the array
 file's.
+
+### 2026-11-03 — A host wait on a value CUDA sets wakes late on NVIDIA: a picture's ready value is waited for on the device, and NVDEC's own wait for a kept picture reads the counter (amends the 2026-11-03 fault entry).
+
+**The rule.** NVIDIA's driver does not wake a host `vkWaitSemaphores` on a
+timeline value CUDA sets (`cuSignalExternalSemaphoresAsync`) when CUDA sets
+it: the wait returns on a tick of the driver's own, 10 ms after it began
+(then 20, 30), or at its timeout. A value a Vulkan submission sets wakes it
+at once, whether the timeline is exported, imported into CUDA too, or
+neither; and CUDA's value is seen at once by a device-side wait, a read of
+the counter or a CUDA event after the signal. So:
+- A picture's ready value (`YuvImage::ready`) is waited for on the device,
+  as every reader here does; `yuv_image.hpp` says so, and that a host that
+  must wait reads the counter (`TimelineSemaphore::value`). No host-side
+  helper: no reader here waits on the host.
+- `CudaTimeline::wait`, NVDEC's host wait for the oldest of three kept
+  pictures, reads the counter, sleeping 50 us between reads (1 ms once the
+  wait is 10 ms old, so a stalled stream costs 1,000 reads a second), and
+  asks the stream every 1 ms, in place of 10 ms `vkWaitSemaphores` slices.
+  A failed stream returns its error, settled, as before, and so does one
+  found idle with the counter still short 10 ms later (the old slice's
+  margin). Its time reaches the scopes (`core::note_blocked`), no longer
+  the device's `host_waits`. Core's `TimelineSemaphore::wait` is left as
+  it is: every value a Vulkan submission sets wakes it at once.
+
+**Not here.** The encoder's coding thread waits on the host for a
+target's written value, which the caller's Vulkan submission sets: woken
+at once. nvJPEG's next decode waits on a CUDA event.
+
+**Measured** (driver 615.71.10; a shared RTX 4090, FFmpeg 6.1, idle; the
+lab RTX 5090, FFmpeg 8, other jobs on it at times; Release, alternating
+rounds; a probe outside the repository). A timeline CUDA sets behind a
+held stream (`cuStreamWaitValue32` on a host word), the waiter blocked
+2 ms before the release; ms from the release to the wake, p50 (p95), 120
+waits each:
+
+| Waiter | RTX 4090 | RTX 5090, busy |
+| --- | --- | --- |
+| host wait, no timeout | 8.01 (8.01) | 8.01 (8.05) |
+| host wait, begun 9 ms or 15 ms before | 1.00 or 5.07 | 1.01 (11.07) or 5.06 |
+| counter read every 50 us | 0.05 (0.11) | 1.19 (1.90) |
+| device-side wait | 0.10 (0.11) | 0.22 (4.22) |
+| host wait, the value set by Vulkan | 0.04 (0.04) | 0.16 (1.97) |
+
+NVDEC, a 3840x2160 P-only clip at 30 Hz, each picture waited for as
+`receive` hands it out: receive to ready, p50 (p95), and the picture's
+send-to-ready p50, ms, 426 pictures each:
+
+| Waiter | RTX 4090 | RTX 5090 |
+| --- | --- | --- |
+| host wait | 10.08 (10.09), 12.23 | 0.15 (10.22), 2.62 |
+| counter read every 50 us | 0.12 (0.12), 2.25 | 0.10 (0.11), 2.54 |
+| device-side wait | 0.19 (0.21), 2.31 | 0.22 (0.30), 2.65 |
+
+Back to back the RTX 5090's host wait is 10.06 (10.16) too. At 1920x1080
+the copy is mostly done before the wait (RTX 4090 0.004 ms). nvJPEG (RTX
+5090, 3840x2160) shows no tick: host wait 3.47 ms, counter read 3.16.
+`CudaTimeline::wait` itself, the stream held as above and the wait begun
+0.3, 2.5, 7 or 15 ms before the release, 120 waits each, p50 in ms: before
+this change 8.72, 6.52, 2.02, 4.03 on the RTX 4090 and 9.72, 7.52, 2.92,
+5.17 on the RTX 5090; after, 0.04-0.10 and 0.06-0.07 up to 7 ms, p95 at
+most 0.12, and at 15 ms, the reads 1 ms apart by then, 0.31 and 0.20 (p95
+0.36 and 0.28). The waiting thread's CPU (a second RTX 4090, FFmpeg 8):
+about 2% of a core while the reads are 50 us apart (1.4-2.8%), 0.6-1.2%
+once they are 1 ms apart; 1 ms `vkWaitSemaphores` slices in their place
+took 6.9-9.1% and woke later, 0.24-0.60 ms after the release. NVDEC at
+3840x2160, 30 Hz or back to back, never reached this wait, and its process
+CPU is the same before and after.
+
+**Why.** A consumer measured about 10 ms more a record once it waited on
+the host for each decoded picture; a read of the counter took the cost
+away, and the consumer now waits on the device.
+
+**Validation.** `sensor_video_handover`'s fault cases run the new loop: a
+stream reported faulted, or run dry with three signals dropped, returns a
+Backend error with the values set; a held stream holds the fourth picture
+until its release, the wait counting none of the device's host waits and
+its time in the scope open around it (no timing threshold). Planted bugs,
+each failing it (an RTX 4090): the stream never asked, the wait ending one
+value early, a dry stream never seen, the old 10 ms slices, the blocked
+time unreported, and reported in microseconds. The suite on both RTX 4090s
+(the second under the validation layer), on the lab RTX 5090 (the
+validation layer; the handover and decoder tests also under
+synchronization validation) and on the M5 Max (validation).

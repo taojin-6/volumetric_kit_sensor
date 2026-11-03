@@ -3,13 +3,15 @@
 
 #include "cuda_timeline.hpp"
 
+#include <chrono>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "cuda_driver.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/sync.hpp"
-#include "volumetric_kit/core/vulkan/vk_result.hpp"
 
 namespace volumetric_kit::sensor::video {
 
@@ -78,28 +80,54 @@ bool CudaTimeline::reached(std::uint64_t value) const {
 }
 
 core::Status CudaTimeline::wait(std::uint64_t value) const {
-  // In slices, the stream asked between them whether it failed. A stream
-  // found idle has run the value's signal, queued before this: a slice later
-  // with the counter still short, the signal was dropped.
-  constexpr std::uint64_t kSliceNs = 10'000'000;
+  // The header has the rates and why the counter is read. An idle stream has
+  // run the value's signal, queued before this: kLong later with the counter
+  // still short, the signal was dropped.
+  constexpr auto kPoll = std::chrono::microseconds(50);
+  constexpr auto kLong = std::chrono::milliseconds(10);
+  constexpr auto kAsk = std::chrono::milliseconds(1);
+  const auto start = std::chrono::steady_clock::now();
+  auto ask = start + kAsk;
   bool idle = false;
+  auto idle_at = start;
+  bool slept = false;
+  core::Status out;
   for (;;) {
-    const core::Status waited = semaphore_->wait(value, kSliceNs);
-    if (!core::is_timeout(waited)) return waited.with_context(who_);
-    if (idle) {
-      return core::Status::backend_error(
+    const core::Result<std::uint64_t> counter = semaphore_->value();
+    if (!counter) {
+      out = counter.status().with_context(who_);
+      break;
+    }
+    if (*counter >= value) break;
+    const auto now = std::chrono::steady_clock::now();
+    if (idle && now - idle_at >= kLong) {
+      out = core::Status::backend_error(
           core::Status::Backend::Cuda, CUDA_ERROR_UNKNOWN,
           std::string(who_) +
               ": the stream ran dry with a picture's ready value unset");
+      break;
     }
-    const CudaContextScope scope(context_);
-    const CUresult r =
-        scope.ok() ? cuda_driver()->cuStreamQuery(stream_) : scope.result();
-    if (r != CUDA_SUCCESS && r != CUDA_ERROR_NOT_READY) {
-      return cuda_error(who_, r, "waiting for a picture's copy");
+    if (!idle && now >= ask) {
+      const CudaContextScope scope(context_);
+      const CUresult r =
+          scope.ok() ? cuda_driver()->cuStreamQuery(stream_) : scope.result();
+      if (r != CUDA_SUCCESS && r != CUDA_ERROR_NOT_READY) {
+        out = cuda_error(who_, r, "waiting for a picture's copy");
+        break;
+      }
+      idle = r == CUDA_SUCCESS;
+      idle_at = now;
+      ask = now + kAsk;
     }
-    idle = r == CUDA_SUCCESS;
+    std::this_thread::sleep_for(now - start < kLong ? kPoll : kAsk);
+    slept = true;
   }
+  if (slept) {
+    core::note_blocked(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count());
+  }
+  return out;
 }
 
 void CudaTimeline::settle() noexcept {
