@@ -18,9 +18,17 @@ add_library(volumetric_kit::sensor_prep ALIAS sensor_prep)
 
 # color_pass.cpp is the colour pass's checks and binding, which the stereo
 # rectifier (sensor_stereo) calls too: exported, behind an internal header.
+# pattern_reader.cpp is test support (testing/pattern_reader.hpp): the test
+# pattern's index read on the GPU, through the plane checks of this target.
 target_sources(
-  sensor_prep PRIVATE color_pass.cpp depth_outliers.cpp gpu_frame_prep.cpp
-                      luma_pass.cpp picture_readback.cpp yuv_planes.cpp)
+  sensor_prep
+  PRIVATE color_pass.cpp
+          depth_outliers.cpp
+          gpu_frame_prep.cpp
+          luma_pass.cpp
+          pattern_reader.cpp
+          picture_readback.cpp
+          yuv_planes.cpp)
 
 generate_export_header(
   sensor_prep
@@ -61,6 +69,7 @@ vs_embed_shaders(
   "${CMAKE_CURRENT_SOURCE_DIR}/shaders/undistort_color_images.comp"
   "${CMAKE_CURRENT_SOURCE_DIR}/shaders/remove_depth_outliers.comp"
   "${CMAKE_CURRENT_SOURCE_DIR}/shaders/luma.comp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/luma_half.comp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/luma_half.comp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/pattern_index.comp")
 
 vs_target_warnings(sensor_prep)

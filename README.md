@@ -397,6 +397,9 @@ index back, on the standard library alone. `testing/rgbd_contract.hpp`
 checks the frames and counters an `IRgbdSensor` handed out against the
 frame contract (`rgbd_sensor.hpp`): `rgbd_breach` over a vector, or
 `RgbdContract` one frame at a time for a run of any length.
+`testing/pattern_reader.hpp` (`sensor_prep`) reads that index from a
+picture or depth wherever it is, on the GPU, for the tools that check each
+frame carries its own picture: `PatternReader::read`, 4 bytes back a read.
 `testing/hevc_slices.hpp` (`sensor_video_syntax`) reads a coded stream's
 slice types and QPs. The encoder rules (`testing/hevc_conformance.hpp`,
 `volumetric_kit::sensor_video_testing`) run on any device whose build has
@@ -404,7 +407,7 @@ slice types and QPs. The encoder rules (`testing/hevc_conformance.hpp`,
 
 ## Versions
 
-The version is `project()`'s (0.29.0), carried by the umbrella as
+The version is `project()`'s (0.30.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

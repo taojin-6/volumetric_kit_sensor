@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-11-03
+
+### Added
+
+- **Test support: `testing::PatternReader`** (`testing/pattern_reader.hpp`,
+  built in `sensor_prep`): the index a `test_pattern` picture or a
+  `pattern_depth` depth carries, read on the GPU wherever it is (NV12
+  plane images, planes or depth in a device buffer, or on the host), for
+  the tools and tests that check each frame carries its own picture. One
+  kernel over the index band decides each read; 4 bytes a read come back.
+  `read(picture)` and `read(frame)` (picture and depth in one batch,
+  `FrameIndex`). A picture's square means are read with a margin, so a
+  blend of two frames is no index; depth as `depth_index` reads it. It
+  waits on the device for a picture's ready value and publishes ownership
+  as `PictureReadback` does. DECISIONS.md, the 2026-11-03 pattern reader
+  entry.
+- `sensor_video_hevc` reads the VideoToolbox-coded pattern clip's index on
+  the GPU too, on NVDEC and on VideoToolbox.
+
 ## [0.29.0] - 2026-11-02
 
 ### Added
