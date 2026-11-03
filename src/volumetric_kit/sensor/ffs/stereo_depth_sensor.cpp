@@ -246,7 +246,7 @@ core::Status StereoDepthSensor::drain(std::vector<RgbdFrame>* out) {
 }
 
 SensorStats StereoDepthSensor::stats() const noexcept {
-  const Impl& s = *impl_;
+  Impl& s = *impl_;
   // The camera's counts last: each of these was counted after the camera's
   // counts said of its pair, so they never sum past what it received.
   SensorStats out;
