@@ -159,45 +159,6 @@ VideoBackend video_backend() noexcept {
 #endif
 }
 
-#if !defined(__APPLE__)
-// TODO(sensor): NVENC through FFmpeg, on this file's coding thread.
-namespace video {
-
-struct HevcEncodeSession::Impl {};
-const bool HevcEncodeSession::kWritesSiting = false;
-
-core::Result<std::unique_ptr<HevcEncodeSession>> HevcEncodeSession::open(
-    const HevcEncoder::Options& /*options*/, HevcEncoder::Facts& /*facts*/,
-    HevcEncodeSession* /*previous*/) {
-  return core::Status::unsupported(
-      std::string(kWho) +
-      ": this build has no HEVC encoder (NVENC is not "
-      "built yet; VideoToolbox is Apple's)");
-}
-
-HevcEncodeSession::HevcEncodeSession(std::unique_ptr<Impl> impl) noexcept
-    : impl_(std::move(impl)) {}
-HevcEncodeSession::~HevcEncodeSession() = default;
-
-core::Result<bool> HevcEncodeSession::encode(
-    EncodePicture& /*picture*/, bool /*key*/, bool /*drop*/,
-    std::vector<std::uint8_t>& /*access_unit*/, bool& /*idr*/) noexcept try {
-  return core::Status::unsupported(std::string(kWho) + ": no session");
-} catch (...) {
-  return core::exception_status(kWho, core::Status::Code::OutOfMemory);
-}
-
-core::Status HevcEncodeSession::target(core::CommandBatch& /*batch*/,
-                                       EncodePicture& /*picture*/,
-                                       YuvImage& /*out*/, bool& /*gone*/) {
-  return core::Status::unsupported(std::string(kWho) + ": no session");
-}
-
-void HevcEncodeSession::lose() noexcept {}
-
-}  // namespace video
-#endif
-
 struct HevcEncoder::Impl {
   // A picture sent, waiting for the coding thread.
   struct Sent {

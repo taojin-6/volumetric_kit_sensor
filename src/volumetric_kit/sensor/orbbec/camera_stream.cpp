@@ -239,7 +239,7 @@ core::Result<std::unique_ptr<CameraStream>> open_camera(
     VKC_ASSIGN(auto device,
                discover(*context, serial, discovery_timeout_ms, who));
     return CameraStream::create(std::move(context), std::move(device), streams,
-                                color_to_world, configure_logging, who);
+                                color_to_world, who);
   } catch (const std::exception& e) {  // ob::Error is one
     // Named when asked for by serial: the SDK can throw before the camera
     // reports it, and a rig's camera is one of several.
@@ -251,11 +251,10 @@ core::Result<std::unique_ptr<CameraStream>> open_camera(
 core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     std::shared_ptr<ob::Context> context, std::shared_ptr<ob::Device> device,
     const OrbbecStreamOptions& streams, const camera::Mat4d& color_to_world,
-    bool configure_logging, const std::string& who) {
+    const std::string& who) {
   std::unique_ptr<CameraStream> s(new CameraStream());
   s->fps_ = streams.fps;
   s->color_codec_ = streams.color_codec;
-  s->configure_ffmpeg_logging_ = configure_logging;
   s->vulkan_device_ = streams.device;
   s->vulkan_allocator_ = streams.allocator;
   s->color_queue_families_ = color_queue_families(streams);
@@ -421,10 +420,6 @@ core::Status CameraStream::start() {
     decoding.device = vulkan_device_;
     decoding.allocator = vulkan_allocator_;
     decoding.queue_families = color_queue_families_;
-    // Once: the first start sets FFmpeg's level, and a later one leaves it
-    // to whoever changed it since.
-    decoding.configure_ffmpeg_logging = configure_ffmpeg_logging_;
-    configure_ffmpeg_logging_ = false;
     decoding.who = who_;
     VKC_ASSIGN(auto decoder, HevcColorDecoder::start(decoding, post));
     hevc_ = std::move(decoder);

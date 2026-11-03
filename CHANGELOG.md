@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0] - 2026-11-03
+
+### Added
+
+- **`HevcEncoder` on NVENC** (`video/hevc_encoder.hpp`, `sensor_video`, a
+  Linux build with `VS_WITH_FFMPEG` and `VS_WITH_CUDA`): FFmpeg's
+  `hevc_nvenc` behind the same API, rules and coding thread as VideoToolbox.
+  NVENC codes targets alone, so `create` needs `Options::device` and
+  `Options::allocator` (`InvalidArgument` without), on a GPU CUDA reaches
+  whose device exports memory. A target is one of `kInFlight + 1` exported
+  buffers made at `create` (`YuvImage::device`: the luma's rows from 0, the
+  chroma's after them, at a stride of the width rounded up to the GPU's
+  texture alignment), which NVENC reads through CUDA with no copy; `target`
+  records the buffer's crossing into the batch. Effort is the preset (p1 to
+  p7), every QP is set from the options, QP 0 to 51 is coded, sitings 1 to 5
+  are refused, and a picture of 4096 rows or more is coded in 3 strips
+  (`Facts::strips`), which an FFmpeg before 7.1 refuses in `create`.
+- **`HevcEncoderCase::Rules::Sequence`** (`testing/hevc_conformance.hpp`):
+  what the sequence says on one key picture (C3-C5, C10), for a sweep over
+  colour codes or efforts. The rules run on NVENC too: C9 checks NVENC's
+  buffer target; pixel buffers (C11) stay Apple's.
+- **`Nv12Writer` writes a buffer's rows** (`testing/nv12_writer.hpp`), as
+  NVENC's targets are, the bytes past each row up to its stride 0.
+
+### Removed
+
+- **`HevcDecoder::Options::configure_ffmpeg_logging`**: the first coder that
+  opens on NVIDIA sets FFmpeg's log level to ERROR, once a process. No
+  caller in the family set the option.
+
+### Changed
+
+- **NVDEC opens FFmpeg's CUDA device as NVENC does**, through one internal
+  helper on the Vulkan device's GPU; its pictures are unchanged.
+- **The colour-code sweep** in `sensor_video_hevc_encoder` runs the
+  sequence's rules, on one key picture each.
+- **CI**: the 26.04 leg builds FFmpeg and CUDA and promises NVDEC and NVENC;
+  the 24.04 leg promises NVENC too.
+
 ## [0.33.0] - 2026-11-03
 
 ### Added
