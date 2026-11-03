@@ -6879,4 +6879,10 @@ order and the failure that ends the run, and a producer racing a drain,
 each frame taken or dropped once. Planted bugs, each failing it: the
 frames a poll passes over not counted, the last failure kept instead of
 the first, a wake that wakes no one, and a discard not counted, which
-fails `sensor_orbbec_contract` too.
+fails `sensor_orbbec_contract` too. The suite on the M5 Max (the Orbbec
+driver) and on a shared RTX 4090 (the Orbbec driver, FFmpeg and CUDA); the
+host-threaded tests of `sensor_tsan_tests` (the queue's, the Orbbec decode
+worker's, `sensor_orbbec_open_sensors` on the stub, the audio capture's)
+under GCC 13's ThreadSanitizer there too, the queue's 20 times more.
+`StereoDepthSensor`'s source was syntax-checked on the Mac; its test runs
+where FFS builds, CI's FFS leg.
