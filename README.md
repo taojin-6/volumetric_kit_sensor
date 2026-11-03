@@ -42,6 +42,7 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | `sensor_video_syntax` | `video/` | H.265 syntax read on the host and `KeyGate` (which units decode after a loss), every build | core base |
 | `sensor_video` | `video/` | `HevcDecoder`, `JpegDecoder`, `HevcEncoder` (VideoToolbox; `send_pixel_buffer` on Apple), `video_backend()`, what H.273 colour codes mean (`frame_color.hpp`), CUDA interop | frame, video_syntax |
 | `sensor_video_testing` | `testing/hevc_conformance.hpp` | `hevc_encoder_breach`, the encoder rules for any runner; static | video |
+| `sensor_wire` | `wire/` | An RGB-D sensor's frames as bytes for a recording or a live link (`rgbd_wire.hpp`): the sensor once, each frame's depth and colour halves, read back in place; every build, iOS included | interface, video_syntax |
 | `sensor_apple` | `apple/` | `PixelBufferImporter`, `color_codes_of`, every Apple build | frame, video_syntax |
 | `sensor_orbbec` | `orbbec/` | `OrbbecSensor`, the rig's sync file | interface, video, video_syntax |
 | `sensor_realsense` | `realsense/` | `RealSenseSensor`, `RealSenseStereo` | interface, stereo |
@@ -395,7 +396,7 @@ slice types and QPs. The encoder rules (`testing/hevc_conformance.hpp`,
 
 ## Versions
 
-The version is `project()`'s (0.27.0), carried by the umbrella as
+The version is `project()`'s (0.28.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

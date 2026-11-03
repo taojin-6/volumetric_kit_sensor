@@ -4,8 +4,9 @@
 #
 # The iOS build check the macOS CI leg runs (.github/workflows/_build.yml):
 # sensor_apple, sensor_video and the H.265 syntax it reads with
-# (sensor_video_syntax), which every Apple build has, and the encoder rules
-# an app's device test runs (sensor_video_testing),
+# (sensor_video_syntax), which every Apple build has, the frames' wire form
+# (sensor_wire), which an iOS writer links, and the encoder rules an app's
+# device test runs (sensor_video_testing),
 # compiled for the iOS floor with the include paths and definitions of a macOS
 # build's compile commands, warnings as errors, the importer with ARC, and
 # its header and the other Apple headers as plain C++ too; then linked into
@@ -26,7 +27,7 @@ main="$(cd "$(dirname "$0")" && pwd)/ios_link_check.cpp"
 mkdir -p "$out"
 ios=(xcrun --sdk iphoneos clang++ -target arm64-apple-ios26.0)
 
-# Each source of the four targets, with its own flags, listed as compiled;
+# Each source of the five targets, with its own flags, listed as compiled;
 # then the Apple headers alone as plain C++, and the app's calls, with the
 # flags of the target that sees them all.
 python3 -I - "$db" "$out" "$main" "${ios[@]}" >"$out/objects.txt" <<'EOF'
@@ -39,7 +40,7 @@ headers = ["apple/core_video_color.hpp", "video/hevc_encoder_apple.hpp",
            "video/backend.hpp", "testing/hevc_conformance.hpp",
            "testing/hevc_slices.hpp", "testing/nv12_pixel_buffer.hpp"]
 targets = ("sensor_apple", "sensor_video", "sensor_video_syntax",
-           "sensor_video_testing")
+           "sensor_video_testing", "sensor_wire")
 objects = []
 # sensor_video_testing's flags and sensor_apple's, which together see every
 # header, as an app linking both does.

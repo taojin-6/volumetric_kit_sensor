@@ -505,8 +505,9 @@ jobs:
             -R '^(sensor_orbbec_(decode_worker|jpeg|hevc|open_sensors)|sensor_audio_capture|sensor_decklink_upload|sensor_video_hevc_encoder)$'
 
       # sensor_apple and sensor_video, with the H.265 syntax they read
-      # (sensor_video_syntax), promise an iOS build (DECISIONS.md, 2026-10-08
-      # and 2026-10-25), which the steps above do not make: compile them for
+      # (sensor_video_syntax), and the frames' wire form (sensor_wire) promise
+      # an iOS build (DECISIONS.md, 2026-10-08, 2026-10-25 and 2026-11-02),
+      # which the steps above do not make: compile them for
       # the iOS floor with build/'s flags and link them against the iOS SDK
       # (tools/ios_build_check.sh). Release only: the promise does not depend
       # on the build type.

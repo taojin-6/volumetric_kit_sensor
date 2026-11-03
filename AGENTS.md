@@ -51,7 +51,8 @@ PCM in host memory.
   `orbbec` the interface, `video` and `video_syntax`;
   `realsense` the interface and `stereo`; `ffs` `stereo` and, privately,
   `video`; `decklink` `stereo` and, privately, its SDK-free units; `audio`
-  the interface; `video_syntax` and `io` the base tier.
+  the interface; `wire` the interface and `video_syntax`; `video_syntax`
+  and `io` the base tier.
   Drivers, decoders and preparation stay targets of their own.
 - C++17, no compiler extensions. Namespace `volumetric_kit::sensor`, the
   camera vocabulary in `sensor::camera`; headers
