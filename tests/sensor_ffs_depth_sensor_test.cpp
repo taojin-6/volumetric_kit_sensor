@@ -14,7 +14,8 @@
 // called from two at once; stop and a restart; a frame kept while the next
 // is made; the right picture's own owner let go before the depth frame is
 // out, which holds the left one's alone; the camera's pairs keep the stereo
-// sync contract (stereo_contract.hpp).
+// sync contract (stereo_contract.hpp), and the depth frames the frame
+// contract (testing/rgbd_contract.hpp).
 //
 // It skips where CUDA does not reach the GPU, as sensor_ffs_stereo does.
 
@@ -45,6 +46,7 @@
 #include "volumetric_kit/sensor/array/sensor_array.hpp"
 #include "volumetric_kit/sensor/ffs/stereo_depth_sensor.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/testing/rgbd_contract.hpp"
 #include "volumetric_kit/sensor/video/cuda_interop.hpp"
 
 namespace vkc = volumetric_kit::core;
@@ -413,6 +415,15 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
     CHECK(breach.empty());
   }
   std::puts("the camera's pairs keep the stereo sync contract");
+  // And what the sensor handed out, the pair it refused among them, keeps
+  // the frame contract.
+  {
+    const std::string breach =
+        sensor::testing::rgbd_breach(info, {**newest, **next, **after}, st);
+    if (!breach.empty()) std::fprintf(stderr, "%s\n", breach.c_str());
+    CHECK(breach.empty());
+  }
+  std::puts("its frames keep the frame contract");
 
   // A restart with a deeper queue: drain hands every frame, oldest first;
   // the counters start again.
@@ -429,6 +440,7 @@ int run(vkc::test::GpuContext& gpu, const fs::path& scratch) {
   for (std::size_t i = 0; i < 3; ++i) CHECK(drained[i].sequence == 8 + i);
   st = s.stats();
   CHECK(st.received == 3 && st.delivered == 3 && st.dropped == 0);
+  CHECK(sensor::testing::rgbd_breach(info, drained, st).empty());
   std::puts("drain: three frames, oldest first, after a restart");
 
   // The pairs the camera replaced or failed on count as the sensor's.

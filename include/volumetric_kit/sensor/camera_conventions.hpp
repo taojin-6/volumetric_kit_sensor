@@ -18,6 +18,7 @@
 #include <cstdint>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/export.hpp"
 #include "volumetric_kit/sensor/frame/camera_params.hpp"
 #include "volumetric_kit/sensor/frame/vector_types.hpp"
@@ -85,5 +86,32 @@ VS_INTERFACE_API Mat4f cv_from_gl_camera(const Mat4f& cam_to_world);
 VS_INTERFACE_API core::Result<DepthCameraParams> depth_from_registered_color(
     const ColorCameraParams& color, std::uint32_t depth_width,
     std::uint32_t depth_height, float min_depth, float max_depth);
+
+/// @brief The colour camera a depth image is registered to, derived from the
+///        depth camera: the inverse of @ref depth_from_registered_color's
+///        rescale.
+///
+/// A receiver of a tracked sensor's depth gets only the depth camera's
+/// model (a depth record carries its pinhole). The picture beside the depth
+/// comes from the same camera, at another size. Both axes rescale as
+/// @ref depth_from_registered_color rescales them, by the inverse ratio:
+/// `f' = f·s` and `c' = (c + 0.5)·s − 0.5`, with `s = width / depth.size.width`
+/// for x and `height / depth.size.height` for y. One code path serves both.
+/// A lens, if any, is kept: its coefficients act on normalised coordinates,
+/// which a rescale leaves as they are.
+///
+/// @code
+/// VKC_ASSIGN(frame.color_camera,
+///            color_from_registered_depth(frame.depth_camera, 1920, 1440));
+/// @endcode
+/// @param depth   The depth camera's model.
+/// @param width   Colour image width in pixels (non-zero).
+/// @param height  Colour image height in pixels (non-zero).
+/// @return The colour camera's model; or `Status::Code::InvalidArgument` if
+///         either requested size is zero, or @p depth fails
+///         `camera::check_camera_model`.
+VS_INTERFACE_API core::Result<camera::CameraModel> color_from_registered_depth(
+    const camera::CameraModel& depth, std::uint32_t width,
+    std::uint32_t height);
 
 }  // namespace volumetric_kit::sensor
