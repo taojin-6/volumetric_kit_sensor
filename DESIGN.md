@@ -543,14 +543,11 @@ waits, one of `record_set` or `SensorArray::record_process`
 destructor before CUDA's import goes, a decoder settles: it synchronizes its
 stream, then sets the last value it handed out from the host if the counter
 is below it, so no batch waits for good on a signal a failed stream dropped.
-NVDEC's host wait for the oldest of three kept pictures reads the counter,
-50 us apart (1 ms once the wait is 10 ms old), and asks the stream every
-1 ms, so a failed one, or one found idle and still short of the value 10 ms
-later, returns an error, settled (the
-2026-11-03 fault decision). It reads rather than waits because NVIDIA's
-driver wakes no host wait on a value CUDA sets when CUDA sets it, only up
-to about 10 ms later (the 2026-11-03 host-wait decision), which is also why
-every reader waits on the device. VideoToolbox's pictures, a camera's and host planes carry none.
+NVDEC's host wait for the oldest of three kept pictures asks the stream as
+it waits, so a failed one, or one run dry short of the value, returns an
+error, settled (the 2026-11-03 fault decision); it reads the counter rather
+than host-waiting on it (the 2026-11-03 host-wait decision). VideoToolbox's
+pictures, a camera's and host planes carry none.
 **`video/`'s H.265 syntax** (`hevc_syntax.hpp`, target
 `sensor_video_syntax`) is public and builds on every platform: host
 code on the family core's base tier, with no codec, GPU or FFmpeg (the

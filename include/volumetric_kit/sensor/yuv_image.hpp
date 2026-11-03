@@ -175,11 +175,12 @@ struct YuvImage {
   /// wait for it: a timeline value its submission sets. A reader's
   /// submission waits for it (`CommandBatch::submit_async`; the waits
   /// gathered by `frame/ready_points.hpp`) before reading, so neither host
-  /// waits. Wait for it on the device: NVIDIA's driver does not wake a host
-  /// wait on a value CUDA sets (`TimelineSemaphore::wait`) when CUDA sets it,
-  /// but up to about 10 ms later (DECISIONS.md, the 2026-11-03 host-wait
-  /// entry); a host that must wait reads the counter
-  /// (`TimelineSemaphore::value`) instead. Null when the writer had finished
+  /// waits. Wait for it on the device: NVIDIA's driver wakes a host wait on a
+  /// value CUDA sets (`TimelineSemaphore::wait`) up to about 10 ms after CUDA
+  /// sets it (DECISIONS.md, the 2026-11-03 host-wait entry). A host that must
+  /// block until the value is set reads the counter in a loop
+  /// (`TimelineSemaphore::value`); the batch that then reads the picture
+  /// still waits for it on the device. Null when the writer had finished
   /// before handing the picture over. NVDEC's and nvJPEG's pictures carry
   /// one; VideoToolbox's, a camera's and host planes do not.
   std::shared_ptr<const core::TimelineSemaphore> ready;

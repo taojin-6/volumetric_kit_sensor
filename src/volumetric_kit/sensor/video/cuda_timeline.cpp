@@ -12,7 +12,6 @@
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/sync.hpp"
-#include "volumetric_kit/core/vulkan/vk_result.hpp"
 
 namespace volumetric_kit::sensor::video {
 
@@ -81,13 +80,9 @@ bool CudaTimeline::reached(std::uint64_t value) const {
 }
 
 core::Status CudaTimeline::wait(std::uint64_t value) const {
-  // The counter read, not waited on: NVIDIA's driver wakes no host wait
-  // (vkWaitSemaphores) when CUDA sets the value, only on a tick of its own,
-  // about 10 ms after the wait began (DECISIONS.md, the 2026-11-03 host-wait
-  // entry). 50 us sleeps between reads, 1 ms ones once the wait is 10 ms
-  // old. Until the stream is found idle it is asked every 1 ms whether it
-  // failed. An idle stream has run the value's signal, queued before this:
-  // 10 ms later with the counter still short, the signal was dropped.
+  // The header has the rates and why the counter is read. An idle stream has
+  // run the value's signal, queued before this: kLong later with the counter
+  // still short, the signal was dropped.
   constexpr auto kPoll = std::chrono::microseconds(50);
   constexpr auto kLong = std::chrono::milliseconds(10);
   constexpr auto kAsk = std::chrono::milliseconds(1);
