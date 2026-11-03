@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-11-02
+
+### Added
+
+- **An RGB-D sensor's frames as bytes** (`wire/rgbd_wire.hpp`, the new
+  target `sensor_wire`, every build, iOS included), version 1, for a
+  recording or a live link of any `IRgbdSensor`:
+  - `encode_sensor` / `decode_sensor`: a `SensorInfo` as a depth track's
+    params, less the id, clock and rate a container's track holds;
+  - `encode_depth` / `decode_depth`: a frame's depth half as a record, a
+    392-byte prefix (the depth camera, `color_to_world`, `depth_to_color`,
+    units, range, noise, the confidence flag and floor) then the rows and
+    the plane, raw. The encode borrows the frame's rows and plane
+    (`DepthRecord`); the decode returns an `RgbdFrame` pointing into the
+    payload, which its `pixels` holds;
+  - `encode_color_params` / `decode_color_params` (`ColorCodec::HevcMain8`)
+    and `encode_color` / `decode_color`: a frame's colour half as a
+    128-byte prefix (the colour camera, its `ColorCodes`, its exposure)
+    before one coded picture, read in place (`ColorRecord`).
+  The decode checks the layout and passes every value as written; another
+  version is `Unsupported`. DECISIONS.md, the 2026-11-02 wire-form entry.
+- **`ColorExposure` and `RgbdFrame::color_exposure`** (`rgbd_frame.hpp`):
+  a picture's exposure time, ISO and bias as the camera reported it, all 0
+  where the driver does not say; the colour record carries it.
+- `tools/ios_build_check.sh` compiles `sensor_wire` too.
+
 ## [0.26.0] - 2026-11-02
 
 ### Added

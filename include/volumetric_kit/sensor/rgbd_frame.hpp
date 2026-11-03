@@ -48,6 +48,14 @@ struct ColorBitstream {
   std::size_t size = 0;  ///< The count of @ref data; 0 with `Codec::None`.
 };
 
+/// @brief A picture's exposure as the camera reported it for its frame; 0 in
+///        a field it does not report.
+struct ColorExposure {
+  float duration_s = 0.0f;  ///< The exposure time (seconds).
+  float iso = 0.0f;         ///< The sensor's gain, as ISO.
+  float bias_ev = 0.0f;     ///< The auto exposure's own offset (EV).
+};
+
 /// @brief A frame's depth on the device, as a GPU stage wrote it: stereo
 ///        matching that writes its depth straight into a Vulkan buffer, say.
 ///
@@ -165,6 +173,9 @@ struct RgbdFrame {
   /// MJPEG camera's JPEG, byte for byte. Held by @ref pixels. Empty for a
   /// frame decoded from H.265 or taken from a dataset.
   ColorBitstream color_bitstream{};
+  /// The picture's exposure, as the camera reported it; all 0 where the
+  /// driver does not say. A recording carries it (`wire/rgbd_wire.hpp`).
+  ColorExposure color_exposure{};
 
   /// The colour camera's frame to the world's, in this package's camera axes
   /// (+Z forward, +Y down): where the sensor sits, from its calibration or,
