@@ -6,14 +6,14 @@
 # camera- and colour-convention conversions. The calibration file is the camera
 # tier's (camera/array_calibration.hpp). Carries no driver itself: one ships in
 # this package only if it can build *and* test it (the 2026-08-02 decision), and
-# the one that does, Orbbec, is its own target (orbbec/, below).
+# those that do are targets of their own (orbbec/, realsense/, decklink/ and
+# arkit/, below).
 #
 # Depends on sensor_camera and sensor_frame alone -- the whole tier is host
 # types and arithmetic. That is what makes the interface implementable from
-# outside: an ARKit driver in volumetric_kit_ios is Objective-C++, and it
-# compiles and links against the camera and frame tiers rather than
-# preprocessing the Vulkan surface to fill in an intrinsics struct. It is also
-# why the tests need no device.
+# outside: a driver in an application's repository compiles and links against
+# the camera and frame tiers rather than preprocessing the Vulkan surface to
+# fill in an intrinsics struct. It is also why the tests need no device.
 include(GenerateExportHeader)
 
 set(_vs_interface_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
@@ -84,6 +84,13 @@ add_subdirectory(video)
 # An RGB-D sensor's frames as bytes, on the interface and the H.265 syntax's
 # colour codes, every build; see wire/CMakeLists.txt.
 add_subdirectory(wire)
+
+# ARKit as an IRgbdSensor, on every Apple build (its camera on iOS, its test
+# pattern everywhere), after apple and video, which it links privately; see
+# arkit/CMakeLists.txt.
+if(APPLE)
+  add_subdirectory(arkit)
+endif()
 
 # The Orbbec driver; see orbbec/CMakeLists.txt.
 if(VS_WITH_ORBBEC)

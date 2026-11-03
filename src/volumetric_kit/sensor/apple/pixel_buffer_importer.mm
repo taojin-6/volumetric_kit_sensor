@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -57,6 +58,15 @@ struct Held {
 
   std::shared_ptr<const Surface> surface;
   CVPixelBufferRef pixels;
+};
+
+// How a picture's images let their Held go: what pixel_buffer_of finds,
+// through std::get_deleter on either image, and so knows the images are this
+// importer's. It carries the buffer, since a deleter is all get_deleter
+// returns. Defined and looked up in this file alone, so the type matches.
+struct HeldDeleter {
+  CVPixelBufferRef pixels = nullptr;
+  void operator()(const Held* held) const noexcept { delete held; }
 };
 
 }  // namespace
@@ -310,7 +320,9 @@ core::Status PixelBufferImporter::import(CVPixelBufferRef pixels,
     surfaces.push_back(entry);
   }
   entry->seen = now;
-  const auto held = std::make_shared<const Held>(entry, pixels);
+  // Not make_shared: get_deleter finds a deleter only where one was given.
+  const std::shared_ptr<const Held> held(new Held(entry, pixels),
+                                         HeldDeleter{pixels});
   out.layout = YuvLayout::Nv12;
   out.device.reset();
   out.image[0] = std::shared_ptr<const core::Image>(held, &entry->luma);
@@ -318,6 +330,14 @@ core::Status PixelBufferImporter::import(CVPixelBufferRef pixels,
   out.width = width;
   out.height = height;
   return {};
+}
+
+CVPixelBufferRef pixel_buffer_of(const YuvImage& picture) noexcept {
+  const HeldDeleter* held =
+      picture.image[0] != nullptr
+          ? std::get_deleter<HeldDeleter>(picture.image[0])
+          : nullptr;
+  return held != nullptr ? held->pixels : nullptr;
 }
 
 }  // namespace volumetric_kit::sensor

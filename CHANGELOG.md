@@ -4,6 +4,53 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.0] - 2026-11-03
+
+### Added
+
+- **`ArkitSensor`** (`arkit/arkit_sensor.hpp`, new target
+  `sensor_arkit`, every Apple build): ARKit as an `IRgbdSensor`. `open`
+  runs the session (the back wide camera's format at the size and rate
+  asked for, one depth map, HDR off, gravity-aligned) and waits for its
+  first frame with depth, whose cameras `info()` names. Each frame's depth
+  is copied once out of ARKit's buffer as u16 millimetres
+  (`arkit_depth_mm`) with ARKit's u8 confidence levels beside it, gated on
+  the GPU at `Options::min_confidence` (2 by default); its picture is
+  ARKit's `capturedImage`, imported as NV12 plane images at `poll` with no
+  copy and described from its own tags (an untagged matrix BT.601). Pose
+  through `cv_from_gl_camera`, the depth camera through
+  `depth_from_registered_color`, times on the host's `system_clock`,
+  frames ARKit did not track normally withheld, one world for the sensor
+  (relocalisation, never a reset). `ArkitStatus` (`status()`): tracking,
+  interruption, withheld, refused, missed periods, the last refusal and
+  the session's error. `ArkitSource::Pattern` runs the same driver with no
+  camera, on every Apple platform: `testing::pattern_depth` and
+  `testing::test_pattern` coding each frame's sequence. ARKit's camera
+  runs on iOS and iPadOS; elsewhere `open` refuses it. DECISIONS.md, the
+  2026-11-03 ARKit entry.
+- **`kArkitDepthNoise`** `{8.58e-3, -7.67e-3, 3.79e-3}`, which every
+  `ArkitSensor` frame states.
+- **`pixel_buffer_of(picture)`** (`apple/pixel_buffer_importer.hpp`,
+  `sensor_apple`): the `CVPixelBuffer` whose planes a picture's images are,
+  where `PixelBufferImporter` made them, to code it as it is
+  (`send_pixel_buffer`); null for any other picture.
+
+### Changed
+
+- **`DepthNoise::known()`** takes a negative b where sigma(z) stays above
+  0 for every z above 0 (b^2 < 4ac), a and c at least 0 as before: a
+  LiDAR's curve, least noisy past the camera. Every model it took before
+  it still takes.
+- `kMaxColorQueueFamilies` moves from `orbbec/orbbec_stream.hpp` to
+  `yuv_image.hpp`, the same name and value; `orbbec_stream.hpp` includes
+  it from there.
+- `PixelBufferImporter`'s images hold their buffer through a deleter of
+  its own, which `pixel_buffer_of` finds; what they hold, and for how long,
+  is unchanged.
+- The iOS build check also compiles `sensor_arkit`, ARKit's feed among
+  it, and links it, and an app's calls to open ARKit's camera, against
+  ARKit and AVFoundation. The ThreadSanitizer step runs the ARKit tests.
+
 ## [0.39.0] - 2026-11-03
 
 ### Fixed

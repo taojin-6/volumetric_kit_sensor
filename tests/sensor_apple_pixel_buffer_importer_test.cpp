@@ -5,8 +5,9 @@
 // with no decoder and no FFmpeg: an NV12 IOSurface's planes reach Vulkan as
 // images without a copy -- they read what the surface holds when they are
 // read, not when it was imported -- at the picture's size from the buffer's
-// corner, each surface's images made once; the images hold the buffer; what
-// the images allocate in Metal; the picture prepares as a frame's colour by
+// corner, each surface's images made once; the images hold the buffer, which
+// pixel_buffer_of finds again from them, and only from them; what the images
+// allocate in Metal; the picture prepares as a frame's colour by
 // the description its caller gives, sampled in place to the words its buffer
 // form gives; the images' sharing across queue families, and a renderer's
 // family copying them on a device shared with recon; what it refuses; and
@@ -50,6 +51,7 @@
 #include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/sensor/testing/nv12_pattern.hpp"
+#include "volumetric_kit/sensor/testing/nv12_picture.hpp"
 #include "volumetric_kit/sensor/testing/nv12_writer.hpp"
 #include "volumetric_kit/sensor/video/hevc_encoder.hpp"
 #include "yuv_reference.hpp"
@@ -257,6 +259,46 @@ int test_holds_the_buffer(const Gpu& gpu) {
   CHECK(CFGetRetainCount(pixels.ref) == alone + 1);  // the chroma holds it
   chroma.reset();
   CHECK(CFGetRetainCount(pixels.ref) == alone);
+  return 0;
+}
+
+// pixel_buffer_of gives back the buffer the importer made a picture's images
+// from, through either image, a copy of the picture's or alone; and null for a
+// picture it did not make: an empty one, host planes, or images another
+// producer made on the device.
+int test_pixel_buffer_of(const Gpu& gpu) {
+  auto importer = PixelBufferImporter::create(gpu.device, "test");
+  CHECK(importer.ok());
+  const Pixels a(make_pixels(64, 32, kFull));
+  const Pixels b(make_pixels(64, 32, kVideo));
+  CHECK(a.ref != nullptr && b.ref != nullptr);
+  YuvImage first;
+  YuvImage second;
+  CHECK(importer->import(a.ref, 64, 32, first).ok());
+  CHECK(importer->import(b.ref, 64, 32, second).ok());
+  CHECK(sensor::pixel_buffer_of(first) == a.ref);
+  CHECK(sensor::pixel_buffer_of(second) == b.ref);
+  // The same surface imported again: its images are kept, its buffer named.
+  YuvImage again;
+  CHECK(importer->import(a.ref, 60, 30, again).ok());
+  CHECK(sensor::pixel_buffer_of(again) == a.ref);
+  const YuvImage copy = first;
+  CHECK(sensor::pixel_buffer_of(copy) == a.ref);
+
+  CHECK(sensor::pixel_buffer_of(YuvImage{}) == nullptr);
+  YuvImage host;
+  const std::vector<std::uint8_t> bytes(64 * 32 * 3 / 2, 128);
+  host.layout = sensor::YuvLayout::Nv12;
+  host.host = bytes.data();
+  host.offset[1] = 64 * 32;
+  host.stride[0] = host.stride[1] = 64;
+  host.width = 64;
+  host.height = 32;
+  CHECK(sensor::pixel_buffer_of(host) == nullptr);
+  vkc::Result<YuvImage> decoded = testing::device_picture(
+      gpu.device, gpu.allocator, testing::test_pattern(64, 32, 1));
+  CHECK(decoded.ok() && decoded->image[0] != nullptr);
+  CHECK(sensor::pixel_buffer_of(*decoded) == nullptr);
   return 0;
 }
 
@@ -760,6 +802,7 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_planes(gpu) != 0) return 1;
   if (test_sets_only_the_planes(gpu) != 0) return 1;
   if (test_holds_the_buffer(gpu) != 0) return 1;
+  if (test_pixel_buffer_of(gpu) != 0) return 1;
   if (test_allocates_only_textures(gpu, Access::Read) != 0) return 1;
   if (test_allocates_only_textures(gpu, Access::Write) != 0) return 1;
   if (test_writes_in_place(gpu) != 0) return 1;
