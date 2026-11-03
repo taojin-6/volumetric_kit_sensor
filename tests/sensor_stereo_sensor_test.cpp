@@ -82,6 +82,9 @@ int test_contract() {
   bad = frames;
   bad[1].timestamp_ns = bad[0].timestamp_ns;
   CHECK(names(bad, stats, "frame 1: time"));
+  bad = frames;  // ordered on the frame before, not on the first
+  bad[2].timestamp_ns = bad[1].timestamp_ns;
+  CHECK(names(bad, stats, "frame 2: time 1033333333 ns after 1033333333"));
 
   // A time of 0 is none (StereoFrame::timestamp_ns, as RgbdFrame's): pairs
   // with none keep the order, the sequence still counted; a 0 between rising

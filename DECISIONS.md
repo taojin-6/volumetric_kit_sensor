@@ -6532,8 +6532,9 @@ stereo contract each pass it the last non-zero time and keep no copy of
 it. A pair that goes back in time past a 0 still breaks it. Planted bugs,
 each failing its test: `order_breach` counting a 0 as a time again
 (`sensor_rgbd_contract`, `sensor_stereo_sensor`), and the stereo contract
-keeping a 0 as the last time, or skipping the sequence of a pair with no
-time (`sensor_stereo_sensor`).
+keeping a 0 as the last time, keeping the first time as the last for
+good, or skipping the sequence of a pair with no time
+(`sensor_stereo_sensor`).
 
 **The rule.** `IRgbdSensor`'s doc states the frame contract every driver
 keeps: a frame's colour is the picture of the capture its depth is from; a
@@ -6574,7 +6575,8 @@ picture's index band, whose layout moves to the standard-library-only
   host clock hands out 0 until it has one. So the checker orders the times
   a sensor reports, each against the last non-zero one, and the sequence
   alone where a frame has none. The stereo contract counts every time, 0
-  included, as before; whether it skips a 0 too is the owner's call.
+  included, as before; whether it skips a 0 too is the owner's call (it
+  skips it since 2026-11-03, amended above).
 - **The plane as prep takes it.** A tracked source (the iPad's pattern
   source) hands out a confidence plane, which `GpuFramePrep` refuses beside
   device depth or at a floor of 0, as it refuses a floor without one; the
