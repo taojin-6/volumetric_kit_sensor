@@ -100,7 +100,7 @@ class DecodeWorker {
         gap_ = true;
       }
     }
-    if (dropped != 0) dropped_.fetch_add(dropped, std::memory_order_relaxed);
+    if (dropped != 0) dropped_.fetch_add(dropped, std::memory_order_release);
     if (lost != 0) lose(lost);
     wake_.notify_one();
   }
@@ -122,7 +122,7 @@ class DecodeWorker {
 
   // Count `items` lost: handed to the decode and never decoded.
   void lose(std::uint64_t items = 1) noexcept {
-    lost_.fetch_add(items, std::memory_order_relaxed);
+    lost_.fetch_add(items, std::memory_order_release);
   }
 
   // Stop decoding for good, for `why` (not OK; the first one stands): what
@@ -143,12 +143,14 @@ class DecodeWorker {
   }
   // Items lost: dropped by DropAll or for want of memory, one whose decode
   // threw, those waiting at fail(), and whatever the decode counts (lose).
+  // Both counts are made with release and read with acquire, so a reader
+  // that reads the items' arrival after them sees it.
   std::uint64_t lost() const noexcept {
-    return lost_.load(std::memory_order_relaxed);
+    return lost_.load(std::memory_order_acquire);
   }
   // Items DropOldest replaced with newer ones.
   std::uint64_t dropped() const noexcept {
-    return dropped_.load(std::memory_order_relaxed);
+    return dropped_.load(std::memory_order_acquire);
   }
 
  private:

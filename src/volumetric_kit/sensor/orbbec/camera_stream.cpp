@@ -350,16 +350,18 @@ CameraStream::~CameraStream() {
 }
 
 OrbbecStreamStats CameraStream::stats() const noexcept {
+  // `received` last: each count before it is made after the arrival it
+  // covers, and read with acquire, so they never sum past it.
   OrbbecStreamStats s;
-  s.received = mailbox_->received.load(std::memory_order_relaxed);
   s.delivered = delivered_;
-  s.dropped = mailbox_->queue.dropped();
   s.failed = failed_;
+  s.dropped = mailbox_->queue.dropped();
   if (hevc_ != nullptr) s.lost = hevc_->lost();
   if (jpeg_ != nullptr) {
     s.dropped += jpeg_->dropped();
     s.lost = jpeg_->lost();
   }
+  s.received = mailbox_->received.load(std::memory_order_acquire);
   return s;
 }
 

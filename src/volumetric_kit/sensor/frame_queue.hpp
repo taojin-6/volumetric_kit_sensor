@@ -46,7 +46,7 @@ class FrameQueue {
 
   // From the producer's thread: a frame in, the oldest pushed out of a full
   // queue (counted dropped), then the consumer woken, after the lock is
-  // released.
+  // released, so its wake-up may take from the queue.
   void push(T frame) {
     std::function<void()> notify;
     {
@@ -129,8 +129,8 @@ class FrameQueue {
   }
 
   // Each drop is counted with release and read with acquire, so a reader
-  // that sees one also sees what the producer counted before it (the
-  // frame's arrival, received).
+  // that reads the frame's arrival (received) after its drops sees it, as
+  // every driver's stats does.
   std::uint64_t dropped() const noexcept {
     return dropped_.load(std::memory_order_acquire);
   }

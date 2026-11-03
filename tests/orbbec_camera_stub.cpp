@@ -217,13 +217,14 @@ void CameraStream::set_queue_depth(std::size_t depth) {
 }
 void CameraStream::set_frame_notify(std::function<void()>) {}
 
+// In the driver's order, `received` last.
 OrbbecStreamStats CameraStream::stats() const noexcept {
   OrbbecStreamStats s;
-  s.received = mailbox_->received.load();
   s.delivered = delivered_;
-  s.dropped = mailbox_->queue.dropped();
   s.failed = failed_;
+  s.dropped = mailbox_->queue.dropped();
   s.lost = orbbec_stub::cameras.at(info_.serial).lost;
+  s.received = mailbox_->received.load();
   return s;
 }
 
