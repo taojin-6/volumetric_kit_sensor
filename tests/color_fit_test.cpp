@@ -189,6 +189,24 @@ void undistort(const camera::CameraModel& cam, double u, double v, double* x,
   }
 }
 
+// The pinhole point of every raw colour pixel, row-major: the lens inverted
+// once, since every camera shares `color_model()`.
+const std::vector<std::array<double, 2>>& color_points() {
+  static const std::vector<std::array<double, 2>> points = [] {
+    const camera::CameraModel cc = color_model();
+    std::vector<std::array<double, 2>> out(std::size_t{cc.size.width} *
+                                           cc.size.height);
+    for (std::uint32_t v = 0; v < cc.size.height; ++v) {
+      for (std::uint32_t u = 0; u < cc.size.width; ++u) {
+        std::array<double, 2>& p = out[std::size_t{v} * cc.size.width + u];
+        undistort(cc, u, v, &p[0], &p[1]);
+      }
+    }
+    return out;
+  }();
+  return points;
+}
+
 Raw render(const Mat4d& pose, const Planted& planted, double noise,
            std::uint32_t seed) {
   Raw raw;
@@ -199,10 +217,10 @@ Raw render(const Mat4d& pose, const Planted& planted, double noise,
   std::mt19937 rng(seed);
   std::normal_distribution<double> gauss(0.0, noise);
   raw.words.resize(std::size_t{cc.size.width} * cc.size.height);
+  const std::vector<std::array<double, 2>>& points = color_points();
   for (std::uint32_t v = 0; v < cc.size.height; ++v) {
     for (std::uint32_t u = 0; u < cc.size.width; ++u) {
-      double x = 0.0, y = 0.0;
-      undistort(cc, u, v, &x, &y);
+      const auto [x, y] = points[std::size_t{v} * cc.size.width + u];
       double t = 0.0;
       Vec3d albedo(0.1);
       trace(eye, rot * Vec3d(x, y, 1.0), &t, &albedo);
