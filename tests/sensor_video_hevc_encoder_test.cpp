@@ -7,19 +7,24 @@
 // once through pixel buffers, and the rules the options change at either
 // range, BT.601 and BT.709, sitings 0 and 1 where the backend writes them,
 // the lowest QP the backend codes and 51 and a key QP of its own, a size the
-// coded picture crops, NVENC's least and most effort, on every code in the
-// colour set, and on one picture past level 5.1's size (on NVENC in strips,
-// or refused by an FFmpeg that cannot ask for them); the pictures it codes
-// decoded back and read on the host, PSNR at QP 22 and the pattern's 0 and
-// 255 and index, one target's batch held behind a value the test sets after
-// its send; a target described by each matrix, range and siting; the images
-// or buffers a batch still writes kept through the teardown and a reopen,
-// and create's first targets waiting for no batch; a device without
-// hevc_encoder_device_requirements(), or on NVENC one that exports no
-// memory, refused; NVENC's strips from 4096 rows; video_backend(); and on
-// Apple color_codes_of on every string Core Video names. On every device:
-// the test writer (testing/nv12_writer.hpp) stores a picture into plane
-// images or a buffer's rows as it is, and refuses what it cannot write.
+// coded picture crops, and one picture past level 5.1's size (on NVENC in
+// strips, or refused by an FFmpeg that cannot ask for them); every code in
+// the colour set (on Apple the stream's rules, on NVENC what the sequence
+// says) and NVENC's least and most effort (what the sequence says); the
+// pictures it codes decoded back and read on the host, PSNR at QP 22 and the
+// pattern's 0 and 255 and index, at the rules' size and the cropped one, one
+// target's batch held behind a value the test sets after its send; a target
+// described by each matrix, range and siting; the images or buffers a batch
+// still writes kept through the teardown and a reopen, and create's first
+// targets waiting for no batch; a picture that fails uncoded letting go of
+// its target only once its writer is done; NVENC handing out no buffer a
+// sent picture holds, and its buffers passing to the session that opens
+// again; a device without hevc_encoder_device_requirements(), or on NVENC
+// one that exports no memory, refused; NVENC's strips asked from 4096 rows;
+// video_backend(); and on Apple color_codes_of on every string Core Video
+// names. On every device: the test writer (testing/nv12_writer.hpp) stores a
+// picture into plane images or a buffer's rows as it is, and refuses what it
+// cannot write.
 //
 // The pictures are as small as each rule allows and no step sleeps a fixed
 // time: each value the test holds is set once the step it holds for is
@@ -321,9 +326,10 @@ testing::HevcEncoderCase stream_only(testing::HevcEncoderCase c) {
 }
 
 // What the sequence says (C3-C5 on one key, C10), which a colour code or an
-// effort changes, on a case of its own.
+// effort changes, on a case of its own: one picture.
 testing::HevcEncoderCase sequence_only(testing::HevcEncoderCase c) {
   c.rules = testing::HevcEncoderCase::Rules::Sequence;
+  c.pictures = 1;
   return c;
 }
 
@@ -501,8 +507,8 @@ int test_device_refused(Gpu& gpu) {
   return 0;
 }
 
-// Strips from 4096 rows: none asked below (the driver's choice), 3 at 4096
-// where this FFmpeg can ask for them; a session opened only.
+// Strips from 4096 rows: none asked below (the driver's choice), 3 asked at
+// 4096 where this FFmpeg can ask for them; a session opened only.
 int test_strips(Gpu& gpu) {
   HevcEncoder::Options o;
   o.width = 3840;
@@ -528,9 +534,11 @@ int test_strips(Gpu& gpu) {
 #endif
 
 // Every code in the set, normalization included, and every siting the
-// backend writes (VideoToolbox's 1 to 5; NVENC refuses them): each what the
-// sequence says, on one key; the stream's decode of a colour is the cases'
-// above.
+// backend writes (VideoToolbox's 1 to 5; NVENC refuses them). On Apple each
+// the stream's rules on the fewest pictures they take, as a pixel buffer's
+// tags are Core Video's names for the codes (C11) and the decode reads them
+// back (C6); on NVENC, which has no tags, what the sequence says, on one
+// key.
 int test_code_set(Gpu& gpu) {
   std::vector<ColorCodes> all;
   for (const int m : {1, 5, 6, 7, 9}) all.push_back({m, 1, 1, true, 0});
@@ -556,7 +564,12 @@ int test_code_set(Gpu& gpu) {
           refused.status().domain() == vkc::Status::Code::Unsupported);
   }
   for (const ColorCodes& c : all) {
+#if defined(__APPLE__)
+    auto run = stream_only(make(kW, kH, c));
+    run.pictures = 4;
+#else
     auto run = sequence_only(make(kW, kH, c));
+#endif
     const std::string what = "matrix " + std::to_string(c.matrix) +
                              " transfer " + std::to_string(c.transfer) +
                              " primaries " + std::to_string(c.primaries) +
@@ -700,21 +713,23 @@ constexpr double kLeastPsnr = 45;
 constexpr double kLeastPsnr = 40;
 #endif
 
-// The pattern coded at QP 22 and decoded back: PSNR at least kLeastPsnr in
-// each plane, square 0's 255 and square 1's 0 exact, and each picture's
-// index.
+// The pattern coded at QP 22 at @p w x @p h and decoded back: PSNR at least
+// kLeastPsnr in each plane, square 0's 255 and square 1's 0 exact, and each
+// picture's index. At rows no multiple of 16, a chroma placed after an
+// aligned luma height fails it.
 // Through targets, the device writes each picture (testing::Nv12Writer), and
 // picture kHeld's batch runs only once the test sets a value, after its send
 // has returned and a receive held ten pictures' time found nothing: it
 // decodes to what that batch wrote, so the coding thread coded it only once
 // it was written.
-int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
+int test_quality(Gpu& gpu, const ColorCodes& color, In in, std::uint32_t w = kW,
+                 std::uint32_t h = kH) {
   constexpr std::uint32_t kCoded = 6;
   constexpr std::uint32_t kHeld = 3;
   const bool targets = in == In::Targets;
   HevcEncoder::Options o;
-  o.width = kW;
-  o.height = kH;
+  o.width = w;
+  o.height = h;
   o.qp = 22;
   o.color = color;
   if (targets) {
@@ -742,7 +757,7 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
   std::uint32_t out = 0;
   Clock::duration path{};  // the slowest picture's, before the held one
   for (std::uint32_t i = 0; i < kCoded; ++i) {
-    const testing::HostNv12 want = testing::test_pattern(kW, kH, 40 + i);
+    const testing::HostNv12 want = testing::test_pattern(w, h, 40 + i);
     const Clock::time_point start = Clock::now();
     if (targets) {
       vkc::CommandBatch batch(gpu.device, gpu.allocator);
@@ -789,8 +804,8 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
       std::vector<std::uint8_t> planes[3];
       vs_test::read_device_picture((*picture)->yuv, gpu.device, gpu.allocator,
                                    planes);
-      CHECK(planes[0].size() == std::size_t{kW} * kH);
-      const testing::HostNv12 ref = testing::test_pattern(kW, kH, 40 + out);
+      CHECK(planes[0].size() == std::size_t{w} * h);
+      const testing::HostNv12 ref = testing::test_pattern(w, h, 40 + out);
       std::vector<std::uint8_t> cb, cr;
       for (std::size_t k = 0; k < ref.chroma.size(); k += 2) {
         cb.push_back(ref.chroma[k]);
@@ -801,20 +816,19 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
       for (int k = 0; k < 3; ++k) worst[k] = std::min(worst[k], p[k]);
       for (std::uint32_t y = 0; y < testing::kIndexSquare; ++y) {
         for (std::uint32_t x = 0; x < testing::kIndexSquare; ++x) {
-          CHECK(planes[0][std::size_t{y} * kW + x] == 255);
-          CHECK(planes[0][std::size_t{y} * kW + testing::kIndexSquare + x] ==
-                0);
+          CHECK(planes[0][std::size_t{y} * w + x] == 255);
+          CHECK(planes[0][std::size_t{y} * w + testing::kIndexSquare + x] == 0);
         }
       }
-      CHECK(testing::pattern_index(planes[0].data(), kW) == 40 + out);
+      CHECK(testing::pattern_index(planes[0].data(), w) == 40 + out);
       ++out;
     }
   }
   CHECK(out == kCoded);
-  std::printf("QP 22, %s range, %s: worst PSNR Y %.2f, Cb %.2f, Cr %.2f dB\n",
-              color.full_range ? "full" : "video",
-              targets ? "targets" : "pixel buffers", worst[0], worst[1],
-              worst[2]);
+  std::printf(
+      "%ux%u QP 22, %s range, %s: worst PSNR Y %.2f, Cb %.2f, Cr %.2f dB\n", w,
+      h, color.full_range ? "full" : "video",
+      targets ? "targets" : "pixel buffers", worst[0], worst[1], worst[2]);
   CHECK(worst[0] >= kLeastPsnr && worst[1] >= kLeastPsnr &&
         worst[2] >= kLeastPsnr);
   return 0;
@@ -942,6 +956,143 @@ int test_writers_outlive(Gpu& gpu) {
   return 0;
 }
 
+// A picture that fails uncoded lets go of its target only once its writer is
+// done, as one coded does (NVENC hands out a target no picture holds): two
+// sent, each batch held, the first dropped once written, so the second fails
+// behind it; that failure does not come back within ten pictures' time while
+// its batch is held, only once the value is set.
+int test_failure_waits_for_writer(Gpu& gpu) {
+  auto writer = testing::Nv12Writer::create(gpu.device);
+  CHECK(writer.ok());
+  auto written = vkc::TimelineSemaphore::create(gpu.device);
+  auto gate = vkc::TimelineSemaphore::create(gpu.device);
+  CHECK(written.ok() && gate.ok());
+  const testing::HostNv12 picture = testing::test_pattern(kW, kH, 70);
+  std::vector<vkc::PendingBatch> pending;  // outlive the encoder
+  std::uint64_t value = 0;                 // written's last
+  HevcEncoder::Options o;
+  o.width = kW;
+  o.height = kH;
+  o.color = kBt709Full;
+  o.device = &gpu.device;
+  o.allocator = &gpu.allocator;
+  auto e = HevcEncoder::create(o);
+  CHECK(e.ok());
+  Gate held(*gate);
+  // A target written by a batch that waits for gate's @p after (none for
+  // 0), then sent.
+  const auto send = [&](bool key, std::int64_t pts,
+                        std::uint64_t after) -> vkc::Status {
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    VKC_ASSIGN(const sensor::YuvImage t, e->target(batch));
+    VKC_TRY(writer->record_upload(batch, gpu.allocator, picture, t));
+    std::vector<vkc::TimelinePoint> waits;
+    if (after != 0) waits.push_back({&*gate, after});
+    VKC_ASSIGN(vkc::PendingBatch p,
+               batch.submit_async(waits, {{&*written, value + 1}}));
+    pending.push_back(std::move(p));
+    ++value;
+    return e->send(key, pts, {&*written, value});
+  };
+  HevcEncoder::CodedPicture coded;
+  const Clock::time_point start = Clock::now();
+  CHECK(send(true, 0, 0).ok());
+  const auto first = e->receive(coded);
+  CHECK(first.ok() && *first);
+  const Clock::duration path = Clock::now() - start;
+  e->inject(HevcEncoder::Fault::Drop);
+  CHECK(send(false, 1, 1).ok());  // dropped once written
+  CHECK(send(false, 2, 2).ok());  // fails behind it
+  held.set(1);
+  const auto dropped = e->receive(coded);
+  CHECK(!dropped.ok() &&
+        dropped.status().domain() == vkc::Status::Code::IoError);
+  const auto early = e->receive(coded, nanoseconds(hold_for(path)));
+  CHECK(early.ok() && !*early);  // its writer is held: not let go yet
+  held.set(2);
+  const auto behind = e->receive(coded);
+  CHECK(!behind.ok() && behind.status().domain() == vkc::Status::Code::IoError);
+  CHECK(!held.fired());
+  std::puts("a picture that fails uncoded waits for its writer");
+  return 0;
+}
+
+#if !defined(__APPLE__)
+// NVENC's buffers: one a sent picture holds is never handed out while its
+// batch is held, however many targets are given up meanwhile (the oldest
+// free goes next, and the held one is the oldest after two give-ups); and
+// they pass from a lost session to the one that opens again, as a batch may
+// still be writing one given up: each target after the reopen is one of the
+// buffers before the loss.
+int test_buffers_handed_out(Gpu& gpu) {
+  auto writer = testing::Nv12Writer::create(gpu.device);
+  CHECK(writer.ok());
+  auto written = vkc::TimelineSemaphore::create(gpu.device);
+  auto gate = vkc::TimelineSemaphore::create(gpu.device);
+  CHECK(written.ok() && gate.ok());
+  const testing::HostNv12 picture = testing::test_pattern(kW, kH, 80);
+  std::vector<vkc::PendingBatch> pending;  // outlive the encoder
+  HevcEncoder::Options o;
+  o.width = kW;
+  o.height = kH;
+  o.color = kBt709Full;
+  o.device = &gpu.device;
+  o.allocator = &gpu.allocator;
+  auto e = HevcEncoder::create(o);
+  CHECK(e.ok());
+  Gate held(*gate);
+  // A key coded, then one sent whose batch waits for the gate.
+  std::shared_ptr<const vkc::Buffer> sent;
+  for (std::uint64_t i = 1; i <= 2; ++i) {
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    const auto t = e->target(batch);
+    CHECK(t.ok());
+    CHECK(writer->record_upload(batch, gpu.allocator, picture, *t).ok());
+    std::vector<vkc::TimelinePoint> waits;
+    if (i == 2) waits.push_back({&*gate, 1});
+    auto p = batch.submit_async(waits, {{&*written, i}});
+    CHECK(p.ok());
+    pending.push_back(std::move(*p));
+    CHECK(e->send(i == 1, static_cast<std::int64_t>(i), {&*written, i}).ok());
+    if (i == 1) {
+      HevcEncoder::CodedPicture coded;
+      const auto got = e->receive(coded);
+      CHECK(got.ok() && *got);
+    }
+    sent = t->device;
+  }
+  vkc::CommandBatch batch(gpu.device, gpu.allocator);  // never submitted
+  for (std::uint32_t i = 0; i < 2 * (HevcEncoder::kInFlight + 1); ++i) {
+    const auto t = e->target(batch);  // each gives up the one before
+    CHECK(t.ok() && t->device != sent);
+  }
+  held.set(1);
+  HevcEncoder::CodedPicture coded;
+  const auto got = e->receive(coded);
+  CHECK(got.ok() && *got && coded.pts == 2);
+  CHECK(!held.fired());
+  std::vector<std::shared_ptr<const vkc::Buffer>> before;
+  for (std::uint32_t i = 0; i <= HevcEncoder::kInFlight; ++i) {
+    const auto t = e->target(batch);
+    CHECK(t.ok());
+    if (std::find(before.begin(), before.end(), t->device) == before.end()) {
+      before.push_back(t->device);
+    }
+  }
+  CHECK(before.size() == HevcEncoder::kInFlight + 1);
+  e->inject(HevcEncoder::Fault::Lose);
+  for (std::uint32_t i = 0; i <= HevcEncoder::kInFlight; ++i) {
+    const auto t = e->target(batch);  // the first opens the session again
+    CHECK(t.ok() && !e->lost());
+    CHECK(std::find(before.begin(), before.end(), t->device) != before.end());
+  }
+  std::puts(
+      "NVENC hands out no buffer a picture holds, and its buffers pass to the "
+      "session that opens again");
+  return 0;
+}
+#endif
+
 // A plane image the writer stores into, or not, as @p usage says: 0xEE
 // throughout, in GENERAL.
 vkc::Result<std::shared_ptr<const vkc::Image>> plane_image(
@@ -980,8 +1131,9 @@ vkc::Result<sensor::YuvImage> planes(Gpu& gpu, std::uint32_t width,
 // The test writer into rows in a buffer, as NVENC's targets are: each row
 // reads back as it is, the bytes past it up to the stride 0, and nothing
 // outside the rows written, at the rules' size and a 4n+2 width with odd
-// rows; rows off 4 bytes, one stride shorter than the width, or past the
-// buffer are refused.
+// rows; rows off 4 bytes (either plane's offset, or the stride), a stride
+// shorter than the width or differing between the planes, chroma over the
+// luma or past the buffer, and a buffer with no STORAGE usage are refused.
 int test_writer_rows(Gpu& gpu, testing::Nv12Writer& writer) {
   constexpr std::uint8_t kFill = 0xEE;
   const struct {
@@ -1056,6 +1208,30 @@ int test_writer_rows(Gpu& gpu, testing::Nv12Writer& writer) {
   bad = good;
   bad.stride[1] = 128;
   CHECK(refused(bad));  // the planes' strides differ
+  bad = good;
+  bad.offset[1] = 64 * 16;
+  CHECK(refused(bad));  // chroma over the luma
+  // In a buffer with room for each, so only the rule named refuses it.
+  auto large = vkc::device_storage_buffer(gpu.allocator, 66 * 48 + 64);
+  CHECK(large.ok());
+  bad = good;
+  bad.device = std::make_shared<const vkc::Buffer>(std::move(*large));
+  const sensor::YuvImage roomy = bad;
+  bad.stride[0] = bad.stride[1] = 66;
+  bad.offset[1] = 66 * 32;
+  CHECK(refused(bad));  // a stride off 4 bytes
+  bad = roomy;
+  bad.offset[0] = 2;
+  bad.offset[1] = 64 * 32 + 4;
+  CHECK(refused(bad));  // luma off 4 bytes
+  vkc::BufferDesc desc;
+  desc.size = 64 * 48;
+  desc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  auto plain = gpu.allocator.create_buffer(desc);
+  CHECK(plain.ok());
+  bad = good;
+  bad.device = std::make_shared<const vkc::Buffer>(std::move(*plain));
+  CHECK(refused(bad));  // a buffer with no STORAGE usage
   std::puts("the test writer stores pictures into a buffer's rows");
   return 0;
 }
@@ -1152,15 +1328,19 @@ int gpu_main(Gpu& gpu) {
   if (test_target_described(gpu) != 0) return 1;
   if (test_device_refused(gpu) != 0) return 1;
   if (test_writers_outlive(gpu) != 0) return 1;
+  if (test_failure_waits_for_writer(gpu) != 0) return 1;
 #if defined(__APPLE__)
   const In ways[] = {In::PixelBuffers, In::Targets};
 #else
   const In ways[] = {In::Targets};
+  if (test_buffers_handed_out(gpu) != 0) return 1;
   if (test_strips(gpu) != 0) return 1;
 #endif
   for (const In in : ways) {
     if (test_quality(gpu, kBt601Full, in) != 0) return 1;
-    if (test_quality(gpu, kBt601Video, in) != 0) return 1;
+    if (test_quality(gpu, kBt601Video, in, kCroppedW, kCroppedH) != 0) {
+      return 1;
+    }
   }
   std::puts("sensor_video_hevc_encoder: OK");
   return 0;

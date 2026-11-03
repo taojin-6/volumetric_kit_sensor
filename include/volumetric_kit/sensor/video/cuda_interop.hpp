@@ -37,10 +37,14 @@ VS_VIDEO_API core::Result<int> cuda_ordinal_of(const core::Device& device);
 /// @brief The primary CUDA context of a device's GPU, retained while this
 ///        lives.
 ///
-/// Every holder on a GPU shares the one context, as CUDA's runtime does. It
-/// is never left current on a thread: each call that needs it makes it
-/// current for its own scope and puts back the context before, and a caller
-/// does the same with @ref handle (`cuCtxPushCurrent`, `cuCtxPopCurrent`).
+/// Every holder on a GPU shares the one context, as CUDA's runtime does:
+/// NVDEC's and NVENC's sessions retain it too. One let go by its last holder
+/// is made again by the next, at about a third of a second (RTX 4090 and
+/// 5090), so a program that opens sessions one after another holds one of
+/// these for their life. It is never left current on a thread: each call
+/// that needs it makes it current for its own scope and puts back the
+/// context before, and a caller does the same with @ref handle
+/// (`cuCtxPushCurrent`, `cuCtxPopCurrent`).
 class VS_VIDEO_API CudaContext {
  public:
   /// @brief Retain the primary context of @p device's GPU.

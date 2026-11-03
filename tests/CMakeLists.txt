@@ -584,8 +584,9 @@ if(APPLE OR VS_WITH_FFMPEG)
   add_test(NAME sensor_video_hevc COMMAND sensor_video_hevc_test)
 
   # The HEVC encoder: the rules (sensor_video_testing's hevc_encoder_breach) on
-  # the public cases and every colour code, decoded back and read on the host,
-  # and color_codes_of on Apple; where no hardware path opens it skips, unless
+  # the public cases, decoded back and read on the host, and on every colour
+  # code (on Apple the stream's rules, elsewhere what the sequence says), and
+  # color_codes_of on Apple; where no hardware path opens it skips, unless
   # VS_TEST_HEVC_ENCODER promises one. Off Apple it reads FFmpeg's hevc_nvenc
   # for whether this FFmpeg can ask NVENC for strips.
   add_executable(sensor_video_hevc_encoder_test

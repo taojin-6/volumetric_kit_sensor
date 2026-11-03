@@ -205,7 +205,9 @@ struct HevcEncoder::Impl {
   std::atomic<bool> lost{false};
   std::thread thread;
 
-  // The coding thread: it allocates nothing and never throws.
+  // The coding thread. It never throws: its rings and buffers are made at
+  // create, and each allocation the backend makes in it can fail, as that
+  // picture's OutOfMemory.
   void run() noexcept;
   // A picture failed or was lost: a key is owed, and each picture sent so
   // far, which would follow the gap, fails too. Under mutex.
