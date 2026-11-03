@@ -5,7 +5,9 @@
 //   - the contract every stereo source keeps (stereo_contract.hpp): a source
 //     opened without a calibration reports both cameras 0 x 0 and one opened
 //     with one neither camera with a side 0, and frames that keep the sync
-//     rules pass; each rule broken is the one named;
+//     rules pass; each rule broken is the one named; a time of 0 is none,
+//     the sequence still checked, and a time after a 0 still increases on
+//     the last one reported;
 //   - StereoRectifier::create takes a pair from two entries of a calibration
 //     file (stereo_calibration), its rig rectify_stereo's bit for bit, the
 //     baseline the cameras' distance; and refuses a source with no
@@ -80,6 +82,26 @@ int test_contract() {
   bad = frames;
   bad[1].timestamp_ns = bad[0].timestamp_ns;
   CHECK(names(bad, stats, "frame 1: time"));
+  bad = frames;  // ordered on the frame before, not on the first
+  bad[2].timestamp_ns = bad[1].timestamp_ns;
+  CHECK(names(bad, stats, "frame 2: time 1033333333 ns after 1033333333"));
+
+  // A time of 0 is none (StereoFrame::timestamp_ns, as RgbdFrame's): pairs
+  // with none keep the order, the sequence still counted; a 0 between rising
+  // times keeps it too; a time after a 0 still increases on the last one
+  // reported.
+  bad = frames;
+  for (sensor::StereoFrame& f : bad) f.timestamp_ns = 0;
+  CHECK(
+      stereo_contract::breach(info, Opened::Uncalibrated, bad, stats).empty());
+  bad[2].sequence = bad[1].sequence;
+  CHECK(names(bad, stats, "frame 2: sequence 12 after 12"));
+  bad = frames;
+  bad[1].timestamp_ns = 0;
+  CHECK(
+      stereo_contract::breach(info, Opened::Uncalibrated, bad, stats).empty());
+  bad[2].timestamp_ns = bad[0].timestamp_ns - 1;
+  CHECK(names(bad, stats, "frame 2: time 999999999 ns after 1000000000"));
   sensor::SensorStats over = stats;
   over.failed = 2;
   CHECK(names(frames, over, "past received 5"));

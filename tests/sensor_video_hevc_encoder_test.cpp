@@ -2,13 +2,15 @@
 // Copyright (c) 2026 Tao Jin
 
 // The HEVC encoder on this machine's hardware: the encoder rules
-// (testing/hevc_conformance.hpp, C1-C13b) at the public sizes, at either
-// range, BT.601 and BT.709, sitings 0 and 1, QP 1 and 51 and a key QP of its
-// own, and on every code in the colour set, through pixel buffers and
-// through targets a kernel writes on the device; the pictures it codes
+// (testing/hevc_conformance.hpp, C1-C13b) on small pictures, every rule once
+// through pixel buffers and once through targets a kernel writes on the
+// device, and the rules the options change at either range, BT.601 and
+// BT.709, sitings 0 and 1, QP 1 and 51 and a key QP of its own, a size the
+// coded picture crops, on every code in the colour set, and on one picture
+// past level 5.1's size; the pictures it codes
 // decoded back and read on the host, PSNR at QP 22 and the pattern's 0 and
-// 255 and index, one target written only after a helper thread lets its
-// batch run; a target described by each matrix, range and siting; the images
+// 255 and index, one target's batch held behind a value the test sets after
+// its send; a target described by each matrix, range and siting; the images
 // a batch still writes kept through the teardown and a reopen, and create's
 // first targets waiting for no batch; a device without
 // hevc_encoder_device_requirements() refused;
@@ -16,6 +18,12 @@
 // names. A build with no encoder refuses in create. On every device: the
 // test writer (testing/nv12_writer.hpp) stores a picture into plane images
 // as it is, and refuses what it cannot write.
+//
+// The pictures are as small as each rule allows and no step sleeps a fixed
+// time: each value the test holds is set once the step it holds for is
+// seen, or once a wait of ten pictures' time found nothing, so the test
+// takes seconds even under ThreadSanitizer. Full-size runs are benchmarks'
+// and a device runner's (an app's -self-test).
 //
 // Where no hardware path opens the encoder part skips; VS_TEST_HEVC_ENCODER,
 // which CI sets on the legs that promise one (VideoToolbox on macOS), makes
@@ -25,10 +33,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <future>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -241,20 +253,34 @@ int breach(const char* what, testing::HevcEncoderCase c, Gpu& gpu,
   c.device = &gpu.device;
   c.allocator = &gpu.allocator;
   c.pixel_buffers = in == In::PixelBuffers;
-  const char* way = c.pixel_buffers ? "pixel buffers" : "targets";
+  const bool all = c.rules == testing::HevcEncoderCase::Rules::All;
+  const std::string name = std::to_string(c.options.width) + "x" +
+                           std::to_string(c.options.height) + " " + what +
+                           (c.pixel_buffers ? ", pixel buffers" : ", targets") +
+                           (all ? ", every rule" : ", the stream's rules");
   const auto broken = testing::hevc_encoder_breach(c);
   if (!broken.ok()) {
-    std::fprintf(stderr, "FAIL %s, %s: %s\n", what, way,
+    std::fprintf(stderr, "FAIL %s: %s\n", name.c_str(),
                  broken.status().message().c_str());
     return 1;
   }
   if (!broken->empty()) {
-    std::fprintf(stderr, "FAIL %s, %s: %s\n", what, way, broken->c_str());
+    std::fprintf(stderr, "FAIL %s: %s\n", name.c_str(), broken->c_str());
     return 1;
   }
-  std::printf("rules kept: %s, %s\n", what, way);
+  std::printf("rules kept: %s\n", name.c_str());
   return 0;
 }
+
+// The rules' pictures: as wide as the test pattern's index band (256
+// columns), and the same 2 larger each way, a 4n+2 width and rows no
+// multiple of 16, which the coded picture crops. A handful of pictures: two
+// keys and P-pictures after a key and after a P-picture.
+constexpr std::uint32_t kW = 256;
+constexpr std::uint32_t kH = 144;
+constexpr std::uint32_t kCroppedW = kW + 2;
+constexpr std::uint32_t kCroppedH = kH + 2;
+constexpr std::uint32_t kPictures = 6;
 
 testing::HevcEncoderCase make(std::uint32_t w, std::uint32_t h,
                               const ColorCodes& color, int qp = 22) {
@@ -263,6 +289,7 @@ testing::HevcEncoderCase make(std::uint32_t w, std::uint32_t h,
   c.options.height = h;
   c.options.qp = qp;
   c.options.color = color;
+  c.pictures = kPictures;
   return c;
 }
 
@@ -271,68 +298,61 @@ const ColorCodes kBt709Video{1, 1, 1, false, 0};
 const ColorCodes kBt601Full{6, 1, 6, true, 0};
 const ColorCodes kBt601Video{6, 1, 6, false, 0};
 
-// The public sizes and colours (512 square, a 4n+2 width, the strip
-// boundary's rows, a camera's 1920x1440), QP at both ends of what
-// VideoToolbox codes, and a key QP of its own.
+// The rules the stream checks, which the session's options change (C2-C6,
+// C10, C11), on a case of its own.
+testing::HevcEncoderCase stream_only(testing::HevcEncoderCase c) {
+  c.rules = testing::HevcEncoderCase::Rules::Stream;
+  return c;
+}
+
+// Every rule on a camera's colour, BT.601 full. Then the stream's rules,
+// which the options change, at the other range, on BT.709 sited at the
+// centre, at the cropped size with a key QP of its own, and at QP at both
+// ends of what VideoToolbox codes. Then the one case whose size is the
+// point: a picture past level 5.1's luma samples (3840x4096), 4 pictures.
 int test_cases(Gpu& gpu) {
-  if (breach("512x512 BT.709 full", make(512, 512, kBt709Full), gpu) != 0) {
-    return 1;
-  }
-  auto narrow = make(1922, 1082, kBt709Video);
-  narrow.options.key_qp = 26;
-  if (breach("1922x1082 BT.709 video, key QP 26", narrow, gpu) != 0) return 1;
-  auto tall = make(3840, 4096, kBt709Full, 30);
-  tall.pictures = 8;
-  if (breach("3840x4096 BT.709 full", tall, gpu) != 0) return 1;
-  if (breach("1920x1440 BT.601 full", make(1920, 1440, kBt601Full), gpu) != 0) {
-    return 1;
-  }
-  if (breach("1920x1440 BT.601 video", make(1920, 1440, kBt601Video), gpu) !=
+  if (breach("BT.601 full", make(kW, kH, kBt601Full), gpu) != 0) return 1;
+  if (breach("BT.601 video", stream_only(make(kW, kH, kBt601Video)), gpu) !=
       0) {
     return 1;
   }
   ColorCodes centred = kBt709Full;
   centred.chroma_location = 1;
-  if (breach("1920x1440 BT.709 full, sited at the centre",
-             make(1920, 1440, centred), gpu) != 0) {
+  if (breach("BT.709 full, sited at the centre",
+             stream_only(make(kW, kH, centred)), gpu) != 0) {
     return 1;
   }
-  auto low = make(512, 512, kBt709Full, 1);
+  auto cropped = stream_only(make(kCroppedW, kCroppedH, kBt709Video));
+  cropped.options.key_qp = 26;
+  if (breach("BT.709 video, key QP 26", cropped, gpu) != 0) return 1;
+  auto low = stream_only(make(kW, kH, kBt709Full, 1));
   low.options.key_qp = 51;
-  if (breach("512x512 QP 1, key QP 51", low, gpu) != 0) return 1;
-  auto high = make(512, 512, kBt709Full, 51);
+  if (breach("QP 1, key QP 51", low, gpu) != 0) return 1;
+  auto high = stream_only(make(kW, kH, kBt709Full, 51));
   high.options.key_qp = 1;
-  if (breach("512x512 QP 51, key QP 1", high, gpu) != 0) return 1;
-  return 0;
+  if (breach("QP 51, key QP 1", high, gpu) != 0) return 1;
+  auto tall = stream_only(make(3840, 4096, kBt709Full, 30));
+  tall.pictures = 4;
+  return breach("BT.709 full", tall, gpu);
 }
 
-// The same rules through targets the device writes: the public sizes, both
-// ranges and matrices, and a siting VideoToolbox takes from the picture's
-// tag.
+// The same through targets the device writes: every rule on BT.709 full,
+// then the stream's at the cropped size and video range, on BT.601, and at a
+// siting VideoToolbox takes from the picture's tag.
 int test_target_cases(Gpu& gpu) {
   const In t = In::Targets;
-  if (breach("512x512 BT.709 full", make(512, 512, kBt709Full), gpu, t) != 0) {
-    return 1;
-  }
-  auto narrow = make(1922, 1082, kBt709Video);
-  narrow.options.key_qp = 26;
-  if (breach("1922x1082 BT.709 video, key QP 26", narrow, gpu, t) != 0) {
-    return 1;
-  }
-  auto tall = make(3840, 4096, kBt709Full, 30);
-  tall.pictures = 8;
-  if (breach("3840x4096 BT.709 full", tall, gpu, t) != 0) return 1;
-  if (breach("1920x1440 BT.601 full", make(1920, 1440, kBt601Full), gpu, t) !=
+  if (breach("BT.709 full", make(kW, kH, kBt709Full), gpu, t) != 0) return 1;
+  auto cropped = stream_only(make(kCroppedW, kCroppedH, kBt709Video));
+  cropped.options.key_qp = 26;
+  if (breach("BT.709 video, key QP 26", cropped, gpu, t) != 0) return 1;
+  if (breach("BT.601 full", stream_only(make(kW, kH, kBt601Full)), gpu, t) !=
       0) {
     return 1;
   }
   ColorCodes centred = kBt601Video;
   centred.chroma_location = 1;
-  if (breach("1920x1440 BT.601 video, sited at the centre",
-             make(1920, 1440, centred), gpu, t) != 0) {
-    return 1;
-  }
-  return 0;
+  return breach("BT.601 video, sited at the centre",
+                stream_only(make(kW, kH, centred)), gpu, t);
 }
 
 #if defined(__APPLE__)
@@ -341,8 +361,8 @@ int test_target_cases(Gpu& gpu) {
 // one that declares neither.
 int test_device_refused(Gpu& gpu) {
   HevcEncoder::Options o;
-  o.width = 512;
-  o.height = 512;
+  o.width = kW;
+  o.height = kH;
   o.color = kBt709Full;
   static const char* const kMetal[] = {"VK_EXT_metal_objects"};
   auto metal_only = vs_test::adopted_device(gpu, kMetal, 1);
@@ -368,19 +388,20 @@ int test_device_refused(Gpu& gpu) {
 #endif
 
 // Every code in the set, normalization included, and every siting
-// VideoToolbox writes: each a short run.
+// VideoToolbox writes: each the stream's rules, on the fewest pictures they
+// take.
 int test_code_set(Gpu& gpu) {
   std::vector<ColorCodes> all;
   for (const int m : {1, 5, 6, 7, 9}) all.push_back({m, 1, 1, true, 0});
-  for (const int t : {1, 2, 6, 7, 8, 13, 14, 15, 16, 17, 18}) {
-    all.push_back({1, t, 1, true, 0});
+  for (const int t : {2, 6, 7, 8, 13, 14, 15, 16, 17, 18}) {
+    all.push_back({1, t, 1, true, 0});  // transfer 1 is the matrices'
   }
   for (const int p : {1, 2, 5, 6, 9, 11, 12, 22}) {
     all.push_back({1, 1, p, false, 0});
   }
   for (int s = 1; s <= 5; ++s) all.push_back({1, 1, 1, true, s});
   for (const ColorCodes& c : all) {
-    auto run = make(512, 512, c);
+    auto run = stream_only(make(kW, kH, c));
     run.pictures = 4;
     const std::string what = "matrix " + std::to_string(c.matrix) +
                              " transfer " + std::to_string(c.transfer) +
@@ -411,8 +432,8 @@ int test_target_described(Gpu& gpu) {
   for (const auto& w : weights) {
     for (const bool full : {true, false}) {
       HevcEncoder::Options o;
-      o.width = 512;
-      o.height = 512;
+      o.width = kW;
+      o.height = kH;
       o.color = {w.matrix, 1, 1, full, siting};
       o.device = &gpu.device;
       o.allocator = &gpu.allocator;
@@ -431,6 +452,8 @@ int test_target_described(Gpu& gpu) {
 }
 
 #if defined(__APPLE__)
+using Clock = std::chrono::steady_clock;
+
 // A thread joined as it goes, so a failed check never leaves one running.
 struct Helper {
   std::thread thread;
@@ -440,6 +463,67 @@ struct Helper {
   ~Helper() {
     if (thread.joinable()) thread.join();
   }
+};
+
+// How long what must not happen is waited for: ten times @p path, one
+// picture's whole path as just measured, and at least 20 ms.
+Clock::duration hold_for(Clock::duration path) {
+  return std::max<Clock::duration>(std::chrono::milliseconds(20), 10 * path);
+}
+
+std::uint64_t nanoseconds(Clock::duration d) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(d).count());
+}
+
+// A host timeline the test holds and sets value by value. Should a call
+// block behind a held value, as an encoder that waits for a batch it must
+// not, a watchdog sets every value kWatchdog after the gate was made, and
+// fired() says so: the test fails rather than hangs. Going, it sets every
+// value, so no batch it held outlives it waiting.
+class Gate {
+ public:
+  static constexpr auto kWatchdog = std::chrono::seconds(20);
+
+  explicit Gate(vkc::TimelineSemaphore& timeline) : timeline_(timeline) {
+    watchdog_ = std::thread([this] {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (!going_cv_.wait_for(lock, kWatchdog, [this] { return going_; })) {
+        fired_ = true;
+        static_cast<void>(timeline_.signal(kEvery));
+      }
+    });
+  }
+  Gate(const Gate&) = delete;
+  Gate& operator=(const Gate&) = delete;
+  ~Gate() {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      going_ = true;
+      if (!fired_) static_cast<void>(timeline_.signal(kEvery));
+    }
+    going_cv_.notify_all();
+    watchdog_.join();
+  }
+
+  // Sets @p value, as long as the watchdog has not.
+  void set(std::uint64_t value) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!fired_) static_cast<void>(timeline_.signal(value));
+  }
+  bool fired() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return fired_;
+  }
+
+ private:
+  static constexpr std::uint64_t kEvery = 1000;  // past every value held
+  vkc::TimelineSemaphore& timeline_;
+  mutable std::mutex mutex_;
+  std::condition_variable going_cv_;
+  bool going_ = false;
+  bool fired_ = false;
+  std::thread watchdog_;
 };
 
 double psnr(const std::vector<std::uint8_t>& a,
@@ -456,14 +540,13 @@ double psnr(const std::vector<std::uint8_t>& a,
 // The pattern coded at QP 22 and decoded back: PSNR at least 45 dB in each
 // plane, square 0's 255 and square 1's 0 exact, and each picture's index.
 // Through targets, the device writes each picture (testing::Nv12Writer), and
-// picture kGated's batch runs only once a helper thread sets a value, after
-// its send has returned: it decodes to what that batch wrote, so the coding
-// thread coded it only once it was written.
+// picture kHeld's batch runs only once the test sets a value, after its send
+// has returned and a receive held ten pictures' time found nothing: it
+// decodes to what that batch wrote, so the coding thread coded it only once
+// it was written.
 int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
-  constexpr std::uint32_t kW = 1920;
-  constexpr std::uint32_t kH = 1440;
-  constexpr std::uint32_t kPictures = 6;
-  constexpr std::uint32_t kGated = 3;
+  constexpr std::uint32_t kCoded = 6;
+  constexpr std::uint32_t kHeld = 3;
   const bool targets = in == In::Targets;
   HevcEncoder::Options o;
   o.width = kW;
@@ -481,10 +564,10 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
   auto written = vkc::TimelineSemaphore::create(gpu.device);
   auto gate = vkc::TimelineSemaphore::create(gpu.device);
   CHECK(written.ok() && gate.ok());
-  std::vector<vkc::PendingBatch> pending(kPictures);
-  Helper helper;  // sets `gate`: joined before the batches go
+  std::vector<vkc::PendingBatch> pending(kCoded);
   auto encoder = HevcEncoder::create(o);
   CHECK(encoder.ok());
+  Gate held(*gate);  // after the encoder: going first, it sets `gate`
   sensor::HevcDecoder::Options d;
   d.device = &gpu.device;
   d.allocator = &gpu.allocator;
@@ -493,28 +576,28 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
   HevcEncoder::CodedPicture coded;
   double worst[3] = {99, 99, 99};
   std::uint32_t out = 0;
-  for (std::uint32_t i = 0; i < kPictures; ++i) {
+  Clock::duration path{};  // the slowest picture's, before the held one
+  for (std::uint32_t i = 0; i < kCoded; ++i) {
     const testing::HostNv12 want = testing::test_pattern(kW, kH, 40 + i);
+    const Clock::time_point start = Clock::now();
     if (targets) {
       vkc::CommandBatch batch(gpu.device, gpu.allocator);
       auto target = encoder->target(batch);
       CHECK(target.ok());
       CHECK(writer->record_upload(batch, gpu.allocator, want, *target).ok());
       std::vector<vkc::TimelinePoint> waits;
-      if (i == kGated) waits.push_back({&*gate, 1});
+      if (i == kHeld) waits.push_back({&*gate, 1});
       auto submitted = batch.submit_async(waits, {{&*written, i + 1}});
       CHECK(submitted.ok());
       pending[i] = std::move(submitted).value();
-      if (i == kGated) {
-        helper.thread = std::thread([&gate] {
-          std::this_thread::sleep_for(std::chrono::milliseconds(300));
-          static_cast<void>(gate->signal(1));
-        });
-      }
       CHECK(encoder->send(i == 0, i, {&*written, i + 1}).ok());
-      if (i == kGated) {
+      if (i == kHeld) {
         auto at_send = written->value();
         CHECK(at_send.ok() && *at_send < i + 1);  // not yet written
+        auto early = encoder->receive(coded, nanoseconds(hold_for(path)));
+        CHECK(early.ok() && !*early);  // not coded while held
+        held.set(1);
+        CHECK(!held.fired());
       }
     } else {
       auto pixels = testing::pixel_buffer(want, color);
@@ -525,8 +608,8 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
       CHECK(sent.ok());
     }
     auto got = encoder->receive(coded);
-    if (helper.thread.joinable()) helper.thread.join();
     CHECK(got.ok() && *got);
+    if (i < kHeld) path = std::max(path, Clock::now() - start);
     CHECK(decoder
               ->send(coded.access_unit.data(), coded.access_unit.size(),
                      coded.pts)
@@ -559,7 +642,7 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
       ++out;
     }
   }
-  CHECK(out == kPictures);
+  CHECK(out == kCoded);
   std::printf("QP 22, %s range, %s: worst PSNR Y %.2f, Cb %.2f, Cr %.2f dB\n",
               color.full_range ? "full" : "video",
               targets ? "targets" : "pixel buffers", worst[0], worst[1],
@@ -570,36 +653,40 @@ int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
 
 // A producer's targets wait for no batch, and the images a batch still
 // writes outlive the encoder's teardown and a reopen. Four pictures, two in
-// flight, each batch waiting for a host value a helper thread sets 300 ms
-// after the one before: each target, on a picture create readied, returns
-// before the batch of the picture before it may run; destroyed with the last
-// two sent, the encoder returns only once the last value is set. Lost while
-// a sent target's batch waits, the target after the loss opens the session
-// again, that picture fails uncoded, and the next codes as the key. The
-// validation layer names an image destroyed while a batch still uses it.
+// flight, each batch waiting for a host value the test holds and sets only
+// to receive the picture two before: each target, on a picture create
+// readied, returns while the batch of the picture before it is held;
+// destroyed with the last two sent and their batches held, the encoder does
+// not return within ten pictures' time, nor once the first is set, and
+// returns once both are, with the writers done. Lost while a sent target's
+// batch is held, the target after the loss opens the session again, that
+// picture fails uncoded, and the next codes as the key. The validation layer
+// names an image destroyed while a batch still uses it.
 int test_writers_outlive(Gpu& gpu) {
-  constexpr std::uint32_t kSide = 512;
-  constexpr auto kStep = std::chrono::milliseconds(300);
   auto writer = testing::Nv12Writer::create(gpu.device);
   CHECK(writer.ok());
+  // The batches wait for `gate` in the first part and `lost_gate` in the
+  // second, each held by a Gate made after that part's encoder, so a failed
+  // check's teardown sets it before the encoder waits for its writers.
   auto written = vkc::TimelineSemaphore::create(gpu.device);
   auto gate = vkc::TimelineSemaphore::create(gpu.device);
-  CHECK(written.ok() && gate.ok());
+  auto lost_gate = vkc::TimelineSemaphore::create(gpu.device);
+  CHECK(written.ok() && gate.ok() && lost_gate.ok());
   std::vector<testing::HostNv12> pictures;
   for (std::uint32_t i = 0; i < 4; ++i) {
-    pictures.push_back(testing::test_pattern(kSide, kSide, 60 + i));
+    pictures.push_back(testing::test_pattern(kW, kH, 60 + i));
   }
   std::vector<vkc::PendingBatch> pending;  // outlive the encoders
   std::uint64_t value = 0;                 // written's last
   // Picture @p i written into a target taken now, by a batch that waits for
-  // gate value @p after (none for 0) and sets written's next.
+  // @p after (none for a null semaphore) and sets written's next.
   const auto write = [&](HevcEncoder& e, std::uint32_t i,
-                         std::uint64_t after) -> vkc::Status {
+                         vkc::TimelinePoint after) -> vkc::Status {
     vkc::CommandBatch batch(gpu.device, gpu.allocator);
     VKC_ASSIGN(const sensor::YuvImage t, e.target(batch));
     VKC_TRY(writer->record_upload(batch, gpu.allocator, pictures[i], t));
     std::vector<vkc::TimelinePoint> waits;
-    if (after != 0) waits.push_back({&*gate, after});
+    if (after.semaphore != nullptr) waits.push_back(after);
     VKC_ASSIGN(vkc::PendingBatch p,
                batch.submit_async(waits, {{&*written, value + 1}}));
     pending.push_back(std::move(p));
@@ -607,51 +694,74 @@ int test_writers_outlive(Gpu& gpu) {
     return {};
   };
   HevcEncoder::Options o;
-  o.width = kSide;
-  o.height = kSide;
+  o.width = kW;
+  o.height = kH;
   o.color = kBt709Full;
   o.device = &gpu.device;
   o.allocator = &gpu.allocator;
-  std::atomic<std::uint64_t> opened{0};  // gate's value, once set
-  const auto open_gate = [&](std::uint64_t from, std::uint64_t to) {
-    for (std::uint64_t v = from; v <= to; ++v) {
-      std::this_thread::sleep_for(kStep);
-      opened = v;
-      static_cast<void>(gate->signal(v));
-    }
-  };
   {
     auto e = HevcEncoder::create(o);
     CHECK(e.ok());
-    Helper helper;
-    helper.thread = std::thread(open_gate, 1, 4);
+    Gate held(*gate);
     HevcEncoder::CodedPicture coded;
+    Clock::duration path{};  // the slowest picture's, from its value set
     for (std::uint32_t i = 0; i < 4; ++i) {
       if (e->in_flight() == HevcEncoder::kInFlight) {
+        const Clock::time_point start = Clock::now();
+        held.set(i - 1);  // picture i - 2's batch runs
         const auto got = e->receive(coded);
         CHECK(got.ok() && *got);
+        path = std::max(path, Clock::now() - start);
       }
-      CHECK(write(*e, i, i + 1).ok());
-      // Taken while picture i - 1's batch waits for value i: it did not
-      // wait for that batch.
-      CHECK(opened < i || i == 0);
+      // Taken while picture i - 1's batch waits for value i, held: it did
+      // not wait for that batch, or the watchdog set it.
+      CHECK(write(*e, i, {&*gate, i + 1}).ok());
+      CHECK(!held.fired());
       CHECK(e->send(i == 0, i, {&*written, value}).ok());
     }
-    {
-      const HevcEncoder gone(std::move(*e));
-    }
-    CHECK(opened == 4);  // the last writer's value, waited for
+    // Destroyed on a thread of its own with the last two sent, their
+    // batches held: it waits for their writers.
+    std::optional<HevcEncoder> last(std::move(*e));
+    std::promise<std::uint64_t> at_return;
+    std::future<std::uint64_t> returned = at_return.get_future();
+    Helper destroyer;
+    destroyer.thread = std::thread([&] {
+      last.reset();
+      const auto v = written->value();
+      at_return.set_value(v.ok() ? *v : 0);
+    });
+    CHECK(returned.wait_for(hold_for(path)) == std::future_status::timeout);
+    held.set(3);
+    // The last writer still held: not yet either.
+    CHECK(returned.wait_for(hold_for(path)) == std::future_status::timeout);
+    held.set(4);
+    CHECK(returned.get() >= value);  // the last writer's value, waited for
+    CHECK(!held.fired());
   }
   {
     auto e = HevcEncoder::create(o);
     CHECK(e.ok());
-    Helper helper;
-    helper.thread = std::thread(open_gate, 5, 5);
-    CHECK(write(*e, 2, 5).ok());
+    Gate held(*lost_gate);
+    CHECK(write(*e, 2, {&*lost_gate, 1}).ok());
     CHECK(e->send(true, 2, {&*written, value}).ok());
     e->inject(HevcEncoder::Fault::Lose);
-    CHECK(write(*e, 3, 0).ok());  // reopens while picture 2 is written
-    CHECK(!e->lost());
+    // The next target reopens the session while picture 2's batch is held,
+    // then waits on the host for that batch, as a surface new to the session
+    // does: a helper sets the value once the session is open again, or the
+    // target failed.
+    std::atomic<bool> taken{false};
+    Helper opener;
+    opener.thread = std::thread([&] {
+      while (e->lost() && !taken) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      held.set(1);
+    });
+    const vkc::Status reopened = write(*e, 3, {});
+    taken = true;
+    opener.thread.join();
+    CHECK(reopened.ok());
+    CHECK(!held.fired() && !e->lost());
     CHECK(e->send(true, 3, {&*written, value}).ok());
     HevcEncoder::CodedPicture coded;
     const auto lost = e->receive(coded);
@@ -700,7 +810,8 @@ vkc::Result<sensor::YuvImage> planes(Gpu& gpu, std::uint32_t width,
 }
 
 // The test writer, on any device: a picture stored into plane images reads
-// back as it is, at even and odd sizes, into images larger than the picture
+// back as it is, at even and odd sizes and a 4n+2 width whose rows end
+// within a kernel thread's 4 samples, into images larger than the picture
 // too, from their corner; what it cannot write is refused, and a device
 // without the storage images' formats has no writer.
 int test_writer(Gpu& gpu) {
@@ -708,7 +819,7 @@ int test_writer(Gpu& gpu) {
   CHECK(writer.ok());
   const struct {
     std::uint32_t width, height, pad;
-  } sizes[] = {{256, 144, 0}, {255, 143, 3}, {1922, 1082, 0}};
+  } sizes[] = {{kW, kH, 0}, {kW - 1, kH - 1, 3}, {kCroppedW, kCroppedH, 0}};
   for (const auto& size : sizes) {
     const testing::HostNv12 picture =
         testing::test_pattern(size.width, size.height, 5);
@@ -772,8 +883,8 @@ int gpu_main(Gpu& gpu) {
   }
 #endif
   HevcEncoder::Options probe;
-  probe.width = 512;
-  probe.height = 512;
+  probe.width = kW;
+  probe.height = kH;
   probe.color = kBt709Full;
   if (auto made = HevcEncoder::create(probe); !made) {
     if (made.status().domain() != vkc::Status::Code::Unsupported) {

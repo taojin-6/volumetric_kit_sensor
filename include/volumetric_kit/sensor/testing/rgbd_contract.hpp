@@ -34,17 +34,19 @@ inline std::string sequence_breach(std::uint64_t sequence_before,
 }
 
 /// @return The ordering rule a frame breaks, named, when it is taken right
-///         after one at (@p sequence_before, @p time_before) and itself sits
-///         at (@p sequence, @p time), times in nanoseconds: the
-///         @ref sequence_breach, then the time's; empty when both increase.
-///         A stereo pair keeps it too, 0 counted as a time there, where
-///         @ref RgbdContract takes 0 as no time.
+///         after one numbered @p sequence_before, the last time reported
+///         before it @p time_before, and itself sits at (@p sequence,
+///         @p time), times in nanoseconds: the @ref sequence_breach, then
+///         the time's where both times are reported; empty when they
+///         increase. A time of 0 is none (`RgbdFrame::timestamp_ns`, and a
+///         stereo pair's as its), so a frame without one, or with none
+///         reported before it, is ordered by its sequence alone.
 inline std::string order_breach(std::uint64_t sequence_before,
                                 std::uint64_t time_before,
                                 std::uint64_t sequence, std::uint64_t time) {
   std::string why = sequence_breach(sequence_before, sequence);
   if (!why.empty()) return why;
-  if (time <= time_before) {
+  if (time != 0 && time_before != 0 && time <= time_before) {
     return "time " + std::to_string(time) + " ns after " +
            std::to_string(time_before);
   }
@@ -102,7 +104,7 @@ class RgbdContract {
   ///         - its sequence increases on the frame's before it, and its
   ///           timestamp on the last non-zero one taken, where it is
   ///           non-zero itself: 0 is no time (`RgbdFrame::timestamp_ns`)
-  ///           (@ref order_breach, @ref sequence_breach).
+  ///           (@ref order_breach).
   ///         Then the counters against @p stats (@ref stats_breach). Empty
   ///         when every rule holds.
   std::string breach(const SensorStats& stats) const {
@@ -177,10 +179,6 @@ inline std::string RgbdContract::frame_breach(const RgbdFrame& frame) const {
     }
   }
   if (taken_ == 0) return {};
-  // A time of 0 is none, so times order only where both are reported.
-  if (frame.timestamp_ns == 0 || last_time_ == 0) {
-    return sequence_breach(last_sequence_, frame.sequence);
-  }
   return order_breach(last_sequence_, last_time_, frame.sequence,
                       frame.timestamp_ns);
 }

@@ -13,9 +13,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -64,13 +66,25 @@ Encoder::Options options_of(const HevcEncoderCase& c) {
 #if defined(__APPLE__)
 using Code = core::Status::Code;
 
+using Clock = std::chrono::steady_clock;
+
 constexpr std::uint32_t kRing = 8;  // distinct pictures a run sends
-// How long C13b's helper thread waits before it sets the value the batch
-// that writes the target waits for: far past a picture's coding, so a
-// coding thread that did not wait has coded it by then.
-constexpr auto kWriterDelay = std::chrono::seconds(1);
+// How long C13b holds the value the batch that writes the target waits for:
+// this many times one picture's whole path, as the run measures it, and at
+// least kHoldFloor, so a coding thread that did not wait has coded the
+// picture well within it.
+constexpr int kHoldPictures = 10;
+constexpr auto kHoldFloor = std::chrono::milliseconds(20);
+// Past the hold, when C13b's watchdog sets the value itself: only a send
+// that waits for its writer lets it.
+constexpr auto kWatchdog = std::chrono::seconds(5);
 
 std::int64_t pts_of(std::uint32_t i) { return 1000 + 333 * std::int64_t{i}; }
+
+std::uint64_t nanoseconds(Clock::duration d) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(d).count());
+}
 
 std::string name(Code code) { return std::string(core::to_string(code)); }
 
@@ -157,13 +171,12 @@ struct CfRelease {
 using Pixels =
     std::unique_ptr<std::remove_pointer_t<CVPixelBufferRef>, CfRelease>;
 
-// The test pattern's picture @p index as a pixel buffer (pixel_buffer):
-// '420f' or '420v' as @p tags' range, tagged with its matrix, transfer and
-// primaries and no siting.
-core::Result<Pixels> make_pixels(std::uint32_t width, std::uint32_t height,
-                                 std::uint32_t index, const ColorCodes& tags) {
-  VKC_ASSIGN(CVPixelBufferRef made,
-             pixel_buffer(test_pattern(width, height, index), tags));
+// @p picture, a test pattern's, as a pixel buffer (pixel_buffer): '420f' or
+// '420v' as @p tags' range, tagged with its matrix, transfer and primaries
+// and no siting.
+core::Result<Pixels> make_pixels(const HostNv12& picture,
+                                 const ColorCodes& tags) {
+  VKC_ASSIGN(CVPixelBufferRef made, pixel_buffer(picture, tags));
   return Pixels(made);
 }
 
@@ -304,7 +317,8 @@ core::Result<YuvImage> Run::write_target(Encoder& e, std::uint32_t i,
 core::Result<CVPixelBufferRef> Run::picture(std::uint32_t i) {
   Pixels& made = ring_[i % kRing];
   if (made == nullptr) {
-    VKC_ASSIGN(made, make_pixels(o_.width, o_.height, i % kRing, o_.color));
+    VKC_ASSIGN(made, make_pixels(test_pattern(o_.width, o_.height, i % kRing),
+                                 o_.color));
   }
   return made.get();
 }
@@ -702,15 +716,18 @@ core::Result<std::string> Run::buffers(Encoder& e) {
     }
   }
   {
-    VKC_ASSIGN(Pixels small, make_pixels(o_.width - 2, o_.height, 0, o_.color));
+    VKC_ASSIGN(Pixels small,
+               make_pixels(test_pattern(o_.width - 2, o_.height, 0), o_.color));
     if (std::string b = refused("another size", small.get()); !b.empty()) {
       return b;
     }
   }
+  // The session's size, made once for the buffers below.
+  const HostNv12 base = test_pattern(o_.width, o_.height, 0);
   {
     ColorCodes other = o_.color;
     other.full_range = !other.full_range;
-    VKC_ASSIGN(Pixels wrong, make_pixels(o_.width, o_.height, 0, other));
+    VKC_ASSIGN(Pixels wrong, make_pixels(base, other));
     if (std::string b = refused("the other range", wrong.get()); !b.empty()) {
       return b;
     }
@@ -718,14 +735,14 @@ core::Result<std::string> Run::buffers(Encoder& e) {
   {
     ColorCodes tags = o_.color;
     tags.matrix = normalized(tags).matrix == 1 ? 6 : 1;
-    VKC_ASSIGN(Pixels tagged, make_pixels(o_.width, o_.height, 0, tags));
+    VKC_ASSIGN(Pixels tagged, make_pixels(base, tags));
     if (std::string b = refused("another matrix tag", tagged.get());
         !b.empty()) {
       return b;
     }
   }
   {
-    VKC_ASSIGN(Pixels sited, make_pixels(o_.width, o_.height, 0, o_.color));
+    VKC_ASSIGN(Pixels sited, make_pixels(base, o_.color));
     const int other = o_.color.chroma_location == 0 ? 1 : 0;
     CVBufferSetAttachment(sited.get(), kCVImageBufferChromaLocationTopFieldKey,
                           other == 0 ? kCVImageBufferChromaLocation_Left
@@ -757,7 +774,7 @@ core::Result<std::string> Run::buffers(Encoder& e) {
     none.matrix = 2;
     none.transfer = 2;
     none.primaries = 2;
-    VKC_ASSIGN(Pixels bare, make_pixels(o_.width, o_.height, 0, none));
+    VKC_ASSIGN(Pixels bare, make_pixels(base, none));
     const core::Status sent = send_pixel_buffer(e, bare.get(), true, 0);
     if (!sent.ok())
       return "C11: a buffer with no colour tags gave " + said(sent);
@@ -884,7 +901,7 @@ core::Result<std::string> Run::in_flight(Encoder& e) {
   // it must sleep, not spin, while nothing is in flight, so the sender
   // starts after a few waits. Each false return takes a whole wait, so
   // they number at most the receiver's time over the wait.
-  constexpr std::uint32_t kPictures = 30;
+  constexpr std::uint32_t kPictures = kRing;
   constexpr auto kWait = std::chrono::milliseconds(5);
   if (!targets()) {
     for (std::uint32_t i = 0; i < kRing; ++i) VKC_TRY(picture(i).status());
@@ -999,26 +1016,45 @@ core::Result<std::string> Run::retake(Encoder& e) {
 
 core::Result<std::string> Run::waits(Encoder& e) {
   if (!targets()) return std::string();
-  // C13b: the batch that writes the target waits for a value a helper
-  // thread sets later. send returns at once, before the value is reached,
-  // and the picture is coded only once it is.
+  // C13b: the batch that writes the target waits for a value the run holds.
+  // send returns at once, before the value is reached; nothing comes back
+  // while it is held, many times one picture's whole path; and the picture
+  // comes back once the value is set.
   Encoder::CodedPicture coded;
+  const Clock::time_point start = Clock::now();
+  VKC_TRY(send(e, 4, e.key_owed()));
+  VKC_ASSIGN(const bool timed, e.receive(coded));
+  if (!timed) return std::string("C13b: a picture vanished");
+  const Clock::duration hold = std::max<Clock::duration>(
+      kHoldFloor, kHoldPictures * (Clock::now() - start));
   const std::uint64_t gate = ++gate_value_;
   VKC_TRY(write_target(e, 5, {&gate_, gate}).status());
   const std::uint64_t value = value_;
-  std::atomic<bool> set{false};
+  // Should send wait for the writer, a watchdog sets the value, well past
+  // the hold, so the run fails rather than hangs. The run sets it otherwise,
+  // whatever came of the send: the batch waits for it.
+  std::mutex mutex;
+  std::condition_variable released;
+  bool set = false;
   core::Status signalled;
-  std::thread helper([&] {
-    std::this_thread::sleep_for(kWriterDelay);
+  const auto set_gate = [&] {
+    const std::lock_guard<std::mutex> lock(mutex);
+    if (!set) signalled = gate_.signal(gate);
     set = true;
+  };
+  std::thread watchdog([&] {
+    std::unique_lock<std::mutex> lock(mutex);
+    if (released.wait_for(lock, hold + kWatchdog, [&] { return set; })) return;
     signalled = gate_.signal(gate);
+    set = true;
   });
   const core::Status sent = e.send(e.key_owed(), pts_of(5), written());
   const core::Result<std::uint64_t> at_send = written_.value();
-  core::Result<bool> got = false;
-  if (sent.ok()) got = e.receive(coded);
-  const bool after = set;
-  helper.join();
+  core::Result<bool> early = false;
+  if (sent.ok()) early = e.receive(coded, nanoseconds(hold));
+  set_gate();
+  released.notify_all();
+  watchdog.join();
   VKC_TRY(signalled);
   if (!sent.ok()) return "C13b: the send gave " + said(sent);
   VKC_TRY(at_send.status());
@@ -1027,15 +1063,20 @@ core::Result<std::string> Run::waits(Encoder& e) {
         "C13b: the writer's value was reached when send returned: send "
         "waited for the writer");
   }
+  if (!early.ok() || *early) {
+    return early.ok()
+               ? std::string(
+                     "C13b: the access unit came back while the value its "
+                     "writer waits for was held: the picture was coded "
+                     "before it was written")
+               : "C13b: while its writer waited, the picture gave " +
+                     said(early.status());
+  }
+  const core::Result<bool> got = e.receive(coded);
   if (!got.ok() || !*got || coded.pts != pts_of(5)) {
     return "C13b: the picture came back " +
            (got.ok() ? std::string(*got ? "mislabelled" : "nothing")
                      : said(got.status()));
-  }
-  if (!after) {
-    return std::string(
-        "C13b: the access unit came back before the value its writer waited "
-        "for was set: the picture was coded before it was written");
   }
   return std::string();
 }
@@ -1044,14 +1085,20 @@ core::Result<std::string> Run::all() {
   format_ = o_.color.full_range
                 ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
                 : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+  // create's own refusal, for the runner, comes first.
   VKC_ASSIGN(Encoder e, Encoder::create(o_));
   if (targets()) VKC_TRY(ready_targets());
   using Rule = core::Result<std::string> (Run::*)(Encoder&);
-  const Rule rules[] = {&Run::stream,  &Run::drop, &Run::lose,
-                        &Run::buffers, &Run::move, &Run::in_flight,
-                        &Run::retake,  &Run::waits};
-  VKC_ASSIGN(const std::string refused, refusals());
-  if (!refused.empty()) return refused;
+  const bool all = c_.rules == HevcEncoderCase::Rules::All;
+  std::vector<Rule> rules = {&Run::stream};
+  if (all) rules.insert(rules.end(), {&Run::drop, &Run::lose});
+  rules.push_back(&Run::buffers);
+  if (all) {
+    rules.insert(rules.end(),
+                 {&Run::move, &Run::in_flight, &Run::retake, &Run::waits});
+    VKC_ASSIGN(const std::string refused, refusals());
+    if (!refused.empty()) return refused;
+  }
   for (const Rule rule : rules) {
     VKC_ASSIGN(const std::string b, (this->*rule)(e));
     if (!b.empty()) return b;
@@ -1076,14 +1123,14 @@ core::Result<std::string> hevc_encoder_breach(const HevcEncoderCase& c) try {
     return core::Status::invalid_argument(
         "hevc_encoder_breach: targets need the case's device and allocator");
   }
-  {
-    // No hardware path here: create's own refusal, for the runner.
-    VKC_ASSIGN(const Encoder probe, Encoder::create(options_of(c)));
-  }
 #if defined(__APPLE__)
   Run run(c);
   return run.all();
 #else
+  {
+    // No hardware path here: create's own refusal, for the runner.
+    VKC_ASSIGN(const Encoder probe, Encoder::create(options_of(c)));
+  }
   return core::Status::invalid_argument(
       "hevc_encoder_breach: this build's encoder has no way in to run");
 #endif
