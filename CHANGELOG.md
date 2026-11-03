@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0] - 2026-11-03
+
+### Added
+
+- **A tracked sensor's stills** (`camera/tracked_stills.hpp`,
+  `sensor_camera`, every build, camera-only included): `TrackedStills`, a
+  tracked sensor's stills of one capture session's world epoch, each a
+  `TrackedStill` with its image's file name (beside the file), its frame's
+  time, its `CameraModel` and its rigid `cam_to_tracking`, the pose the
+  session records for that frame. `validate_`, `parse_`, `read_`,
+  `format_` and `write_tracked_stills` read and write the file,
+  `"volumetric_kit.tracked_stills"` version 1: the registration's `sensor`, `session` and `world_epoch`, and the array
+  file's camera block and transform form for each still. A tracked
+  sensor's recorder writes it beside the session's images; calib's
+  `register_tracked` reads it. DECISIONS.md, the 2026-11-03 tracked stills
+  entry.
+
+### Changed
+
+- **`TrackedRegistration::edge_m` is the tag's edge the solve fitted the
+  corners to**, which the solver is given, not one the stills measure; the
+  file is unchanged.
+- The array file's camera block, and the registration's head and session,
+  are read and written in the internal `calibration_json.{hpp,cpp}`, which
+  the stills share. Both files read, refuse and write as before, every
+  message the same.
+
+### Fixed
+
+- A camera-only build with tests configures on Apple: it no longer adds the
+  VideoToolbox clip's maker (`tools/vt_pattern_clip`), which needs the video
+  tier.
+
 ## [0.40.0] - 2026-11-03
 
 ### Added

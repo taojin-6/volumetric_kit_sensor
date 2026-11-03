@@ -27,7 +27,8 @@ recon's examples assemble the rest.
   rational lens), the lens as a scalar template, rigid transforms, the
   sensor array's calibration file (`camera/array_calibration.hpp`), a
   tracked sensor's registration into its world
-  (`camera/tracked_registration.hpp`), and a stereo pair, its
+  (`camera/tracked_registration.hpp`) and the posed stills it is solved
+  from (`camera/tracked_stills.hpp`), and a stereo pair, its
   rectification and a lens's fold, on the host
   (`camera/stereo_rectification.hpp`). No Vulkan (the 2026-10-06
   decisions), so a tool that solves or checks a calibration without a GPU
@@ -239,17 +240,35 @@ decision): unprojection and rescaling come with their first caller.
   sensor's id, the session's 16-byte id (never all zero) and the epoch, the
   array's world (one sensor or one tag, the array file's block), the rigid
   `tracking_to_world` in `depth_to_color`'s form, and the tag fit's RMS,
-  stills and mean edge. A frame posed `cam_to_tracking` sits at
+  stills and the edge it fitted the corners to. A frame posed
+  `cam_to_tracking` sits at
   `tracking_to_world * cam_to_tracking`; a reader refuses frames of another
   session or epoch, and the registration for an array of another world.
   The file is `"volumetric_kit.tracked_registration"` version 1, the
   session as 32 hex digits, byte 0 first, written lowercase and read in
   either case; it reads, checks and writes as the array file does. calib's
   `register_tracked` writes it, and a tracked source reads it at open.
-  The two files' world block (read, written, and checked as one sensor or
-  one tag), transforms, numbers and text live in one internal place
-  (`calibration_json.{hpp,cpp}`); each file's public functions prefix its
-  refusals with its name.
+  The files' world block (read, written, and checked as one sensor or
+  one tag), camera block, transforms, session, numbers and text live in
+  one internal place (`calibration_json.{hpp,cpp}`); each file's public
+  functions prefix its refusals with its name.
+- **`camera/tracked_stills.hpp`** — a tracked sensor's stills of one
+  session's world epoch, each with the pose its session records for it:
+  what a recorder writes beside the session (ios) and calib's
+  `register_tracked` reads. `TrackedStills` is the sensor's id, the session
+  and the epoch as the registration names them, and at least one
+  `TrackedStill` in time order, each one of the session's recorded frames:
+  its image's file name in the stills file's directory (the header names
+  the names it refuses), its frame's time (each after the one before), its
+  `CameraModel` and its rigid `cam_to_tracking` in `depth_to_color`'s form,
+  the frame's pose as the session's records carry it (after any correction
+  the recorder makes to every pose), so the registration solved from the
+  stills places the session's frames.
+  Each image is the picture's 8-bit luma as a grey PNG, which the recorder
+  writes. A still's `camera` is the array file's camera block, written
+  `"factory"` and read with either source, which is not kept. The file is
+  `"volumetric_kit.tracked_stills"` version 1; it reads, checks and writes
+  as the registration does.
 - **`camera/stereo_rectification.hpp`** — a stereo pair on the host, in
   `sensor`'s namespace as when it was the stereo tier's (the 2026-11-01
   host rectification decision): `StereoCalibration` (the two cameras,

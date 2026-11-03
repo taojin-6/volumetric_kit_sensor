@@ -485,7 +485,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   of its own (`camera/tracked_registration.hpp`), with the array's world it
   registers into and the tag fit that solved it. The array file's world
   block and transforms are read and written in one internal place that
-  both files call.
+  both files call. *Amended 2026-11-03:* the fit's `edge_m` is the tag's
+  edge the solve fitted the corners to.
 - [**2026-11-02**](#2026-11-02--every-rgb-d-driver-keeps-one-frame-contract-same-capture-whole-frames-loss-read-off-the-sequence-checked-by-rgbd_breach-in-every-drivers-fake-the-colour-camera-derives-from-registered-depth-and-test-depth-carries-the-pictures-index-band) —
   Every RGB-D driver keeps one frame contract, stated in `IRgbdSensor`'s
   doc: same capture, whole frames, the sizes `SensorInfo` names, loss read
@@ -565,6 +566,15 @@ entries relevant to your task; later amendments supersede earlier rules.
   2026-11-03:* a failed reopen keeps the lost session's buffers; the facts,
   `receive`'s limit and the open failures say what NVENC does; C13 holds
   the dropped picture's writer on NVENC.
+
+- [**2026-11-03**](#2026-11-03--a-tracked-sensors-posed-stills-are-a-file-of-their-own-cameratracked_stillshpp-with-one-reader-and-one-writer-that-the-recorder-and-calibs-solve-share-built-from-the-registrations-and-the-array-files-blocks-the-registrations-edge_m-is-the-edge-the-solve-fitted-the-corners-to-amends-the-2026-11-02-tracked-registration-entry) —
+  A tracked sensor's stills of one session's world epoch, each with its
+  image's name, its frame's time, its model and the pose its session
+  records for it, are a file of their own (`camera/tracked_stills.hpp`),
+  with one reader and one writer in sensor that the recorder and calib's
+  solve share. Its session is the registration's, each still's camera the array
+  file's block. The registration's `edge_m` is the edge the solve fitted
+  the corners to.
 
 ## Decision record
 
@@ -6511,7 +6521,9 @@ epoch it holds for, the array's world it registers into (the array file's
 world block: one sensor or one tag, never neither or both), the rigid
 `tracking_to_world` in the array file's `depth_to_color` form, and the
 tag fit as its solver states it: the RMS reprojection error, the stills it
-used (at least 1) and the tag's mean edge as they placed it. A frame
+used (at least 1) and the tag's mean edge as they placed it. (*Amended
+2026-11-03 (the tracked stills entry, below):* `edge_m` is the tag's edge
+the solve fitted the corners to; a hold's stills fix no size.) A frame
 posed `cam_to_tracking`, in this package's camera convention (+Z forward,
 +Y down; ARKit's poses through `cv_from_gl_camera` first), sits at
 `tracking_to_world * cam_to_tracking`. The
@@ -6537,7 +6549,9 @@ functions prefix theirs with its name.
 - **One rigid transform.** The tracking world is metric, so the
   registration is rigid; a scale error in the tracking shows in `edge_m`
   against the tag's `size_m`, where the solver and the reader can judge
-  it, rather than hidden in a similarity.
+  it, rather than hidden in a similarity. (*Amended 2026-11-03 (below):*
+  the edge is the solver's input, so it shows no scale error; the
+  registration stays rigid.)
 - **The session, the epoch and the world, written down.** A reader refuses
   frames of another session or epoch, and the registration for an array of
   another world, so a registration is never applied to poses it was not
@@ -7419,3 +7433,73 @@ quality case).
   stream's rules (C6 and C11 on every code); the writer's other row
   refusals. That a device CUDA does not reach is refused (lavapipe) is
   checked by hand, as no CI leg has both ICDs.
+
+### 2026-11-03 — A tracked sensor's posed stills are a file of their own (`camera/tracked_stills.hpp`), with one reader and one writer that the recorder and calib's solve share, built from the registration's and the array file's blocks; the registration's `edge_m` is the edge the solve fitted the corners to (amends the 2026-11-02 tracked registration entry).
+
+**The rule.** `camera/tracked_stills.hpp` (`sensor_camera`) is the file a
+tracked sensor's stills of one session's world epoch live in:
+`"volumetric_kit.tracked_stills"`, version 1, in the directory of the
+images it names. `TrackedStills` holds the sensor's id, the session and
+the epoch, written and checked as the registration's, and at least one
+`TrackedStill` in time order, each one of the session's recorded frames:
+its image's file name, its frame's time, its `CameraModel` and its rigid
+`cam_to_tracking`, the frame's pose as the session's records carry it
+(after any correction the recorder makes to every pose), in the array
+file's `depth_to_color` form and this package's camera axes. Each image is
+the frame's picture's luma, an 8-bit grey PNG at the picture's size, full
+range, which the recorder writes. A name is non-empty UTF-8, not `.` or
+`..`, with no '/' or NUL, and unique as bytes; each time is after the one
+before. A still's `camera` is the array file's camera block, read and
+written by the same code: the writer writes the lens (zero for a pinhole) and the
+source `"factory"`, version 1's stills carrying their SDK's model, and the
+reader takes either source and an absent lens, as the array file's does,
+and keeps the model alone. It is read, checked and written as the
+registration is: validate, parse, read, format and write, numbers that
+read back to the same double, unknown keys ignored, a later version
+refused. The files' head (`format`, `version`), session and camera block
+move into the internal `calibration_json.{hpp,cpp}` beside the world and
+transform blocks. The registration's `edge_m` is the tag's edge the solve
+fitted the corners to.
+
+**Why.**
+- **A file in sensor, not calib's reader alone.** The recorder (ios) writes
+  the stills and calib's `register_tracked` reads them; a reader in calib
+  would copy the registration's session and transform readers, and the
+  recorder would write the layout by hand. One reader and one writer,
+  beside the registration they are solved into, keep the two in step
+  (owner, 2026-11-03).
+- **The array file's camera block.** A still's model is a camera's, so
+  it is written as the array file writes one and read by the same code; a
+  source field would say what every version-1 still says, so the struct
+  keeps the model alone. A recorder that writes solved models adds the
+  field in a later version.
+- **The recorded pose, not the tracker's.** The registration is applied
+  to the poses the session's frames carry, so the stills carry those
+  poses: a recorder that corrects its tracker's poses writes the corrected
+  pose here too, or every frame after a correction is placed off by it.
+- **Names that stay in the directory.** The reader joins each name to the
+  file's directory, so a name with a '/' or a NUL, or `.` or `..`, would
+  name another file or none.
+- **Time order.** The stills are a session's frames, so each is after the
+  one before, and a reader can pick a hold's stills by time.
+- **The edge the solve was given.** From a hold, the stills' rays are
+  nearly parallel and fix no size, so the solve fits the corners to the
+  edge the rig measured and states that edge; the registration stays
+  rigid.
+
+**Not here.** The images' writer (the recorder's, ios) and the solve
+(calib's `register_tracked`) land with their own PRs; `image_io` writes
+no grey PNG today.
+
+**Validation.** Apple M5 Max, Release with warnings as errors: the whole
+suite passes (57 tests), and the camera-only build's 10, its consumer
+including the new header. The array file's and the registration's suites
+print byte for byte what `main`'s build prints, refusals and the
+registration's document included. The stills suite takes 0.03 s, 0.21 s
+under ThreadSanitizer. Planted bugs, each failing
+`sensor_camera_tracked_stills`: the writer writing the pose's inverse (the
+golden writer's direction), a repeated name accepted, an equal time
+accepted (their refusals) and the version checked after the stills (a
+later version without them refused as InvalidArgument). The shared camera
+block dropping the lens it read fails the stills' suite and the array
+file's.
