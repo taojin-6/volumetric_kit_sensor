@@ -81,17 +81,20 @@ bool CudaTimeline::reached(std::uint64_t value) const {
 }
 
 core::Status CudaTimeline::wait(std::uint64_t value) const {
-  // The counter read every 50 us, not waited on: NVIDIA's driver wakes no
-  // host wait (vkWaitSemaphores) when CUDA sets the value, only on a tick of
-  // its own, about 10 ms after the wait began (DECISIONS.md, the 2026-11-03
-  // host-wait entry). The stream is asked every 1 ms whether it failed. A
-  // stream found idle has run the value's signal, queued before this: an
-  // ask later with the counter still short, the signal was dropped.
+  // The counter read, not waited on: NVIDIA's driver wakes no host wait
+  // (vkWaitSemaphores) when CUDA sets the value, only on a tick of its own,
+  // about 10 ms after the wait began (DECISIONS.md, the 2026-11-03 host-wait
+  // entry). 50 us sleeps between reads, 1 ms ones once the wait is 10 ms
+  // old. Until the stream is found idle it is asked every 1 ms whether it
+  // failed. An idle stream has run the value's signal, queued before this:
+  // 10 ms later with the counter still short, the signal was dropped.
   constexpr auto kPoll = std::chrono::microseconds(50);
+  constexpr auto kLong = std::chrono::milliseconds(10);
   constexpr auto kAsk = std::chrono::milliseconds(1);
   const auto start = std::chrono::steady_clock::now();
   auto ask = start + kAsk;
   bool idle = false;
+  auto idle_at = start;
   bool slept = false;
   core::Status out;
   for (;;) {
@@ -102,14 +105,14 @@ core::Status CudaTimeline::wait(std::uint64_t value) const {
     }
     if (*counter >= value) break;
     const auto now = std::chrono::steady_clock::now();
-    if (now >= ask) {
-      if (idle) {
-        out = core::Status::backend_error(
-            core::Status::Backend::Cuda, CUDA_ERROR_UNKNOWN,
-            std::string(who_) +
-                ": the stream ran dry with a picture's ready value unset");
-        break;
-      }
+    if (idle && now - idle_at >= kLong) {
+      out = core::Status::backend_error(
+          core::Status::Backend::Cuda, CUDA_ERROR_UNKNOWN,
+          std::string(who_) +
+              ": the stream ran dry with a picture's ready value unset");
+      break;
+    }
+    if (!idle && now >= ask) {
       const CudaContextScope scope(context_);
       const CUresult r =
           scope.ok() ? cuda_driver()->cuStreamQuery(stream_) : scope.result();
@@ -118,9 +121,10 @@ core::Status CudaTimeline::wait(std::uint64_t value) const {
         break;
       }
       idle = r == CUDA_SUCCESS;
+      idle_at = now;
       ask = now + kAsk;
     }
-    std::this_thread::sleep_for(kPoll);
+    std::this_thread::sleep_for(now - start < kLong ? kPoll : kAsk);
     slept = true;
   }
   if (slept) {

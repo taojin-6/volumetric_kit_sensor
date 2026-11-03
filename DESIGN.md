@@ -543,9 +543,10 @@ waits, one of `record_set` or `SensorArray::record_process`
 destructor before CUDA's import goes, a decoder settles: it synchronizes its
 stream, then sets the last value it handed out from the host if the counter
 is below it, so no batch waits for good on a signal a failed stream dropped.
-NVDEC's host wait for the oldest of three kept pictures reads the counter
-every 50 us and asks the stream every 1 ms, so a failed one, or one run dry
-short of the value, returns an error, settled (the
+NVDEC's host wait for the oldest of three kept pictures reads the counter,
+50 us apart (1 ms once the wait is 10 ms old), and asks the stream every
+1 ms, so a failed one, or one found idle and still short of the value 10 ms
+later, returns an error, settled (the
 2026-11-03 fault decision). It reads rather than waits because NVIDIA's
 driver wakes no host wait on a value CUDA sets when CUDA sets it, only up
 to about 10 ms later (the 2026-11-03 host-wait decision), which is also why

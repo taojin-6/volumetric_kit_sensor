@@ -9,11 +9,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **NVDEC's wait for the oldest of three kept pictures returns when CUDA
-  sets its value** (`HevcDecoder::receive`): it reads the counter every
-  50 us and asks the stream every 1 ms, where its 10 ms
-  `vkWaitSemaphores` slices returned up to 10 ms late. NVIDIA's driver
-  wakes no host wait on a value CUDA sets when CUDA sets it, only on a
-  tick of its own. DECISIONS.md, the 2026-11-03 host-wait entry.
+  sets its value** (`HevcDecoder::receive`): it reads the counter, 50 us
+  apart (1 ms once the wait is 10 ms old), and asks the stream every 1 ms,
+  where its 10 ms `vkWaitSemaphores` slices returned up to 10 ms late.
+  NVIDIA's driver wakes no host wait on a value CUDA sets when CUDA sets
+  it, only on a tick of its own. Its time reaches the scopes
+  (`core::note_blocked`), no longer `DeviceCounters::host_waits`.
+  DECISIONS.md, the 2026-11-03 host-wait entry.
 
 ### Changed
 

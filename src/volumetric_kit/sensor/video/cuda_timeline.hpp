@@ -49,9 +49,11 @@ class CudaTimeline {
 
   // Wait on the host until the counter reaches @p value, or the stream fails
   // (its error) or runs dry short of it (a Backend error), after which it
-  // sets no more values: settle() then. It reads the counter every 50 us and
-  // asks the stream every 1 ms, since a host wait on the semaphore wakes up
-  // to 10 ms late; the time blocked reaches the scopes open on this thread
+  // sets no more values: settle() then. It reads the counter, sleeping 50 us
+  // between reads (1 ms once the wait is 10 ms old), and asks the stream
+  // every 1 ms, since a host wait on the semaphore wakes up to 10 ms late; a
+  // stream found idle with the counter still short 10 ms later ran dry. The
+  // time blocked reaches the scopes open on this thread
   // (`core::note_blocked`), not the device's counters.
   core::Status wait(std::uint64_t value) const;
 

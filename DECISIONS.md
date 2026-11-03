@@ -555,8 +555,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   its timeline before it returns any error from `send` or `receive` but
   `InvalidArgument`, and its host wait for the oldest of three kept
   pictures asks the stream between slices, so a failed one returns its
-  error, settled. *Amended 2026-11-03:* the wait reads the counter every
-  50 us and asks the stream every 1 ms (the host-wait entry).
+  error, settled. *Amended 2026-11-03:* the wait reads the counter, 50 us
+  apart, and asks the stream every 1 ms (the host-wait entry).
 
 - [**2026-11-03**](#2026-11-03--the-encoder-codes-on-nvenc-too-kinflight--1-exported-buffers-a-session-as-its-targets-which-nvenc-reads-through-cuda-with-no-copy-every-qp-set-from-the-options-and-strips-from-4096-rows-amends-the-2026-11-02-encoder-entries) —
   The encoder codes on NVENC too, through FFmpeg's `hevc_nvenc`: targets
@@ -581,7 +581,7 @@ entries relevant to your task; later amendments supersede earlier rules.
   A host wait on a value CUDA sets wakes late on NVIDIA: the driver wakes
   it on its own 10 ms tick, not on CUDA's signal. A picture's ready value
   is waited for on the device (`yuv_image.hpp` says so), and NVDEC's own
-  wait for a kept picture reads the counter every 50 us.
+  wait for a kept picture reads the counter, 50 us apart.
 
 ## Decision record
 
@@ -7299,9 +7299,9 @@ wait would never end; a stream found idle with the counter still short a
 slice later returns a Backend error, settled. Each slice that blocks counts
 as one of the device's `host_waits`; `blocked_ns` counts the wait's time
 once. *Amended 2026-11-03 (the host-wait entry):* the wait reads the
-counter every 50 us and asks the stream every 1 ms, an ask later still
-short the same error; its time reaches the scopes, not the device's
-counts. nvJPEG needs neither: its next decode synchronizes
+counter, 50 us apart, and asks the stream every 1 ms; a stream found idle
+with the counter still short 10 ms later returns the same error; its time
+reaches the scopes, not the device's counts. nvJPEG needs neither: its next decode synchronizes
 the last one's event, settling on a failure, and a failed decode queues no
 signal.
 
@@ -7528,10 +7528,14 @@ the counter or a CUDA event after the signal. So:
   must wait reads the counter (`TimelineSemaphore::value`). No host-side
   helper: no reader here waits on the host.
 - `CudaTimeline::wait`, NVDEC's host wait for the oldest of three kept
-  pictures, reads the counter every 50 us and asks the stream every 1 ms,
-  in place of 10 ms `vkWaitSemaphores` slices; a failed stream, or one run
-  dry, returns its error, settled, as before. Its time reaches the scopes
-  (`core::note_blocked`), no longer the device's `host_waits`.
+  pictures, reads the counter, sleeping 50 us between reads (1 ms once the
+  wait is 10 ms old, so a stalled stream costs 1,000 reads a second), and
+  asks the stream every 1 ms, in place of 10 ms `vkWaitSemaphores` slices.
+  A failed stream returns its error, settled, as before, and so does one
+  found idle with the counter still short 10 ms later (the old slice's
+  margin). Its time reaches the scopes (`core::note_blocked`), no longer
+  the device's `host_waits`. Core's `TimelineSemaphore::wait` is left as
+  it is: every value a Vulkan submission sets wakes it at once.
 
 **Not here.** The encoder's coding thread waits on the host for a
 target's written value, which the caller's Vulkan submission sets: woken
