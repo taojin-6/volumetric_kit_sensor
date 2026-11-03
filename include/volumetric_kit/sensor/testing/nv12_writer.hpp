@@ -4,14 +4,16 @@
 #pragma once
 
 /// @file testing/nv12_writer.hpp
-/// @brief Test support: an 8-bit NV12 picture written into a picture's two
-///        plane images on the device by a compute kernel, in the caller's
-///        batch, as a producer's own kernel writes an encoder's target
+/// @brief Test support: an 8-bit NV12 picture written into a picture's
+///        planes on the device by a compute kernel, in the caller's batch, as
+///        a producer's own kernel writes an encoder's target
 ///        (`HevcEncoder::target`) (`volumetric_kit::sensor_video_testing`,
 ///        with no test framework).
 ///
-/// The planes are storage images, `r8` and `rg8` in GLSL, so the device
-/// needs `hevc_encoder_device_requirements()`; the picture's codes go in as
+/// The planes are two storage images, `r8` and `rg8` in GLSL, as
+/// VideoToolbox's targets are, or rows in a storage buffer, as NVENC's are.
+/// The device needs `hevc_encoder_device_requirements()`; the picture's codes
+/// go in as
 /// they are, whatever the target's matrix and range say they mean. Writing in
 /// the batch, ordered by the timeline values it waits for and sets, is what a
 /// test of the encoder's wait for its writer needs.
@@ -40,8 +42,8 @@
 
 namespace volumetric_kit::sensor::testing {
 
-/// @brief Writes NV12 pictures into plane images on the device from one
-///        compute kernel, recorded into the caller's batches.
+/// @brief Writes NV12 pictures into plane images or a buffer's rows on the
+///        device from a compute kernel, recorded into the caller's batches.
 ///
 /// @warning Not thread-safe: use from one thread. At most @ref kPending of
 ///          the batches it recorded into may be unfinished at once.
@@ -52,7 +54,7 @@ class VS_VIDEO_TESTING_API Nv12Writer {
   /// @ref kPending records later.
   static constexpr std::uint32_t kPending = 8;
 
-  /// @return The writer, its kernel built on @p device.
+  /// @return The writer, its kernels built on @p device.
   ///         `Status::Code::InvalidArgument` for a moved-from @p device;
   ///         `Status::Code::Unsupported` where @p device did not enable
   ///         `hevc_encoder_device_requirements()` (the `r8` and `rg8`
@@ -79,17 +81,25 @@ class VS_VIDEO_TESTING_API Nv12Writer {
   /// @brief Record into @p batch the kernel that stores @p planes, a
   ///        picture of @p target's size as @ref upload lays it out, into
   ///        @p target's planes.
-  /// @param batch   The batch; @p planes and @p target's images must stay
-  ///                alive until it completes.
+  /// @param batch   The batch; @p planes and @p target's images or buffer
+  ///                must stay alive until it completes.
   /// @param planes  The picture's codes, a storage buffer.
-  /// @param target  NV12 plane images: `image[0]` R8 and `image[1]` R8G8,
-  ///                each in `GENERAL` with a view and `STORAGE` usage, at
-  ///                least the picture's size (chroma halved, rounded up),
-  ///                written from their corner.
+  /// @param target  NV12, either plane images, `image[0]` R8 and `image[1]`
+  ///                R8G8, each in `GENERAL` with a view and `STORAGE` usage,
+  ///                at least the picture's size (chroma halved, rounded up),
+  ///                written from their corner; or rows in a buffer
+  ///                (`YuvImage::device`) with `STORAGE` usage, the luma's
+  ///                from `offset[0]` and the chroma's from `offset[1]`, both
+  ///                `stride[0]` bytes apart (`stride[1]` the same), each a
+  ///                multiple of 4 and the stride at least the width. The
+  ///                bytes past a row's codes, up to its stride, are written
+  ///                0.
   /// @return OK; `Status::Code::InvalidArgument` for another target (not
-  ///         NV12 images, another format, layout or usage, too small),
-  ///         @p planes too small for @p target's size, or a moved-from
-  ///         writer; or @p batch's refusal.
+  ///         NV12; images of another format, layout or usage, or too small;
+  ///         a buffer without `STORAGE` usage, too small for its rows, or
+  ///         with offsets or strides not as above), @p planes too small for
+  ///         @p target's size, or a moved-from writer; or @p batch's
+  ///         refusal.
   core::Status record(core::CommandBatch& batch, const core::Buffer& planes,
                       const YuvImage& target);
 
@@ -105,6 +115,9 @@ class VS_VIDEO_TESTING_API Nv12Writer {
  private:
   struct Impl;
   explicit Nv12Writer(std::unique_ptr<Impl> impl) noexcept;
+  // @ref record into a target's rows in a buffer.
+  core::Status record_rows(core::CommandBatch& batch,
+                           const core::Buffer& planes, const YuvImage& target);
   std::unique_ptr<Impl> impl_;
 };
 

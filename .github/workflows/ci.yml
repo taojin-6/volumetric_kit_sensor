@@ -61,12 +61,13 @@ jobs:
       #
       # The video decoders hand out pictures on the device only (the
       # 2026-10-06 device-only decoder decision). The Mac builds them always,
-      # on VideoToolbox with no FFmpeg; `ffmpeg` builds them on 24.04 with
-      # `cuda` (VS_WITH_CUDA=ON, the toolkit installed per job: NVDEC and
-      # nvJPEG; 24.04's FFmpeg 6.1 is the floor). `hevc_backend` names the
-      # hardware each must decode on, so their tests fail rather than skip
-      # without it. 26.04 builds without them. The HEVC encoder is
-      # VideoToolbox's alone so far: `hevc_encoder` promises it on the Mac.
+      # on VideoToolbox with no FFmpeg; `ffmpeg` builds them on both Ubuntu
+      # legs with `cuda` (VS_WITH_CUDA=ON, the toolkit installed per job:
+      # NVDEC, nvJPEG and NVENC; 24.04's FFmpeg 6.1 is the floor, 26.04's
+      # FFmpeg asks NVENC for strips). `hevc_backend` names the hardware each
+      # must decode on, so their tests fail rather than skip without it, and
+      # `hevc_encoder` the encoder's: VideoToolbox on the Mac, NVENC on the
+      # Ubuntu legs.
       #
       # `ffs` builds sensor_ffs (VS_WITH_FFS, TensorRT from the CUDA
       # repository, installed per job) on 24.04, the CUDA leg; its tests fail
@@ -96,6 +97,7 @@ jobs:
             ffs: true
             decklink: true
             hevc_backend: cuda
+            hevc_encoder: nvenc
             portaudio: true
             sync_validation: true
           - os: ubuntu-26.04
@@ -104,6 +106,10 @@ jobs:
             container: '{"image":"ubuntu@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c","options":"--gpus all","env":{"NVIDIA_DRIVER_CAPABILITIES":"all","CMAKE_BUILD_PARALLEL_LEVEL":"4","CTEST_PARALLEL_LEVEL":"4","__GL_SHADER_DISK_CACHE_PATH":"/__w/_tool/nvidia-glcache","__GL_SHADER_DISK_CACHE_SKIP_CLEANUP":"1"}}'
             build_types: '["Release"]'
             realsense_sdk: true
+            ffmpeg: true
+            cuda: true
+            hevc_backend: cuda
+            hevc_encoder: nvenc
             portaudio: true
             sync_validation: true
           - os: macos-26

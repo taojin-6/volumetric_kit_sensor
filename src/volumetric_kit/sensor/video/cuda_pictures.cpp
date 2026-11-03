@@ -14,6 +14,10 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
+extern "C" {
+#include <libavutil/hwcontext_cuda.h>
+}
+
 namespace volumetric_kit::sensor::video {
 namespace {
 
@@ -74,6 +78,39 @@ core::Result<std::unique_ptr<CudaSession>> CudaSession::open(
   if (!made) return made.status().with_context(who);
   s->stream = std::move(made).value();
   return s;
+}
+
+namespace {
+
+// FFmpeg's device context's free: the session it was given.
+void release_cuda_session(AVHWDeviceContext* device) {
+  delete static_cast<CudaSession*>(device->user_opaque);
+}
+
+}  // namespace
+
+core::Result<FfmpegCudaDevice> FfmpegCudaDevice::open(
+    const core::Device& device, const char* who, const char* path) {
+  VKC_ASSIGN(std::unique_ptr<CudaSession> cuda, CudaSession::open(device, who));
+  FfmpegCudaDevice out;
+  out.device.reset(av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA));
+  if (out.device == nullptr) {
+    return ffmpeg_alloc_error(who, std::string("opening ") + path);
+  }
+  auto* hw = reinterpret_cast<AVHWDeviceContext*>(out.device->data);
+  auto* hw_cuda = static_cast<AVCUDADeviceContext*>(hw->hwctx);
+  hw_cuda->cuda_ctx = cuda->context->handle();
+  hw_cuda->stream = cuda->stream->handle();
+  out.cuda = cuda.get();
+  hw->user_opaque = cuda.release();
+  hw->free = &release_cuda_session;
+  const int err = av_hwdevice_ctx_init(out.device.get());
+  if (err < 0) {
+    return core::Status::unsupported(
+        std::string(who) + ": " + path +
+        ": no device opens: " + ffmpeg_message(err));
+  }
+  return out;
 }
 
 core::Result<std::unique_ptr<CudaPictures>> CudaPictures::create(

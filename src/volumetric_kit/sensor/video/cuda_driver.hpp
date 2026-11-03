@@ -27,6 +27,7 @@ namespace volumetric_kit::sensor::video {
   X(cuDeviceGetCount)                        \
   X(cuDeviceGet)                             \
   X(cuDeviceGetUuid)                         \
+  X(cuDeviceGetAttribute)                    \
   X(cuDevicePrimaryCtxRetain)                \
   X(cuDevicePrimaryCtxRelease)               \
   X(cuCtxPushCurrent)                        \

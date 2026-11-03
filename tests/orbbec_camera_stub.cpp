@@ -132,7 +132,7 @@ namespace volumetric_kit::sensor::orbbec {
 
 core::Result<std::unique_ptr<CameraStream>> CameraStream::create(
     std::shared_ptr<ob::Context>, std::shared_ptr<ob::Device>,
-    const OrbbecStreamOptions& streams, const camera::Mat4d&, bool,
+    const OrbbecStreamOptions& streams, const camera::Mat4d&,
     const std::string& who) {
   const orbbec_stub::FakeCamera& fake =
       orbbec_stub::cameras.at(orbbec_stub::opening);
@@ -160,7 +160,7 @@ core::Result<std::unique_ptr<CameraStream>> open_camera(
   }
   it->second.discovery_timeout_ms = discovery_timeout_ms;
   orbbec_stub::opening = serial;
-  return CameraStream::create({}, {}, streams, pose, false, who);
+  return CameraStream::create({}, {}, streams, pose, who);
 }
 
 CameraStream::~CameraStream() { --orbbec_stub::open_streams; }

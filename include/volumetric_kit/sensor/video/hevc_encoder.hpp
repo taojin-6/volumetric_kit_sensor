@@ -31,14 +31,16 @@ namespace volumetric_kit::sensor {
 /// @return What a device needs to write @ref HevcEncoder::target's planes
 ///         from a compute shader: `device_requirements()`, plus
 ///         `shaderStorageImageExtendedFormats` for R8 and R8G8 storage
-///         images (`r8` and `rg8` in GLSL).
+///         images (`r8` and `rg8` in GLSL). NVENC also needs the device to
+///         export memory (`VK_KHR_external_memory_fd`), which
+///         `device_requirements()` enables where offered.
 VS_VIDEO_API core::DeviceRequirements hevc_encoder_device_requirements();
 
 /// @brief Codes 8-bit 4:2:0 pictures as an H.265 Main stream (Annex B) on
 ///        the hardware of this build's backend (@ref video_backend):
-///        VideoToolbox on Apple. Hardware only: @ref create says what is
-///        missing rather than falling back. A build with no encoder (Linux,
-///        until NVENC lands) refuses in @ref create.
+///        VideoToolbox on Apple, NVENC through FFmpeg elsewhere (a build
+///        with VS_WITH_FFMPEG and VS_WITH_CUDA). Hardware only: @ref create
+///        says what is missing rather than falling back.
 ///
 /// One configuration: low latency (P-pictures only, no reordering, no
 /// look-ahead, every NAL unit in temporal layer 0); @ref Options::qp as
@@ -51,7 +53,8 @@ VS_VIDEO_API core::DeviceRequirements hevc_encoder_device_requirements();
 /// order sent. A coding thread of the encoder's own waits on the host for
 /// each picture's writer, then codes it. The hardware holds a thread for the
 /// whole encode in this configuration (VideoToolbox's low-latency mode codes
-/// inside its call), and this keeps that thread off the caller's. On Apple
+/// inside its call, and NVENC on Linux codes synchronously), and this keeps
+/// that thread off the caller's. On Apple
 /// it runs at user-interactive quality of service, as a camera's delivery
 /// does. Encoders on separate threads code side by side where the hardware
 /// has the engines.
@@ -64,6 +67,7 @@ VS_VIDEO_API core::DeviceRequirements hevc_encoder_device_requirements();
 ///   for the device, and the picture never crosses to the host.
 /// - On Apple, send_pixel_buffer (video/hevc_encoder_apple.hpp) sends a
 ///   `CVPixelBuffer` as it is, such as a camera's, with or without a device.
+///   NVENC codes targets alone.
 ///
 /// The first picture is a key, and so is the next after one that failed or
 /// was dropped (@ref key_owed): a P-picture after a gap does not decode. A
@@ -113,12 +117,13 @@ class VS_VIDEO_API HevcEncoder {
     std::uint32_t width = 0;
     std::uint32_t height = 0;  ///< See @ref width.
     /// Every P-picture's slice QP, 0 to 51. Fixed for the session: to change
-    /// it, open another. VideoToolbox codes 1 to 51 and refuses 0.
+    /// it, open another. VideoToolbox codes 1 to 51 and refuses 0; NVENC
+    /// codes 0 to 51.
     int qp = 22;
     /// Every IDR's slice QP, as @ref qp; empty for @ref qp.
     std::optional<int> key_qp;
-    /// Speed against quality, 1 (fastest) to @ref kMaxEffort. VideoToolbox
-    /// has one speed and ignores it.
+    /// Speed against quality, 1 (fastest) to @ref kMaxEffort: NVENC's
+    /// preset, p1 to p7. VideoToolbox has one speed and ignores it.
     int effort = 4;
     /// The pictures' colour, which the VUI states: the caller's to state
     /// truly. The matrix must be stated (not 2). @ref create first gives
@@ -126,21 +131,23 @@ class VS_VIDEO_API HevcEncoder {
     /// 15 are 1), then accepts only these: matrix 1, 6, 7 or 9; transfer 1,
     /// 2, 7, 8, 13, 16, 17 or 18; primaries 1, 2, 5, 6, 9, 11, 12 or 22;
     /// either range; chroma siting 0, or 1 to 5 where this backend writes
-    /// it (VideoToolbox does). Anything else is
+    /// it (VideoToolbox does; NVENC does not). Anything else is
     /// `Status::Code::Unsupported`, naming the code. A @ref target's
     /// matrix weights, range and siting are these.
     ColorCodes color;
     /// The device that writes @ref target's planes, made with
     /// @ref hevc_encoder_device_requirements; on Apple one that imports
-    /// Metal textures (`Device::imports_metal_textures`). Null for a session
-    /// that codes `CVPixelBuffer`s only, which has no @ref target. @ref create
-    /// readies the targets' pictures on it (on VideoToolbox coding one
-    /// throwaway picture first), waiting on the host for the device's
-    /// earlier work. Borrowed: it must outlive the encoder and every target.
+    /// Metal textures (`Device::imports_metal_textures`); on NVENC, required,
+    /// one on a GPU CUDA reaches that exports memory. Null, on Apple, for a
+    /// session that codes `CVPixelBuffer`s only, which has no @ref target.
+    /// @ref create readies the targets' pictures on it (on VideoToolbox
+    /// coding one throwaway picture first, waiting on the host for the
+    /// device's earlier work; on NVENC making its buffers). Borrowed: it must
+    /// outlive the encoder and every target.
     const core::Device* device = nullptr;
-    /// Allocates the target buffers of a backend that has its own (NVENC,
-    /// when it lands). VideoToolbox's pictures come from its own pool and
-    /// need none. Borrowed, as @ref device.
+    /// Allocates NVENC's target buffers: required there. VideoToolbox's
+    /// pictures come from its own pool and need none. Borrowed, as
+    /// @ref device.
     core::Allocator* allocator = nullptr;
   };
 
@@ -151,7 +158,8 @@ class VS_VIDEO_API HevcEncoder {
     ColorCodes color;     ///< What the VUI states: Options::color, normalized.
     int effort = 0;       ///< As applied; 0 where the backend has one speed.
     /// The horizontal strips each picture is split into across the GPU's
-    /// encoders; 0 for the driver's own choice.
+    /// encoders; 0 for the driver's own choice. NVENC asks for 3 from 4096
+    /// rows, and leaves smaller pictures to the driver.
     int strips = 0;
     /// The whole configuration, one line, as the session reports it where
     /// it reports it.
@@ -176,16 +184,21 @@ class VS_VIDEO_API HevcEncoder {
   };
 
   /// @return The encoder. `Status::Code::InvalidArgument` for a size, QP,
-  ///         key QP or effort out of range, matrix 2, or a moved-from
-  ///         @ref Options::device. `Status::Code::Unsupported` where there is
-  ///         no hardware path, naming what is missing: a build with no
-  ///         encoder; a colour code or siting outside @ref Options::color's
-  ///         set; a QP the backend does not code; a device without
-  ///         @ref hevc_encoder_device_requirements, or on Apple one that
-  ///         imports no Metal textures; no hardware HEVC encoder, or one that
-  ///         takes no QP a picture; or the hardware refusing the session
-  ///         (busy, or at its session limit). Or `Status::Code::OutOfMemory`
-  ///         or `Status::Code::Backend` if the backend fails.
+  ///         key QP or effort out of range, matrix 2, a moved-from
+  ///         @ref Options::device, or on NVENC no @ref Options::device or
+  ///         @ref Options::allocator. `Status::Code::Unsupported` where there
+  ///         is no hardware path, naming what is missing: a colour code or
+  ///         siting outside @ref Options::color's set; a QP the backend does
+  ///         not code; a device without @ref hevc_encoder_device_requirements,
+  ///         on Apple one that imports no Metal textures, on NVENC one that
+  ///         exports no memory or that CUDA does not reach; an FFmpeg without
+  ///         hevc_nvenc, or one that cannot ask NVENC for strips at 4096 rows
+  ///         or more (FFmpeg 7.1 or later, built with nv-codec-headers 12.1 or
+  ///         later, can); no hardware HEVC encoder, or one that takes no QP a
+  ///         picture; or the hardware refusing the session (busy, at its
+  ///         session limit, which a GeForce GPU sets at a few sessions, or
+  ///         taking no such parameter). Or `Status::Code::OutOfMemory` or
+  ///         `Status::Code::Backend` if the backend fails.
   static core::Result<HevcEncoder> create(const Options& options);
 
   HevcEncoder(HevcEncoder&& other) noexcept;
@@ -214,6 +227,16 @@ class VS_VIDEO_API HevcEncoder {
   /// which on VideoToolbox is nothing, as they stay on the device's queue
   /// family.
   ///
+  /// NVENC: one of `kInFlight + 1` buffers the device exports
+  /// (`YuvImage::device`), with `STORAGE`, `TRANSFER_SRC` and `TRANSFER_DST`
+  /// usage, and no images: the luma's rows from `offset[0]` (0) and the
+  /// chroma's (Cb first) from `offset[1]`, `stride[0]` bytes apart
+  /// (`stride[1]` the same), the width rounded up to the GPU's texture
+  /// alignment. NVENC reads the buffer through CUDA with no copy; this
+  /// records into @p batch its crossing from outside Vulkan before the
+  /// batch's commands and back after its last one. The colour and
+  /// `queue_family` are as VideoToolbox's.
+  ///
   /// Unlike a decoder's picture, this is the encoder's input, not a picture
   /// the caller holds: write it only in @p batch, submit that batch, and
   /// @ref send the timeline value it sets as it completes; then drop
@@ -222,20 +245,24 @@ class VS_VIDEO_API HevcEncoder {
   /// given up may be the next handed out, so a batch already submitted to
   /// write it must finish before the next one's writer starts: on
   /// VideoToolbox it does, as MoltenVK runs the device's one queue in order.
+  /// NVENC hands it out again two targets later at the soonest, and nothing
+  /// orders the two batches on the device: the caller waits for the first.
   /// The encoder keeps a target's images for the batch that writes them, a
   /// lost session's too: they go with the encoder, or once 64 targets have
-  /// come after the last on the same picture. Destroy the encoder only once
-  /// every batch that wrote a target given up has completed; it waits for a
-  /// sent target's writer itself.
+  /// come after the last on the same picture (NVENC's buffers, for the
+  /// encoder's life). Destroy the encoder only once every batch that wrote
+  /// a target given up has completed; it waits for a sent target's writer
+  /// itself.
   ///
   /// Returns at once on a picture the session has readied: @ref create
-  /// readies `kInFlight + 2`, which a producer with @ref kInFlight in
-  /// flight, or one target given up, cycles through. A picture new to the
-  /// session (the first few after a reopen, or one more the pool makes) is
-  /// readied first, a submit waited for on the host behind the device's
-  /// earlier work, without the encoder's lock, as a reopen is. So where a
-  /// target may reopen, no batch submitted before it may wait for a value
-  /// set only after it returns: it would never return.
+  /// readies `kInFlight + 2` on VideoToolbox, which a producer with
+  /// @ref kInFlight in flight, or one target given up, cycles through, and
+  /// every buffer on NVENC. A picture new to the VideoToolbox session (the
+  /// first few after a reopen, or one more the pool makes) is readied
+  /// first, a submit waited for on the host behind the device's earlier
+  /// work, without the encoder's lock, as a reopen is. So where a target may
+  /// reopen, no batch submitted before it may wait for a value set only
+  /// after it returns: it would never return.
   /// @return The target. `Status::Code::InvalidArgument` when
   ///         @ref kInFlight pictures are in flight (receive first), on a
   ///         moved-from encoder, or on one opened with no

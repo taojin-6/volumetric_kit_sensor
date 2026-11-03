@@ -7,8 +7,7 @@
 // configuration HevcEncoder describes: the seam between HevcEncoder's rules
 // and coding thread (hevc_encoder.cpp, every backend's) and the backend. One
 // definition a build, no virtual interface: VideoToolbox's on Apple
-// (vt_hevc_encode.cpp), and on a build with no encoder the refusal in
-// hevc_encoder.cpp. Internal.
+// (vt_hevc_encode.cpp), NVENC's elsewhere (nvenc_session.cpp). Internal.
 
 #include <cstdint>
 #include <memory>
@@ -26,13 +25,20 @@
 
 namespace volumetric_kit::sensor::video {
 
-// A picture to code, held until it is: on Apple a pixel buffer, retained;
-// and, for a target the device writes, the value its writer sets once the
-// picture is written, which the coding thread waits for on the host (a null
-// semaphore for none).
+#if !defined(__APPLE__)
+struct NvencTarget;  // nvenc_session.cpp
+#endif
+
+// A picture to code, held until it is: on Apple a pixel buffer, retained; on
+// NVENC the session's target buffer, which is free again once no picture
+// holds it; and, for a target the device writes, the value its writer sets
+// once the picture is written, which the coding thread waits for on the host
+// (a null semaphore for none).
 struct EncodePicture {
 #if defined(__APPLE__)
   PixelBufferPtr pixels;
+#else
+  std::shared_ptr<NvencTarget> target;
 #endif
   core::TimelinePoint written;
 };
