@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.22.0] - 2026-11-02
+## [0.37.0] - 2026-11-03
 
 ### Added
 
@@ -22,6 +22,428 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   field. DECISIONS.md, the 2026-10-31 spread-gate entry.
 - `tools/ffs/make_test_onnx.py` also writes three test models with a known
   spread (`spread_64x32.onnx`, and two that are refused).
+
+## [0.36.0] - 2026-11-03
+
+### Added
+
+- **`HevcEncoder` on NVENC** (`video/hevc_encoder.hpp`, `sensor_video`, a
+  Linux build with `VS_WITH_FFMPEG` and `VS_WITH_CUDA`): FFmpeg's
+  `hevc_nvenc` behind the same API, rules and coding thread as VideoToolbox.
+  NVENC codes targets alone, so `create` needs `Options::device` and
+  `Options::allocator` (`InvalidArgument` without), on a GPU CUDA reaches
+  whose device exports memory. A target is one of `kInFlight + 1` exported
+  buffers made at `create` (`YuvImage::device`: the luma's rows from 0, the
+  chroma's after them, at a stride of the width rounded up to the GPU's
+  texture alignment), which NVENC reads through CUDA with no copy; `target`
+  records the buffer's crossing into the batch. Effort is the preset (p1 to
+  p7), every QP is set from the options, QP 0 to 51 is coded, sitings 1 to 5
+  are refused, and a picture of 4096 rows or more is coded in 3 strips
+  (`Facts::strips`), which an FFmpeg before 7.1 refuses in `create`.
+- **`HevcEncoderCase::Rules::Sequence`** (`testing/hevc_conformance.hpp`):
+  what the sequence says on one key picture (C3-C5, C10), for a sweep over
+  colour codes or efforts. The rules run on NVENC too: C9 checks NVENC's
+  buffer target; pixel buffers (C11) stay Apple's.
+- **`Nv12Writer` writes a buffer's rows** (`testing/nv12_writer.hpp`), as
+  NVENC's targets are, the bytes past each row up to its stride 0.
+
+### Removed
+
+- **`HevcDecoder::Options::configure_ffmpeg_logging`**: the first coder that
+  opens on NVIDIA sets FFmpeg's log level to ERROR, once a process. No
+  caller in the family set the option.
+
+### Changed
+
+- **NVDEC opens FFmpeg's CUDA device as NVENC does**, through one internal
+  helper on the Vulkan device's GPU; its pictures are unchanged.
+- **The colour-code sweep** in `sensor_video_hevc_encoder` runs the
+  sequence's rules, on one key picture each.
+- **CI**: the 26.04 leg builds FFmpeg and CUDA and promises NVDEC and NVENC;
+  the 24.04 leg promises NVENC too.
+
+## [0.33.0] - 2026-11-03
+
+### Added
+
+- **`HevcEncoderCase::rules`** (`testing/hevc_conformance.hpp`): `All`, the
+  default, runs every rule as before; `Stream` runs only those a session's
+  options change (C2-C6, C10, C11), for a sweep over colour codes, QPs or
+  sizes. A caller that sets no `rules`, as the iOS self-test, is unchanged.
+
+### Changed
+
+- **The encoder tests are fast.** `sensor_video_hevc_encoder` runs its rules
+  on 256x144 pictures (and 258x146, a 4n+2 width), 6 pictures a case, and its
+  colour-code sweep on the stream's rules alone: 3.0 s in Release (was
+  25.6 s) and 16.2 s under ThreadSanitizer (was 163-178 s) on an M5 Max.
+  Full-size coding stays in the benchmarks and the iOS self-test.
+- **C13b holds its writer's value instead of waiting 1 s.** It holds ten times
+  one picture's whole path, as the run measures it (at least 20 ms); nothing
+  may come back while the value is held, and the access unit comes back once
+  the run sets it. A watchdog sets the value 5 s past the hold, so a coding
+  thread that never waits fails the rule rather than hanging the run.
+
+## [0.32.0] - 2026-11-03
+
+### Changed
+
+- **`order_breach`** (`testing/rgbd_contract.hpp`) takes a time of 0 as
+  none: the sequence is still checked, the time only where both are
+  non-zero. `RgbdContract` calls it with the last non-zero time, as
+  before, and its answers are unchanged.
+- **The stereo contract** (`tests/stereo_contract.hpp`) takes a time of 0
+  as none too: a pair's sequence is still checked, and its time, where it
+  has one, on the last one reported. DECISIONS.md, the 2026-11-02 frame
+  contract entry, amended.
+
+## [0.31.0] - 2026-11-03
+
+### Fixed
+
+- **A GPU fault leaves no reader waiting for good.** `HevcDecoder` (NVDEC)
+  returns every error from `send` or `receive` but `InvalidArgument` once
+  each ready value it handed out is set, from the host where a failed
+  stream dropped CUDA's signal; with three pictures kept, `receive`'s host
+  wait for the oldest asks the stream between 10 ms slices, so a failed one
+  returns CUDA's error, settled, and one that runs dry with the value unset
+  a Backend error, rather than waiting for good. Each slice that blocks
+  counts as one of the device's `host_waits`. DECISIONS.md, the 2026-11-03
+  fault entry.
+- `sensor_video_handover`'s CUDA table drops ready values' signals and
+  reports a faulted stream, as a GPU fault leaves them. Under a validation
+  layer older than 1.4.341, which reports a host signal after a read of an
+  exported timeline (VUID-VkSemaphoreSignalInfo-value-03259), those tests
+  run in a second, unvalidated run.
+
+## [0.30.0] - 2026-11-02
+
+### Added
+
+- **`HevcEncoder::target(batch)`** and **`send(key, pts, written)`**
+  (`video/hevc_encoder.hpp`): the encoder hands out its next picture on the
+  device, NV12 R8 and R8G8 storage images over a picture of VideoToolbox's
+  pool, described by the session's colour, for the caller's kernel to write
+  in its own batch; `send` hands over the timeline value that batch sets,
+  returns at once, and the coding thread waits for that value on the host
+  before it codes. A second `target` before `send` gives up the first once
+  it succeeds; a refused `send` keeps the target. The images are kept for
+  the batch that writes them across a lost session too. `create` readies
+  the targets' pictures (one throwaway picture coded first, as VideoToolbox
+  replaces its pool at its first), so a producer's targets wait for no
+  batch; one on a picture new to the session, as after a reopen, waits on
+  the host for the device's earlier work, without the encoder's lock. A
+  session whose pool is gone, as after the system reclaims it, fails the
+  target (`IoError`) and is lost. DECISIONS.md, the 2026-11-02 target
+  entry.
+- `HevcEncoder::Options::device` and `Options::allocator`, and
+  **`hevc_encoder_device_requirements()`**: `device_requirements()` plus
+  `shaderStorageImageExtendedFormats`, which `create` checks of a device it
+  is given.
+- **`PixelBufferImporter::Access`** (`apple/pixel_buffer_importer.hpp`):
+  `Write` imports planes a compute shader stores into as well (`STORAGE`
+  and `TRANSFER_DST` usage, Metal textures written in place), refused where
+  the device has no R8 or R8G8 storage images; `Read`, the default, is
+  unchanged.
+- **Test support:** `testing::Nv12Writer` (`testing/nv12_writer.hpp`,
+  `sensor_video_testing`): a compute kernel that stores an NV12 test picture
+  into plane images in the caller's batch, as a producer's kernel writes a
+  target. `hevc_encoder_breach` runs on targets when the case is not
+  `pixel_buffers`, and checks C9 (the target, taken twice) and C13b (the
+  coding thread waits for each target's writer).
+
+### Changed
+
+- The encoder's destructor waits for the writer of each target sent, with
+  no limit, as a pending batch does; `send_pixel_buffer` refuses while a
+  target is taken and not sent.
+- `HevcEncoderCase::device` and `allocator` also write the targets; a case
+  that is not `pixel_buffers` runs on targets rather than being refused.
+- The encoder test runs on a device made with
+  `hevc_encoder_device_requirements()` on every leg, the test writer first.
+
+## [0.29.0] - 2026-11-02
+
+### Added
+
+- **`HevcEncoder`** (`video/hevc_encoder.hpp`, `sensor_video`), the twin
+  of `HevcDecoder`: one hardware H.265 Main session in one low-latency
+  configuration, a slice QP for P-pictures and one for IDRs fixed for the
+  session, keys only when asked, the VUI from `Options::color` normalized
+  and checked against one code set. Pipelined: a send returns at once, a
+  coding thread of its own codes (allocating nothing; user-interactive
+  quality of service on Apple), and `receive(picture, timeout_ns)` hands
+  back each Annex B access unit in the order sent, swapping buffers, at most
+  `kInFlight` (2) in flight; a finite wait sleeps even with none in flight.
+  `key_owed()`, `lost()`, `facts()` and
+  `inject(Fault)` as the header says. On VideoToolbox in every Apple build;
+  `create` refuses on Linux until NVENC lands. DECISIONS.md, the
+  2026-11-02 encoder entry.
+- **`send_pixel_buffer(encoder, pixels, key, pts)`**
+  (`video/hevc_encoder_apple.hpp`, Apple): a camera's `CVPixelBuffer` coded
+  as it is, with no Vulkan device.
+- **`video_backend()`** (`video/backend.hpp`): `VideoToolbox` or `Nvidia`.
+- **`color_codes_of(pixels)`** (`apple/core_video_color.hpp`,
+  `sensor_apple`): a `CVPixelBuffer`'s colour tags as H.273 codes, through
+  Core Video's own mapping.
+- **Test support:** `testing::SliceReader` (`testing/hevc_slices.hpp`,
+  `sensor_video_syntax`): each picture's first slice type and QP and each
+  SPS's profile and sub-layers; `hevc_encoder_breach`
+  (`testing/hevc_conformance.hpp`, new static target
+  `sensor_video_testing`): the encoder rules C1-C13 on one case;
+  `hevc_encoder_promised()` (`VS_TEST_HEVC_ENCODER`);
+  `testing/nv12_pattern.hpp`, the host half of `nv12_picture.hpp`, with
+  `pattern_index`, the band's reader; and on Apple
+  `testing/nv12_pixel_buffer.hpp`'s `pixel_buffer`.
+- `tests/data/hevc/vt_pattern_1920x1440.h265`, coded by VideoToolbox's
+  encoder (`tools/vt_pattern_clip`): the test pattern, 12 pictures, keys at
+  0 and 6. The decoder test decodes it on NVDEC and VideoToolbox to
+  libavcodec's MD5.
+
+### Changed
+
+- `sensor_apple` links `sensor_video_syntax` PUBLIC (for `ColorCodes`);
+  `sensor_video` links CoreVideo PUBLIC on Apple (the encoder's Apple entry
+  names `CVPixelBufferRef`).
+- `testing/nv12_picture.hpp` includes `testing/nv12_pattern.hpp`, where
+  `HostNv12` and `test_pattern` now live, unchanged, with the band's layout
+  from `testing/index_band.hpp`.
+- The H.265 parsers read through internal walks the slice reader shares;
+  what they read and refuse is unchanged.
+- The iOS build check also compiles `sensor_video_testing` and the Apple
+  headers as plain C++, and links an app's encoder calls into an iOS
+  executable.
+
+## [0.28.0] - 2026-11-02
+
+### Added
+
+- **A picture's ready value** (`YuvImage::ready`, `YuvImage::ready_value`):
+  the timeline value a writer that did not wait for its work sets once the
+  picture is written, which a reader's submission waits for on the device.
+  NVDEC's and nvJPEG's pictures carry one; VideoToolbox's, a camera's and
+  host planes none. DECISIONS.md, the 2026-11-02 hand-over entry.
+- **`ready_points(frame)`** and **`ready_points(frames)`**
+  (`prep/gpu_frame_prep.hpp`, `sensor_prep`): the values a batch that reads
+  a frame's colour, or a set's, waits for, for a caller of
+  `GpuFramePrep::record`, `record_set` or `SensorArray::record_process`
+  (`ready_points(set.frames)`) to pass among its `submit_async` waits.
+- **`add_ready_point(image, points)`** (`frame/ready_points.hpp`,
+  `sensor_frame`): a picture's ready value added to a submission's waits,
+  one a timeline at its highest value, for a reader of its own.
+- `device_requirements()` names `VK_KHR_external_semaphore_fd` among its
+  optional extensions.
+
+### Changed
+
+- **NVIDIA's decoders hand their pictures over on the GPU.** `HevcDecoder`
+  (NVDEC) and `JpegDecoder` (nvJPEG) queue the copy or decode, signal an
+  exported timeline CUDA imported after it, and hand the picture out with
+  that value, in place of `cuStreamSynchronize` and the event wait.
+  `HevcDecoder` keeps each frame FFmpeg handed out until its value is
+  reached, whoever holds the picture, and up to three: with three kept, the
+  next `receive` waits on the host for the oldest. FFmpeg's own copy of
+  NVDEC's output stays (dropping it costs about 100 MB more a 4K decoder).
+  On NVIDIA `create` is `Unsupported` on a device that does not export
+  semaphores (`Device::exports_semaphores`).
+- **Every reader here waits for a picture's ready value on the device:**
+  `GpuFramePrep::prepare` and `prepare_batch`, `PictureReadback`,
+  `LumaPass` and `StereoRectifier`; each refuses a ready timeline made on
+  another device (`InvalidArgument`). **A caller that records
+  `GpuFramePrep` into its own batch, or reads a decoder's picture in its
+  own, must pass the picture's ready value among its waits**
+  (`ready_points`, `add_ready_point`), or it reads an NVIDIA picture CUDA
+  may not have written yet.
+- The core is pinned at 0.41.0 (core #88: `create_exported_timeline`,
+  `Device::exports_semaphores`, `fwd.hpp`'s `TimelineSemaphore`), and every
+  build but a camera-only one needs it.
+
+## [0.27.0] - 2026-11-02
+
+### Added
+
+- **An RGB-D sensor's frames as bytes** (`wire/rgbd_wire.hpp`, the new
+  target `sensor_wire`, every build, iOS included), version 1, for a
+  recording or a live link of any `IRgbdSensor`:
+  - `encode_sensor` / `decode_sensor`: a `SensorInfo` as a depth track's
+    params, less the id, clock and rate a container's track holds;
+  - `encode_depth` / `decode_depth`: a frame's depth half as a record, a
+    392-byte prefix (the depth camera, `color_to_world`, `depth_to_color`,
+    units, range, noise, the confidence flag and floor) then the rows and
+    the plane, raw. The encode borrows the frame's rows and plane
+    (`DepthRecord`); the decode returns an `RgbdFrame` pointing into the
+    payload, which its `pixels` holds;
+  - `encode_color_params` / `decode_color_params` (`ColorCodec::HevcMain8`)
+    and `encode_color` / `decode_color`: a frame's colour half as a
+    128-byte prefix (the colour camera, its `ColorCodes`, its exposure)
+    before one coded picture, read in place (`ColorRecord`).
+  The decode checks the layout and passes every value as written; another
+  version is `Unsupported`. DECISIONS.md, the 2026-11-02 wire-form entry.
+- **`ColorExposure` and `RgbdFrame::color_exposure`** (`rgbd_frame.hpp`):
+  a picture's exposure time, ISO and bias as the camera reported it, all 0
+  where the driver does not say; the colour record carries it.
+- `tools/ios_build_check.sh` compiles `sensor_wire` too.
+
+## [0.26.0] - 2026-11-02
+
+### Added
+
+- **The frame contract**, in `IRgbdSensor`'s doc (`rgbd_sensor.hpp`): a
+  frame's colour is its own capture's picture; a sensor that names a depth
+  or colour camera hands out whole frames only, a lost or undecoded picture
+  counted in `SensorStats::failed`; a frame's cameras are the sizes
+  `SensorInfo` names; a gap in `RgbdFrame::sequence` is a frame lost after
+  the sensor numbered it, and a rate gate's skips leave none
+  (`RgbdFrame::sequence`'s doc says so too); a timestamp of 0 is none, so
+  only reported times increase; a confidence plane comes beside host depth
+  at a floor of 1 or more, and a floor only with one, as `GpuFramePrep`
+  takes it (0.24.0's plane). DECISIONS.md, the 2026-11-02 frame contract
+  entry.
+- **`color_from_registered_depth(depth, width, height)`**
+  (`camera_conventions.hpp`, `sensor_interface`): the colour camera a depth
+  image is registered to, a `camera::CameraModel` in and out, the inverse
+  of `depth_from_registered_color`'s rescale through the same per-axis
+  code, the lens kept; `InvalidArgument` for a zero size or a depth camera
+  `check_camera_model` refuses.
+- **Test support** (`testing/`, header-only):
+  - `testing/rgbd_contract.hpp`: `RgbdContract`, which checks a source's
+    frames one at a time, one start each, and keeps none, `rgbd_breach`
+    over a vector, and the rules they share with the stereo contract,
+    `sequence_breach`, `order_breach` and `stats_breach`.
+  - `testing/rgbd_pattern.hpp` (standard library alone): `PatternDepth`,
+    `pattern_depth(width, height, index)`, u16 millimetres carrying the
+    index band at the picture's pixels and a confidence plane, and
+    `depth_index`, which reads it back; `kPatternNearMm`, `kPatternFarMm`.
+  - `testing/index_band.hpp` (standard library alone): `kIndexSquare` and
+    `kIndexBits`, moved from `nv12_picture.hpp`, which includes it;
+    `test_pattern`'s bytes are unchanged.
+
+### Changed
+
+- `tests/stereo_contract.hpp` calls `order_breach` and `stats_breach`; the
+  stereo suites are unchanged.
+- The Orbbec camera stub stands in for `CameraStream`'s mailbox, take and
+  read, playing a script of captures with counts of its own, and
+  `tests/realsense_camera_stub.cpp` stands in for the RealSense camera
+  (`camera.cpp`) with librealsense's software device: the Orbbec,
+  RealSense and FFS depth sensors' tests run `rgbd_breach` under injected
+  faults through each sensor's poll, drain and stats. The cameras' own
+  counting is checked only on a camera.
+
+## [0.25.0] - 2026-11-02
+
+### Added
+
+- **A tracked sensor's registration** (`camera/tracked_registration.hpp`,
+  `sensor_camera`, every build): `TrackedRegistration`, the one rigid
+  `tracking_to_world` that places a tracked sensor's world (ARKit's) in a
+  sensor array's world for one capture session's world epoch, with the
+  array's world it registers into (one sensor or one tag) and the tag fit
+  that solved it (`rms_px`, `views`, `edge_m`). A frame posed
+  `cam_to_tracking` sits at `tracking_to_world * cam_to_tracking`.
+  `validate_`, `parse_`, `read_`, `format_` and `write_tracked_registration`
+  read and write the file, `"volumetric_kit.tracked_registration"` version
+  1, through the core's `read_file` and `write_file`; the session is 32 hex
+  digits, byte 0 first. calib's `register_tracked` writes it; a tracked
+  source reads it at open. DECISIONS.md, the 2026-11-02 tracked
+  registration entry.
+
+### Changed
+
+- The array calibration file's world block, its transforms, and the JSON
+  numbers, objects and text under them are read and written in one internal
+  place (`camera/calibration_json.{hpp,cpp}`), which the registration
+  shares, and so is the check that a world is one sensor or one tag. The
+  file reads, refuses and writes as before, every message the same.
+
+## [0.24.0] - 2026-11-02
+
+### Added
+
+- **A depth confidence plane** (`RgbdFrame::depth_confidence`,
+  `RgbdFrame::min_confidence`): beside host depth, one byte a sample in the
+  sensor's own levels (ARKit's 0 low, 1 medium, 2 high), and the floor below
+  which `GpuFramePrep` drops a sample on the GPU, per raw sample, before the
+  depth offset, the mix, the colour-view test and the outlier filter, so a
+  dropped sample is a hole. Level 0 is never integrated: a producer that
+  invalidates a sample, such as one it masks as a moving person, writes 0
+  there, and every floor drops it. A plane comes with a floor of 1 or more,
+  which its producer sets, and is copied into the pass's slot after the
+  depth; a frame without a plane is prepared bit for bit as before.
+  `prepare` refuses a plane beside device depth or at a floor of 0, and a
+  floor without a plane (`InvalidArgument`). DECISIONS.md, the 2026-11-02
+  confidence plane entry.
+- `sensor_gpu_frame_prep_confidence`: the gate at every floor, per raw
+  sample, the slot, sets and the refusals.
+
+## [0.23.0] - 2026-11-02
+
+### Added
+
+- **What H.273 colour codes mean, public** (`video/frame_color.hpp`,
+  `sensor_video`): `resolve_matrix(matrix, height)`,
+  `resolve_encoding(transfer, primaries)` and
+  `resolve_chroma_location(code)` give a `ColorCodes`' `VideoColorMatrix`,
+  `ColorEncoding` and `ChromaLocation`, as the decoders describe their
+  pictures by them, for any caller holding codes (an SPS's, a capture
+  source's tags). They resolve as they did inside; `resolve_matrix` takes
+  the height as `std::uint32_t`. DECISIONS.md, the 2026-11-02 colour codes
+  entry.
+- **Test support** (`testing/`, header-only, no test framework):
+  - `testing/hevc_clip.hpp`: `split_access_units` and
+    `access_units_of_file`, a clip's access units at its delimiters, and
+    `hevc_decoder_promised()`, whether `VS_TEST_HEVC_BACKEND` promises a
+    hardware decoder.
+  - `testing/nv12_picture.hpp`: `HostNv12`; `test_pattern(width, height,
+    index)`, the family's NV12 test picture, whose index band names
+    `index % 16384` in 16 x 16 squares beside a 255 and a 0 reference
+    (`kIndexSquare`, `kIndexBits`); and `device_picture(device, allocator,
+    picture, pad)`, the picture as R8 and R8G8 plane images in `GENERAL`,
+    as a hardware decoder hands one out, written through the core's
+    `core_test_policy`.
+- `tests/data/hevc/centred_full_256x144.h265` (`tools/make_hevc_fixtures.sh`):
+  testsrc2 at BT.709 full range, its chroma sited at the centre, an IDR
+  every 4. The decoder test decodes it to libavcodec's MD5 on both paths and
+  checks its range and siting; the syntax test reads its SPS.
+
+### Changed
+
+- `sensor_video` links `sensor_video_syntax` PUBLIC (was PRIVATE):
+  `frame_color.hpp` resolves the codes the syntax reader returns.
+- The Metal device under a Vulkan device is found in one place,
+  `sensor_apple`'s internal `metal_device.mm`, which `PixelBufferImporter`
+  and the importer's test both call; the importer behaves as before.
+- The package's tests are on the test support: `tests/hevc_fixture.hpp` is
+  gone, `decoder_test.hpp`'s promise is `hevc_decoder_promised()`, and the
+  frame prep, readback and luma tests make their NV12 plane images with
+  `device_picture` (the readback and luma tests' 3 columns wider and 3 rows
+  taller, where they were 3 and 2).
+  The frame colour test calls the public resolvers and still runs on every
+  leg, with or without the decoders.
+
+## [0.22.0] - 2026-11-02
+
+### Added
+
+- **`KeyGate`** (`video/key_gate.hpp`, `volumetric_kit::sensor_video_syntax`,
+  every build): which access units of a predicted H.265 stream to send after
+  a loss. `admit(seq, key)` is `Skip` while it waits for a key (at the
+  start, after a number other than one up from the last, and after
+  `lose()`), `Restart` for the key that ends a wait (reset the decoder, then
+  send it), and `Take` otherwise; an empty `seq` is an unnumbered unit,
+  never a gap. `waiting()` says whether it waits.
+- **`hevc::first_slice_type(data, size)`** (`video/hevc_syntax.hpp`): the
+  nal_unit_type of an access unit's first slice segment, found by start
+  codes alone, with no allocation and no failure; empty if there is none.
+  With `is_irap`, whether the unit is a key.
+  DECISIONS.md, the 2026-11-02 key gate entry.
+
+### Changed
+
+- The Orbbec driver's H.265 colour decoder uses them: its internal gate and
+  `is_key_frame` go, its behaviour unchanged, and
+  `sensor_orbbec` links `sensor_video_syntax` privately. Their unit cases
+  move to `sensor_video_key_gate` and `sensor_video_hevc_syntax`.
 
 ## [0.21.0] - 2026-11-01
 

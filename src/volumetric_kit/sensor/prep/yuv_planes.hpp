@@ -5,11 +5,15 @@
 
 // A device picture's planes and the checks every reader of one makes:
 // GpuFramePrep and the stereo rectifier, which convert it (color_pass.hpp),
-// and PictureReadback, which copies it to the host. Internal to sensor_prep.
+// and PictureReadback, which copies it to the host; and that the timeline
+// value each one's submission waits for is one it can. Internal to
+// sensor_prep.
 
 #include <cstdint>
 
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/core/vulkan/fwd.hpp"
+#include "volumetric_kit/sensor/prep/export.hpp"
 #include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace volumetric_kit::sensor::detail {
@@ -42,5 +46,13 @@ enum class ImageRead { Sample, Copy };
 // the caller's to check first. `who` starts every message.
 core::Result<YuvPlanes> check_yuv_planes(const YuvImage& image, const char* who,
                                          ImageRead read);
+
+// InvalidArgument where `image`'s YuvImage::ready is an empty semaphore or one
+// made on another VkDevice than `device`, which a reader's submission could
+// not wait for; OK without one. `who` starts the message. Exported: the stereo
+// rectifier checks its views with it too.
+VS_PREP_API core::Status check_ready(const YuvImage& image,
+                                     const core::Device& device,
+                                     const char* who);
 
 }  // namespace volumetric_kit::sensor::detail

@@ -32,6 +32,7 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/gpu_timer.hpp"
 #include "volumetric_kit/core/vulkan/host_ring.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/unique_handle.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/sensor/frame/camera_params.hpp"
@@ -174,9 +175,15 @@ struct GpuFramePrepConfig {
 /// arrive, are sampled where they are, with no copy, either after the pass
 /// takes them over from the queue family that wrote them
 /// (`YuvImage::queue_family`). The two read the same samples, so give the
-/// same frame. Or it comes on the host: planes as a camera's SDK hands them
-/// over (`YuvImage::host`; a UVC camera's YUYV), converted on the device like
-/// a buffer's, or words a dataset decoded (@ref RgbdFrame::color_packed).
+/// same frame. A picture whose writer has not finished carries the timeline
+/// value that says it has (`YuvImage::ready`, NVDEC's and nvJPEG's): the
+/// batch that reads it waits for that value on the device, so no host waits
+/// between the decoder and the pass. @ref prepare and @ref prepare_batch
+/// wait for it themselves; a caller of @ref record or @ref record_set passes
+/// @ref ready_points among its `submit_async` waits. Or it comes on the host:
+/// planes as a camera's SDK hands them over (`YuvImage::host`; a UVC camera's
+/// YUYV), converted on the device like a buffer's, or words a dataset decoded
+/// (@ref RgbdFrame::color_packed).
 ///
 /// Depth comes from the host, as a sensor's SDK hands it over
 /// (@ref RgbdFrame::depth), or from the device, as a GPU stage such as stereo
@@ -186,6 +193,14 @@ struct GpuFramePrepConfig {
 /// many depths and pictures of its frames it holds -- a frame's depth and
 /// planes, or every camera's depth -- so they must all name the family that
 /// wrote it.
+///
+/// Host depth may carry a confidence plane (@ref RgbdFrame::depth_confidence)
+/// and, with it, a floor of 1 or more (@ref RgbdFrame::min_confidence),
+/// copied into the slot after the depth: each raw sample below the floor is
+/// no return before anything else reads it, so the mix skips it and the
+/// outlier filter counts it as none. Level 0, which a producer writes on
+/// the samples it invalidates, is dropped at every floor. A frame without a
+/// plane is prepared exactly as before, bit for bit.
 ///
 /// A frame with colour keeps only what both its cameras see, so each pixel
 /// handed out is in both views: a depth sensor's field of view and its colour
@@ -204,11 +219,12 @@ struct GpuFramePrepConfig {
 /// that a nearer surface hides from it is kept. A frame without colour keeps
 /// all its depth (every frame has depth).
 ///
-/// A frame's host depth and host colour are copied into the pass's persistent
-/// slot (`core::HostRing`), which its batch binds: in place where the device's
-/// mapped memory is cached (Apple, lavapipe), and through one copy of the used
-/// range elsewhere (a discrete GPU). Nothing else goes up from the host, and
-/// nothing is allocated per frame.
+/// A frame's host depth, the confidence plane it is gated by, and its host
+/// colour are copied into the pass's persistent slot (`core::HostRing`),
+/// which its batch binds: in place where the device's mapped memory is
+/// cached (Apple, lavapipe), and through one copy of the used range elsewhere
+/// (a discrete GPU). Nothing else goes up from the host, and nothing is
+/// allocated per frame.
 ///
 /// Every check on the frame is made before anything is recorded, so a refused
 /// frame leaves the pass and the frames it handed out as they were.
@@ -256,7 +272,9 @@ class VS_PREP_API GpuFramePrep {
   ///                 Device depth and planes are read when @p batch runs, so
   ///                 keep the frame until the batch has resolved, and after a
   ///                 failed wait for as long as `PendingBatch::in_flight`
-  ///                 says.
+  ///                 says. A picture with `YuvImage::ready` is read only once
+  ///                 its value is reached: submit @p batch with
+  ///                 `submit_async`, @ref ready_points among its waits.
   /// @param metrics  Optional: a `"frame prep"` row, its host half now and its
   ///                 device half from `PendingBatch::device_rows`.
   /// @return The frame; with nothing recorded, @ref prepare's refusals, or
@@ -279,7 +297,8 @@ class VS_PREP_API GpuFramePrep {
   /// @param preps    One pass per camera, all made with @p batch's `Device`;
   ///                 `preps[i]` records `frames[i]`.
   /// @param frames   One entry per camera, an empty one skipped; kept as
-  ///                 @ref record says.
+  ///                 @ref record says, and @p batch submitted with
+  ///                 `ready_points(frames)` among its waits.
   /// @param metrics  Optional: one `"frame prep"` row for the set, timed by
   ///                 the first pass used.
   /// @return One `DeviceFrame` per present frame, empty where the frame was;
@@ -293,7 +312,8 @@ class VS_PREP_API GpuFramePrep {
   ///        buffers on the device: @ref record, one submit and its wait.
   /// @param frame    The frame; read during the call only. Device depth and
   ///                 planes must be on this pass's device, their writer
-  ///                 finished.
+  ///                 finished; or for planes, `YuvImage::ready` set, which
+  ///                 the batch waits for on the device (@ref ready_points).
   /// @param metrics  Optional `StageMetrics` collecting a `"frame prep"`
   ///                 row: the copy into the slot and the passes on the host,
   ///                 and on the device the frame's copy up and the three
@@ -302,7 +322,9 @@ class VS_PREP_API GpuFramePrep {
   /// @return The frame, which holds its buffers; @ref
   ///         Status::Code::InvalidArgument for a moved-from pass, a frame
   ///         without depth or with depth both on the host and on the device,
-  ///         device depth at an odd offset, past its buffer (to the word
+  ///         a confidence plane beside device depth or at a
+  ///         `min_confidence` of 0, a `min_confidence` above 0 without a
+  ///         plane, device depth at an odd offset, past its buffer (to the word
   ///         holding its last sample) or in one that is empty, without
   ///         storage usage or not device-local, a depth range that is not
   ///         finite with
@@ -322,8 +344,9 @@ class VS_PREP_API GpuFramePrep {
   ///         and a view, in `GENERAL` or `SHADER_READ_ONLY_OPTIMAL`, a
   ///         `queue_family` the device lacks, depth and planes in one buffer
   ///         that name different writers' families, `EXCLUSIVE` images from
-  ///         another of its families, or an image past a single
-  ///         dispatch (16.7 M pixels);
+  ///         another of its families, an image past a single
+  ///         dispatch (16.7 M pixels), or a `YuvImage::ready` timeline
+  ///         made on another device;
   ///         `Status::Code::Unsupported` for a colour encoding
   ///         @ref is_canonical refuses; `Status::Code::OutOfMemory` for a
   ///         host allocation failure, with previously returned frames intact;
@@ -446,10 +469,11 @@ class VS_PREP_API GpuFramePrep {
   core::DescriptorPool images_pool_;
   core::GpuTimer gpu_timer_;
 
-  // Each frame's depth and colour on the host, copied into its one slot, the
-  // colour range at minStorageBufferOffsetAlignment, and a word for a frame
-  // with neither, which its batch binds all the same; made at the first
-  // record, grown as a larger frame asks. The host only writes
+  // Each frame's depth, the confidence plane it is gated by, and colour on
+  // the host, copied into its one slot, the plane at the word after the
+  // depth and the colour range at minStorageBufferOffsetAlignment, and a
+  // word for a frame with neither, which its batch binds all the same; made
+  // at the first record, grown as a larger frame asks. The host only writes
   // the slot (core::HostAccess::SequentialWrite), so where the ring is
   // copied, as on a discrete GPU, it is write-combined staging.
   std::unique_ptr<core::HostRing> inputs_;
@@ -467,5 +491,40 @@ class VS_PREP_API GpuFramePrep {
   std::unique_ptr<detail::DepthOutlierPass> outliers_;
   core::Buffer undistorted_;
 };
+
+/// @brief What a batch that reads @p frame waits for on the device.
+///
+/// @code
+/// VKC_ASSIGN(DeviceFrame prepared, prep.record(batch, frame));
+/// // ... fusion recorded into the same batch ...
+/// VKC_ASSIGN(core::PendingBatch fused,
+///            batch.submit_async(ready_points(frame), {}));
+/// @endcode
+/// @param frame  A frame whose colour may carry `YuvImage::ready`.
+/// @return The timeline values @p frame's colour must reach before a batch
+///         reads it (`YuvImage::ready`): none, or one. Depth carries none. For
+///         a caller of @ref GpuFramePrep::record to pass among its
+///         `submit_async` waits (a set's, below); @ref GpuFramePrep::prepare
+///         and @ref GpuFramePrep::prepare_batch wait for them on the device
+///         themselves.
+VS_PREP_API std::vector<core::TimelinePoint> ready_points(
+    const RgbdFrame& frame);
+
+/// @brief What a batch that reads @p frames waits for on the device.
+///
+/// @code
+/// VKC_ASSIGN(DeviceFrameSet prepared, array.record_process(batch, set));
+/// // ... fusion recorded into the same batch ...
+/// VKC_ASSIGN(core::PendingBatch fused,
+///            batch.submit_async(ready_points(set.frames), {}));
+/// @endcode
+/// @param frames  One entry per camera, an empty one skipped, as
+///                @ref GpuFramePrep::record_set takes them.
+/// @return Every frame's @ref ready_points, one point a timeline at its
+///         highest value: for a caller of @ref GpuFramePrep::record_set or
+///         `SensorArray::record_process` to pass among its `submit_async`
+///         waits.
+VS_PREP_API std::vector<core::TimelinePoint> ready_points(
+    const std::vector<std::optional<RgbdFrame>>& frames);
 
 }  // namespace volumetric_kit::sensor

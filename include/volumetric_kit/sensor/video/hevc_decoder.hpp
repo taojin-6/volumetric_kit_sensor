@@ -31,6 +31,9 @@ namespace volumetric_kit::sensor {
 ///        order, NV12, on that device (@ref DecodedPicture), and never cross
 ///        to the host.
 ///
+/// On NVIDIA, sensor sets FFmpeg's log level to ERROR once, at the first
+/// coder it opens: FFmpeg has one logger, for the whole process.
+///
 /// Every access unit must be sent: each frame is predicted from earlier ones,
 /// so skipping one costs the pictures after it until the next key frame
 /// (VideoToolbox reports each as `Status::Code::IoError`). Drop pictures after
@@ -50,14 +53,10 @@ class VS_VIDEO_API HevcDecoder {
     /// the samples are the stream's own: VideoToolbox writes them at the
     /// range the stream declares, video range when it declares none.
     std::optional<VideoColorDescription> unlabelled_color;
-    /// Set FFmpeg's log level to ERROR, where NVDEC decodes through it. Does
-    /// nothing on Apple, which uses no FFmpeg. Process-wide: FFmpeg has one
-    /// logger.
-    bool configure_ffmpeg_logging = true;
     /// The device the pictures are handed out on, whose GPU decodes them: one
-    /// that imports Metal textures on Apple, one that exports memory and is a
-    /// CUDA device elsewhere. Required. Borrowed: it must outlive the decoder
-    /// and every picture on it.
+    /// that imports Metal textures on Apple, one that exports memory and
+    /// semaphores and is a CUDA device elsewhere. Required. Borrowed: it must
+    /// outlive the decoder and every picture on it.
     const core::Device* device = nullptr;
     /// The allocator NVDEC's picture images are made through: exported
     /// device-only memory, counted against its heap's budget like any other
@@ -75,8 +74,9 @@ class VS_VIDEO_API HevcDecoder {
   /// @return The decoder; `Status::Code::Unsupported` if there is no device
   ///         path: no @ref Options::device (or, for NVDEC, no
   ///         @ref Options::allocator), a device whose GPU this build's
-  ///         hardware path cannot reach, an FFmpeg without NVDEC, or on
-  ///         Apple no hardware HEVC decoder;
+  ///         hardware path cannot reach, for NVDEC one that does not export
+  ///         semaphores (`VK_KHR_external_semaphore_fd`), an FFmpeg without
+  ///         NVDEC, or on Apple no hardware HEVC decoder;
   ///         `Status::Code::InvalidArgument` for queue families
   ///         @ref PixelBufferImporter::create would refuse; or
   ///         `Status::Code::IoError`,
@@ -105,6 +105,18 @@ class VS_VIDEO_API HevcDecoder {
                     std::int64_t pts);
 
   /// @brief Take the next decoded picture, if one is ready.
+  ///
+  /// On NVDEC the picture's copy into its images is queued, not waited for:
+  /// the picture carries the value CUDA sets once it is done
+  /// (`YuvImage::ready`). The decoder keeps the frame FFmpeg copied NVDEC's
+  /// output into until then, whoever holds the picture, and waits on the
+  /// host only when CUDA is three pictures behind. Every error but
+  /// `Status::Code::InvalidArgument` from @ref send or receive returns once
+  /// every value handed out is set, from the host where a failed GPU dropped
+  /// CUDA's signal, so no reader waits for good; a picture whose copy failed
+  /// holds what it left. Until that error, or the decoder's destruction, such
+  /// a value stays unset: a thread that waits for it before it calls the
+  /// decoder again (decoding and preparing on one thread) waits for good.
   /// @return The picture; empty when the decoder needs more input or has
   ///         drained; `Status::Code::Unsupported`, as from @ref send, once the
   ///         pictures decoded before a refusal are taken;

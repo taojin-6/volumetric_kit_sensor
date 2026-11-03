@@ -13,6 +13,7 @@
 #include "volumetric_kit/sensor/camera/geometry.hpp"
 #include "volumetric_kit/sensor/camera/projection.hpp"
 #include "volumetric_kit/sensor/camera/stereo_rectification.hpp"
+#include "volumetric_kit/sensor/camera/tracked_registration.hpp"
 
 int main() {
   namespace camera = volumetric_kit::sensor::camera;

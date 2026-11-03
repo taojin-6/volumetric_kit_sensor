@@ -8,7 +8,8 @@
 // so the kernels read them where they are and they never cross the bus:
 // NVDEC's copied device to device into two plane images, which shaders
 // sample in place, and nvJPEG's decoded in place into a buffer, the only
-// memory it writes.
+// memory it writes. The writes are queued on the decoder's stream, and a
+// CudaTimeline value after them says when they are done (cuda_timeline.hpp).
 
 #include <cuda.h>
 
@@ -18,6 +19,8 @@
 #include <vector>
 
 #include "cuda_driver.hpp"
+#include "cuda_timeline.hpp"
+#include "ffmpeg.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
@@ -53,28 +56,50 @@ struct CudaSession {
   std::unique_ptr<CudaStream> stream;
 };
 
+// FFmpeg's CUDA device on the GPU of a Vulkan device, as NVDEC and NVENC both
+// open it: a CudaSession of its own, which FFmpeg's device context holds and
+// lets go with its last reference, so a codec context or frames context that
+// refers to it keeps the session alive.
+struct FfmpegCudaDevice {
+  // @p who names the coder and @p path its hardware ("NVDEC", "NVENC") in
+  // errors. Unsupported where CUDA does not reach @p device's GPU or FFmpeg's
+  // device does not open; OutOfMemory if FFmpeg cannot allocate.
+  static core::Result<FfmpegCudaDevice> open(const core::Device& device,
+                                             const char* who, const char* path);
+  BufferRef device;                   // AV_HWDEVICE_TYPE_CUDA, initialized
+  const CudaSession* cuda = nullptr;  // owned by device's context
+};
+
 // nvJPEG's: a ring of exported Vulkan buffers on one device, each mapped into
 // CUDA once, in the decoder's CUDA context. A picture takes one that no
 // earlier picture still holds, or a new one; a free one too small for it is
-// let go.
+// let go once CUDA's last write into it is done.
 class CudaPictures {
  public:
   // The buffers are made through @p allocator, which, like @p device and
-  // @p context, must outlive this and every picture on it. @p who names the
-  // decoder in errors.
+  // @p context, must outlive this and every picture on it; @p timeline, on
+  // the stream the decoder writes them on, must outlive this. @p who names
+  // the decoder in errors.
   static core::Result<std::unique_ptr<CudaPictures>> create(
       const core::Device& device, core::Allocator& allocator,
-      const CudaContext& context, const char* who);
+      const CudaContext& context, CudaTimeline& timeline, const char* who);
   CudaPictures(const CudaPictures&) = delete;
   CudaPictures& operator=(const CudaPictures&) = delete;
 
   // A buffer of at least @p bytes that no picture holds, and where CUDA sees
-  // it, for a decoder that writes the picture itself.
+  // it, for a decoder that writes the picture itself, then hands it out with
+  // mark().
   struct Target {
     std::shared_ptr<const core::Buffer> buffer;
     CUdeviceptr pointer = 0;
+    std::uint64_t* written = nullptr;  // its slot's last value, mark()'s
   };
   core::Result<Target> take(std::uint64_t bytes);
+
+  // Once the writes into @p target are queued: the timeline's next value
+  // queued after them and given to @p out (CudaTimeline::mark), and kept as
+  // the slot's last write.
+  core::Status mark(const Target& target, YuvImage& out);
 
  private:
   // One exported buffer and CUDA's view of it, which goes first. A picture
@@ -87,18 +112,22 @@ class CudaPictures {
     std::shared_ptr<core::Buffer> buffer;
     std::unique_ptr<CudaBufferMapping> mapping;
     std::uint64_t bytes = 0;
+    std::uint64_t written = 0;  // the timeline value after its last write
   };
 
   CudaPictures(const core::Device& device, core::Allocator& allocator,
-               const CudaContext& context, const char* who)
+               const CudaContext& context, CudaTimeline& timeline,
+               const char* who)
       : device_(&device),
         allocator_(&allocator),
         context_(&context),
+        timeline_(&timeline),
         who_(who) {}
 
   const core::Device* device_;
   core::Allocator* allocator_;
   const CudaContext* context_;
+  CudaTimeline* timeline_;
   const char* who_;
   std::vector<std::unique_ptr<Slot>> slots_;
 };
@@ -107,28 +136,32 @@ class CudaPictures {
 // and an R8G8 chroma image of one picture's size, mapped into CUDA once, in
 // the decoder's CUDA context, and handed over to CUDA once, in GENERAL. A
 // picture takes a set that no earlier picture still holds, or a new one; a
-// free one of another size is let go.
+// free one of another size is let go once CUDA's last copy into it is
+// done.
 class CudaPlanePictures {
  public:
   // The images are made through @p allocator, which, like @p device and
   // @p context, must outlive this and every picture on it, and are shared
   // with @p queue_families as PixelBufferImporter::create shares its images.
-  // @p who names the decoder in errors. InvalidArgument for families
+  // @p timeline, signalled on @p stream, must outlive this. @p who names the
+  // decoder in errors. InvalidArgument for families
   // detail::sharing_families refuses; Unsupported where @p device does not
   // export memory.
   static core::Result<std::unique_ptr<CudaPlanePictures>> create(
       const core::Device& device, core::Allocator& allocator,
-      const CudaContext& context, CUstream stream,
+      const CudaContext& context, CUstream stream, CudaTimeline& timeline,
       const std::uint32_t* queue_families, std::uint32_t queue_family_count,
       const char* who);
   CudaPlanePictures(const CudaPlanePictures&) = delete;
   CudaPlanePictures& operator=(const CudaPlanePictures&) = delete;
 
-  // Copy an NV12 picture on the device, Y at `luma` and the chroma at
-  // `chroma` with their row strides in bytes, into a set's two images; the
-  // copy has finished when this returns. Fills @p out's size, layout and
-  // images, which a reader takes over from outside Vulkan
-  // (kQueueFamilyExternal).
+  // Queue the copy of an NV12 picture on the device, Y at `luma` and the
+  // chroma at `chroma` with their row strides in bytes, into a set's two
+  // images, on the stream, and the timeline's next value after it
+  // (CudaTimeline::mark): the source must stay as it is until that value is
+  // reached. Fills @p out's size, layout, images and ready value; a reader
+  // takes the images over from outside Vulkan (kQueueFamilyExternal) once
+  // the value is reached. Nothing is handed out on failure.
   core::Status copy(CUdeviceptr luma, std::size_t luma_stride,
                     CUdeviceptr chroma, std::size_t chroma_stride,
                     std::uint32_t width, std::uint32_t height, YuvImage& out);
@@ -150,15 +183,18 @@ class CudaPlanePictures {
     std::unique_ptr<CudaImageMapping> mapping[2];
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint64_t written = 0;  // the timeline value after its last copy
   };
 
   CudaPlanePictures(const core::Device& device, core::Allocator& allocator,
                     const CudaContext& context, CUstream stream,
-                    std::vector<std::uint32_t> families, const char* who)
+                    CudaTimeline& timeline, std::vector<std::uint32_t> families,
+                    const char* who)
       : device_(&device),
         allocator_(&allocator),
         context_(&context),
         stream_(stream),
+        timeline_(&timeline),
         families_(std::move(families)),
         who_(who) {}
   core::Result<Slot*> slot(std::uint32_t width, std::uint32_t height);
@@ -170,6 +206,7 @@ class CudaPlanePictures {
   core::Allocator* allocator_;
   const CudaContext* context_;
   CUstream stream_;
+  CudaTimeline* timeline_;
   std::vector<std::uint32_t> families_;  // CONCURRENT across; empty: EXCLUSIVE
   const char* who_;
   std::vector<std::unique_ptr<Slot>> slots_;

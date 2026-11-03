@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Tao Jin
 
 // Camera-convention tests for the sensor tier: the OpenGL/ARKit -> CV pose
-// conversion and the registered-depth intrinsics rescale.
+// conversion, the registered-depth intrinsics rescale and its inverse, the
+// colour camera from its registered depth.
 //
 // These pin the two things a capture integration gets silently wrong. A flipped
 // axis or a half-pixel bias never raises an error -- it produces a smeared or
@@ -15,8 +16,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <string>
 
 #include "volumetric_kit/core/testing/test_check.hpp"
+#include "volumetric_kit/sensor/camera/camera_model.hpp"
 #include "volumetric_kit/sensor/camera_conventions.hpp"
 #include "volumetric_kit/sensor/color_conventions.hpp"
 #include "volumetric_kit/sensor/frame/vector_types.hpp"
@@ -27,6 +30,7 @@
 // against.
 namespace vkc = volumetric_kit::core;
 namespace sensor = volumetric_kit::sensor;
+namespace camera = volumetric_kit::sensor::camera;
 
 namespace {
 
@@ -205,6 +209,78 @@ int main() {
       CHECK(!sensor::depth_from_registered_color(bad_fy, 256, 192, 0.1f, 5.0f)
                  .ok());
     }
+  }
+
+  // --- Intrinsics: the colour camera derived from registered depth --------
+  // The inverse of the rescale above: a colour camera taken to its depth
+  // camera and back gives back its intrinsics, at ARKit's landscape and
+  // portrait sizes and at odd ones, off-centre and with fx != fy.
+  {
+    struct Pair {
+      std::uint32_t cw, ch, dw, dh;
+    };
+    for (const Pair p : {Pair{1920, 1440, 256, 192}, Pair{1440, 1920, 192, 256},
+                         Pair{1281, 721, 97, 55}}) {
+      sensor::ColorCameraParams c{};
+      c.width = p.cw;
+      c.height = p.ch;
+      c.fx = 0.81f * static_cast<float>(p.cw);
+      c.fy = 0.79f * static_cast<float>(p.cw);
+      c.cx = 0.52f * static_cast<float>(p.cw);
+      c.cy = 0.47f * static_cast<float>(p.ch);
+      vkc::Result<sensor::DepthCameraParams> d =
+          sensor::depth_from_registered_color(c, p.dw, p.dh, 0.1f, 5.0f);
+      CHECK(d.ok());
+      camera::CameraModel depth;
+      depth.size = {d->width, d->height};
+      depth.intrinsics = {d->fx, d->fy, d->cx, d->cy};
+      vkc::Result<camera::CameraModel> back =
+          sensor::color_from_registered_depth(depth, p.cw, p.ch);
+      CHECK(back.ok());
+      const camera::PinholeIntrinsics& k = back->intrinsics;
+      CHECK(back->size.width == p.cw && back->size.height == p.ch);
+      CHECK(std::fabs(k.fx - c.fx) < 1e-3 && std::fabs(k.fy - c.fy) < 1e-3);
+      CHECK(std::fabs(k.cx - c.cx) < 1e-3 && std::fabs(k.cy - c.cy) < 1e-3);
+    }
+
+    // A centred principal point stays centred, and a lens is kept as it is.
+    camera::CameraModel depth;
+    depth.size = {256, 192};
+    depth.intrinsics = {192.0, 192.0, 127.5, 95.5};
+    depth.distortion = {0.1, -0.05, 1e-3, -2e-3, 0.01, 0.0, 0.0, 0.0};
+    vkc::Result<camera::CameraModel> color =
+        sensor::color_from_registered_depth(depth, 1920, 1440);
+    CHECK(color.ok());
+    CHECK(color->intrinsics.cx == 959.5 && color->intrinsics.cy == 719.5);
+    CHECK(color->intrinsics.fx == 1440.0 && color->intrinsics.fy == 1440.0);
+    CHECK(color->distortion.k1 == 0.1 && color->distortion.k2 == -0.05 &&
+          color->distortion.p1 == 1e-3 && color->distortion.p2 == -2e-3 &&
+          color->distortion.k3 == 0.01);
+
+    // Each refusal, named: a colour size with a zero side, and a depth
+    // camera check_camera_model refuses.
+    const auto refused = [](const camera::CameraModel& m, std::uint32_t w,
+                            std::uint32_t h, const char* why) {
+      const vkc::Status s =
+          sensor::color_from_registered_depth(m, w, h).status();
+      const bool named = s.domain() == vkc::Status::Code::InvalidArgument &&
+                         s.message().find("color_from_registered_depth") !=
+                             std::string::npos &&
+                         s.message().find(why) != std::string::npos;
+      if (!named) std::fprintf(stderr, "unexpected: %s\n", s.message().c_str());
+      return named;
+    };
+    CHECK(refused(depth, 0, 1440, "non-zero"));
+    CHECK(refused(depth, 1920, 0, "non-zero"));
+    camera::CameraModel bad = depth;
+    bad.size.height = 0;
+    CHECK(refused(bad, 1920, 1440, "zero side"));
+    bad = depth;
+    bad.intrinsics.fy = 0.0;
+    CHECK(refused(bad, 1920, 1440, "focal"));
+    bad = depth;
+    bad.distortion.k4 = std::numeric_limits<double>::quiet_NaN();
+    CHECK(refused(bad, 1920, 1440, "distortion"));
   }
 
   // --- to_canonical: the colour half of the capture boundary ----------------

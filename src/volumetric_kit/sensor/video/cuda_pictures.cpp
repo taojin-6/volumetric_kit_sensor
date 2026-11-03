@@ -14,6 +14,10 @@
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/external_memory.hpp"
 
+extern "C" {
+#include <libavutil/hwcontext_cuda.h>
+}
+
 namespace volumetric_kit::sensor::video {
 namespace {
 
@@ -24,8 +28,9 @@ core::Status no_export(const char* who) {
 }
 
 // The first of @p slots that no picture holds and @p fits, or null, after
-// letting go of every other one no picture holds. A slot is held while its
-// `owner(slot)` has another reference than the slot's own.
+// letting go of every other one no picture holds whose last write @p timeline
+// has reached. A slot is held while its `owner(slot)` has another reference
+// than the slot's own.
 //
 // Reused only once no picture holds it, and a free one left over does not
 // fit, so it is let go rather than kept past a change of picture size.
@@ -33,12 +38,16 @@ core::Status no_export(const char* who) {
 // picture, a family may take memory without a transfer when its contents need
 // not survive, and its last reader finished before letting it go. An image
 // stays in GENERAL, the layout CUDA was handed it in and its readers find it
-// in. use_count() is a relaxed load. Each fence orders CUDA's next write, or
-// the release, after whatever the thread that dropped the last other
-// reference did first, such as its fence wait on its last read.
+// in. A reused one's next write queues behind its last on the one stream, but
+// a holder may drop a picture before CUDA's write into it has run, so one is
+// let go, and CUDA's view of it with it, only once that write is done
+// (`Slot::written` reached). use_count() is a relaxed load. Each fence orders
+// CUDA's next write, or the release, after whatever the thread that dropped
+// the last other reference did first, such as its fence wait on its last
+// read.
 template <typename Slot, typename Owner, typename Fits>
 Slot* free_slot(std::vector<std::unique_ptr<Slot>>& slots, Owner owner,
-                Fits fits) {
+                Fits fits, const CudaTimeline& timeline) {
   for (const std::unique_ptr<Slot>& s : slots) {
     if (owner(*s).use_count() == 1 && fits(*s)) {
       std::atomic_thread_fence(std::memory_order_acquire);
@@ -46,7 +55,7 @@ Slot* free_slot(std::vector<std::unique_ptr<Slot>>& slots, Owner owner,
     }
   }
   for (auto it = slots.begin(); it != slots.end();) {
-    if (owner(**it).use_count() == 1) {
+    if (owner(**it).use_count() == 1 && timeline.reached((*it)->written)) {
       std::atomic_thread_fence(std::memory_order_acquire);
       it = slots.erase(it);
     } else {
@@ -71,18 +80,51 @@ core::Result<std::unique_ptr<CudaSession>> CudaSession::open(
   return s;
 }
 
+namespace {
+
+// FFmpeg's device context's free: the session it was given.
+void release_cuda_session(AVHWDeviceContext* device) {
+  delete static_cast<CudaSession*>(device->user_opaque);
+}
+
+}  // namespace
+
+core::Result<FfmpegCudaDevice> FfmpegCudaDevice::open(
+    const core::Device& device, const char* who, const char* path) {
+  VKC_ASSIGN(std::unique_ptr<CudaSession> cuda, CudaSession::open(device, who));
+  FfmpegCudaDevice out;
+  out.device.reset(av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA));
+  if (out.device == nullptr) {
+    return ffmpeg_alloc_error(who, std::string("opening ") + path);
+  }
+  auto* hw = reinterpret_cast<AVHWDeviceContext*>(out.device->data);
+  auto* hw_cuda = static_cast<AVCUDADeviceContext*>(hw->hwctx);
+  hw_cuda->cuda_ctx = cuda->context->handle();
+  hw_cuda->stream = cuda->stream->handle();
+  out.cuda = cuda.get();
+  hw->user_opaque = cuda.release();
+  hw->free = &release_cuda_session;
+  const int err = av_hwdevice_ctx_init(out.device.get());
+  if (err < 0) {
+    return core::Status::unsupported(
+        std::string(who) + ": " + path +
+        ": no device opens: " + ffmpeg_message(err));
+  }
+  return out;
+}
+
 core::Result<std::unique_ptr<CudaPictures>> CudaPictures::create(
     const core::Device& device, core::Allocator& allocator,
-    const CudaContext& context, const char* who) {
+    const CudaContext& context, CudaTimeline& timeline, const char* who) {
   if (!device.exports_memory()) return no_export(who);
   return std::unique_ptr<CudaPictures>(
-      new CudaPictures(device, allocator, context, who));
+      new CudaPictures(device, allocator, context, timeline, who));
 }
 
 core::Result<CudaPictures::Target> CudaPictures::take(std::uint64_t bytes) {
   Slot* s = free_slot(
       slots_, [](const Slot& slot) -> const auto& { return slot.buffer; },
-      [bytes](const Slot& slot) { return slot.bytes >= bytes; });
+      [bytes](const Slot& slot) { return slot.bytes >= bytes; }, *timeline_);
   if (s == nullptr) {
     VKC_ASSIGN(core::ExportedBuffer exported,
                core::create_exported_buffer(*device_, *allocator_, bytes));
@@ -102,12 +144,18 @@ core::Result<CudaPictures::Target> CudaPictures::take(std::uint64_t bytes) {
     slots_.push_back(std::move(made));
     s = slots_.back().get();
   }
-  return Target{s->buffer, s->mapping->pointer()};
+  return Target{s->buffer, s->mapping->pointer(), &s->written};
+}
+
+core::Status CudaPictures::mark(const Target& target, YuvImage& out) {
+  VKC_TRY(timeline_->mark(out));
+  *target.written = out.ready_value;
+  return {};
 }
 
 core::Result<std::unique_ptr<CudaPlanePictures>> CudaPlanePictures::create(
     const core::Device& device, core::Allocator& allocator,
-    const CudaContext& context, CUstream stream,
+    const CudaContext& context, CUstream stream, CudaTimeline& timeline,
     const std::uint32_t* queue_families, std::uint32_t queue_family_count,
     const char* who) {
   VKC_ASSIGN(std::vector<std::uint32_t> families,
@@ -115,7 +163,7 @@ core::Result<std::unique_ptr<CudaPlanePictures>> CudaPlanePictures::create(
                                       queue_family_count, who));
   if (!device.exports_memory()) return no_export(who);
   return std::unique_ptr<CudaPlanePictures>(new CudaPlanePictures(
-      device, allocator, context, stream, std::move(families), who));
+      device, allocator, context, stream, timeline, std::move(families), who));
 }
 
 core::Result<std::unique_ptr<CudaPlanePictures::Slot>>
@@ -175,7 +223,8 @@ core::Result<CudaPlanePictures::Slot*> CudaPlanePictures::slot(
       slots_, [](const Slot& slot) -> const auto& { return slot.planes; },
       [width, height](const Slot& slot) {
         return slot.width == width && slot.height == height;
-      });
+      },
+      *timeline_);
   if (s != nullptr) return s;
   VKC_ASSIGN(std::unique_ptr<Slot> made, make_slot(width, height));
   slots_.push_back(std::move(made));
@@ -213,8 +262,11 @@ core::Status CudaPlanePictures::copy(CUdeviceptr luma, std::size_t luma_stride,
     plane.Height = (std::size_t{height} + 1) / 2;
     r = cu->cuMemcpy2DAsync(&plane, stream_);
   }
-  if (r == CUDA_SUCCESS) r = cu->cuStreamSynchronize(stream_);
   if (r != CUDA_SUCCESS) return cuda_error(who_, r, "copying a picture");
+  // The copy's end, which a reader's batch waits for on the device, as the
+  // slot's next let-go does.
+  VKC_TRY(timeline_->mark(out));
+  s->written = out.ready_value;
 
   out.width = width;
   out.height = height;

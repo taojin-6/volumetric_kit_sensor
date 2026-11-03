@@ -42,6 +42,20 @@ vs_target_warnings(sensor_camera_array_calibration_test)
 add_test(NAME sensor_camera_array_calibration
          COMMAND sensor_camera_array_calibration_test)
 
+# A tracked sensor's registration into the array's world: a golden document (the
+# transform's direction, the session's byte order), written and read back, each
+# refusal, through write_file, and a frame placed as a tracked source does.
+# Host-only, so camera-only builds run it too.
+add_executable(sensor_camera_tracked_registration_test
+               camera_tracked_registration_test.cpp)
+target_link_libraries(sensor_camera_tracked_registration_test
+                      PRIVATE volumetric_kit::sensor_camera)
+target_include_directories(sensor_camera_tracked_registration_test SYSTEM
+                           PRIVATE "${VS_JSON_INCLUDE_DIR}")
+vs_target_warnings(sensor_camera_tracked_registration_test)
+add_test(NAME sensor_camera_tracked_registration
+         COMMAND sensor_camera_tracked_registration_test)
+
 # The camera tier's stereo pair: a pair from two entries of a calibration file
 # (stereo_calibration), its rectification on the host (rectify_stereo: rows
 # aligned within 1e-9 px, R2 the right camera's own, OpenCV's numbers as
@@ -66,6 +80,16 @@ target_link_libraries(sensor_depth_lens_fold_test
                       PRIVATE volumetric_kit::sensor_camera)
 vs_target_warnings(sensor_depth_lens_fold_test)
 add_test(NAME sensor_depth_lens_fold COMMAND sensor_depth_lens_fold_test)
+
+# The index-coded test depth (testing/rgbd_pattern.hpp): the index read back,
+# the readings that are none, the planes as documented. The header is on the
+# standard library alone, so camera-only builds, which have no Vulkan, build and
+# run it too.
+add_executable(sensor_rgbd_pattern_test sensor_rgbd_pattern_test.cpp)
+target_include_directories(sensor_rgbd_pattern_test
+                           PRIVATE "${PROJECT_SOURCE_DIR}/include")
+vs_target_warnings(sensor_rgbd_pattern_test)
+add_test(NAME sensor_rgbd_pattern COMMAND sensor_rgbd_pattern_test)
 
 # A project that adds the package (subproject/) takes each dependency this build
 # fetched as a local source, so it needs no network.
@@ -134,6 +158,19 @@ vs_target_warnings(sensor_decoder_test_harness_test)
 add_test(NAME sensor_decoder_test_harness
          COMMAND sensor_decoder_test_harness_test)
 
+# The package's test support (include/volumetric_kit/sensor/testing/): a clip's
+# access units, the decoder promise and the NV12 test pattern on the host, and
+# the pattern on the device; the device part skips without one.
+add_executable(sensor_testing_support_test sensor_testing_support_test.cpp)
+target_link_libraries(
+  sensor_testing_support_test PRIVATE volumetric_kit::sensor_frame
+                                      volumetric_kit::core_test_policy)
+target_compile_definitions(
+  sensor_testing_support_test
+  PRIVATE VS_HEVC_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data/hevc")
+vs_target_warnings(sensor_testing_support_test)
+add_test(NAME sensor_testing_support COMMAND sensor_testing_support_test)
+
 # GPU pre-processing (sensor_prep) on synthetic frames: undistortion in the
 # right direction, the colour matrix, a host reference of the sampling, the
 # refusals, the outputs' sharing, read on another queue family. Fusing its
@@ -162,6 +199,21 @@ target_compile_options(sensor_gpu_frame_prep_outliers_test
 vs_target_warnings(sensor_gpu_frame_prep_outliers_test)
 add_test(NAME sensor_gpu_frame_prep_outliers
          COMMAND sensor_gpu_frame_prep_outliers_test)
+
+# The frame prep's confidence gate on synthetic frames: exact through a pinhole
+# at every floor, a level-0 sample dropped at each; per raw sample, before the
+# offset, the mix, the colour-view test and the outlier filter, bit for bit as
+# the same frame zeroed on the host; bit-identical without a plane; the slot's
+# colour after the plane; sets; and its refusals, a plane at a floor of 0 among
+# them. Skips where no device is present.
+add_executable(sensor_gpu_frame_prep_confidence_test
+               sensor_gpu_frame_prep_confidence_test.cpp)
+target_link_libraries(
+  sensor_gpu_frame_prep_confidence_test
+  PRIVATE volumetric_kit::sensor_prep volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_gpu_frame_prep_confidence_test)
+add_test(NAME sensor_gpu_frame_prep_confidence
+         COMMAND sensor_gpu_frame_prep_confidence_test)
 
 # Allocation failure while staging is an OutOfMemory result, and a retained
 # frame survives it. Separate executable for its replacement operator new.
@@ -273,6 +325,27 @@ target_link_libraries(sensor_conventions_test
 vs_target_warnings(sensor_conventions_test)
 add_test(NAME sensor_conventions COMMAND sensor_conventions_test)
 
+# The frame contract's checker (testing/rgbd_contract.hpp) on fake frames: each
+# rule broken once and named, a clean script empty, the first breach kept. Host-
+# only.
+add_executable(sensor_rgbd_contract_test sensor_rgbd_contract_test.cpp)
+target_link_libraries(sensor_rgbd_contract_test
+                      PRIVATE volumetric_kit::sensor_interface)
+vs_target_warnings(sensor_rgbd_contract_test)
+add_test(NAME sensor_rgbd_contract COMMAND sensor_rgbd_contract_test)
+
+# An RGB-D sensor's frames as bytes (wire/rgbd_wire.hpp), against goldens built
+# by hand from the layout: the sensor, depth and colour records round-trip bit
+# for bit and are read in place, every refusal named, pattern depth's records
+# keep the frame contract, and a host allocation failure is OutOfMemory.
+# Host-only.
+add_executable(sensor_wire_rgbd_test wire_rgbd_test.cpp)
+target_link_libraries(
+  sensor_wire_rgbd_test PRIVATE volumetric_kit::sensor_wire
+                                volumetric_kit::core_test_allocation_failure)
+vs_target_warnings(sensor_wire_rgbd_test)
+add_test(NAME sensor_wire_rgbd COMMAND sensor_wire_rgbd_test)
+
 # The sensor array's trigger grouper, driven by synthetic streams -- drops, a
 # silent sensor, a slow poll, a clock off by more than the tolerance, a late
 # frame, the start-up frames. Host-only. Internal and unexported, so the test
@@ -380,18 +453,28 @@ endif()
 # Apple's pixel buffers imported as images (sensor_apple, any Apple build, with
 # or without FFmpeg): buffers made here, read back in place, prepared as a
 # frame's colour, what the import allocates in Metal (metal_allocation.mm), and
-# the refusals. Skips without a device.
+# the refusals; imported for writing, stored into by the test writer
+# (sensor_video_testing's Nv12Writer, which every Apple build has) and read back
+# through the locked IOSurface; and the stale surfaces let go. Skips without a
+# device. The Metal device is sensor_apple's internal metal_device, so the test
+# compiles its source itself.
 if(APPLE)
+  set(_vs_apple_src ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/apple)
   add_executable(
     sensor_apple_pixel_buffer_importer_test
-    sensor_apple_pixel_buffer_importer_test.cpp metal_allocation.mm)
-  set_source_files_properties(metal_allocation.mm PROPERTIES COMPILE_OPTIONS
-                                                             -fobjc-arc)
+    sensor_apple_pixel_buffer_importer_test.cpp metal_allocation.mm
+    ${_vs_apple_src}/metal_device.mm)
+  set_source_files_properties(
+    metal_allocation.mm ${_vs_apple_src}/metal_device.mm
+    PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+  target_include_directories(sensor_apple_pixel_buffer_importer_test
+                             PRIVATE ${_vs_apple_src})
   target_link_libraries(
     sensor_apple_pixel_buffer_importer_test
     PRIVATE volumetric_kit::core_test_policy
             volumetric_kit::sensor_apple
             volumetric_kit::sensor_prep
+            volumetric_kit::sensor_video_testing
             "-framework CoreFoundation"
             "-framework CoreVideo"
             "-framework IOSurface"
@@ -403,16 +486,35 @@ if(APPLE)
 endif()
 
 # The video decoders' host pieces, with no codec and no GPU, so on every leg:
-# the colour H.273 codes describe, compiling the internal source itself, as the
-# Orbbec conversion test does; and the public H.265 syntax (sensor_video_syntax)
-# on the committed clips.
+# the colour H.273 codes describe (video/frame_color.hpp, and the internal
+# describe_color), compiling the source itself, as the Orbbec conversion test
+# does, so legs without sensor_video run it too; and the public H.265 syntax
+# (sensor_video_syntax) on the committed clips. The source's own object library
+# carries sensor_video's export header, static, which a leg without the decoders
+# does not generate.
+include(GenerateExportHeader)
 set(_vs_video_src ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/video)
-add_executable(sensor_video_frame_color_test sensor_video_frame_color_test.cpp
-                                             ${_vs_video_src}/frame_color.cpp)
+add_library(sensor_video_frame_color_source OBJECT
+            ${_vs_video_src}/frame_color.cpp)
+set(_vs_frame_color_inc "${CMAKE_CURRENT_BINARY_DIR}/frame_color/include")
+generate_export_header(
+  sensor_video_frame_color_source
+  BASE_NAME
+  VS_VIDEO
+  EXPORT_MACRO_NAME
+  VS_VIDEO_API
+  EXPORT_FILE_NAME
+  "${_vs_frame_color_inc}/volumetric_kit/sensor/video/export.hpp")
+target_compile_definitions(sensor_video_frame_color_source
+                           PUBLIC VS_VIDEO_STATIC_DEFINE)
+target_include_directories(sensor_video_frame_color_source
+                           PUBLIC ${_vs_video_src} ${_vs_frame_color_inc})
+target_link_libraries(sensor_video_frame_color_source
+                      PUBLIC volumetric_kit::sensor_interface)
+vs_target_warnings(sensor_video_frame_color_source)
+add_executable(sensor_video_frame_color_test sensor_video_frame_color_test.cpp)
 target_link_libraries(sensor_video_frame_color_test
-                      PRIVATE volumetric_kit::sensor_interface)
-target_include_directories(sensor_video_frame_color_test
-                           PRIVATE ${_vs_video_src})
+                      PRIVATE sensor_video_frame_color_source)
 vs_target_warnings(sensor_video_frame_color_test)
 add_test(NAME sensor_video_frame_color COMMAND sensor_video_frame_color_test)
 
@@ -426,6 +528,13 @@ target_compile_definitions(
   PRIVATE VS_HEVC_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data/hevc")
 vs_target_warnings(sensor_video_hevc_syntax_test)
 add_test(NAME sensor_video_hevc_syntax COMMAND sensor_video_hevc_syntax_test)
+
+# The key gate (key_gate.hpp), in the same target: host code on every leg.
+add_executable(sensor_video_key_gate_test sensor_video_key_gate_test.cpp)
+target_link_libraries(sensor_video_key_gate_test
+                      PRIVATE volumetric_kit::sensor_video_syntax)
+vs_target_warnings(sensor_video_key_gate_test)
+add_test(NAME sensor_video_key_gate COMMAND sensor_video_key_gate_test)
 
 # The video decoders (on Apple, and elsewhere with VS_WITH_FFMPEG). The FFmpeg
 # helper test maps error codes and a frame's colour fields, compiling ffmpeg.cpp
@@ -462,6 +571,28 @@ if(APPLE OR VS_WITH_FFMPEG)
   vs_target_warnings(sensor_video_hevc_test)
   add_test(NAME sensor_video_hevc COMMAND sensor_video_hevc_test)
 
+  # The HEVC encoder: the rules (sensor_video_testing's hevc_encoder_breach) on
+  # the public cases and every colour code, decoded back and read on the host,
+  # and color_codes_of on Apple; where no hardware path opens it skips, unless
+  # VS_TEST_HEVC_ENCODER promises one. Off Apple it reads FFmpeg's hevc_nvenc
+  # for whether this FFmpeg can ask NVENC for strips.
+  add_executable(sensor_video_hevc_encoder_test
+                 sensor_video_hevc_encoder_test.cpp)
+  target_link_libraries(
+    sensor_video_hevc_encoder_test
+    PRIVATE volumetric_kit::sensor_video_testing volumetric_kit::sensor_prep
+            volumetric_kit::core_test_policy)
+  if(APPLE)
+    target_link_libraries(sensor_video_hevc_encoder_test
+                          PRIVATE volumetric_kit::sensor_apple)
+  else()
+    target_link_libraries(sensor_video_hevc_encoder_test
+                          PRIVATE PkgConfig::VS_FFMPEG)
+  endif()
+  vs_target_warnings(sensor_video_hevc_encoder_test)
+  add_test(NAME sensor_video_hevc_encoder
+           COMMAND sensor_video_hevc_encoder_test)
+
   add_executable(sensor_video_jpeg_test sensor_video_jpeg_test.cpp)
   target_link_libraries(
     sensor_video_jpeg_test
@@ -497,6 +628,53 @@ if(APPLE OR VS_WITH_FFMPEG)
                                PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
     vs_target_warnings(sensor_stereo_cuda_test)
     add_test(NAME sensor_stereo_cuda COMMAND sensor_stereo_cuda_test)
+
+    # The decoders' GPU hand-over: their sources, compiled here over a CUDA
+    # driver table that can hold their stream behind a flag the test raises,
+    # with libcuda's loader (cuda_driver.cpp) compiled under another name for
+    # that table to wrap; frame prep, readback and the luma pass read each held
+    # picture. It skips as the decoder tests do.
+    add_library(sensor_video_handover_real_driver OBJECT
+                ${_vs_video_src}/cuda_driver.cpp)
+    target_compile_definitions(sensor_video_handover_real_driver
+                               PRIVATE cuda_driver=vs_test_real_cuda_driver)
+    target_include_directories(sensor_video_handover_real_driver
+                               PRIVATE ${_vs_video_src})
+    target_include_directories(sensor_video_handover_real_driver SYSTEM
+                               PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_link_libraries(sensor_video_handover_real_driver
+                          PRIVATE volumetric_kit::core_base)
+    vs_target_warnings(sensor_video_handover_real_driver)
+    add_executable(
+      sensor_video_handover_test
+      sensor_video_handover_test.cpp
+      ${_vs_video_src}/hevc_decoder.cpp
+      ${_vs_video_src}/jpeg_decoder.cpp
+      ${_vs_video_src}/cuda_interop.cpp
+      ${_vs_video_src}/cuda_pictures.cpp
+      ${_vs_video_src}/cuda_timeline.cpp
+      ${_vs_video_src}/ffmpeg.cpp
+      $<TARGET_OBJECTS:sensor_video_handover_real_driver>)
+    target_compile_definitions(
+      sensor_video_handover_test
+      PRIVATE VS_VIDEO_WITH_CUDA=1
+              VS_HEVC_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data/hevc"
+              VS_JPEG_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data/jpeg")
+    target_include_directories(sensor_video_handover_test
+                               PRIVATE ${_vs_video_src})
+    target_include_directories(sensor_video_handover_test SYSTEM
+                               PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_link_libraries(
+      sensor_video_handover_test
+      PRIVATE sensor_video_frame_color_source
+              volumetric_kit::sensor_video_syntax
+              volumetric_kit::sensor_prep
+              volumetric_kit::core_test_policy
+              PkgConfig::VS_FFMPEG
+              ${CMAKE_DL_LIBS})
+    target_compile_options(sensor_video_handover_test PRIVATE -fexceptions)
+    vs_target_warnings(sensor_video_handover_test)
+    add_test(NAME sensor_video_handover COMMAND sensor_video_handover_test)
 
     # The Status of a failed driver or nvJPEG call. It compiles the driver
     # source itself, which loads libcuda for the error's name and opens no
@@ -559,6 +737,23 @@ if(APPLE OR VS_WITH_FFMPEG)
     vs_target_warnings(sensor_video_vt_jpeg_error_test)
     add_test(NAME sensor_video_vt_jpeg_error
              COMMAND sensor_video_vt_jpeg_error_test)
+
+    # The encoder's open and output failures, through its public calls, its
+    # VideoToolbox session's calls replaced here as for the JPEG decoder; and on
+    # the device, targets on a session the system reclaims.
+    add_executable(
+      sensor_video_vt_encode_error_test
+      sensor_video_vt_encode_error_test.cpp ${_vs_video_src}/hevc_encoder.cpp
+      ${_vs_video_src}/hevc_encoder_apple.cpp
+      ${_vs_video_src}/vt_hevc_encode.cpp ${_vs_video_src}/videotoolbox.cpp)
+    target_link_libraries(
+      sensor_video_vt_encode_error_test
+      PRIVATE volumetric_kit::sensor_video volumetric_kit::sensor_apple
+              "-framework VideoToolbox" "-framework CoreMedia"
+              "-framework CoreVideo" volumetric_kit::core_test_policy)
+    vs_target_warnings(sensor_video_vt_encode_error_test)
+    add_test(NAME sensor_video_vt_encode_error
+             COMMAND sensor_video_vt_encode_error_test)
   endif()
 endif()
 
@@ -658,6 +853,24 @@ if(VS_WITH_REALSENSE)
                         PRIVATE volumetric_kit::sensor_realsense)
   vs_target_warnings(sensor_realsense_open_test)
   add_test(NAME sensor_realsense_open COMMAND sensor_realsense_open_test)
+
+  # The frame contract (testing/rgbd_contract.hpp) under injected faults:
+  # RealSenseSensor's own conversion, poll, drain and stats, compiled here with
+  # a camera stub (realsense_camera_stub.cpp, librealsense's software device) in
+  # place of camera.cpp, as the Orbbec stub tests do.
+  add_executable(
+    sensor_realsense_contract_test
+    sensor_realsense_contract_test.cpp realsense_camera_stub.cpp
+    ${_vs_realsense_src}/realsense_sensor.cpp
+    ${_vs_realsense_src}/conversion.cpp)
+  target_link_libraries(sensor_realsense_contract_test
+                        PRIVATE volumetric_kit::sensor_realsense)
+  vs_link_realsense_sdk(sensor_realsense_contract_test)
+  target_include_directories(sensor_realsense_contract_test
+                             PRIVATE ${_vs_realsense_src})
+  vs_target_warnings(sensor_realsense_contract_test)
+  add_test(NAME sensor_realsense_contract
+           COMMAND sensor_realsense_contract_test)
 endif()
 
 # The Orbbec SDK prerequisite (VS_WITH_ORBBEC only): the copy the build found is
@@ -754,6 +967,21 @@ if(VS_WITH_ORBBEC)
   add_test(NAME sensor_orbbec_open_sensors
            COMMAND sensor_orbbec_open_sensors_test)
 
+  # The frame contract (testing/rgbd_contract.hpp) under injected faults:
+  # OrbbecSensor's own poll, drain and stats on the camera stub, whose mailbox,
+  # take and read, in place of CameraStream's, play a script of captures.
+  add_executable(
+    sensor_orbbec_contract_test
+    sensor_orbbec_contract_test.cpp orbbec_camera_stub.cpp
+    ${_vs_orbbec_src}/orbbec_sensor.cpp ${_vs_orbbec_src}/frame_conversion.cpp)
+  target_link_libraries(sensor_orbbec_contract_test
+                        PRIVATE volumetric_kit::sensor_orbbec)
+  vs_link_orbbec_sdk(sensor_orbbec_contract_test)
+  target_include_directories(sensor_orbbec_contract_test
+                             PRIVATE ${_vs_orbbec_src})
+  vs_target_warnings(sensor_orbbec_contract_test)
+  add_test(NAME sensor_orbbec_contract COMMAND sensor_orbbec_contract_test)
+
   # The driver's H.265 colour decoder, with no camera: the committed patch clip
   # wrapped in SDK frames. Internal and unexported, so the test compiles its
   # source itself.
@@ -764,7 +992,8 @@ if(VS_WITH_ORBBEC)
   target_link_libraries(
     sensor_orbbec_hevc_test
     PRIVATE volumetric_kit::sensor_orbbec volumetric_kit::sensor_video
-            volumetric_kit::sensor_prep volumetric_kit::core_test_policy)
+            volumetric_kit::sensor_video_syntax volumetric_kit::sensor_prep
+            volumetric_kit::core_test_policy)
   vs_link_orbbec_sdk(sensor_orbbec_hevc_test)
   target_include_directories(sensor_orbbec_hevc_test PRIVATE ${_vs_orbbec_src})
   target_compile_definitions(
@@ -802,12 +1031,15 @@ vs_target_warnings(sensor_io_image_test)
 add_test(NAME sensor_io_image COMMAND sensor_io_image_test)
 
 # The tests whose code runs threads -- the Orbbec decode workers, the audio
-# capture's queue and the DeckLink driver's upload -- which CI builds and runs
-# again under ThreadSanitizer (.github/workflows/_build.yml): one target to
-# build them.
+# capture's queue, the DeckLink driver's upload and the HEVC encoder's coding
+# thread -- which CI builds and runs again under ThreadSanitizer
+# (.github/workflows/_build.yml): one target to build them.
 add_custom_target(sensor_tsan_tests)
 add_dependencies(sensor_tsan_tests sensor_orbbec_decode_worker_test
                  sensor_audio_capture_test sensor_decklink_upload_test)
+if(TARGET sensor_video_hevc_encoder_test)
+  add_dependencies(sensor_tsan_tests sensor_video_hevc_encoder_test)
+endif()
 if(VS_WITH_ORBBEC)
   add_dependencies(sensor_tsan_tests sensor_orbbec_jpeg_test
                    sensor_orbbec_hevc_test sensor_orbbec_open_sensors_test)
@@ -869,8 +1101,8 @@ add_test(NAME sensor_subproject_glsl
                  --target vs_glsl_consumer)
 set_tests_properties(sensor_subproject_glsl PROPERTIES FIXTURES_REQUIRED
                                                        vs_subproject_defaults)
-# A subproject builds neither the tests nor the DeckLink driver, so its floor is
-# the base one, not the 0.38.0 the driver's units need.
+# A subproject builds neither the tests nor the DeckLink driver; its floor is
+# the base one all the same, every build's but a camera-only one.
 _vs_add_subproject_test(sensor_subproject_old_core old_core -DVS_CORE_FIRST=ON
                         -DVKC_WITH_VULKAN=ON -DVS_CONSUMER_CORE_VERSION=0.0.1)
 _vs_expect_message(

@@ -41,6 +41,7 @@
 #include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 #include "volumetric_kit/sensor/prep/picture_readback.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
+#include "volumetric_kit/sensor/testing/nv12_picture.hpp"
 #include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace sensor = volumetric_kit::sensor;
@@ -203,21 +204,12 @@ YuvImage in_buffer(const vkc::test::Gpu& gpu, const Packed& p, YuvLayout layout,
 }
 
 // `p` as VideoToolbox leaves it: NV12's planes as images 3 texels wider and
-// 2 rows taller than the planes, junk in the rest; no images if they cannot
-// be made.
+// taller than the planes, junk in the rest (testing/nv12_picture.hpp); no
+// images if they cannot be made.
 YuvImage as_images(const vkc::test::Gpu& gpu, const Packed& p) {
-  const std::vector<std::uint8_t> cbcr = p.cbcr();
-  YuvImage image;
-  image.layout = YuvLayout::Nv12;
-  image.width = p.w;
-  image.height = p.h;
-  image.image[0] =
-      test_image::with_corner(gpu.device, gpu.allocator, VK_FORMAT_R8_UNORM, 1,
-                              p.w + 3, p.h + 2, p.y.data(), p.w, p.h);
-  image.image[1] = test_image::with_corner(
-      gpu.device, gpu.allocator, VK_FORMAT_R8G8_UNORM, 2, p.cw + 3, p.ch + 2,
-      cbcr.data(), 2 * p.cw, p.ch);
-  return image;
+  auto made = sensor::testing::device_picture(gpu.device, gpu.allocator,
+                                              {p.w, p.h, p.y, p.cbcr()}, 3);
+  return made.ok() ? std::move(made).value() : YuvImage{};
 }
 
 bool made(const YuvImage& image) {

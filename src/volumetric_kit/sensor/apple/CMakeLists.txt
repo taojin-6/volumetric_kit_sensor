@@ -6,8 +6,10 @@
 # Vulkan images through Metal textures (Objective-C++, with ARC). Built on every
 # Apple platform and with no FFmpeg, since it uses none: the video decoders'
 # VideoToolbox pictures come through it, and so can a camera's on iOS, such as
-# ARKit's. Links sensor_frame alone; the YuvImage it fills is a header of
-# sensor_interface's (sensor/yuv_image.hpp) that names no camera.
+# ARKit's; and color_codes_of, a CVPixelBuffer's colour tags as H.273 codes.
+# Links sensor_frame and sensor_video_syntax (for ColorCodes); the YuvImage it
+# fills is a header of sensor_interface's (sensor/yuv_image.hpp) that names no
+# camera.
 include(GenerateExportHeader)
 
 set(_vs_sensor_apple_generated_inc
@@ -16,9 +18,14 @@ set(_vs_sensor_apple_generated_inc
 add_library(sensor_apple)
 add_library(volumetric_kit::sensor_apple ALIAS sensor_apple)
 
-target_sources(sensor_apple PRIVATE pixel_buffer_importer.mm)
-set_source_files_properties(pixel_buffer_importer.mm PROPERTIES COMPILE_OPTIONS
-                                                                -fobjc-arc)
+# metal_device.mm: the Metal device under a Vulkan device, which the importer
+# and the tests read (internal; a test compiles it itself). core_video_color: a
+# buffer's colour tags as H.273 codes (color_codes_of), plain C++ on Core Video,
+# through core_video_tags.hpp, which the VideoToolbox encoder shares.
+target_sources(sensor_apple PRIVATE core_video_color.cpp metal_device.mm
+                                    pixel_buffer_importer.mm)
+set_source_files_properties(metal_device.mm pixel_buffer_importer.mm
+                            PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 
 generate_export_header(
   sensor_apple
@@ -43,10 +50,11 @@ endif()
 
 target_compile_features(sensor_apple PUBLIC cxx_std_17)
 
-# PUBLIC: the header takes a core Device and a CVPixelBufferRef.
+# PUBLIC: the headers take a core Device and a CVPixelBufferRef, and return
+# sensor_video_syntax's ColorCodes.
 target_link_libraries(
   sensor_apple
-  PUBLIC sensor_frame "-framework CoreVideo"
+  PUBLIC sensor_frame sensor_video_syntax "-framework CoreVideo"
   PRIVATE "-framework IOSurface" "-framework Metal" "-framework Foundation")
 
 target_include_directories(

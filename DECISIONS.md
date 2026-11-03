@@ -64,7 +64,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   decoded as BT.601 full range, which it codes and does not say. Its RGB
   output, and the RGB mode its calibration was read from, went on
   2026-10-06, and its host decoding the same day. *Amended 2026-10-27:*
-  H.265 at 3840x2160 and 25 fps is the default.
+  H.265 at 3840x2160 and 25 fps is the default. *Amended 2026-11-02:* the
+  colour gate is `sensor_video_syntax`'s `KeyGate`.
 - [**2026-09-28**](#2026-09-28--gpu-pre-processing-is-recon_sensor_utils-a-driver-hands-out-the-frame-as-captured-the-device-undistorts-depth-and-undistorts-and-converts-colour-and-fusion-reads-the-buffers-in-place-depth-and-colour-each-with-its-own-camera-rather-than-registered) —
   GPU pre-processing is `recon_sensor_utils`: a driver hands out the frame as
   captured, the device undistorts depth and undistorts and converts colour,
@@ -74,7 +75,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   an edge or a hole; and a frame with colour keeps only what both its
   cameras see, depth and colour each cropped to the other's field of view,
   no longer an option (depth's an option from 2026-09-29; the same-view
-  entry).
+  entry). *Amended 2026-11-02:* host depth may carry a confidence plane,
+  each sample below the frame's floor dropped before anything reads it (the
+  confidence plane entry).
 - [**2026-09-28**](#2026-09-28--a-decoded-colour-frame-never-leaves-the-gpu-the-platforms-hardware-decoder-for-h265-and-mjpeg-alike-hands-its-picture-to-vulkan-in-place-and-gpuframeprep-takes-i420-or-nv12-from-the-host-or-the-device) —
   A decoded colour frame never leaves the GPU: the platform's hardware
   decoder, for H.265 and MJPEG alike, hands its picture to Vulkan in place,
@@ -448,6 +451,105 @@ entries relevant to your task; later amendments supersede earlier rules.
   rounded 2x2 mean. The outputs are pooled device buffers, leased like frame
   prep's, CONCURRENT across the families the caller names.
   `PictureReadback` reads a list in one submit.
+- [**2026-11-02**](#2026-11-02--which-access-units-decode-after-a-loss-is-keygate-and-whether-one-is-a-key-hevcfirst_slice_type-public-in-sensor_video_syntax-the-orbbec-colour-decoders-gate-and-key-scan-moved-there-unchanged-amends-the-2026-09-28-h265-and-2026-10-25-public-syntax-entries) —
+  Which access units of a predicted H.265 stream decode after a loss is
+  `KeyGate` (`video/key_gate.hpp`), and whether one is a key
+  `hevc::first_slice_type` with `is_irap`: public, in
+  `sensor_video_syntax`, on every platform. They are the Orbbec colour
+  decoder's gate and key scan (`hevc_color.hpp`), moved with their
+  behaviour unchanged.
+- [**2026-11-02**](#2026-11-02--what-h273-colour-codes-mean-is-public-and-the-familys-nv12-test-picture-and-clip-helpers-are-the-packages-test-support-amends-the-2026-10-25-public-syntax-entry) —
+  What H.273 colour codes mean is public (`video/frame_color.hpp`), so
+  code that holds codes resolves them as the decoders do. The family's NV12
+  test picture and clip helpers are header-only test support under
+  `testing/`; the test pattern's index band is read by square means after
+  lossy coding. The Metal device under a Vulkan device is found in one
+  place.
+- [**2026-11-02**](#2026-11-02--the-hevc-encoder-is-hevcencoder-the-decoders-twin-in-sensor_video-one-hardware-low-latency-configuration-sent-and-received-through-a-coding-thread-of-its-own-on-videotoolbox-first-a-cameras-pixel-buffer-coded-as-it-is) —
+  The HEVC encoder is `HevcEncoder`, the decoder's twin in `sensor_video`:
+  one hardware low-latency configuration, QPs fixed for the session, sent
+  and received through a coding thread of its own, at most 2 in flight;
+  VideoToolbox first, a camera's `CVPixelBuffer` coded as it is
+  (`send_pixel_buffer`). The encoder rules C1-C13 are one function any
+  runner calls (`sensor_video_testing`). *Amended 2026-11-02:* the
+  device-written target (`target`, `send` with a timeline value) followed,
+  with C9 and C13b. *Amended 2026-11-03:* NVENC followed (the 2026-11-03
+  NVENC entry).
+- [**2026-11-02**](#2026-11-02--host-depth-may-carry-a-confidence-plane-which-frame-prep-gates-on-the-gpu-per-raw-sample-before-anything-else-reads-it-level-0-is-never-integrated-and-a-frame-without-a-plane-is-prepared-bit-for-bit-as-before-amends-the-2026-09-28-gpu-pre-processing-entry) —
+  Host depth may carry a confidence plane (`RgbdFrame::depth_confidence`, a
+  byte a sample in the sensor's levels) and a floor (`min_confidence`):
+  `GpuFramePrep` drops each raw sample below the floor on the GPU, before
+  the depth offset, the mix, the colour-view test and the outlier filter, as
+  a hole the sensor left. Level 0 is never integrated: a producer writes it
+  on the samples it invalidates, such as those it masks as a moving person,
+  and a plane comes with a floor of 1 or more, which drops it. No plane is
+  bit-identical to before; a plane beside device depth or at a floor of 0 is
+  refused.
+- [**2026-11-02**](#2026-11-02--a-tracked-sensors-world-is-registered-into-an-arrays-for-one-sessions-world-epoch-by-one-rigid-transform-in-a-file-of-its-own-cameratracked_registrationhpp-the-array-files-world-block-and-transforms-are-read-and-written-in-one-place-that-both-files-share) —
+  A tracked sensor's world (ARKit's) is registered into an array's for one
+  capture session's world epoch by one rigid `tracking_to_world`, in a file
+  of its own (`camera/tracked_registration.hpp`), with the array's world it
+  registers into and the tag fit that solved it. The array file's world
+  block and transforms are read and written in one internal place that
+  both files call.
+- [**2026-11-02**](#2026-11-02--every-rgb-d-driver-keeps-one-frame-contract-same-capture-whole-frames-loss-read-off-the-sequence-checked-by-rgbd_breach-in-every-drivers-fake-the-colour-camera-derives-from-registered-depth-and-test-depth-carries-the-pictures-index-band) —
+  Every RGB-D driver keeps one frame contract, stated in `IRgbdSensor`'s
+  doc: same capture, whole frames, the sizes `SensorInfo` names, loss read
+  off the sequence, a time of 0 being none, a confidence plane as frame prep
+  takes it.
+  `testing/rgbd_contract.hpp` checks it, incrementally or over a vector,
+  and every driver's fake runs it under injected faults.
+  `color_from_registered_depth` derives the colour camera from registered
+  depth; `testing/rgbd_pattern.hpp`'s depth carries the picture's index
+  band. *Amended 2026-11-03:* the stereo contract takes a time of 0 as none
+  too, and `order_breach` holds that rule for both.
+- [**2026-11-02**](#2026-11-02--an-rgb-d-sensors-frames-as-bytes-are-the-sensor-packages-sensor_wire-writes-the-sensorinfo-once-and-each-rgbdframes-depth-and-colour-halves-a-record-each-for-any-sensor-a-container-carries-them-unread-the-version-is-in-the-params-and-the-decode-checks-the-layout-not-the-values) —
+  An RGB-D sensor's frames as bytes are this package's
+  (`wire/rgbd_wire.hpp`, `sensor_wire`): the `SensorInfo` once, as a
+  depth track's params, then each frame's depth half and colour half a
+  record each, for any sensor. The depth is raw, the cameras, units, range
+  and noise per record, the colour one coded picture with its codes and
+  exposure. A container carries the bytes and reads none; the version is
+  in the params; the decode reads in place and checks the layout, not the
+  values. `RgbdFrame::color_exposure` comes with it.
+
+- [**2026-11-02**](#2026-11-02--nvidias-decoded-pictures-hand-over-on-the-gpu-each-carries-the-value-of-a-timeline-cuda-signals-after-its-copy-yuvimageready-every-reader-waits-for-it-on-the-device-and-ffmpegs-own-copy-of-nvdecs-output-stays-amends-the-2026-10-06-device-only-decoder-and-2026-10-26-plane-image-entries) —
+  NVIDIA's decoded pictures hand over on the GPU: NVDEC and nvJPEG queue
+  their copy or decode, CUDA signals an exported timeline after it, and the
+  picture carries that value (`YuvImage::ready`), which every reader here
+  waits for on the device and a caller reading in its own batch passes
+  (`ready_points`, `add_ready_point`). FFmpeg's own copy of NVDEC's output
+  stays: dropping it (`AV_HWACCEL_FLAG_UNSAFE_OUTPUT`) costs about 100 MB
+  more a 4K decoder on the low-delay streams NVENC writes. Each frame FFmpeg
+  hands out is kept until its value is reached, never by the picture's
+  holder.
+
+- [**2026-11-02**](#2026-11-02--the-encoder-hands-out-its-next-picture-on-the-device-targetbatch-gives-a-picture-of-the-sessions-own-as-storage-images-the-callers-kernel-writes-in-its-batch-and-send-hands-over-the-value-that-batch-sets-which-the-coding-thread-waits-for-on-the-host-amends-the-2026-11-02-encoder-entry) —
+  The encoder hands out its next picture on the device: `target(batch)`,
+  on VideoToolbox a pool picture's planes as R8 and R8G8 storage images
+  (`PixelBufferImporter::Access::Write`), described by the session's
+  colour, for the caller's kernel to write in its batch; `send(key, pts,
+  written)` hands over the value that batch sets, and the coding thread
+  waits for it on the host before it codes. The targets' images stay with
+  the encoder across a lost session; the writer of every target sent is
+  waited for, the destructor's included. `create` readies the targets'
+  surfaces (a throwaway picture first), so a producer's targets wait for no
+  batch; a surface new to the session waits on the host, unlocked. The test
+  picture is written by a kernel (`testing::Nv12Writer`), not a copy.
+
+- [**2026-11-03**](#2026-11-03--a-gpu-fault-leaves-no-reader-waiting-for-good-every-error-nvdecs-decoder-returns-but-invalidargument-comes-back-with-each-ready-value-it-handed-out-set-and-its-wait-for-the-oldest-of-three-kept-pictures-sees-a-failed-stream-amends-the-2026-11-02-hand-over-entry) —
+  A GPU fault leaves no reader waiting for good: NVDEC's decoder settles
+  its timeline before it returns any error from `send` or `receive` but
+  `InvalidArgument`, and its host wait for the oldest of three kept
+  pictures asks the stream between slices, so a failed one returns its
+  error, settled.
+
+- [**2026-11-03**](#2026-11-03--the-encoder-codes-on-nvenc-too-kinflight--1-exported-buffers-a-session-as-its-targets-which-nvenc-reads-through-cuda-with-no-copy-every-qp-set-from-the-options-and-strips-from-4096-rows-amends-the-2026-11-02-encoder-entries) —
+  The encoder codes on NVENC too, through FFmpeg's `hevc_nvenc`: targets
+  only, `kInFlight + 1` exported buffers a session, which NVENC reads through
+  CUDA with no copy, the free one handed out longest ago next; every QP set
+  from the options; 3 strips from 4096 rows, which an FFmpeg before 7.1
+  refuses. FFmpeg's log level is sensor's to set, once.
 
 ## Decision record
 
@@ -6167,3 +6269,1007 @@ validation layer: the whole suite passes, 40 tests; the core's shared test
 device takes two queues of one family there, so the cross-family case
 skips. recon's suite was not
 run: `frame` is unchanged.
+
+### 2026-11-02 — Which access units decode after a loss is `KeyGate`, and whether one is a key `hevc::first_slice_type`: public in `sensor_video_syntax`, the Orbbec colour decoder's gate and key scan moved there unchanged (amends the 2026-09-28 H.265 and 2026-10-25 public-syntax entries).
+
+**The rule.** `KeyGate` (`video/key_gate.hpp`) says which access units of a
+predicted H.265 stream to send after a loss, and `hevc::first_slice_type`
+(`video/hevc_syntax.hpp`) the type of an access unit's first slice, which
+with `is_irap` says whether it is a key. Both are public, in
+`sensor_video_syntax`, host code on the core's base tier on every platform.
+The Orbbec colour decoder uses them; its own gate and key scan
+(`is_key_frame`, `hevc_color.hpp`) go.
+
+**The semantics, as they were.** The gate waits for a key at the start,
+after a number other than one up from the last, and after `lose()` (was
+`resync()`). The key that ends a wait is `Restart`, and the caller resets
+the decoder before sending it; a unit of an unbroken stream is `Take` (was
+`Decode`); one while waiting is `Skip` (was `Drop`). An unnumbered unit is
+an empty number, where Orbbec's was index 0: it is never a gap, and the
+unit after it is not checked. The driver passes its frame index with 0 as
+empty, so 0 is still unnumbered there, while the gate itself takes 0 as a
+number. `first_slice_type` is the old scan: the first unit after a start
+code whose type is below 32, its header not checked further, with no
+allocation and no failure. Null data, which the driver never passes, has
+no slice.
+
+**Why public.** Any caller of `HevcDecoder` whose stream can lose units
+needs this rule and this scan; one public copy, beside the syntax it reads,
+leaves none in a driver.
+
+**Tests.** `sensor_video_key_gate`, on every leg: the Orbbec gate's cases,
+moved with the names changed, then the start, a gap, an unnumbered unit
+resetting the last number, `lose()`, and a key while waiting.
+`sensor_video_hevc_syntax`: on every access unit of every committed clip,
+`first_slice_type` is the type of the first slice `split_annex_b` finds; the
+unlabelled clip's keys are its units 0 and 4 (the Orbbec test's case,
+moved); and three- and four-byte start codes, units before the slice, bytes
+before the first start code, no slice, a cut header and null data. The
+Orbbec HEVC test is otherwise unchanged.
+
+**Validation.** Apple M5 Max, macOS 27.2, Release with the Orbbec driver,
+under the validation layer on VideoToolbox (`VS_TEST_HEVC_BACKEND`): the 55
+tests pass. Each of these fails a test: the gate's gap check removed, an
+unnumbered unit not resetting the last number, the driver's index 0 taken
+as a number, and the scan resuming past a unit's second header byte. Run
+once by hand, the deleted scan and `first_slice_type` with `is_irap` agreed
+on 2,000,000 random byte strings. No camera was opened.
+
+### 2026-11-02 — What H.273 colour codes mean is public, and the family's NV12 test picture and clip helpers are the package's test support (amends the 2026-10-25 public-syntax entry).
+
+**The rule.** `video/frame_color.hpp` (`sensor_video`) is public:
+`resolve_matrix`, `resolve_encoding` and `resolve_chroma_location` turn a
+`ColorCodes` into a `VideoColorMatrix`, a `ColorEncoding` and a
+`ChromaLocation`, the one home of that mapping. The decoders' internal
+`describe_color` is made of the three. `sensor_video` links
+`sensor_video_syntax` PUBLIC, since the codes it resolves are the ones the
+syntax reader returns (`hevc::Sps::color`). Test support for this package
+and its consumers lives in `include/volumetric_kit/sensor/testing/`,
+header-only, with no test framework: `hevc_clip.hpp` (a clip's access
+units at its delimiters, and `hevc_decoder_promised()`) and
+`nv12_picture.hpp` (`HostNv12`, `test_pattern`, `device_picture`). The
+Metal device under a Vulkan device is read in one place, `sensor_apple`'s
+internal `metal_device.mm`.
+
+**Why.**
+- **One mapping.** Capture code that holds codes, a camera's pixel-buffer
+  tags on iOS or a stream's SPS on a receiver, would otherwise keep a copy
+  of the decoders' table, which drifts. Public, it is the table they use.
+- **One test picture, one clip split.** The package's tests each made NV12
+  plane images and split clips in a local helper, and so did consumers'
+  tests. One header each serves them all; a consumer reaches them through
+  the include directory every sensor target carries.
+- **A pattern a coded stream keeps.** Tests that code and decode the
+  picture, or carry it across a link, need to know which picture arrived.
+  The index band is squares of whole 16 x 16 coding blocks, each 255 or 0,
+  beside a 255 and a 0 reference: a square's mean away from its edges lands
+  on the right side of the references' midpoint after lossy coding and
+  after a change of range. Fourteen bits fit the band in 256 columns, the
+  fixtures' width. Elsewhere the planes are smooth and move with the
+  index, so a predicted picture codes well.
+- **Every leg.** The frame colour test still compiles `frame_color.cpp`
+  itself, with the export header generated for its own object library, so
+  the legs without the decoders run it as before.
+
+**Not here.** Writing a picture into an encoder's target in a batch waits
+for that target: `CommandBatch` uploads buffers only, and images through
+the core's `write_image`, which submits on its own.
+`hevc_encoder_promised()` lands with the encoder it promises.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer, `VS_TEST_HEVC_BACKEND=videotoolbox` and the
+Orbbec driver, on top of the key gate entry above: the whole suite passes,
+56 tests. The new clip (`centred_full_256x144.h265`) decodes on
+VideoToolbox to libavcodec's MD5, full range, BT.709 and centred, and is
+among the clips `first_slice_type` is checked on. Planted bugs, each failing its test: code
+1 resolved to `TopLeft` (`sensor_video_frame_color` and
+`sensor_video_hevc`), the band's bits read one square off, the padding
+written as 0 rather than 0xEE, and a four-byte start code split as three
+(`sensor_testing_support`).
+
+### 2026-11-02 — The HEVC encoder is `HevcEncoder`, the decoder's twin in `sensor_video`: one hardware low-latency configuration, sent and received through a coding thread of its own, on VideoToolbox first, a camera's pixel buffer coded as it is.
+
+**The rule.** `video/hevc_encoder.hpp` is the family's one HEVC encoder,
+in `sensor_video` beside `HevcDecoder` and shaped like it: `create(Options)`
+returns a move-only value, one backend a build, hardware only, and says
+what is missing (`Unsupported`) rather than falling back. One
+configuration: low latency (P-pictures only, no reordering, no look-ahead,
+every NAL unit in temporal layer 0), `Options::qp` every P-picture's slice
+QP and `Options::key_qp` every IDR's, fixed for the session, keys only when
+asked, and the VUI from `Options::color`. The colour is normalized (matrix
+5 is 6; transfer 6, 14 and 15 are 1) and must be in one set: matrix 1, 6,
+7 or 9 (2 refused as `InvalidArgument`); transfer 1, 2, 7, 8, 13, 16, 17 or
+18; primaries 1, 2, 5, 6, 9, 11, 12 or 22; either range; siting 0, or 1 to 5
+where the backend writes it. A send returns at once; a coding thread of the
+encoder's own codes; `receive(picture, timeout_ns)` hands back each access
+unit in the order sent, its buffer swapped with the caller's, at most
+`kInFlight` (2) in flight. The first picture is a key, and so is the next
+after a failure (`key_owed`); a drop keeps the session, any other failure
+loses it, a failed picture fails those already sent behind it, and the next
+send opens a lost session again. On Apple the way in is
+`send_pixel_buffer` (`video/hevc_encoder_apple.hpp`): an IOSurface NV12
+buffer of the session's size and range, its tags agreeing with the
+session's colour, coded as it is, with no Vulkan device. The device-written
+target (`target`, `send` with a timeline value) and NVENC follow in their
+own PRs; until NVENC, a Linux build's `create` refuses. *Amended
+2026-11-02:* the target landed (the 2026-11-02 target entry). *Amended
+2026-11-03:* NVENC landed (the 2026-11-03 NVENC entry).
+
+**Why a coding thread.** In this mode VideoToolbox codes inside
+`VTCompressionSessionEncodeFrame`: 5.6-5.9 ms at 1920x1440 and 15.2-15.4 ms
+at 3840x2160 on the M5 Max (a probe of the bare session, before this
+encoder), and leaving the mode loses `SupportsBaseFrameQP`. NVENC on Linux blocks the same way. The
+thread keeps that wait off the producer: `send_pixel_buffer` returns in
+0.008 ms p50 (0.021 p95) at 1920x1440 and 0.009 (0.020) at 3840x2160, one
+picture in flight. One session codes no faster with two in flight (181.6
+and 183.3 pictures a second at 1920x1440; 66.9 and 67.2 at 3840x2160); two
+sessions on their own threads code side by side at full speed (2 x 182.8;
+2 x 66.8). With one in flight, send to access unit is 5.51 ms p50 at
+1920x1440 and 14.85 ms at 3840x2160, at or under the synchronous call.
+
+**What VideoToolbox does, measured here** (the M5 Max, macOS 27.2, with
+probes of the bare session on synthetic buffers):
+- It writes every code of the set into the VUI as given; it refuses matrix
+  5 as a property (hence the normalization), and writes transfer 6, 14 and
+  15 as 1.
+- It writes the stream's chroma siting from the buffer's
+  `kCVImageBufferChromaLocationTopFieldKey` (0 to 5) and has no property for
+  it, so the encoder tags a buffer that lacks the tag with the session's
+  siting, and accepts sitings 1 to 5.
+- It codes base QP 0 as 1 (the slice QP, read back), so `create` refuses QP
+  0 there; 1 to 51 code as asked.
+- Its SPS declares two sub-layers though every NAL unit is in layer 0; the
+  rules check the units' temporal ids.
+- It does not report `UsingHardwareAcceleratedVideoEncoder` in this mode;
+  the settings line says "hardware required", which the specification asks.
+- An IOSurface buffer keeps a colour tag as a code, and Core Video names
+  some back as another string (matrix 11 and 12 as primaries' names, matrix
+  15 not at all): `color_codes_of` reads what Core Video keeps, refusing a
+  string it maps to no code.
+
+**The coding thread, after the review.** Each point was found by a probe
+and is now a test:
+- A finite `receive` waits even with nothing in flight. A receive thread
+  of its own, waiting 50 ms beside a 30 Hz sender, returned at once 291
+  million times in 2 s and used 81% of a core; it now sleeps (60 calls, no
+  CPU). `UINT64_MAX` with nothing in flight still returns at once, so one
+  thread never waits for ever. C13 bounds a receive thread's empty returns
+  by its time over the wait.
+- The coding thread allocates nothing and never throws. Its queues are
+  rings of `kInFlight`, the spare buffers are reserved at `create`, and a
+  failure's message that cannot be allocated becomes `OutOfMemory`. Before,
+  one failed allocation in its loop aborted the process; now every
+  allocation in it can fail, and each failure is that picture's
+  `OutOfMemory`.
+- The compression session is the last member of the backend's state, so
+  it is torn down first. VideoToolbox hands an output still pending to the
+  callback inside `VTCompressionSessionInvalidate` (all 6 outputs of a
+  default-mode session came that way). After a stuck picture's 2 s wait,
+  the old order made the callback lock a destroyed mutex: `std::terminate`.
+- A reopen waits for the picture coding at the loss. A test holds that
+  picture in `VTCompressionSessionEncodeFrame` for 50 ms, so the wait is
+  checked whatever the timing. Without the wait the old session is closed
+  under the picture: a crash.
+- The coding thread runs at user-interactive quality of service, as a
+  camera's queue does. A `std::thread` gets DEFAULT, and VideoToolbox's work
+  runs on it. With every core of the M5 Max busy at user-interactive QoS,
+  send to access unit at 1920x1440 and 30 Hz was 16.6-17.6 ms p95 with the
+  thread at user-interactive QoS and 19.6-21.1 ms at DEFAULT. With 12 or 24
+  busy threads, the DEFAULT thread's worst picture took 15-21 ms and the
+  user-interactive thread's at most 5.9 ms.
+- What the rules check holds whatever the timing. C8 accepts each picture
+  in flight at a loss coming back coded or failed, but never one coded
+  after one that failed. C13's drop in flight retries, up to 5 rounds, the
+  race it needs. With the test thread held 1, 2 or 5 ms at C8's loss, no
+  run broke a rule (before: 3 of 5 runs at 1 ms). With it held 2 ms on 4
+  of C13's 5 rounds, no run broke one either.
+- `CodedPicture::key` is the key VideoToolbox marked, not the one asked
+  for. Each picture's options are made once, at `create`. The siting tag
+  is added on the caller's thread, in `send_pixel_buffer`.
+
+**Why `HevcEncoderAccess` is a friend.** The Apple entry is a free function
+in a header of its own, so `hevc_encoder.hpp` names no Core Video type; it
+reaches the pimpl through one internal struct the class befriends. No test
+uses it: the rule against friends keeps tests on public calls, which this
+does not change.
+
+**The rules, once** (`testing/hevc_conformance.hpp`,
+`sensor_video_testing`): `hevc_encoder_breach` checks C1-C13 on one case
+through the public calls, with sensor's syntax readers
+(`testing::SliceReader`, test use only, over the parsers' own walks) and
+`HevcDecoder`, and names the first rule broken; it is static and needs no
+core test support, so an app's device test can run it as it is. C9 (a
+target taken twice) and C13b (the wait for a writer) come with the target.
+
+**Tests.** `sensor_video_hevc_encoder` (Mac; skips elsewhere unless
+`VS_TEST_HEVC_ENCODER` promises an encoder): the rules on 512x512,
+1922x1082 with a key QP of its own, 3840x4096, and 1920x1440 BT.601 at
+either range and BT.709 sited at the centre, QP 1 with key QP 51 and the
+reverse, and every code of the set, 4 pictures each; the pattern at QP 22
+decoded back, its worst PSNR 52.9 dB luma and 48.5 dB chroma, its 0 and
+255 exact, each picture's index read; `color_codes_of` on every string
+Core Video names. `sensor_video_vt_encode_error`: the busy, absent and
+failing opens and no base QP, through `create`'s text and code; a
+dropped, missing (then handed over at the teardown), wrongly keyed and
+doubled output, through `receive`; a loss while a picture codes; and the
+coding thread's quality of service.
+`sensor_video_hevc_syntax`: the slice reader's types and QPs on every
+committed clip, as FFmpeg's `trace_headers` reads them.
+`sensor_video_hevc`: a clip VideoToolbox's encoder coded
+(`vt_pattern_1920x1440.h265`, `tools/vt_pattern_clip`) decodes to
+libavcodec's MD5 on VideoToolbox and NVDEC, each picture's index read. The
+iOS build check links an app's encoder calls into an iOS executable with
+no FFmpeg or CUDA symbol.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer, `VS_TEST_HEVC_BACKEND` and
+`VS_TEST_HEVC_ENCODER` set to videotoolbox: the whole suite passes, 64
+tests with main's at #35 and the Orbbec driver on; the encoder tests pass
+under ThreadSanitizer (Debug). Each of these
+fails a test: `ForceKeyFrame` never set (C3), the session's source format
+always video range (C10) and the buffer's range not checked (C11), a drop
+neither failing the picture behind it nor owing a key (C7) and one owing a
+key but not failing it (C13), the IDR coded at the P-pictures' QP (C5), the
+siting tag not added (C4), and a lost session not reopened (C8). So does
+each of the review round's: `receive` returning at once with nothing in
+flight (C13), a reopen not waiting for the picture coding, and the session
+torn down after its callback's state (`sensor_video_vt_encode_error`, a
+crash and `std::terminate`). The encoder's first timings ran on battery and
+the bare session's on AC power. After the review round, on AC power, one
+picture in flight at 1920x1440 took 5.32 ms p50 from send to access unit,
+and 14.82 ms at 3840x2160.
+
+### 2026-11-02 — Host depth may carry a confidence plane, which frame prep gates on the GPU per raw sample before anything else reads it; level 0 is never integrated, and a frame without a plane is prepared bit for bit as before (amends the 2026-09-28 GPU pre-processing entry).
+
+**The rule.** `RgbdFrame` gains `depth_confidence`, beside host `depth`: one
+byte a sample, in the depth's order, in the sensor's own levels (ARKit's 0
+low, 1 medium, 2 high), held by `pixels`; and `min_confidence`, the floor,
+1 or more with a plane and 0 without one. `GpuFramePrep` copies the plane
+into the pass's slot at the word after the depth, inside the depth's
+binding, which grows to cover it; host colour goes after both. The depth
+pass reads each raw pixel's level first (`metres_at`), and a level below
+the floor is no return (0) before the depth offset, so the 2x2 mix skips
+it, the colour-view test never sees it and the outlier filter counts it as
+none, exactly as a sample the sensor returned as 0. `DepthParams` gains
+`confidence_first` (the plane's first byte in the binding) and
+`min_confidence`, 72 to 80 bytes of push constants; there is no new
+binding, and `DeviceFrame` gains nothing.
+`prepare` refuses a plane beside device depth, at any floor, a plane at a
+floor of 0, and a floor above 0 without a plane (`InvalidArgument`), before
+anything is recorded.
+
+**Level 0 is never integrated.** The owner (2026-11-02): "when handling
+scene dynamics, we also need to provide zero out the confidence mask to
+invalidated person is not intergrated". This is a contract on producers:
+one that invalidates a sample, such as one it masks as a moving person,
+writes level 0 there, and every floor drops it, whatever the depth holds.
+The gate drops the depth only. No producer masks people yet; one that does
+writes 0 in its plane, with no change here. The producer, which knows its
+levels, sets the floor; phone depth sets 2, high only. A plane at a floor
+of 0 is refused rather than read as no plane: a receiver that forgot the
+floor would otherwise fuse every sample its producer invalidated, with no
+error (this PR's review).
+
+**Why this form.**
+- **The wire is raw.** The stream's depth record is u16 millimetres plus
+  the u8 plane, as ARKit hands them over (owner, 2026-11-02: "yeah u16 mm,
+  and u8 confidence is good"), so the receiver hands both planes to prep as
+  they arrived and the gate, like the units, stays on the GPU.
+- **Per raw sample, first.** A low-confidence sample is a hole the sensor
+  left, not a value to blend: gated after the mix, a block holding it and
+  its kept neighbours would still be mixed (they lie within the mix's 4 cm),
+  and the filter would count it.
+- **Nothing for the rig.** A Femto or stereo frame has no plane: its slot,
+  binding and copy are as before, and the one uniform branch is never taken,
+  so its depth is bit-identical.
+- **Host only.** The plane arrives from the wire beside host depth; no GPU
+  stage writes one, so device depth with a plane is refused rather than
+  given a second binding.
+
+**Tests.** `sensor_gpu_frame_prep_confidence`, on every GPU leg: through a
+pinhole, a sample kept exactly where its level reaches the floor and 0
+elsewhere, at ARKit's levels and floors and at every floor from 1 to 255
+over levels 0 to 255, a level-0 sample kept at none; through a lens, a gated
+frame bit for bit the same frame with its gated samples zeroed on the host,
+with the filter off, and on beside a depth offset and colour; a frame without
+a plane and with one all at the floor alike, bit for bit; the slot's colour
+after the plane at depth and plane sizes that end part-way through a word;
+gated and ungated frames in one set, recorded or prepared, each as alone;
+and the refusals (a plane beside device depth, a plane at a floor of 0, a
+floor without a plane), alone or in a set, with nothing recorded, submitted
+or timed. The other prep suites are unchanged.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer (and synchronization validation for the new
+test): the whole suite passes, 49 tests. Planted bugs, each failing the new
+test: the gate on the mixed value, by the nearest raw pixel's level (7,255
+of 19,200 pixels off through the lens); `<=` for `<` (the floor's own level
+dropped: 1,008 off at floor 1); host colour placed after the depth
+alone, over the plane (the slot case: 1,033 depth pixels off at 63 x 47,
+while the colour itself still matches); and the floor-0 refusal dropped
+(the refusal case: the plane at a floor of 0 is taken). A depth binding
+not grown over the plane passes on MoltenVK, which reads past a binding,
+but fails the gate case on the RTX 5090 and on lavapipe, which read 0
+there (2,016 of 3,072 pixels off at floor 1), so the Linux legs catch it;
+under GPU-assisted validation on the 5090 the layer also names the read
+(`VUID-vkCmdDispatch-storageBuffers-06936`), and the test as committed
+runs clean there.
+
+**On the devices** (Release, a bench built against this commit and against
+main). The lab RTX 5090: the lab's take1, 300 sets of four Femto Mega
+cameras, its recorded 640 x 576 depth fed as raw depth through each
+camera's factory lens and depth offset, beside packed colour at a quarter of
+its colour camera, prepared as the rig does (`prepare_batch`, the outlier
+filter on): every camera's depth and colour bytes, 1,193 frames, are the
+same on main and on this commit, run twice each. The set's device time,
+interleaved main, this commit, main, this commit: p50 0.568 / 0.575 /
+0.565 / 0.573 ms, p95 1.963 / 1.958 / 1.961 / 1.960 ms; with a plane at
+floor 2 on every camera, 0.651 / 2.218 ms. An idle RTX 4090 (synthetic,
+256 x 192, one camera, 300 prepares each, interleaved): device p50 / p95
+0.0208 / 0.0211 ms on main, 0.0208 / 0.0212 ms here without a plane, and
+0.0259-0.0284 / 0.0287 ms with a plane at floor 2, a plane's cost of 5-8
+microseconds. With the floor-0 refusal, rechecked there, interleaved twice:
+device p50 0.0208 ms on main, 0.0208-0.0209 ms without a plane and
+0.0283-0.0284 ms with one; host p50 0.096-0.099, 0.090-0.093 and
+0.099-0.101 ms.
+
+### 2026-11-02 — A tracked sensor's world is registered into an array's for one session's world epoch, by one rigid transform in a file of its own (`camera/tracked_registration.hpp`); the array file's world block and transforms are read and written in one place that both files share.
+
+**The rule.** `camera/tracked_registration.hpp` (`sensor_camera`) is the
+file a tracked sensor's registration lives in:
+`"volumetric_kit.tracked_registration"`, version 1. `TrackedRegistration`
+holds the sensor's id, the capture session's 16-byte id and the world
+epoch it holds for, the array's world it registers into (the array file's
+world block: one sensor or one tag, never neither or both), the rigid
+`tracking_to_world` in the array file's `depth_to_color` form, and the
+tag fit as its solver states it: the RMS reprojection error, the stills it
+used (at least 1) and the tag's mean edge as they placed it. A frame
+posed `cam_to_tracking`, in this package's camera convention (+Z forward,
++Y down; ARKit's poses through `cv_from_gl_camera` first), sits at
+`tracking_to_world * cam_to_tracking`. The
+session is written as 32 hex digits, byte 0 first, lowercase, and read in
+either case; an all-zero session, which a session uses for none, is
+refused. It is read, checked and written as the array file is: the same
+validate, parse, read, format and write, numbers that read back to the
+same double, unknown keys ignored, a later version refused. The array
+file's world block, transforms, and the JSON numbers, objects and text
+under them move out of `array_calibration.cpp` into the internal
+`calibration_json.{hpp,cpp}`, which both files call, with the check that
+a world is one sensor or one tag (`check_world_kind`; only the array file
+allows neither); its refusals name no file, and each file's public
+functions prefix theirs with its name.
+
+**Why.**
+- **A file of its own.** The array file holds an array's calibration,
+  which outlives every session. A tracked sensor starts its world afresh
+  each session and moves it at each reset, so its registration holds for
+  one session's epoch alone; in the array file it would go stale with the
+  first restart and change the array file's version for a field most
+  arrays never have.
+- **One rigid transform.** The tracking world is metric, so the
+  registration is rigid; a scale error in the tracking shows in `edge_m`
+  against the tag's `size_m`, where the solver and the reader can judge
+  it, rather than hidden in a similarity.
+- **The session, the epoch and the world, written down.** A reader refuses
+  frames of another session or epoch, and the registration for an array of
+  another world, so a registration is never applied to poses it was not
+  solved for. Each of the three is what the reader compares, so each is in
+  the file.
+- **One reader and one writer per block.** The registration names its
+  world with the array file's block and writes its transform in the array
+  file's form, so both files call the same code for them; a copy would
+  drift. The array file reads, refuses and writes as before, every message
+  the same.
+
+**Not here.** The solve (calib's `register_tracked`) and the readers (a
+tracked source, which compares the session and the epoch with each
+frame's) land with their own PRs. No `WorldFrame` equality: only the
+mobile lane compares an array's world with a registration's, so it adds
+one with its first caller.
+
+**Validation.** Apple M5 Max, Release with warnings as errors: the whole
+suite passes (49 tests), and the camera-only build's 8, its consumer
+including the new header. The array file's refusal messages are byte for
+byte those of `main`'s build, and its suite now requires each to start
+with the file's name. Planted bugs, each failing
+`sensor_camera_tracked_registration`: the writer writing
+`world_to_tracking` (the golden writer's direction), the session's digits
+read nibble-swapped and its bytes reversed (the golden session), an
+all-zero session accepted (its refusal), a byte's high digit read without
+its hex check (a non-hex high digit's refusal), and a world of neither
+kind accepted (its refusal). The shared world check accepting a tag's
+negative id fails both files' suites, and accepting both kinds fails each
+suite for its own file. The array file's parse refusals without its name
+fail `sensor_camera_array_calibration`.
+
+### 2026-11-02 — Every RGB-D driver keeps one frame contract (same capture, whole frames, loss read off the sequence), checked by `rgbd_breach` in every driver's fake; the colour camera derives from registered depth, and test depth carries the picture's index band.
+
+*Amended 2026-11-03 (the owner's call, below under "0 is no time"):* the
+stereo contract (`tests/stereo_contract.hpp`) takes a time of 0 as none
+too, as `StereoFrame::timestamp_ns` is `RgbdFrame::timestamp_ns`: a
+pair's sequence is still checked, and its time, where it has one, on the
+last one reported. The rule is `order_breach`'s own now, the time's
+checked only where both times are non-zero, so `RgbdContract` and the
+stereo contract each pass it the last non-zero time and keep no copy of
+it. A pair that goes back in time past a 0 still breaks it. Planted bugs,
+each failing its test: `order_breach` counting a 0 as a time again
+(`sensor_rgbd_contract`, `sensor_stereo_sensor`), and the stereo contract
+keeping a 0 as the last time, keeping the first time as the last for
+good, or skipping the sequence of a pair with no time
+(`sensor_stereo_sensor`).
+
+**The rule.** `IRgbdSensor`'s doc states the frame contract every driver
+keeps: a frame's colour is the picture of the capture its depth is from; a
+sensor whose `SensorInfo` names a depth camera hands out a frame only with
+depth, and one that names a colour camera only with its own picture (one
+that names none, no colour), and a frame whose picture is lost or fails
+to decode is dropped and counted in `SensorStats::failed`; a frame's
+cameras are the sizes `SensorInfo` names, its picture its colour camera's;
+a gap in `RgbdFrame::sequence` is a frame lost after the sensor numbered
+it, and frames a rate gate never chose leave no gap. Within one start,
+sequences increase, and so do the timestamps a sensor reports (non-zero:
+0 is none), a confidence plane comes beside host depth at a floor of 1 or
+more and a floor only with one (the confidence plane entry above, as
+`GpuFramePrep` takes it), and the counters keep `SensorStats`' rule.
+`testing/rgbd_contract.hpp` checks it on what a source handed out:
+`RgbdContract` frame by frame, one checker a start, `rgbd_breach` over a
+vector, and the rules they share with the stereo contract,
+`sequence_breach`, `order_breach` and `stats_breach`.
+`color_from_registered_depth` (`camera_conventions.hpp`) derives the
+colour camera from the depth camera it is registered to, a
+`camera::CameraModel` in and out. `testing/rgbd_pattern.hpp` makes test
+depth, u16 millimetres and a confidence plane, that carries the test
+picture's index band, whose layout moves to the standard-library-only
+`testing/index_band.hpp`.
+
+**Why.**
+- **One contract for every source.** A receiver of a phone's stream, a
+  rig's frames and a recording's must each know which picture belongs to
+  which depth and when a frame went missing. Stated once, in the
+  interface, and checked by one checker, each driver proves it rather than
+  a test of its own (the same robustness rule for every driver).
+- **Incremental.** A long soak (an hour is 36,000 frames at 10 Hz) cannot
+  keep its frames: each holds its decoder's picture. `RgbdContract` keeps
+  only counts and the last frame's place; `rgbd_breach` is the class over
+  a vector, as driver tests use it.
+- **0 is no time.** `RgbdFrame::timestamp_ns` is 0 when a sensor reports
+  none: recon's Replica source sets none, and the Orbbec driver on the
+  host clock hands out 0 until it has one. So the checker orders the times
+  a sensor reports, each against the last non-zero one, and the sequence
+  alone where a frame has none. The stereo contract counts every time, 0
+  included, as before; whether it skips a 0 too is the owner's call (it
+  skips it since 2026-11-03, amended above).
+- **The plane as prep takes it.** A tracked source (the iPad's pattern
+  source) hands out a confidence plane, which `GpuFramePrep` refuses beside
+  device depth or at a floor of 0, as it refuses a floor without one; the
+  checker names such a frame where the source hands it out.
+- **A stand-in for each camera's mailbox.** The Orbbec camera stub stands
+  in for `CameraStream`'s mailbox, take and read, playing a script of
+  captures with counts of its own, so `OrbbecSensor`'s poll, drain (its
+  discards after a refusal) and stats (failed plus lost) run under a
+  dropped frame, a lost one, a skipped one and a refusal mid-poll and
+  mid-drain. The RealSense camera stub stands in for `camera.cpp`, its SDK
+  callback's received count and `stats()` among it, and sends
+  librealsense software-device framesets into the driver's frame queue, so
+  `RealSenseSensor`'s conversion, poll, drain, its delivered and failed
+  counts and the queue's drops run under the same faults.
+  `CameraStream`'s and `camera.cpp`'s own counting (`take`'s drops,
+  `read`'s refusals and skips, the callback's received and failed counts)
+  is checked only on a camera. `StereoDepthSensor`'s test checks its frames
+  beside the stereo contract.
+- **The type its caller holds.** A receiver of tracked depth holds the
+  depth camera's `CameraModel` (`RgbdFrame::depth_camera`) and fills the
+  colour camera's: the colour camera comes back as one, through
+  `depth_from_registered_color`'s own per-axis rescale, rather than a
+  `DepthCameraParams` with a range and pose it does not need.
+- **One band.** The depth carries the picture's index band at the same
+  pixels, so a frame's depth and picture name one index; a source that
+  makes the depth (an iPad's pattern source) builds on the standard
+  library alone. The depth's reader needs every sample of a square's
+  central half to hold its value, which a lossless depth record keeps, so
+  torn depth is no index rather than a wrong one.
+
+**Not here.** Reading the picture's index (`picture_index`) lands with its
+first caller, the stream checks: whether a check reads the band back to
+the host or a GPU kernel means it is the owner's open choice. Until then
+`sensor_testing_support`'s own square-mean reader stays.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer, `VS_TEST_HEVC_BACKEND=videotoolbox` and the
+Orbbec driver: the whole suite passes, 62 tests on 0.25.0's main (60
+before it). The M4 Mac mini, the same
+with the RealSense driver (librealsense 2.59.1): 55 tests pass, the
+RealSense contract test among them. `test_pattern`'s bytes are pinned by
+MD5 to sensor 0.23.0's. Planted bugs, each failing its test:
+`stats_breach` refusing counters that sum to exactly what was received
+(`sensor_rgbd_contract`, `sensor_orbbec_contract`, `sensor_stereo_sensor`);
+the half-pixel term dropped from the shared rescale and from
+`color_from_registered_depth` alone (`sensor_conventions`); `depth_index`
+reading each square's centre sample alone (`sensor_rgbd_pattern`); and
+`OrbbecSensor::drain` leaving one pair after a refusal uncounted
+(`sensor_orbbec_contract`); a size match on width or height alone, a
+picture refused only when both differ, a time of 0 ordered as a time,
+a 0 kept as the last time, and a confidence plane taken beside device
+depth or at a floor of 0, or a floor of 1 without one
+(`sensor_rgbd_contract`).
+
+### 2026-11-02 — An RGB-D sensor's frames as bytes are the sensor package's: `sensor_wire` writes the `SensorInfo` once and each `RgbdFrame`'s depth and colour halves a record each, for any sensor; a container carries them unread, the version is in the params, and the decode checks the layout, not the values.
+
+**The rule.** `wire/rgbd_wire.hpp` (`sensor_wire`, on the interface and
+`sensor_video_syntax`, every build) is how any RGB-D sensor's frames
+become bytes for a recording or a live link; the header holds the layout.
+- `encode_sensor` writes a `SensorInfo`, less its id, clock and rate, as a
+  depth track's params; `decode_sensor` reads it back, given those three
+  by the track.
+- `encode_depth` makes a frame's depth half a record: a 392-byte prefix
+  (the depth camera with its lens, `color_to_world`, `depth_to_color`, the
+  units, the range, the noise, whether a confidence plane follows, its
+  floor), then the rows and the plane as the driver handed them out,
+  borrowed, not copied. Every depth record is a key. `decode_depth` returns
+  an `RgbdFrame` whose depth and plane point into the payload and whose
+  `pixels` holds it; the reader sets the time and the sequence from the
+  container's.
+- `encode_color` makes a frame's colour half a 128-byte prefix (the colour
+  camera, the `ColorCodes` its picture's stream states, its exposure)
+  before one coded picture, `ColorCodec::HevcMain8` the only codec;
+  `decode_color` reads it in place. `ColorExposure` and
+  `RgbdFrame::color_exposure` hold a picture's exposure time, ISO and bias
+  as the camera reported them, 0 where it does not.
+- Each track's params begin with the version, 1, which lays out every
+  record of the track. Reserved bytes are written 0 and ignored; a field
+  an old reader may ignore takes reserved bytes or comes after the params'
+  last, and one it must not takes the next version, which the decode
+  refuses, `Unsupported`, before it reads anything else.
+- The decode refuses bytes that are not a record of the sensor it is
+  given: a size, a camera of another size than `SensorInfo` names (the
+  contract's sizes), a flag, role or pose it does not name, a plane at a
+  floor of 0 or a floor without one, an odd payload address. It passes
+  every value as written. The encode refuses a frame that breaks the frame
+  contract where the record states it (the sizes, the plane and its
+  floor), and depth on the device alone, `Unsupported`.
+- Little-endian, each f32 and f64 bit for bit; the target builds only for
+  a little-endian host, and the role and the pose take wire numbers of
+  their own, not the enumerations' order.
+
+**Why.**
+- **The frame itself, for any sensor.** Every source is an `IRgbdSensor`
+  handing out `RgbdFrame`s, so the bytes of one carry any: one writer
+  records any sensor, and one reader replays any recording or link as an
+  `IRgbdSensor`, where a camera-specific record would need a reader of its
+  own per sensor. The bytes live beside `RgbdFrame`, here; grid's `.vrst`
+  session carries them as bytes, since neither package may include the
+  other, and the writer and the reader live above both.
+- **The depth raw.** No delta and no compression: what fusion reads is
+  what the driver handed out, bit for bit, and neither side copies a
+  sample (the payload goes out in three runs: prefix, rows, plane).
+- **Per record, not per track.** `RgbdFrame` carries its cameras, units,
+  range and noise per frame, and a tracked sensor refines its cameras per
+  frame; a per-track copy would need a rule for frames that differ from
+  it. The prefix is 392 of a record's 147,848 bytes at 256 x 192 with a
+  plane.
+- **The colour's codes on the record.** A JPEG or a camera's untagged
+  H.265 (the Femto Mega's) cannot state its colour, so the record does. An
+  encoder writes the same codes into its VUI, and a reader drops a frame
+  whose decoded description differs from its record's, so the two cannot
+  drift silently. JPEG becomes codec 2 when a writer records one; none
+  does now.
+- **The layout, not the values.** A recording holds what the driver said.
+  Each value's user checks it already (`GpuFramePrep` the units, range,
+  cameras and poses; a consumer that needs a noise model the noise), so a
+  second check here could only disagree with theirs.
+- **No field is a tracked sensor's alone in version 1** (the owner,
+  2026-11-02). Every record carries `color_to_world`, a tracked sensor's
+  own estimate. There is no tracking state, since a tracked source
+  withholds frames it did not track normally, and no world epoch, since
+  one open is one world, epoch 0; each comes with its first producer, as
+  an `RgbdFrame` field and the next version, because an old reader must
+  not mix two worlds. No log of a tracker's map steps travels either: no
+  `RgbdFrame` field holds one.
+- **The rows at an even address.** The prefix is a multiple of 8, so a
+  payload at an even address, as any allocation is, puts the rows where a
+  u16 read is aligned.
+
+**Not here.** The container's two track kinds and its third payload run
+(grid), the writer and the reader (their PRs, above both packages), and a
+mask: a later producer writes level 0 in its copy of the plane, with no
+wire change.
+
+**The next version.** `kVersion` is both params' version, and
+`decode_depth` and `decode_color` take none: they read version 1's records
+alone. The first version to change a record's layout adds a version
+argument to that record's decode, an API change 0.x allows, so a library
+that writes it still reads version 1 recordings.
+
+**Validation.** Apple M5 Max, Release with warnings as errors: the whole
+suite passes, 53 tests, and the iOS build check links `sensor_wire` with
+the other three targets (11 sources). `sensor_wire_rgbd` checks against
+goldens built from the layout by hand, never by the library: a Femto-like
+and an ARKit-like sensor (every double bit for bit, -0.0, a subnormal and
+all 52 fraction bits among them; every truncation, an unknown flag, role
+3, pose 2 and version 2 refused); depth records at 256 x 192 with a
+plane, 640 x 576 without, and 1 x 1 and 3 x 5, whose payloads end at an
+odd size (the encode's runs are the frame's own pointers, the decoded
+frame's at `payload + 392` and `+ 392 + 2wh`, holding the payload); each
+refusal named, a depth camera whose record's bytes pass a size_t among
+them; reserved bytes of all ones ignored in all three layouts; prep's
+refusals round-trip as written; colour records and params, codes of 255
+and siting 5 accepted; pattern depth's records keeping the frame contract
+and their index; and a host allocation failure as `OutOfMemory`. Planted
+bugs, each failing it: the plane decoded at `392 + wh`, transforms written
+row-major, the size check `<` where it is `!=`, the size_t check removed,
+a decode refusing non-zero reserved bytes (each layout), a siting or code
+bound one off (decode siting, encode siting, encode codes), and the unit
+dropped on decode.
+
+### 2026-11-02 — NVIDIA's decoded pictures hand over on the GPU: each carries the value of a timeline CUDA signals after its copy (`YuvImage::ready`), every reader waits for it on the device, and FFmpeg's own copy of NVDEC's output stays (amends the 2026-10-06 device-only decoder and 2026-10-26 plane-image entries).
+
+**The rule.** `YuvImage` gains `ready` and `ready_value`: the timeline value
+a writer that did not wait for its work sets once the picture is written.
+NVIDIA's decoders set it. Each makes a timeline with
+`core::create_exported_timeline` (core 0.41.0, on a device that
+`exports_semaphores`; elsewhere `create` is `Unsupported`), imports it into
+its CUDA context once (internal `cuda_timeline.cpp`), and after each
+picture's copy (NVDEC) or decode (nvJPEG) queues the next value's signal on
+its stream (`cuSignalExternalSemaphoresAsync`) in place of the stream
+synchronize or the event wait, then hands the picture out. A reader's
+submission waits for the value: `GpuFramePrep::prepare` and
+`prepare_batch`, `PictureReadback`, `LumaPass` and `StereoRectifier` each
+pass every picture's value among their `submit_async` waits, one a
+timeline at its highest value (`frame/ready_points.hpp`'s
+`add_ready_point`), and refuse a timeline made on another device before
+they record anything. A caller of `GpuFramePrep::record` passes
+`ready_points(frame)`, one of `record_set` or `SensorArray::record_process`
+`ready_points(frames)` (`set.frames`), and a reader of its own, which
+samples or copies a picture in a batch it submits, gathers its waits with
+`add_ready_point`. VideoToolbox's pictures, a camera's and host planes carry
+none, nor does `DeviceDepth`.
+
+**The crossing.** On the decoder's stream: NVDEC's post-processing into its
+output surface, FFmpeg's copy into a pool frame, the copy into the plane
+images, the signal. The reader takes the images or buffer over from
+`VK_QUEUE_FAMILY_EXTERNAL` as before, its submission waiting at every stage.
+The signal is queued before the picture is handed out, so before any batch
+that waits for it is submitted, as the core asks. A ring slot no picture
+holds is reused at once, its next write queued behind its last on the one
+stream; one that does not fit is let go only once its last write's value is
+reached, since a holder may drop a picture CUDA has not written yet. After a
+CUDA failure the decoder synchronizes its stream, then sets the last value
+it handed out from the host if the counter is below it, so no batch waits
+for good; its destructor does the same before CUDA's import goes. The host
+sets nothing where the stream could not be waited for, as the core's
+`ExportedTimeline` asks. *Amended 2026-11-03 (the fault entry,
+below):* NVDEC's decoder also settles before every error `send` or
+`receive` returns but `InvalidArgument`, and its wait for a kept picture
+sees a failed stream. nvJPEG's next decode waits on the host for the last
+one's work (an event, long done at a camera's rate) before it rewrites
+nvJPEG's pinned, device and state buffers.
+
+**FFmpeg's copy stays.** `AV_HWACCEL_FLAG_UNSAFE_OUTPUT` (FFmpeg 6.1 has
+it, the floor) would hand out NVDEC's mapped output surface with no
+`av_frame_make_writable` copy into a pool frame, so a picture would take one
+device copy, not two; but NVDEC then has as many output surfaces as decode
+surfaces (FFmpeg's pool: the SPS's DPB + 2 + 3) instead of one. The cost
+follows the DPB the stream declares (`sps_max_dec_pic_buffering_minus1` +
+1), not whether it reorders. The bar was about 100 MB a 4K decoder, and
+NVENC's default low-delay stream declares a DPB of 5 with no reordering (4
+reference pictures): the flag adds 98-112 MiB (103-117 MB) there, past the
+bar, so the decoder sets no flag and FFmpeg's copy stays. The decoder still keeps
+each frame FFmpeg hands out, up to three, until its picture's value is
+reached, and lets it go then, whoever holds the picture; with three kept the
+next `receive` waits on the host for the oldest, so CUDA runs at most three
+pictures behind. VRAM per decoder, NVIDIA's per-process accounting, the
+GPU's primary context in the baseline, synthetic `testsrc2` clips:
+
+| MiB a decoder, lab RTX 5090, FFmpeg 8 | sensor 0.26.0 | 0.28.0 | with the flag | the flag adds |
+| --- | --- | --- | --- | --- |
+| 2560x1440, P-only, DPB 3 | 96 | 102 | 138 | 36 |
+| 3840x2160, P-only, DPB 3 | 190 | 204 | 288 | 84 |
+| 3840x2160, two reordered B-pictures, DPB 5 | 214 | 228 | 340 | 112 |
+| 4 x 3840x2160, P-only, DPB 3, each | 186.5 | 200.5 | 284.5 | 84 |
+
+| MiB a decoder, a shared RTX 4090, FFmpeg 6.1, two rounds | sensor 0.26.0 | 0.28.0 | with the flag | the flag adds |
+| --- | --- | --- | --- | --- |
+| 3840x2160, P-only, DPB 3 | 188 | 202-216 | 286 | 70-84 |
+| 3840x2160, P-only, DPB 5 (NVENC's default) | 212 | 226-240 | 338 | 98-112 |
+
+0.28.0's kept frames hold one or two more pool frames than 0.26.0: 14 MiB at
+4K on the lab, 14 to 28 on the RTX 4090. The flag
+could return for streams whose coded size times DPB is small (FFmpeg reads
+`hwaccel_flags` as NVDEC starts, so the decoder's `get_format` could set it
+per stream), or for sources that write a DPB of 2; neither is here.
+
+**Why.** The owner's pipelined rule (the efficiency review, F3): between
+decode and fusion the host waited on the copies. The cost was small.
+The `receive()` call, decoding back to back, the lab RTX 5090 quiet, two
+rounds, p50 / p95: 0.023-0.024 / 0.029-0.031 ms at 1440p before,
+0.005-0.010 / 0.012-0.021 ms after; 0.051-0.054 / 0.055 ms at 4K before,
+0.006-0.011 / 0.031-0.032 ms after; four 4K decoders 0.054 / 0.057-0.064 ms
+before, 0.006 / 0.017-0.024 ms after. FFmpeg maps NVDEC's picture and makes
+its copy inside `send()`, which these times leave out, and which this
+change leaves as it was.
+
+**Not here.** Depth from a GPU stage (`DeviceDepth`) carries no value, so
+its writer still finishes first; FFS's crossing is the timeline's second
+caller, when it comes, and `CudaTimeline` stays internal until then.
+
+**Validation.** `sensor_video_handover` (NVIDIA legs) compiles the decoders'
+sources over a CUDA table that holds their stream behind a flag
+(`cuStreamWaitValue32`): the picture comes out with its value unset, and a
+batch recorded with `ready_points`, still waiting after 50 ms, `prepare`,
+`PictureReadback` and `LumaPass`, each started before the flag is raised,
+read what the picture reads unheld, to the bit. One hold before picture 0's
+copy holds the stream: pictures 0 to 2 come out at once and the fourth only
+after the raise, all four reading as unheld. A decoder destroyed while its
+stream is held waits for it, and the picture it handed out reads as unheld,
+its value reached. nvJPEG's picture likewise on a GPU with the engine (the
+lab RTX 5090), with its bytes overwritten once `decode` returns.
+`sensor_video_hevc` holds 72 pictures at once, each read back to its
+frame's pattern, with values that rise. `sensor_gpu_frame_prep` checks
+`ready_points(frames)` and `add_ready_point` (one a timeline, its highest
+value) and a `record_set` batch submitted with them waiting until the host
+sets both timelines. A device that exports memory and not semaphores is
+refused by both decoders. Planted bugs, each failing its test: prepare, the
+readback and the luma pass each skipping the wait, `ready_points` empty, the
+copy waited on the host and the full ring not waited for
+(`sensor_video_handover`); a set's `ready_points` empty
+(`sensor_gpu_frame_prep`). The suite on a shared RTX 4090 (FFmpeg 6.1), the
+lab RTX 5090 (FFmpeg 8, the validation layer 1.4.341 with synchronization
+validation) and the M5 Max (VideoToolbox, the Orbbec driver, validation);
+recon's suite on this checkout on the Mac.
+
+### 2026-11-02 — The encoder hands out its next picture on the device: `target(batch)` gives a picture of the session's own as storage images the caller's kernel writes in its batch, and `send` hands over the value that batch sets, which the coding thread waits for on the host (amends the 2026-11-02 encoder entry).
+
+**The rule.** With `Options::device`, a device with
+`hevc_encoder_device_requirements()` (`device_requirements()` plus
+`shaderStorageImageExtendedFormats`, which `create` checks with
+`Device::check_enabled`), `HevcEncoder::target(batch)` hands out the next
+picture as a `YuvImage`: on VideoToolbox a picture of the session's pool,
+its planes R8 and R8G8 images over the IOSurface in `GENERAL`, with
+`STORAGE`, `SAMPLED`, `TRANSFER_SRC` and `TRANSFER_DST` usage
+(`PixelBufferImporter::Access::Write`), described by the session's colour:
+the matrix's weights, the range and the siting, which the VUI states. It
+records into the batch what the planes need, which on VideoToolbox is
+nothing: they stay on the device's family, Metal sharing the surface with
+VideoToolbox. The caller writes them in that batch, submits it, and
+`send(key, pts, written)` hands over the value it sets and returns at once;
+the coding thread waits for that value on the host, then codes. A second
+`target` before `send` gives up the first; a refused send (no key while one
+is owed, two in flight) keeps the target for the send that corrects it;
+`send_pixel_buffer` is refused while a target is taken. `Options::allocator`
+is for a backend with target buffers of its own (NVENC, next); VideoToolbox
+needs none. A session with no device has no target and codes pixel buffers,
+as before.
+
+**Why the host waits, on the coding thread.** VideoToolbox reads the
+surface when `VTCompressionSessionEncodeFrame` is called, so something must
+know the write is done: the coding thread, which holds a thread for the
+encode anyway, waits for the value (`vkWaitSemaphores`, Vulkan's own call,
+so it allocates nothing but a failure's message) and neither the producer
+nor the device waits. At 1920x1440 with the device writing the target,
+send to access unit is 5.99 ms p50 (5.35 with pixel buffers), and the
+device's write, submission and signal included, is 0.57 ms of it; at
+3840x2160 15.54 ms (14.71), the write 0.78 ms. The wait itself adds under
+0.1 ms. The producer's time a picture (target, the kernel's record, the
+submit, the send) is 0.022 ms p50 at 1920x1440 and 0.032 ms at 3840x2160;
+with two in flight the throughput is the pixel buffers' (186 and 67.6
+pictures a second).
+
+**Why the images stay with the encoder.** A batch may still be writing a
+target when its session is lost: the coding thread fails a picture sent
+before a loss uncoded, and a reopen used to drop the importer, and with it
+the images, at once. The validation layer named it (an image view destroyed
+while a command buffer that wrote it was in use). So the new session takes
+over the lost one's importer, whose surface cache keeps each picture's
+images until 64 targets have come with none on its surface; the coding
+thread waits for each sent target's writer whatever comes of the picture,
+and the destructor waits for them all with no limit, as a pending batch
+does. The caller destroys the encoder only once the batches of the targets
+it gave up have completed.
+
+**Why `create` readies the targets' surfaces.** The importer readies a
+surface new to it (`UNDEFINED` to `GENERAL`) with a single-time submit it
+waits for on the host, and MoltenVK runs the device's one queue in order,
+so that wait runs behind every batch the caller submitted before. A target
+on such a surface held the producer for as long, and the encoder's lock
+with it (receive and the coding thread), and a batch waiting for a value
+the same thread sets only after `target` returns made it endless: Metal's
+GPU timeout lost the device after 5 s. A session cycles through a few
+surfaces, so `create` imports them before any batch of the caller's exists.
+The session replaces its pool as it codes its first picture (it picks the
+level then: with `ProfileLevel` set to `HEVC_Main_AutoLevel` the first
+encode hands out a new pool, without it the old one stays), so surfaces
+taken before that are never handed out again; `create` therefore codes
+one throwaway picture first, sited as the stream (VideoToolbox takes the
+siting from the first picture), and then imports `kInFlight + 2` pictures
+of the pool it keeps. At 1920x1440 and 3840x2160 every target of a fresh
+encoder then returns in 0.007-0.011 ms with one or two in flight, a target
+given up each time, or the images held past `send` (2 to 4 surfaces), where
+the first three were 0.4-0.8 ms before; `create` with a device takes 24 ms
+at 1920x1440 and 33 ms at 3840x2160 (1.4 ms without). A reopen's surfaces
+come as they are handed out, as do any more the pool makes: such a target
+waits behind the caller's earlier batches, now without the encoder's lock
+(299.5 ms behind a batch held 300 ms). Recording the transition into the
+caller's batch would need no host wait at all, but `CommandBatch::acquire`
+refuses a layout change with nothing to transfer: a core call first. A
+session whose pool is gone (VideoToolbox's
+`GetPixelBufferPool` is null once the session is invalidated, as the system
+reclaims one) fails the target (`IoError`) and is lost, so a producer of
+targets alone opens it again with its next target.
+
+**Why a kernel writes the test picture** (`testing::Nv12Writer`,
+`sensor_video_testing`, one compute kernel recorded into the caller's
+batch). The test pictures' upload into images waited for this, as the
+core's `CommandBatch` has no buffer-to-image copy. A copy added to the core
+would be its own core PR first, and would write the planes through
+`TRANSFER_DST`, which a target's caller does not use; a helper that takes
+no batch (the core's
+`test::write_image`, a blocking single-time submit) cannot be ordered by a
+timeline value, which C13b needs. The kernel stores into the planes as a
+producer's kernel does, so the storage images, the device requirement and
+`Access::Write` are what the tests exercise. `device_picture`, a new
+decoder-like picture through the core's `write_image`, stays as it is.
+
+**Tests.** `hevc_encoder_breach` runs on targets when the case is not
+`pixel_buffers`: C2 (a refused target kept), C6 (the target described by
+the colour its pictures decode with), C9 (a target is NV12 storage images
+of the session's size on the device's family; taken twice, one access unit
+follows; a send with no target refused), C11 (a pixel buffer refused while
+a target is taken; a session with no device hands out none), C12 (moved
+between `target` and `send`), C13 (a third target refused) and C13b (the
+batch waits for a value a helper thread sets 1 s later; `written` is below
+its value when `send` returns, and the access unit comes back only after
+the helper set it). `sensor_video_hevc_encoder` runs it on 512x512,
+1922x1082, 3840x4096 and 1920x1440 at either range, one sited at the
+centre, through targets beside the pixel-buffer cases; codes the pattern
+through targets with one batch held 300 ms behind a host value, decoding to
+the same PSNR as pixel buffers (52.9 dB luma) and each picture's index;
+describes a target by H.273's weights on each matrix of the set, at either
+range and each siting; runs four pictures two in flight, each batch behind
+a host value a helper sets 300 ms after the one before, each target
+returning before the batch before it may run, and the encoder destroyed
+with the last two sent returning only once the last value is set; loses
+the session while a sent target's batch waits, the next target reopening;
+and refuses a device without the storage formats. The test writer's own
+test runs on every leg with a device. `sensor_video_vt_encode_error`
+invalidates the session under targets, as the system reclaims one: the
+next target is `IoError` and loses it, the target taken before kept and
+coded as the key on the reopened session. `sensor_apple_pixel_buffer_importer`:
+written planes read back through the locked IOSurface, byte for byte, the
+bytes past the picture untouched; what written images allocate in Metal;
+a surface let go after 64 pictures. Planted bugs, each failing a test:
+`Access::Write` without `STORAGE`, the surface cache never letting go, the
+target's weights not from the matrix (C6), the coding thread skipping
+the wait for `written` (C13b, and the held picture's index), the
+destructor's drain not waiting for a writer, a reopen with an importer of
+its own, `create` readying no surface or the first pool's, a gone pool not
+losing the session, and a failed second target giving up the first. The suite on
+the M5 Max (Release, validation, both promises) and the threaded tests
+under ThreadSanitizer; the iOS build check links an app's target calls.
+
+### 2026-11-03 — A GPU fault leaves no reader waiting for good: every error NVDEC's decoder returns but `InvalidArgument` comes back with each ready value it handed out set, and its wait for the oldest of three kept pictures sees a failed stream (amends the 2026-11-02 hand-over entry).
+
+**The rule.** A stream that fails after a picture's signal was queued drops
+the signal, so a batch waiting for that value, and every batch behind it on
+its queue, would wait for good. `HevcDecoder` (NVDEC) settles its timeline
+before it returns any error from `send` or `receive` but `InvalidArgument`
+(a caller's mistake, which leaves the stream as it was): FFmpeg's decode,
+allocation and end-of-stream errors, and a refusal, which a failed GPU can
+bring too (NVDEC failing to start at a new SPS). Settling is the 2026-11-02
+entry's: synchronize the stream, which returns once its work has run or
+failed, then set the last value handed out from the host if the counter is
+below it; it ran before only where a picture could not be handed over and
+in the destructors. With three pictures kept, `receive`'s host wait for the
+oldest waits in 10 ms slices and asks the stream between them
+(`cuStreamQuery`): a failed stream returns its error, settled, where the
+wait would never end; a stream found idle with the counter still short a
+slice later returns a Backend error, settled. Each slice that blocks counts
+as one of the device's `host_waits`; `blocked_ns` counts the wait's time
+once. nvJPEG needs neither: its next decode synchronizes
+the last one's event, settling on a failure, and a failed decode queues no
+signal.
+
+**Not covered.** A caller that waits for a picture's value before it calls
+the decoder again (decoding and preparing on one thread) still waits for
+good on a fault after that signal: nothing runs in the decoder to see it.
+Destroying the decoder settles.
+
+**Why.** The HV11 review's second finding, approved by the owner on
+2026-11-03: before 0.28.0 such a fault came back from `receive` as an
+error; since, it could leave readers waiting on the device for good.
+
+**Validation.** `sensor_video_handover`'s CUDA table drops the next ready
+values' signals and can report a faulted stream from `cuStreamQuery`. With
+picture 0's signal dropped, the refused clip's 4:0:0 grey sent after picture
+0 is taken (`send` reports it) or before (FFmpeg holds it until then and
+`receive` reports it) comes back `Unsupported` with the value set, and the
+picture reads as unheld; so does a slice naming a picture parameter set
+never sent, `IoError`, where FFmpeg reports it (6.1; FFmpeg 8 skips the
+NAL unit, and those cases skip). With pictures 0 to 2's signals dropped and
+the stream reporting a fault, or running dry, the next `receive` returns a
+Backend error with the three values set (a watchdog sets them after 5 s, so
+a decoder that waits for good fails rather than hangs). The validation
+layer 1.3.275 (Ubuntu 24.04's) reports each settle's host signal after a
+read of the exported timeline as not below a signal still pending
+(VUID-VkSemaphoreSignalInfo-value-03259), though none is, as the core's
+`vulkan_external_memory_test` records; 1.4.341 reports nothing. Under an
+older layer those tests run after the rest, in a run of their own without
+validation. The table cannot fail FFmpeg's own CUDA and NVDEC calls, made
+through its own libcuda handle, so a real fault's `AVERROR_EXTERNAL` is
+stood in for by those reaching the same returns. A real fault, a kernel's
+store to address 16 (`CUDA_ERROR_ILLEGAL_ADDRESS`), was checked by hand in
+a process of its own, since it ends the primary context: one picture held,
+the next `send` returned FFmpeg's error with the value set; three held,
+`receive` returned CUDA's after 10 ms with the three set. Planted bugs,
+each failing it (a shared RTX 4090, FFmpeg 6.1): the
+settle left out of every error, of `send`'s and of `receive`'s decode
+error, and of `receive`'s refusal; the wait not sliced. The suite on that
+RTX 4090, on the lab RTX 5090 (FFmpeg 8, the validation layer, the handover
+and decoder tests also under synchronization validation) and on the M5 Max
+(VideoToolbox, unchanged; validation).
+
+### 2026-11-03 — The encoder codes on NVENC too: `kInFlight + 1` exported buffers a session as its targets, which NVENC reads through CUDA with no copy, every QP set from the options, and strips from 4096 rows (amends the 2026-11-02 encoder entries).
+
+**The rule.** A Linux build with `VS_WITH_FFMPEG` and `VS_WITH_CUDA` codes
+on NVENC through FFmpeg's `hevc_nvenc` (`nvenc_session.cpp`), behind the
+same API, rules and coding thread as VideoToolbox.
+- **Targets only.** `create` needs `Options::device` and
+  `Options::allocator` (`InvalidArgument` without), a device that exports
+  memory, on a GPU CUDA reaches (`Unsupported` otherwise).
+- **Targets are `kInFlight + 1` exported buffers**, made at `create`, each
+  mapped into CUDA once; FFmpeg registers each with NVENC once, by pointer,
+  and NVENC reads it with no copy. NV12 rows: the luma's from 0, the chroma's
+  after them, at a stride of the width rounded up to the GPU's texture
+  alignment, as FFmpeg pads its own CUDA frames. `target` records into the
+  batch the buffer's crossing from outside Vulkan before its commands and
+  back after them. The free buffer handed out longest ago goes next. A lost
+  session's buffers pass to the session that opens again.
+- **One configuration**: preset `p<effort>`, `tune ll`, `rc constqp` with
+  `init_qpP`, `init_qpB` and `init_qpI` all set from the options, forced
+  IDRs, no scene cut, no look-ahead, `delay` 0, zero latency, no multipass,
+  no B-frames, an endless GOP. From 4096 rows, `split_encode_mode` 3; below,
+  the driver's choice. An FFmpeg without that option refuses a picture of
+  4096 rows or more in `create`, naming FFmpeg 7.1 and nv-codec-headers 12.1.
+- **Colour and QP.** The VUI's codes go in as FFmpeg numbers them, H.273's;
+  FFmpeg writes no siting, so sitings 1 to 5 are refused. QP 0 to 51.
+- **FFmpeg's CUDA device** is opened by one helper (`FfmpegCudaDevice`) for
+  NVDEC and NVENC alike. `HevcDecoder::Options::configure_ffmpeg_logging` is
+  removed: the first coder that opens on NVIDIA sets FFmpeg's log level to
+  ERROR, once a process.
+- **The rules run on NVENC.** `hevc_encoder_breach` is every backend's; its
+  pixel-buffer parts (C11) stay Apple's. C9 checks NVENC's buffer target and
+  that a target given up comes back two targets later at the soonest; C10
+  pins NVENC's settings line. `Rules::Sequence` runs what the sequence says
+  on one key (C3-C5, C10), for the colour and effort sweeps. `Nv12Writer`
+  writes a buffer's rows.
+
+**Why.**
+- **3 buffers, not the 2 planned.** `target` keeps the target taken before
+  until the new one is handed out, so a target taken while one picture
+  codes and one target is held needs a third. Handing out the oldest free
+  one makes a target given up the last to come back.
+- **Every QP set.** A QP left unset is FFmpeg's to choose, and the
+  session's QPs are the caller's.
+- **Strips by rows, not by GPU.** FFmpeg reports no engine count, and 3
+  strips equal `auto` on a GPU of 2 engines, so the rule needs no GPU name.
+- **No version floor below 4096 rows.** FFmpeg 6.1 (24.04's) keeps every
+  rule there, so `create` checks only the option the strips need.
+- **No GPU-side wait for NVENC's input.** NVENC holds the coding thread
+  through the encode anyway; a device-side wait would save the thread's wake
+  only.
+- **The test's PSNR floor is 40 dB on NVENC.** NVENC codes the pattern's
+  sharp chroma edges at 43-47 dB at QP 22 (RTX 4090 and 5090); a picture read
+  at the wrong stride fails the pattern's exact squares first.
+
+**Validation.** `sensor_video_hevc_encoder` on NVENC: every rule through
+targets, the stream's at both QP ends (0 and 51) and a 4n+2 width, the
+sequence's on every code of the set and at efforts 1 and 7, the quality and
+writer cases, devices refused, strips at 4094 and 4096 rows. A shared RTX
+4090 (FFmpeg 6.1, CUDA 13.4): the full suite, 56 tests, 3.0 s for the
+encoder test on a quiet GPU, the 4096-row picture refused as the option is
+missing. The lab RTX 5090 (FFmpeg 8): the full suite under the validation
+layer, the encoder test under synchronization validation too, the 4096-row
+picture coded in strips. The M5 Max (VideoToolbox): the full suite, 55
+tests. Planted bugs, each failing its test: an unset `init_qpI` and an
+unset `init_qpB` (C5), `forced-idr` not set (C2), strips
+from 4094 rows (the strips case), the oldest-free hand-out dropped (C9), and
+a target described at another stride than NVENC reads (the quality case).

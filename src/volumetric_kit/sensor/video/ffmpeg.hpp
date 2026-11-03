@@ -18,8 +18,8 @@ extern "C" {
 #include <memory>
 #include <string>
 
-#include "frame_color.hpp"
 #include "volumetric_kit/core/base/result.hpp"
+#include "volumetric_kit/sensor/video/color_codes.hpp"
 
 namespace volumetric_kit::sensor::video {
 
@@ -57,5 +57,15 @@ core::Status ffmpeg_alloc_error(const char* who, const std::string& what);
 
 /// @return The colour @p frame declares, as H.273 codes.
 ColorCodes color_codes(const AVFrame& frame) noexcept;
+
+/// @brief @p codes as the colour @p context codes: FFmpeg numbers the
+///        matrix, transfer and primaries as H.273 does, and the siting one
+///        past it.
+void set_color(AVCodecContext& context, const ColorCodes& codes) noexcept;
+
+/// @brief FFmpeg's log level set to ERROR, once a process, by the first
+///        coder that opens on it (NVDEC's or NVENC's): FFmpeg has one
+///        logger, and its warnings at every picture would flood a caller's.
+void quiet_ffmpeg_log() noexcept;
 
 }  // namespace volumetric_kit::sensor::video

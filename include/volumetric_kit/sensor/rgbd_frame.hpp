@@ -48,6 +48,14 @@ struct ColorBitstream {
   std::size_t size = 0;  ///< The count of @ref data; 0 with `Codec::None`.
 };
 
+/// @brief A picture's exposure as the camera reported it for its frame; 0 in
+///        a field it does not report.
+struct ColorExposure {
+  float duration_s = 0.0f;  ///< The exposure time (seconds).
+  float iso = 0.0f;         ///< The sensor's gain, as ISO.
+  float bias_ev = 0.0f;     ///< The auto exposure's own offset (EV).
+};
+
 /// @brief A frame's depth on the device, as a GPU stage wrote it: stereo
 ///        matching that writes its depth straight into a Vulkan buffer, say.
 ///
@@ -69,10 +77,11 @@ struct DeviceDepth {
   /// samples, through the word holding the last one: the buffer's size is at
   /// least @ref offset plus the samples' bytes, rounded up to 4, since the
   /// pass reads whole words. Its writer must have **finished** before the
-  /// frame is prepared, as for `YuvImage::device`, since the pass waits on no
-  /// semaphore. The frame holds it, so its writer cannot reuse it while the
-  /// frame is kept or prepared, and a prepare whose wait fails holds it for
-  /// good, as the device may still read it.
+  /// frame is prepared, a fence waited on or a CUDA stream synchronized:
+  /// unlike a picture (`YuvImage::ready`), depth carries no timeline value
+  /// for the pass to wait on. The frame holds it, so its writer cannot reuse
+  /// it while the frame is kept or prepared, and a prepare whose wait fails
+  /// holds it for good, as the device may still read it.
   std::shared_ptr<const core::Buffer> buffer;
   /// The first sample's byte in @ref buffer, any even one: the pass binds
   /// from below it at the alignment a binding needs, so it need not be
@@ -121,6 +130,21 @@ struct RgbdFrame {
   /// Or the same samples on the device, where a GPU stage left them; set
   /// this or @ref depth, not both.
   DeviceDepth depth_device{};
+  /// Beside host @ref depth: the sensor's confidence in each sample, one byte
+  /// a sample in @ref depth's order, in the producer's own levels (ARKit's:
+  /// 0 low, 1 medium, 2 high). Level 0 is never integrated: a producer that
+  /// invalidates a sample, such as one it masks as a moving person, writes 0
+  /// there, and the floor a plane comes with, 1 or more, drops its depth.
+  /// Null, the default, for none. Held by @ref pixels. Only with host depth
+  /// and a @ref min_confidence of 1 or more: `GpuFramePrep` refuses a plane
+  /// beside @ref depth_device or at a floor of 0.
+  const std::uint8_t* depth_confidence = nullptr;
+  /// Samples whose @ref depth_confidence level is below this are no return
+  /// (0): `GpuFramePrep` drops them on the GPU, per raw sample, before it
+  /// mixes, offsets or filters the depth, as holes the sensor left. The
+  /// producer, which knows its levels, sets it: 1 or more with a plane (a
+  /// phone's depth: 2, high only), 0, the default, without one.
+  std::uint8_t min_confidence = 0;
   float metres_per_unit = 0.001f;    ///< What one depth unit is, in metres.
   camera::CameraModel depth_camera;  ///< The depth camera, lens included.
   /// Nearer samples are dropped (metres). Set it: the pass needs
@@ -150,6 +174,9 @@ struct RgbdFrame {
   /// MJPEG camera's JPEG, byte for byte. Held by @ref pixels. Empty for a
   /// frame decoded from H.265 or taken from a dataset.
   ColorBitstream color_bitstream{};
+  /// The picture's exposure, as the camera reported it; all 0 where the
+  /// driver does not say. A recording carries it (`wire/rgbd_wire.hpp`).
+  ColorExposure color_exposure{};
 
   /// The colour camera's frame to the world's, in this package's camera axes
   /// (+Z forward, +Y down): where the sensor sits, from its calibration or,
@@ -165,8 +192,10 @@ struct RgbdFrame {
   /// reports none.
   std::uint64_t timestamp_ns = 0;
   /// The sensor's own count of its frames: a gap is a lost frame, which a
-  /// timestamp cannot tell from a late one. Like @ref timestamp_ns, it
-  /// counts within one capture session; it may begin again at a restart.
+  /// timestamp cannot tell from a late one. Frames the sensor chose not to
+  /// take, such as a rate gate's, are not counted, so they leave no gap. Like
+  /// @ref timestamp_ns, it counts within one capture session, and it may
+  /// begin again at a restart.
   std::uint64_t sequence = 0;
   /// When the host received the frame, on `std::chrono::system_clock`, in
   /// nanoseconds since its epoch: what a sender's latency counts from. 0 when
@@ -174,9 +203,9 @@ struct RgbdFrame {
   /// polled.
   std::uint64_t arrival_ns = 0;
 
-  /// What @ref depth, `color.host`, @ref color_packed and
-  /// @ref color_bitstream point into, held for as long as the frame is; null
-  /// when they need no owner.
+  /// What @ref depth, @ref depth_confidence, `color.host`, @ref color_packed
+  /// and @ref color_bitstream point into, held for as long as the frame is;
+  /// null when they need no owner.
   std::shared_ptr<const void> pixels;
 
   /// @return `true` if this frame carries depth, on the host or the device.

@@ -3,8 +3,14 @@
 
 #include "volumetric_kit/sensor/video/hevc_syntax.hpp"
 
+#include "hevc_syntax_detail.hpp"
+
 #include <array>
+#include <cstddef>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "volumetric_kit/core/base/check.hpp"
 #include "volumetric_kit/core/base/exception_status.hpp"
@@ -29,10 +35,11 @@ core::Status wrong_type(const char* call, const char* want, const Nal& nal) {
                                         want);
 }
 
-// profile_tier_level(1, max_sub_layers_minus1) (7.3.3).
-void skip_profile_tier_level(BitReader& r,
-                             std::uint32_t max_sub_layers_minus1) {
-  r.skip(96);  // the general profile, tier and level
+// profile_tier_level(1, max_sub_layers_minus1) (7.3.3): general_profile_idc.
+int read_profile_tier_level(BitReader& r, std::uint32_t max_sub_layers_minus1) {
+  r.skip(3);  // general_profile_space, general_tier_flag
+  const int profile_idc = static_cast<int>(r.bits(5));
+  r.skip(88);  // the compatibility, source and constraint flags; the level
   bool profile[8] = {};
   bool level[8] = {};
   for (std::uint32_t i = 0; i < max_sub_layers_minus1; ++i) {
@@ -46,6 +53,7 @@ void skip_profile_tier_level(BitReader& r,
     if (profile[i]) r.skip(88);
     if (level[i]) r.skip(8);
   }
+  return profile_idc;
 }
 
 // scaling_list_data() (7.3.4).
@@ -62,97 +70,6 @@ bool skip_scaling_list_data(BitReader& r) {
     }
   }
   return !r.overrun();
-}
-
-// The delta POCs of one short-term reference picture set, as 7.4.8 derives
-// them: the negative ones nearest first, then the positive ones.
-struct ShortTermSet {
-  int negative = 0;
-  int positive = 0;
-  std::array<std::int32_t, 16> s0{};
-  std::array<std::int32_t, 16> s1{};
-  int count() const noexcept { return negative + positive; }
-};
-
-// st_ref_pic_set(index) in an SPS (7.3.7), its deltas derived (7-61, 7-62)
-// from the sets before it, which a set predicted from another needs.
-bool parse_short_term_set(BitReader& r, std::uint32_t index,
-                          std::vector<ShortTermSet>& sets) {
-  ShortTermSet set;
-  if (index != 0 && r.flag()) {  // inter_ref_pic_set_prediction_flag
-    const bool sign = r.flag();
-    const std::uint32_t abs_delta = r.ue() + 1;
-    if (abs_delta > (1u << 15)) return false;
-    const std::int32_t delta_rps = sign ? -static_cast<std::int32_t>(abs_delta)
-                                        : static_cast<std::int32_t>(abs_delta);
-    const ShortTermSet& ref = sets[index - 1];
-    bool use[17] = {};
-    for (int j = 0; j <= ref.count(); ++j) {
-      const bool used_by_curr = r.flag();
-      use[j] = used_by_curr || r.flag();  // use_delta_flag, 1 if absent
-    }
-    int i = 0;
-    for (int j = ref.positive - 1; j >= 0; --j) {
-      const std::int32_t d = ref.s1[static_cast<std::size_t>(j)] + delta_rps;
-      if (d < 0 && use[ref.negative + j]) {
-        if (i >= 16) return false;
-        set.s0[static_cast<std::size_t>(i++)] = d;
-      }
-    }
-    if (delta_rps < 0 && use[ref.count()]) {
-      if (i >= 16) return false;
-      set.s0[static_cast<std::size_t>(i++)] = delta_rps;
-    }
-    for (int j = 0; j < ref.negative; ++j) {
-      const std::int32_t d = ref.s0[static_cast<std::size_t>(j)] + delta_rps;
-      if (d < 0 && use[j]) {
-        if (i >= 16) return false;
-        set.s0[static_cast<std::size_t>(i++)] = d;
-      }
-    }
-    set.negative = i;
-    i = 0;
-    for (int j = ref.negative - 1; j >= 0; --j) {
-      const std::int32_t d = ref.s0[static_cast<std::size_t>(j)] + delta_rps;
-      if (d > 0 && use[j]) {
-        if (i >= 16) return false;
-        set.s1[static_cast<std::size_t>(i++)] = d;
-      }
-    }
-    if (delta_rps > 0 && use[ref.count()]) {
-      if (i >= 16) return false;
-      set.s1[static_cast<std::size_t>(i++)] = delta_rps;
-    }
-    for (int j = 0; j < ref.positive; ++j) {
-      const std::int32_t d = ref.s1[static_cast<std::size_t>(j)] + delta_rps;
-      if (d > 0 && use[ref.negative + j]) {
-        if (i >= 16) return false;
-        set.s1[static_cast<std::size_t>(i++)] = d;
-      }
-    }
-    set.positive = i;
-  } else {
-    const std::uint32_t negative = r.ue();
-    const std::uint32_t positive = r.ue();
-    if (negative > 16 || positive > 16 - negative) return false;
-    set.negative = static_cast<int>(negative);
-    set.positive = static_cast<int>(positive);
-    std::int32_t poc = 0;
-    for (int i = 0; i < set.negative; ++i) {
-      poc -= static_cast<std::int32_t>(r.ue() % (1u << 16)) + 1;
-      set.s0[static_cast<std::size_t>(i)] = poc;
-      r.skip(1);  // used_by_curr_pic_s0_flag
-    }
-    poc = 0;
-    for (int i = 0; i < set.positive; ++i) {
-      poc += static_cast<std::int32_t>(r.ue() % (1u << 16)) + 1;
-      set.s1[static_cast<std::size_t>(i)] = poc;
-      r.skip(1);  // used_by_curr_pic_s1_flag
-    }
-  }
-  if (set.count() > 16 || r.overrun()) return false;
-  sets.push_back(set);
-  return true;
 }
 
 // sub_layer_hrd_parameters() (E.2.3).
@@ -242,6 +159,103 @@ bool parse_vui(BitReader& r, std::uint32_t max_sub_layers_minus1,
 
 }  // namespace
 
+namespace detail {
+
+int ShortTermSet::used() const noexcept {
+  int n = 0;
+  for (int i = 0; i < negative; ++i) n += used0[static_cast<std::size_t>(i)];
+  for (int i = 0; i < positive; ++i) n += used1[static_cast<std::size_t>(i)];
+  return n;
+}
+
+// Its deltas derived (7-61, 7-62) from the set it is predicted from, which
+// for an SPS's is the one before it.
+bool read_short_term_set(BitReader& r, std::uint32_t index, std::uint32_t count,
+                         const std::vector<ShortTermSet>& sets,
+                         ShortTermSet& set) {
+  set = ShortTermSet{};
+  if (index != 0 && r.flag()) {  // inter_ref_pic_set_prediction_flag
+    std::uint32_t delta_idx = 1;
+    if (index == count) delta_idx = r.ue() + 1;  // delta_idx_minus1 + 1
+    if (delta_idx > index || index - delta_idx >= sets.size()) return false;
+    const bool sign = r.flag();
+    const std::uint32_t abs_delta = r.ue() + 1;
+    if (abs_delta > (1u << 15)) return false;
+    const std::int32_t delta_rps = sign ? -static_cast<std::int32_t>(abs_delta)
+                                        : static_cast<std::int32_t>(abs_delta);
+    const ShortTermSet& ref = sets[index - delta_idx];
+    bool use[17] = {};
+    bool used[17] = {};
+    for (int j = 0; j <= ref.count(); ++j) {
+      used[j] = r.flag();            // used_by_curr_pic_flag
+      use[j] = used[j] || r.flag();  // use_delta_flag, 1 if absent
+    }
+    int i = 0;
+    const auto take0 = [&](std::int32_t d, int j) {
+      if (d >= 0 || !use[j]) return true;
+      if (i >= 16) return false;
+      set.used0[static_cast<std::size_t>(i)] = used[j];
+      set.s0[static_cast<std::size_t>(i++)] = d;
+      return true;
+    };
+    for (int j = ref.positive - 1; j >= 0; --j) {
+      if (!take0(ref.s1[static_cast<std::size_t>(j)] + delta_rps,
+                 ref.negative + j)) {
+        return false;
+      }
+    }
+    if (!take0(delta_rps, ref.count())) return false;
+    for (int j = 0; j < ref.negative; ++j) {
+      if (!take0(ref.s0[static_cast<std::size_t>(j)] + delta_rps, j)) {
+        return false;
+      }
+    }
+    set.negative = i;
+    i = 0;
+    const auto take1 = [&](std::int32_t d, int j) {
+      if (d <= 0 || !use[j]) return true;
+      if (i >= 16) return false;
+      set.used1[static_cast<std::size_t>(i)] = used[j];
+      set.s1[static_cast<std::size_t>(i++)] = d;
+      return true;
+    };
+    for (int j = ref.negative - 1; j >= 0; --j) {
+      if (!take1(ref.s0[static_cast<std::size_t>(j)] + delta_rps, j)) {
+        return false;
+      }
+    }
+    if (!take1(delta_rps, ref.count())) return false;
+    for (int j = 0; j < ref.positive; ++j) {
+      if (!take1(ref.s1[static_cast<std::size_t>(j)] + delta_rps,
+                 ref.negative + j)) {
+        return false;
+      }
+    }
+    set.positive = i;
+  } else {
+    const std::uint32_t negative = r.ue();
+    const std::uint32_t positive = r.ue();
+    if (negative > 16 || positive > 16 - negative) return false;
+    set.negative = static_cast<int>(negative);
+    set.positive = static_cast<int>(positive);
+    std::int32_t poc = 0;
+    for (int i = 0; i < set.negative; ++i) {
+      poc -= static_cast<std::int32_t>(r.ue() % (1u << 16)) + 1;
+      set.s0[static_cast<std::size_t>(i)] = poc;
+      set.used0[static_cast<std::size_t>(i)] = r.flag();
+    }
+    poc = 0;
+    for (int i = 0; i < set.positive; ++i) {
+      poc += static_cast<std::int32_t>(r.ue() % (1u << 16)) + 1;
+      set.s1[static_cast<std::size_t>(i)] = poc;
+      set.used1[static_cast<std::size_t>(i)] = r.flag();
+    }
+  }
+  return set.count() <= 16 && !r.overrun();
+}
+
+}  // namespace detail
+
 core::Status split_annex_b(const std::uint8_t* data, std::size_t size,
                            std::vector<Nal>& out) try {
   out.clear();
@@ -291,6 +305,18 @@ core::Status split_annex_b(const std::uint8_t* data, std::size_t size,
   return {};
 } catch (...) {
   return core::exception_status("split_annex_b", core::Status::Code::IoError);
+}
+
+std::optional<int> first_slice_type(const std::uint8_t* data,
+                                    std::size_t size) noexcept {
+  if (data == nullptr) return std::nullopt;
+  for (std::size_t i = 0; i + 3 < size; ++i) {
+    if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1) continue;
+    const int type = (data[i + 3] >> 1) & 0x3f;
+    if (type < 32) return type;
+    i += 2;  // on from the unit's header
+  }
+  return std::nullopt;
 }
 
 BitReader::BitReader(const Nal& nal) noexcept
@@ -369,7 +395,32 @@ core::Result<std::uint32_t> vps_id(const Nal& vps) try {
   return core::exception_status("vps_id", core::Status::Code::IoError);
 }
 
-core::Result<Sps> parse_sps(const Nal& nal) try {
+core::Result<Sps> parse_sps(const Nal& nal) {
+  return detail::read_sps(nal, nullptr);
+}
+
+core::Result<Pps> parse_pps(const Nal& nal) {
+  return detail::read_pps(nal, nullptr);
+}
+
+core::Result<SliceStart> parse_slice_start(
+    const Nal& nal, const std::map<std::uint32_t, Pps>& pps,
+    const std::map<std::uint32_t, Sps>& sps) try {
+  if (nal.type < 0 || nal.type > 31) {
+    return wrong_type("parse_slice_start", "a VCL NAL unit", nal);
+  }
+  BitReader r(nal);
+  VKC_ASSIGN(const detail::SliceHead head,
+             detail::read_slice_start(r, nal, pps, sps));
+  return head.start;
+} catch (...) {
+  return core::exception_status("parse_slice_start",
+                                core::Status::Code::IoError);
+}
+
+namespace detail {
+
+core::Result<Sps> read_sps(const Nal& nal, SpsTail* tail) try {
   if (nal.type != kSps) return wrong_type("parse_sps", "an SPS", nal);
   BitReader r(nal);
   // Why the SPS is refused: cut short, if a read went past its end, since
@@ -382,7 +433,7 @@ core::Result<Sps> parse_sps(const Nal& nal) try {
   const std::uint32_t max_sub_layers_minus1 = r.bits(3);
   if (max_sub_layers_minus1 > 6) return bad("more than 7 sub-layers");
   r.skip(1);  // sps_temporal_id_nesting_flag
-  skip_profile_tier_level(r, max_sub_layers_minus1);
+  const int profile_idc = read_profile_tier_level(r, max_sub_layers_minus1);
   sps.id = r.ue();
   sps.chroma_format_idc = r.ue();
   if (sps.id > 15) return bad("an id past 15");
@@ -436,11 +487,15 @@ core::Result<Sps> parse_sps(const Nal& nal) try {
       return bad("a buffer past 16 pictures, or a reorder depth not below it");
     }
   }
-  for (int i = 0; i < 6; ++i) r.ue();  // block sizes, transform depths
+  // log2_min_luma_coding_block_size_minus3 and its difference to the CTB's
+  const std::uint32_t log2_min_cb = r.ue() + 3;
+  const std::uint32_t log2_ctb = log2_min_cb + r.ue();
+  for (int i = 0; i < 4; ++i) r.ue();  // transform sizes and depths
   if (r.flag() && r.flag() && !skip_scaling_list_data(r)) {
     return bad("its scaling lists");  // scaling_list_enabled, sps_..._data
   }
-  r.skip(2);       // amp_enabled_flag, sample_adaptive_offset_enabled_flag
+  r.skip(1);  // amp_enabled_flag
+  const bool sao = r.flag();
   if (r.flag()) {  // pcm_enabled_flag
     r.skip(8);
     r.ue();
@@ -451,16 +506,34 @@ core::Result<Sps> parse_sps(const Nal& nal) try {
   if (short_term_sets > 64) return bad("more than 64 short-term sets");
   std::vector<ShortTermSet> sets;
   for (std::uint32_t i = 0; i < short_term_sets; ++i) {
-    if (!parse_short_term_set(r, i, sets)) return bad("a short-term set");
+    ShortTermSet set;
+    if (!read_short_term_set(r, i, short_term_sets, sets, set)) {
+      return bad("a short-term set");
+    }
+    sets.push_back(set);
   }
-  if (r.flag()) {  // long_term_ref_pics_present_flag
+  const bool long_term_present = r.flag();
+  std::vector<bool> long_term_used;
+  if (long_term_present) {
     const std::uint32_t long_term = r.ue();
     if (long_term > 32) return bad("more than 32 long-term pictures");
     for (std::uint32_t i = 0; i < long_term; ++i) {
-      r.skip(static_cast<int>(log2_max_poc_lsb) + 1);
+      r.skip(static_cast<int>(log2_max_poc_lsb));  // lt_ref_pic_poc_lsb_sps
+      long_term_used.push_back(r.flag());
     }
   }
-  r.skip(2);  // sps_temporal_mvp_enabled, strong_intra_smoothing_enabled
+  const bool temporal_mvp = r.flag();  // sps_temporal_mvp_enabled_flag
+  r.skip(1);                           // strong_intra_smoothing_enabled_flag
+  if (tail != nullptr) {
+    tail->profile_idc = profile_idc;
+    tail->max_sub_layers_minus1 = max_sub_layers_minus1;
+    tail->log2_ctb = log2_ctb;
+    tail->sao = sao;
+    tail->short_term = std::move(sets);
+    tail->long_term = long_term_present;
+    tail->long_term_used = std::move(long_term_used);
+    tail->temporal_mvp = temporal_mvp;
+  }
   if (r.flag() && !parse_vui(r, max_sub_layers_minus1, sps.color)) {
     return bad("its VUI");
   }
@@ -486,31 +559,71 @@ core::Result<Sps> parse_sps(const Nal& nal) try {
   return core::exception_status("parse_sps", core::Status::Code::IoError);
 }
 
-core::Result<Pps> parse_pps(const Nal& nal) try {
+core::Result<Pps> read_pps(const Nal& nal, PpsTail* tail) try {
   if (nal.type != kPps) return wrong_type("parse_pps", "a PPS", nal);
   BitReader r(nal);
   Pps pps;
   pps.id = r.ue();
   pps.sps_id = r.ue();
-  r.skip(1);  // dependent_slice_segments_enabled_flag
+  const bool dependent_slices = r.flag();
   pps.output_flag_present = r.flag();
   pps.num_extra_slice_header_bits = r.bits(3);
   if (r.overrun()) return malformed("a PPS", "cut short");
   if (pps.id > 63) return malformed("a PPS", "an id past 63");
   if (pps.sps_id > 15) return malformed("a PPS", "an SPS id past 15");
+  if (tail == nullptr) return pps;
+  PpsTail t;
+  t.dependent_slices = dependent_slices;
+  r.skip(1);  // sign_data_hiding_enabled_flag
+  t.cabac_init_present = r.flag();
+  t.num_ref_idx_l0_default = r.ue() + 1;
+  t.num_ref_idx_l1_default = r.ue() + 1;
+  t.init_qp = 26 + r.se();
+  r.skip(2);       // constrained_intra_pred, transform_skip_enabled
+  if (r.flag()) {  // cu_qp_delta_enabled_flag
+    r.ue();        // diff_cu_qp_delta_depth
+  }
+  r.se();     // pps_cb_qp_offset
+  r.se();     // pps_cr_qp_offset
+  r.skip(1);  // pps_slice_chroma_qp_offsets_present_flag
+  t.weighted_pred = r.flag();
+  t.weighted_bipred = r.flag();
+  r.skip(1);  // transquant_bypass_enabled_flag
+  const bool tiles = r.flag();
+  r.skip(1);  // entropy_coding_sync_enabled_flag
+  if (tiles) {
+    const std::uint32_t columns = r.ue();  // num_tile_columns_minus1
+    const std::uint32_t rows = r.ue();     // num_tile_rows_minus1
+    if (columns > 63 || rows > 63) return malformed("a PPS", "too many tiles");
+    if (!r.flag()) {  // uniform_spacing_flag
+      for (std::uint32_t i = 0; i < columns + rows; ++i) r.ue();
+    }
+    r.skip(1);  // loop_filter_across_tiles_enabled_flag
+  }
+  r.skip(1);          // pps_loop_filter_across_slices_enabled_flag
+  if (r.flag()) {     // deblocking_filter_control_present_flag
+    r.skip(1);        // deblocking_filter_override_enabled_flag
+    if (!r.flag()) {  // pps_deblocking_filter_disabled_flag
+      r.se();         // pps_beta_offset_div2
+      r.se();         // pps_tc_offset_div2
+    }
+  }
+  if (r.flag() && !skip_scaling_list_data(r)) {
+    return malformed("a PPS", "its scaling lists");
+  }
+  t.lists_modification = r.flag();
+  if (r.overrun()) return malformed("a PPS", "cut short");
+  *tail = t;
   return pps;
 } catch (...) {
   return core::exception_status("parse_pps", core::Status::Code::IoError);
 }
 
-core::Result<SliceStart> parse_slice_start(
-    const Nal& nal, const std::map<std::uint32_t, Pps>& pps,
+core::Result<SliceHead> read_slice_start(
+    BitReader& r, const Nal& nal, const std::map<std::uint32_t, Pps>& pps,
     const std::map<std::uint32_t, Sps>& sps) try {
-  if (nal.type < 0 || nal.type > 31) {
-    return wrong_type("parse_slice_start", "a VCL NAL unit", nal);
-  }
-  BitReader r(nal);
-  SliceStart slice;
+  SliceHead head;
+  SliceStart& slice = head.start;
   slice.first_slice_segment = r.flag();
   if (is_irap(nal.type)) slice.no_output_of_prior_pics = r.flag();
   slice.pps_id = r.ue();
@@ -528,9 +641,12 @@ core::Result<SliceStart> parse_slice_start(
                                   std::to_string(p->second.sps_id) +
                                   ", which is not given");
   }
-  if (!slice.first_slice_segment) return slice;
+  head.pps = &p->second;
+  head.sps = &s->second;
+  if (!slice.first_slice_segment) return head;
   r.skip(static_cast<int>(p->second.num_extra_slice_header_bits));
   const std::uint32_t slice_type = r.ue();
+  head.slice_type = slice_type;
   if (p->second.output_flag_present) slice.pic_output = r.flag();
   if (s->second.separate_colour_plane) r.skip(2);  // colour_plane_id
   if (!is_idr(nal.type)) {
@@ -538,10 +654,12 @@ core::Result<SliceStart> parse_slice_start(
   }
   if (r.overrun()) return malformed("a slice header", "cut short");
   if (slice_type > 2) return malformed("a slice header", "a slice type past 2");
-  return slice;
+  return head;
 } catch (...) {
   return core::exception_status("parse_slice_start",
                                 core::Status::Code::IoError);
 }
+
+}  // namespace detail
 
 }  // namespace volumetric_kit::sensor::hevc

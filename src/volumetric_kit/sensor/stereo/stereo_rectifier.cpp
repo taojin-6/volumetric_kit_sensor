@@ -11,8 +11,10 @@
 #include <new>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "../prep/color_pass.hpp"
+#include "../prep/yuv_planes.hpp"
 #include "../sharing_families.hpp"
 #include "rectify_comp.spv.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
@@ -23,6 +25,7 @@
 #include "volumetric_kit/core/vulkan/host_ring.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
 
 namespace volumetric_kit::sensor {
 namespace {
@@ -346,6 +349,7 @@ core::Result<Picture> check_picture(const core::Device& device,
           std::to_string(family) + ", which the device does not have");
     }
   }
+  VKC_TRY(detail::check_ready(image, device, kWho));
   return out;
 }
 
@@ -505,7 +509,11 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
     }
   }
 
-  core::Result<core::PendingBatch> pending = batch.submit_async({}, {});
+  // The values of the views' writers that did not wait for their work
+  // (YuvImage::ready), which the batch waits for on the device.
+  std::vector<core::TimelinePoint> ready;
+  for (const YuvImage* image : images) add_ready_point(*image, ready);
+  core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
   const core::Status ran = pending.ok() ? pending->wait() : pending.status();
   if (!ran.ok()) {
     // The pass may still run: the frame's device planes are let go rather

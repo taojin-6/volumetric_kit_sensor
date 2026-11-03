@@ -44,8 +44,8 @@ on:
       ffmpeg:
         description: >-
           Install FFmpeg and build with VS_WITH_FFMPEG=ON, so this leg builds
-          the video decoders and runs their tests. Linux only, with cuda:
-          macOS builds them always, with no FFmpeg.
+          the video decoders and the HEVC encoder and runs their tests. Linux
+          only, with cuda: macOS builds them always, with no FFmpeg.
         required: false
         type: boolean
         default: false
@@ -53,8 +53,8 @@ on:
         description: >-
           Install the CUDA 13 toolkit's headers and nvcc from NVIDIA's
           repository and build with VS_WITH_CUDA=ON, so this leg hands NVDEC's
-          and nvJPEG's pictures out on the device and tests them. Needs
-          ffmpeg.
+          and nvJPEG's pictures out on the device, codes NVENC's targets from
+          it, and tests them. Needs ffmpeg.
         required: false
         type: boolean
         default: false
@@ -80,6 +80,15 @@ on:
           The hardware this leg promises the decoders run on (cuda,
           videotoolbox), passed to the tests as VS_TEST_HEVC_BACKEND; the
           decoder tests then fail, rather than skip, where no device path
+          opens. Empty requires none.
+        required: false
+        type: string
+        default: ''
+      hevc_encoder:
+        description: >-
+          The hardware this leg promises the HEVC encoder codes on
+          (videotoolbox, nvenc), passed to the tests as VS_TEST_HEVC_ENCODER; the
+          encoder tests then fail, rather than skip, where no hardware path
           opens. Empty requires none.
         required: false
         type: string
@@ -164,7 +173,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: taojin-6/volumetric_kit_core
-          ref: 19720798ef25d76c6fa570052a0cc6a32883e3c5
+          ref: 712d30a501a03a22779d56eff231f09d23b85db2
           path: _decklink_sdk
           persist-credentials: false
           sparse-checkout: tools/ci/decklink-sdk-16.0
@@ -208,9 +217,9 @@ jobs:
           if [ "${{ inputs.realsense_sdk }}" = "true" ]; then
             pkgs="$pkgs gnupg"
           fi
-          # FFmpeg, found through pkg-config (cmake/vs_ffmpeg.cmake). NVDEC
-          # needs nothing more: the toolkit mounts libcuda and libnvcuvid, which
-          # FFmpeg loads at run time.
+          # FFmpeg, found through pkg-config (cmake/vs_ffmpeg.cmake). NVDEC and
+          # NVENC need nothing more: the toolkit mounts libcuda, libnvcuvid and
+          # libnvidia-encode, which FFmpeg loads at run time.
           if [ "${{ inputs.ffmpeg }}" = "true" ]; then
             pkgs="$pkgs pkg-config libavcodec-dev libavutil-dev"
           fi
@@ -447,6 +456,7 @@ jobs:
       - name: Test
         env:
           VS_TEST_HEVC_BACKEND: ${{ inputs.hevc_backend }}
+          VS_TEST_HEVC_ENCODER: ${{ inputs.hevc_encoder }}
           # The core's test policy (core/testing/gpu_test.hpp). Every leg has a
           # device and the validation layer, so a GPU test fails rather than
           # skips without either, and fails on any error the layer reports.
@@ -457,8 +467,9 @@ jobs:
         run: ctest --test-dir build --output-on-failure --no-tests=error
 
       # The tests whose code runs threads again under ThreadSanitizer: the
-      # Orbbec decode workers, the audio capture's queue and the DeckLink
-      # driver's upload thread, whose races the
+      # Orbbec decode workers, the audio capture's queue, the DeckLink
+      # driver's upload thread and the HEVC encoder's coding thread, whose
+      # races the
       # sanitizer job, on address and undefined only and with no Orbbec SDK,
       # never sees. In a tree of their own that reuses the sources
       # FetchContent fetched for build/, built for those tests alone
@@ -471,6 +482,7 @@ jobs:
         env:
           TSAN_OPTIONS: halt_on_error=1
           VS_TEST_HEVC_BACKEND: ${{ inputs.hevc_backend }}
+          VS_TEST_HEVC_ENCODER: ${{ inputs.hevc_encoder }}
           VKC_REQUIRE_VULKAN_DEVICE: '1'
           VKC_TEST_VALIDATION: '1'
           DYLD_LIBRARY_PATH: ${{ env.VS_LAYER_LIBRARY_PATH }}
@@ -490,11 +502,12 @@ jobs:
             --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}" \
             --target sensor_tsan_tests
           ctest --test-dir build-tsan --output-on-failure --no-tests=error \
-            -R '^(sensor_orbbec_(decode_worker|jpeg|hevc|open_sensors)|sensor_audio_capture|sensor_decklink_upload)$'
+            -R '^(sensor_orbbec_(decode_worker|jpeg|hevc|open_sensors)|sensor_audio_capture|sensor_decklink_upload|sensor_video_hevc_encoder)$'
 
       # sensor_apple and sensor_video, with the H.265 syntax they read
-      # (sensor_video_syntax), promise an iOS build (DECISIONS.md, 2026-10-08
-      # and 2026-10-25), which the steps above do not make: compile them for
+      # (sensor_video_syntax), and the frames' wire form (sensor_wire) promise
+      # an iOS build (DECISIONS.md, 2026-10-08, 2026-10-25 and 2026-11-02),
+      # which the steps above do not make: compile them for
       # the iOS floor with build/'s flags and link them against the iOS SDK
       # (tools/ios_build_check.sh). Release only: the promise does not depend
       # on the build type.
