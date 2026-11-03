@@ -3,10 +3,13 @@
 
 #include "cuda_timeline.hpp"
 
+#include <chrono>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "cuda_driver.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
@@ -78,28 +81,54 @@ bool CudaTimeline::reached(std::uint64_t value) const {
 }
 
 core::Status CudaTimeline::wait(std::uint64_t value) const {
-  // In slices, the stream asked between them whether it failed. A stream
-  // found idle has run the value's signal, queued before this: a slice later
-  // with the counter still short, the signal was dropped.
-  constexpr std::uint64_t kSliceNs = 10'000'000;
+  // The counter read every 50 us, not waited on: NVIDIA's driver wakes no
+  // host wait (vkWaitSemaphores) when CUDA sets the value, only on a tick of
+  // its own, about 10 ms after the wait began (DECISIONS.md, the 2026-11-03
+  // host-wait entry). The stream is asked every 1 ms whether it failed. A
+  // stream found idle has run the value's signal, queued before this: an
+  // ask later with the counter still short, the signal was dropped.
+  constexpr auto kPoll = std::chrono::microseconds(50);
+  constexpr auto kAsk = std::chrono::milliseconds(1);
+  const auto start = std::chrono::steady_clock::now();
+  auto ask = start + kAsk;
   bool idle = false;
+  bool slept = false;
+  core::Status out;
   for (;;) {
-    const core::Status waited = semaphore_->wait(value, kSliceNs);
-    if (!core::is_timeout(waited)) return waited.with_context(who_);
-    if (idle) {
-      return core::Status::backend_error(
-          core::Status::Backend::Cuda, CUDA_ERROR_UNKNOWN,
-          std::string(who_) +
-              ": the stream ran dry with a picture's ready value unset");
+    const core::Result<std::uint64_t> counter = semaphore_->value();
+    if (!counter) {
+      out = counter.status().with_context(who_);
+      break;
     }
-    const CudaContextScope scope(context_);
-    const CUresult r =
-        scope.ok() ? cuda_driver()->cuStreamQuery(stream_) : scope.result();
-    if (r != CUDA_SUCCESS && r != CUDA_ERROR_NOT_READY) {
-      return cuda_error(who_, r, "waiting for a picture's copy");
+    if (*counter >= value) break;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= ask) {
+      if (idle) {
+        out = core::Status::backend_error(
+            core::Status::Backend::Cuda, CUDA_ERROR_UNKNOWN,
+            std::string(who_) +
+                ": the stream ran dry with a picture's ready value unset");
+        break;
+      }
+      const CudaContextScope scope(context_);
+      const CUresult r =
+          scope.ok() ? cuda_driver()->cuStreamQuery(stream_) : scope.result();
+      if (r != CUDA_SUCCESS && r != CUDA_ERROR_NOT_READY) {
+        out = cuda_error(who_, r, "waiting for a picture's copy");
+        break;
+      }
+      idle = r == CUDA_SUCCESS;
+      ask = now + kAsk;
     }
-    idle = r == CUDA_SUCCESS;
+    std::this_thread::sleep_for(kPoll);
+    slept = true;
   }
+  if (slept) {
+    core::note_blocked(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count());
+  }
+  return out;
 }
 
 void CudaTimeline::settle() noexcept {
