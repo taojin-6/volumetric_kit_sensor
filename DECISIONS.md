@@ -7579,4 +7579,8 @@ away, and the consumer now waits on the device.
 **Validation.** `sensor_video_handover`'s fault cases run the new loop: a
 stream reported faulted, or run dry with three signals dropped, returns a
 Backend error with the values set; a held stream holds the fourth picture
-until its release.
+until its release. Planted bugs, each failing it (the RTX 4090): the
+stream never asked, the wait ending one value early, a dry stream never
+seen. The suite on that RTX 4090, on the lab RTX 5090 (the validation
+layer; the handover and decoder tests also under synchronization
+validation) and on the M5 Max (validation).
