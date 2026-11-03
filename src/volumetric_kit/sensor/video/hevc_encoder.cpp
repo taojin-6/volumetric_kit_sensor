@@ -97,20 +97,20 @@ class Ring {
  public:
   bool empty() const noexcept { return size_ == 0; }
   void push(T&& entry) noexcept {
-    VKC_CHECK(size_ < kSlots, "HevcEncoder: more than kInFlight queued");
-    slots_[(head_ + size_) % kSlots] = std::move(entry);
+    VKC_CHECK(size_ < kCapacity, "HevcEncoder: more than kInFlight queued");
+    entries_[(head_ + size_) % kCapacity] = std::move(entry);
     ++size_;
   }
   T take() noexcept {
-    T entry = std::move(slots_[head_]);
-    head_ = (head_ + 1) % kSlots;
+    T entry = std::move(entries_[head_]);
+    head_ = (head_ + 1) % kCapacity;
     --size_;
     return entry;
   }
 
  private:
-  static constexpr std::uint32_t kSlots = HevcEncoder::kInFlight;
-  std::array<T, kSlots> slots_{};
+  static constexpr std::uint32_t kCapacity = HevcEncoder::kInFlight;
+  std::array<T, kCapacity> entries_{};
   std::uint32_t head_ = 0;
   std::uint32_t size_ = 0;
 };
