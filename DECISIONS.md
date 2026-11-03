@@ -6304,8 +6304,9 @@ no FFmpeg or CUDA symbol.
 
 **Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
 under the validation layer, `VS_TEST_HEVC_BACKEND` and
-`VS_TEST_HEVC_ENCODER` set to videotoolbox: the whole suite passes, 52
-tests; the encoder tests pass under ThreadSanitizer (Debug). Each of these
+`VS_TEST_HEVC_ENCODER` set to videotoolbox: the whole suite passes, 54
+tests with main's at #33; the encoder tests pass under ThreadSanitizer
+(Debug). Each of these
 fails a test: `ForceKeyFrame` never set (C3), the session's source format
 always video range (C10) and the buffer's range not checked (C11), a drop
 neither failing the picture behind it nor owing a key (C7) and one owing a
