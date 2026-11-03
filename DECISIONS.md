@@ -534,6 +534,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   surfaces (a throwaway picture first), so a producer's targets wait for no
   batch; a surface new to the session waits on the host, unlocked. The test
   picture is written by a kernel (`testing::Nv12Writer`), not a copy.
+- [**2026-11-03**](#2026-11-03--the-test-patterns-index-is-read-on-the-gpu-by-patternreader-one-kernel-over-the-band-decides-it-4-bytes-a-read-come-back-and-a-pictures-squares-are-read-with-a-margin-so-a-blend-is-no-index-amends-the-2026-11-02-frame-contract-entry) —
+  The index a test picture or test depth carries is read on the GPU, where
+  it is, by `testing::PatternReader` (`sensor_prep`): the band copied or
+  uploaded into the reader's buffer, one kernel deciding it, 4 bytes a
+  read back. A picture's squares are read with a margin, so a blend of two
+  frames is no index; depth as `depth_index` reads it. One batch a read,
+  the picture's ready value among its waits.
 
 - [**2026-11-03**](#2026-11-03--a-gpu-fault-leaves-no-reader-waiting-for-good-every-error-nvdecs-decoder-returns-but-invalidargument-comes-back-with-each-ready-value-it-handed-out-set-and-its-wait-for-the-oldest-of-three-kept-pictures-sees-a-failed-stream-amends-the-2026-11-02-hand-over-entry) —
   A GPU fault leaves no reader waiting for good: NVDEC's decoder settles
@@ -6755,7 +6762,8 @@ picture's index band, whose layout moves to the standard-library-only
 **Not here.** Reading the picture's index (`picture_index`) lands with its
 first caller, the stream checks: whether a check reads the band back to
 the host or a GPU kernel means it is the owner's open choice. Until then
-`sensor_testing_support`'s own square-mean reader stays.
+`sensor_testing_support`'s own square-mean reader stays. *Answered
+2026-11-03:* a GPU kernel, `PatternReader` (the pattern reader entry).
 
 **Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
 under the validation layer, `VS_TEST_HEVC_BACKEND=videotoolbox` and the
@@ -7128,6 +7136,70 @@ its own, `create` readying no surface or the first pool's, a gone pool not
 losing the session, and a failed second target giving up the first. The suite on
 the M5 Max (Release, validation, both promises) and the threaded tests
 under ThreadSanitizer; the iOS build check links an app's target calls.
+
+### 2026-11-03 — The test pattern's index is read on the GPU by `PatternReader`: one kernel over the band decides it, 4 bytes a read come back, and a picture's squares are read with a margin, so a blend is no index (amends the 2026-11-02 frame contract entry).
+
+**The rule.** `testing/pattern_reader.hpp`'s `PatternReader`, built in
+`sensor_prep`, is how a check tool or a test reads the index a frame's
+picture (`test_pattern`) and depth (`pattern_depth`) carry, wherever they
+are: NV12 plane images, planes or depth in a device buffer, planes or
+depth on the host. The band, 256 x 16 samples, goes into the reader's own
+device buffer, copied on the device or its host rows uploaded, and one
+kernel decides it; only its result word, the index or none, is read back.
+- **A picture:** each square's central-half mean. The references must be
+  at least 64 apart, square 0 the brighter; a square three quarters of the
+  way from square 1's mean to square 0's or more is set, a quarter or less
+  clear, and between them none. A clean or lightly coded picture names
+  what `pattern_index` names; a blend of two frames is none.
+- **Depth:** `depth_index`'s rule, every sample of a square's central half
+  one value, the references 1000 and 2000.
+- **One batch a read**, one submit and its wait, with the picture's ready
+  value among the waits; the inputs' ownership is published after it, as
+  `PictureReadback` publishes it. `read(frame)` reads the picture and the
+  depth in the one batch.
+
+**Why.** The owner's choice, 2026-11-03: check tools read the index with
+a small GPU kernel over the band, 64 bytes back, rather than read the
+whole picture back (2.8 MB a 1920x1440 frame). The kernel applies the
+rule, so less comes back than that: 4 bytes a read.
+- **Not recorded into a caller's batch.** Such a read cannot know when the
+  caller's batch resolves, so it would need a ring of bands, result words
+  and sets (as `Nv12Writer` keeps a ring of sets, for the encoder's
+  batches), could not publish the picture's ownership after success, and
+  every caller would gather the ready values, add the readback and decode
+  the words itself. A check waits a frame, which a check tool can afford.
+- **Host inputs through the same kernel,** so the rule has no host twin
+  and the tests hold the one kernel to `depth_index` for host and device
+  depth alike. `pattern_index`, the host reader with no margin, stays for
+  the decoder and encoder tests, which read their pictures back anyway.
+- **The margin** turns a blend into none, where the midpoint alone names a
+  wrong frame (frames 5 and 10 averaged read as frame 0).
+- **Built in `sensor_prep`,** whose plane checks it shares, as
+  `SliceReader` is built in `sensor_video_syntax`; no new target. Not in
+  `sensor_video_testing` beside `Nv12Writer`: that builds only where the
+  decoders do, and the reader needs none.
+
+**Not here.** YUYV and V210 pictures, which the pattern never is, are
+refused.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer, `VS_TEST_HEVC_BACKEND=videotoolbox`: the whole
+suite passes, 56 tests (55 before). `sensor_pattern_reader`: 286 picture
+reads across the span and past it (a stride of 331, the ends, 16384 and
+70000) as NV12 images padded and not, NV12, I420 and luma alone in a buffer
+and on the host, full and limited range, at 256 x 16, 300 x 21 and
+1920 x 1440, each equal to `pattern_index`; 228 depth reads at 256 x 192
+and 300 x 20, on the host and in a buffer at an even lead, each equal to
+`depth_index`; a frame's two indices apart and alike, and one buffer
+holding both taken over once; none under 256 x 16, for a blend, at each
+side of both margins and of the 64 floor, for a grey picture, torn depth
+and swapped references; the index through +-40 noise and a 4 x 4 blur; a
+read that waits for a ready value the host sets 50 ms later; ownership
+from outside Vulkan published; every refusal, the inputs as they were.
+`sensor_video_hevc`: the 12 VideoToolbox-coded pictures read their own
+index on the GPU on VideoToolbox. Planted bugs, each failing its test: the
+margin dropped for the midpoint (the blend), the ready wait dropped (the
+ready case), and depth read from one sample of each square (torn depth).
 
 ### 2026-11-03 — A GPU fault leaves no reader waiting for good: every error NVDEC's decoder returns but `InvalidArgument` comes back with each ready value it handed out set, and its wait for the oldest of three kept pictures sees a failed stream (amends the 2026-11-02 hand-over entry).
 

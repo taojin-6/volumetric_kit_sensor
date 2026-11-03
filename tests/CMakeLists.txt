@@ -290,6 +290,18 @@ target_link_libraries(
 vs_target_warnings(sensor_picture_readback_test)
 add_test(NAME sensor_picture_readback COMMAND sensor_picture_readback_test)
 
+# The test pattern's index read on the GPU (testing/pattern_reader.hpp, in
+# sensor_prep): pictures in images, buffers and on the host and depth on the
+# host and the device, across the span, held to pattern_index and depth_index;
+# what reads as none, the ready wait, ownership and the refusals. Skips with no
+# device.
+add_executable(sensor_pattern_reader_test sensor_pattern_reader_test.cpp)
+target_link_libraries(
+  sensor_pattern_reader_test PRIVATE volumetric_kit::sensor_prep
+                                     volumetric_kit::core_test_policy)
+vs_target_warnings(sensor_pattern_reader_test)
+add_test(NAME sensor_pattern_reader COMMAND sensor_pattern_reader_test)
+
 # Allocation failure during creation (including the timer) or a read is an
 # OutOfMemory result, and retry succeeds. Separate allocation overrides.
 add_executable(sensor_picture_readback_oom_test
