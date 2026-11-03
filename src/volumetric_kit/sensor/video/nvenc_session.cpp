@@ -87,7 +87,8 @@ core::Status open_failure(const std::string& what, int err) {
 }
 
 // The rows of a target, in bytes: the width rounded up to the GPU's texture
-// alignment, as FFmpeg pads its own CUDA frames, whose pitch NVENC registers.
+// alignment, as FFmpeg pads its own CUDA frames, whose row stride NVENC
+// registers.
 core::Result<std::uint32_t> target_stride(const core::Device& device,
                                           std::uint32_t width) {
   VKC_ASSIGN(const int ordinal, cuda_ordinal_of(device));
@@ -167,7 +168,7 @@ struct NvencTargets {
   BufferRef frames;  // AV_PIX_FMT_CUDA frames of NV12 at the session's size
   std::uint32_t stride = 0;
   std::uint64_t bytes = 0;
-  std::array<std::shared_ptr<NvencTarget>, kTargets> slots;
+  std::array<std::shared_ptr<NvencTarget>, kTargets> buffers;
   std::uint64_t handed = 0;  // hand-outs so far
 };
 
@@ -196,7 +197,7 @@ core::Result<std::unique_ptr<NvencTargets>> NvencTargets::create(
   const int err = av_hwframe_ctx_init(t->frames.get());
   if (err < 0) return ffmpeg_error(kWho, "making NVENC's frames", err);
   const CudaContext& context = *t->cuda.cuda->context;
-  for (std::shared_ptr<NvencTarget>& slot : t->slots) {
+  for (std::shared_ptr<NvencTarget>& made : t->buffers) {
     VKC_ASSIGN(core::ExportedBuffer exported,
                core::create_exported_buffer(device, allocator, t->bytes));
     device.set_object_name(VK_OBJECT_TYPE_BUFFER,
@@ -207,9 +208,9 @@ core::Result<std::unique_ptr<NvencTargets>> NvencTargets::create(
     core::Result<std::unique_ptr<CudaBufferMapping>> mapping =
         CudaBufferMapping::map(context, exported);
     if (!mapping) return mapping.status().with_context(kWho);
-    slot = std::make_shared<NvencTarget>();
-    slot->buffer = std::make_shared<core::Buffer>(std::move(exported.buffer));
-    slot->mapping = std::move(mapping).value();
+    made = std::make_shared<NvencTarget>();
+    made->buffer = std::make_shared<core::Buffer>(std::move(exported.buffer));
+    made->mapping = std::move(mapping).value();
   }
   return t;
 }
@@ -419,10 +420,10 @@ core::Status HevcEncodeSession::target(core::CommandBatch& batch,
   // go of one once NVENC has read it; the fence orders this batch's writes
   // after that read.
   std::shared_ptr<NvencTarget>* pick = nullptr;
-  for (std::shared_ptr<NvencTarget>& slot : all.slots) {
-    if (slot.use_count() == 1 &&
-        (pick == nullptr || slot->handed < (*pick)->handed)) {
-      pick = &slot;
+  for (std::shared_ptr<NvencTarget>& each : all.buffers) {
+    if (each.use_count() == 1 &&
+        (pick == nullptr || each->handed < (*pick)->handed)) {
+      pick = &each;
     }
   }
   if (pick == nullptr) return io_error("every target is held");
