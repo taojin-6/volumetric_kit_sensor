@@ -468,8 +468,8 @@ jobs:
 
       # The tests whose code runs threads again under ThreadSanitizer: the
       # Orbbec decode workers, the audio capture's queue, the DeckLink
-      # driver's upload thread and the HEVC encoder's coding thread, whose
-      # races the
+      # driver's upload thread, the HEVC encoder's coding thread and ARKit's
+      # driver and test pattern, fed on a queue of their own, whose races the
       # sanitizer job, on address and undefined only and with no Orbbec SDK,
       # never sees. In a tree of their own that reuses the sources
       # FetchContent fetched for build/, built for those tests alone
@@ -502,12 +502,13 @@ jobs:
             --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}" \
             --target sensor_tsan_tests
           ctest --test-dir build-tsan --output-on-failure --no-tests=error \
-            -R '^(sensor_orbbec_(decode_worker|jpeg|hevc|open_sensors)|sensor_audio_capture|sensor_decklink_upload|sensor_video_hevc_encoder)$'
+            -R '^(sensor_orbbec_(decode_worker|jpeg|hevc|open_sensors)|sensor_audio_capture|sensor_decklink_upload|sensor_video_hevc_encoder|sensor_arkit_(sensor|pattern))$'
 
       # sensor_apple and sensor_video, with the H.265 syntax they read
-      # (sensor_video_syntax), and the frames' wire form (sensor_wire) promise
-      # an iOS build (DECISIONS.md, 2026-10-08, 2026-10-25 and 2026-11-02),
-      # which the steps above do not make: compile them for
+      # (sensor_video_syntax), the frames' wire form (sensor_wire) and ARKit's
+      # driver (sensor_arkit, whose camera feed compiles for iOS alone)
+      # promise an iOS build (DECISIONS.md, 2026-10-08, 2026-10-25, 2026-11-02
+      # and 2026-11-03), which the steps above do not make: compile them for
       # the iOS floor with build/'s flags and link them against the iOS SDK
       # (tools/ios_build_check.sh). Release only: the promise does not depend
       # on the build type.

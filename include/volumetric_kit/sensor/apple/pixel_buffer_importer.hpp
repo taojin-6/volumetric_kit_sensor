@@ -133,4 +133,27 @@ class VS_APPLE_API PixelBufferImporter {
   std::unique_ptr<Impl> impl_;
 };
 
+/// @brief The pixel buffer whose planes @p picture's images are, when a
+///        @ref PixelBufferImporter made them: a camera's picture (ARKit's
+///        `capturedImage`, through `ArkitSensor`) or a VideoToolbox decoder's,
+///        to hand on as it is, such as to `send_pixel_buffer`
+///        (video/hevc_encoder_apple.hpp), with no copy.
+///
+/// Found through what the images hold, so it answers for any picture and
+/// takes no cast: a picture whose images another producer made, or whose
+/// planes are on the host or in a buffer, has none.
+///
+/// @code
+/// VKC_ASSIGN(std::optional<RgbdFrame> frame, camera.poll());  // ArkitSensor
+/// if (frame) {
+///   VKC_TRY(send_pixel_buffer(encoder, pixel_buffer_of(frame->color),
+///                             encoder.key_owed(), pts));
+/// }
+/// @endcode
+/// @param picture  Any picture.
+/// @return Its pixel buffer, not retained: valid while @p picture's images
+///         are held. Null when @ref PixelBufferImporter::import did not make
+///         them.
+VS_APPLE_API CVPixelBufferRef pixel_buffer_of(const YuvImage& picture) noexcept;
+
 }  // namespace volumetric_kit::sensor

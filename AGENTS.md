@@ -10,8 +10,8 @@ of it.
 and the rig's calibration file, the RGB-D sensor interface, GPU frame
 preparation, the sensor array, calibrated stereo pairs, their GPU
 rectification and stereo depth on NVIDIA (FFS), the hardware video
-decoders, Apple's pixel-buffer importer, the Orbbec, RealSense and
-DeckLink drivers, audio sources and a microphone driver, and image files.
+decoders, Apple's pixel-buffer importer, the Orbbec, RealSense, DeckLink
+and ARKit drivers, audio sources and a microphone driver, and image files.
 It hands consumers
 posed, undistorted RGB-D frames on the device (`DeviceFrame`), and audio as
 PCM in host memory.
@@ -24,9 +24,10 @@ PCM in host memory.
   recon's libraries link `sensor_frame` alone, so a change there is a change
   to recon's contract. A change a consumer needs too lands as a sensor PR,
   then the consumer's PR that re-pins sensor.
-- A sensor driver belongs here only if this package can build and test it.
-  Platform-only drivers such as ARKit belong with their downstream
-  application.
+- A sensor driver belongs here only if this package can build and test it:
+  ARKit's does (CI's iOS check compiles it, the Mac runs it over a fake
+  feed and its test pattern). One no leg can build or exercise belongs with
+  its downstream application.
 - Vulkan compute is the baseline on every platform, MoltenVK on Apple. The
   decoders use the platform's hardware (VideoToolbox, NVDEC, nvJPEG) and hand
   their pictures out on the device only.
@@ -50,7 +51,8 @@ PCM in host memory.
   and `video_syntax` (and, on Apple, `apple`); `video_testing` `video`;
   `orbbec` the interface, `video` and `video_syntax`;
   `realsense` the interface and `stereo`; `ffs` `stereo` and, privately,
-  `video`; `decklink` `stereo` and, privately, its SDK-free units; `audio`
+  `video`; `decklink` `stereo` and, privately, its SDK-free units; `arkit`
+  the interface and, privately, its units on `apple` and `video`; `audio`
   the interface; `wire` the interface and `video_syntax`; `video_syntax`
   and `io` the base tier.
   Drivers, decoders and preparation stay targets of their own.

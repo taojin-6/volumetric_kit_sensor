@@ -485,6 +485,43 @@ if(APPLE)
            COMMAND sensor_apple_pixel_buffer_importer_test)
 endif()
 
+# ARKit as an IRgbdSensor (sensor_arkit, any Apple build). The conversion test
+# is host-only: the depth copy out of padded rows and its refusals, the
+# picture's checks and its colour from its tags, ARKit's pinhole and pose, the
+# clock and the missed periods, on the internal units (sensor_arkit_units). The
+# driver test runs the driver over a scripted feed of captures made here
+# (IOSurface pictures, depth buffers), on the device: the frame contract
+# (rgbd_breach), the counters, the sequences, the colour, the picture's own
+# buffer and its holds, info, a feeding thread, the session's failure. The
+# pattern test opens ArkitSensor with its test pattern: every frame's depth and
+# picture carry its sequence, the contract over 300 frames, a skipped tick, the
+# refusals. Both skip without a device.
+if(APPLE)
+  add_executable(sensor_arkit_conversion_test sensor_arkit_conversion_test.cpp)
+  target_link_libraries(
+    sensor_arkit_conversion_test PRIVATE volumetric_kit::sensor_arkit
+                                         volumetric_kit::sensor_arkit_units)
+  vs_target_warnings(sensor_arkit_conversion_test)
+  add_test(NAME sensor_arkit_conversion COMMAND sensor_arkit_conversion_test)
+
+  add_executable(sensor_arkit_sensor_test sensor_arkit_sensor_test.cpp)
+  target_link_libraries(
+    sensor_arkit_sensor_test
+    PRIVATE volumetric_kit::sensor_arkit volumetric_kit::sensor_arkit_units
+            volumetric_kit::core_test_policy "-framework CoreFoundation"
+            "-framework CoreVideo" "-framework IOSurface")
+  vs_target_warnings(sensor_arkit_sensor_test)
+  add_test(NAME sensor_arkit_sensor COMMAND sensor_arkit_sensor_test)
+
+  add_executable(sensor_arkit_pattern_test sensor_arkit_pattern_test.cpp)
+  target_link_libraries(
+    sensor_arkit_pattern_test
+    PRIVATE volumetric_kit::sensor_arkit volumetric_kit::sensor_prep
+            volumetric_kit::core_test_policy)
+  vs_target_warnings(sensor_arkit_pattern_test)
+  add_test(NAME sensor_arkit_pattern COMMAND sensor_arkit_pattern_test)
+endif()
+
 # The video decoders' host pieces, with no codec and no GPU, so on every leg:
 # the colour H.273 codes describe (video/frame_color.hpp, and the internal
 # describe_color), compiling the source itself, as the Orbbec conversion test
@@ -1028,12 +1065,17 @@ vs_target_warnings(sensor_io_image_test)
 add_test(NAME sensor_io_image COMMAND sensor_io_image_test)
 
 # The tests whose code runs threads -- the Orbbec decode workers, the audio
-# capture's queue, the DeckLink driver's upload and the HEVC encoder's coding
-# thread -- which CI builds and runs again under ThreadSanitizer
-# (.github/workflows/_build.yml): one target to build them.
+# capture's queue, the DeckLink driver's upload, the HEVC encoder's coding
+# thread and ARKit's driver and pattern, fed on a queue of their own -- which CI
+# builds and runs again under ThreadSanitizer (.github/workflows/_build.yml):
+# one target to build them.
 add_custom_target(sensor_tsan_tests)
 add_dependencies(sensor_tsan_tests sensor_orbbec_decode_worker_test
                  sensor_audio_capture_test sensor_decklink_upload_test)
+if(APPLE)
+  add_dependencies(sensor_tsan_tests sensor_arkit_sensor_test
+                   sensor_arkit_pattern_test)
+endif()
 if(TARGET sensor_video_hevc_encoder_test)
   add_dependencies(sensor_tsan_tests sensor_video_hevc_encoder_test)
 endif()

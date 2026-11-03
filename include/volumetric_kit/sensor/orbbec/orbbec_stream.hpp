@@ -19,13 +19,9 @@
 #include "volumetric_kit/core/vulkan/fwd.hpp"
 #include "volumetric_kit/sensor/camera/color_controls.hpp"
 #include "volumetric_kit/sensor/orbbec/orbbec_sync_config.hpp"
+#include "volumetric_kit/sensor/yuv_image.hpp"  // kMaxColorQueueFamilies
 
 namespace volumetric_kit::sensor {
-
-/// @brief The size of @ref OrbbecStreamOptions::color_queue_families: the
-///        core's `BufferDesc::kMaxQueueFamilies`, mirrored so this header
-///        includes no Vulkan.
-inline constexpr std::uint32_t kMaxColorQueueFamilies = 4;
 
 /// @brief How the colour stream crosses the wire. Either way the camera's
 ///        colour is decoded on a thread per camera, onto the GPU by the
