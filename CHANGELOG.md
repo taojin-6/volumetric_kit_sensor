@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0] - 2026-11-03
+
+### Fixed
+
+- **NVDEC's wait for the oldest of three kept pictures returns when CUDA
+  sets its value** (`HevcDecoder::receive`): it reads the counter every
+  50 us and asks the stream every 1 ms, where its 10 ms
+  `vkWaitSemaphores` slices returned up to 10 ms late. NVIDIA's driver
+  wakes no host wait on a value CUDA sets when CUDA sets it, only on a
+  tick of its own. DECISIONS.md, the 2026-11-03 host-wait entry.
+
+### Changed
+
+- **Docs: wait for a picture's ready value on the device**
+  (`YuvImage::ready`): a host wait on it (`TimelineSemaphore::wait`)
+  returns up to about 10 ms after CUDA sets it; a host that must wait reads
+  the counter. `video/backend.hpp` names NVENC as the encoder's backend on
+  NVIDIA, no longer one to come.
+
 ## [0.39.0] - 2026-11-03
 
 ### Fixed
