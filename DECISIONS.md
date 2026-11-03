@@ -5649,7 +5649,7 @@ colour is multiplied by so a rig's cameras agree on a surface they share:
   from them, and it is not kept in memory. The identity is not written, so
   a calibration without a response keeps its version-2 or -3 bytes. A
   reader ignores keys it does not know, so a response in a version-3 file
-  would run uncorrected under 0.36.0 and before; a version-4 file is
+  would run uncorrected under 0.37.0 and before; a version-4 file is
   refused there, and a response in a version-2 or -3 file is refused here.
 - **One check.** `camera::validate`, used by the reader, the writer and
   `GpuFramePrep::create`: the identity, or gains finite and above 0, a and b
@@ -5677,7 +5677,7 @@ sRGB levels after a sigma-8 blur, held out by world position:
   the rig `r_max` is 0.65-0.68, and F is held over 28-32% of each image,
   where it is x1.53-1.70.
 - **Gauge G2 (owner, 2026-10-31).** Gains and F are fixed only up to a
-  common scale; the fit (0.38.0) sets it so that, per channel, the mean of
+  common scale; the fit (0.39.0) sets it so that, per channel, the mean of
   `gain * F` over both pixels of every kept sample is 1. The held-out
   residual is 6.271 under every gauge. G2 keeps the shared floor at today's
   brightness (0.000 stop, against -0.227 for G1, which matches the
