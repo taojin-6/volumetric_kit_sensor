@@ -189,7 +189,7 @@ long read_of(PatternReader& reader, Planted& planted) {
 // other form, limited range and the decoder's size on a few.
 int test_pictures(const vkc::test::Gpu& gpu, PatternReader& reader) {
   int reads = 0;
-  for (const auto [w, h] : {std::pair{256u, 16u}, std::pair{300u, 21u}}) {
+  for (const auto& [w, h] : {std::pair{256u, 16u}, std::pair{300u, 21u}}) {
     for (std::uint32_t i : indices()) {
       const HostNv12 p = st::test_pattern(w, h, i);
       const long want = st::pattern_index(p.luma.data(), w);
@@ -270,7 +270,7 @@ RgbdFrame device_frame(const vkc::test::Gpu& gpu, const st::PatternDepth& d,
 // picture index.
 int test_depth(const vkc::test::Gpu& gpu, PatternReader& reader) {
   int reads = 0;
-  for (const auto [w, h] : {std::pair{256u, 192u}, std::pair{300u, 20u}}) {
+  for (const auto& [w, h] : {std::pair{256u, 192u}, std::pair{300u, 20u}}) {
     for (std::uint32_t i : indices()) {
       const st::PatternDepth d = st::pattern_depth(w, h, i);
       const std::optional<std::uint32_t> want =
@@ -387,7 +387,7 @@ int test_none(const vkc::test::Gpu& gpu, PatternReader& reader) {
   CHECK(with_square(64) == -1);
   CHECK(with_square(63) == 0);  // 4 * 63 <= 255
   // References 64 apart read; 63 apart, as a grey picture's, do not.
-  for (const auto [white, want] : {std::pair{96, 0L}, std::pair{95, -1L}}) {
+  for (const auto& [white, want] : {std::pair{96, 0L}, std::pair{95, -1L}}) {
     HostNv12 p = st::test_pattern(256, 16, 0);
     for (std::uint32_t s = 0; s < 16; ++s) fill_square(p.luma, 256, s, 32);
     fill_square(p.luma, 256, 0, static_cast<std::uint8_t>(white));
