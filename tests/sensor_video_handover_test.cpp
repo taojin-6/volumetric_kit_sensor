@@ -49,6 +49,7 @@
 #include "cuda_driver.hpp"
 #include "decoder_test.hpp"
 #include "device_picture_readback.hpp"
+#include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/buffer_readback.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
@@ -364,13 +365,18 @@ std::vector<std::uint32_t> prepared_words(const Gpu& gpu,
   return color_words(gpu, *prepared);
 }
 
-// Read after a host wait for the picture's ready value, so they hold whether
-// or not the readers wait for it themselves.
+// Read once the host sees the picture's ready value reached, so they hold
+// whether or not the readers wait for it themselves. The counter read, as a
+// host that must block does (yuv_image.hpp).
 Reads reads_of(const Gpu& gpu, sensor::GpuFramePrep& prep, const Frames& frames,
                const sensor::YuvImage& yuv) {
   Reads out;
-  if (yuv.ready == nullptr || !yuv.ready->wait(yuv.ready_value).ok()) {
-    return out;
+  if (yuv.ready == nullptr) return out;
+  for (;;) {
+    const vkc::Result<std::uint64_t> counter = yuv.ready->value();
+    if (!counter) return out;
+    if (*counter >= yuv.ready_value) break;
+    std::this_thread::sleep_for(50us);
   }
   out.words = prepared_words(gpu, prep, frames.of(yuv));
   sensor::YuvImage copy = yuv;
@@ -547,7 +553,8 @@ int test_hevc(const Gpu& gpu, const Flag& flag, sensor::GpuFramePrep& prep,
 // One hold before picture 0's copy holds every later copy on the stream:
 // pictures 0 to 2 come out at once, and with three kept the decoder waits on
 // the host for picture 0's value before it hands out another, until the
-// watchdog raises the flag. All four then read as unheld.
+// watchdog raises the flag, reading the counter, its time in the scope open
+// around it. All four then read as unheld.
 int test_back_pressure(const Gpu& gpu, const Flag& flag,
                        sensor::GpuFramePrep& prep, const Frames& frames,
                        const Clip& clip) {
@@ -555,7 +562,9 @@ int test_back_pressure(const Gpu& gpu, const Flag& flag,
   auto decoder = sensor::HevcDecoder::create(options_of(gpu));
   CHECK(decoder.ok());
   std::vector<sensor::DecodedPicture> got;
-  std::vector<double> out_ms;  // when each came out, from the hold
+  std::vector<double> out_ms;    // when each came out, from the hold
+  vkc::StageMetrics kept;        // the receives made with three pictures kept
+  std::uint64_t kept_waits = 0;  // the device's host waits in them
   {
     Hold hold(flag, kCopy, kAfter);
     const auto start = std::chrono::steady_clock::now();
@@ -565,7 +574,13 @@ int test_back_pressure(const Gpu& gpu, const Flag& flag,
                        static_cast<std::int64_t>(i))
                 .ok());
       while (got.size() < 4) {
+        const bool three = got.size() == 3;
+        const std::uint64_t before = gpu.device.counters().host_waits;
+        std::optional<vkc::StageScope> scope;
+        if (three) scope.emplace(kept, "kept");
         auto picture = decoder->receive();
+        scope.reset();
+        if (three) kept_waits += gpu.device.counters().host_waits - before;
         CHECK(picture.ok());
         if (!picture.value()) break;
         out_ms.push_back(ms_since(start));
@@ -576,6 +591,11 @@ int test_back_pressure(const Gpu& gpu, const Flag& flag,
   }
   for (std::size_t k = 0; k < 3; ++k) CHECK(out_ms[k] < 1000.0);
   CHECK(out_ms[3] >= 1500.0);  // after the watchdog's raise
+  // The wait for picture 0 reads the counter: none of the device's host
+  // waits (the one allowed is the fourth picture's new slot's submit), and
+  // its time reaches the scope open around it.
+  CHECK(kept.rows().size() == 1 && kept.rows()[0].wait_ms >= 1000.0);
+  CHECK(kept_waits <= 1);
   for (std::size_t k = 0; k < 4; ++k) {
     CHECK(prepared_words(gpu, prep, frames.of(got[k].yuv)) ==
           clip.want[k].words);
