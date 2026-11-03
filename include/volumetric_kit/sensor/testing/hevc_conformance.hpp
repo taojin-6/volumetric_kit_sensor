@@ -76,9 +76,9 @@ struct HevcEncoderCase {
              ///< QPs or sizes needs. C1, C7-C9, C12, C13 and C13b, the
              ///< session's own behaviour, are left to a case that runs All.
     /// What the sequence says, on one key picture: its access unit (C3), its
-    /// SPS and VUI (C4) and the settings line (C10), as a sweep over colour
-    /// codes or efforts needs; @ref pictures is not read. The stream's other
-    /// rules are left to a case that runs Stream or All.
+    /// SPS and VUI (C4), its slice QP (C5) and the settings line (C10), as a
+    /// sweep over colour codes or efforts needs; @ref pictures is not read.
+    /// The stream's other rules are left to a case that runs Stream or All.
     Sequence,
   };
   Rules rules = Rules::All;
@@ -133,14 +133,17 @@ struct HevcEncoderCase {
 ///
 ///        What each rule checks holds whatever the timing: a loaded machine
 ///        changes which path a picture takes, not whether the rule holds.
-///        C13's drop in flight needs one picture sent while the drop codes,
-///        and tries up to 5 rounds for it.
+///        C13's drop in flight needs one picture sent while the drop codes:
+///        on NVENC the dropped picture's writer waits for a value the run
+///        sets once that one is sent; on VideoToolbox it tries up to 5
+///        rounds.
 /// @return Empty when the encoder keeps every rule; else the first rule it
 ///         breaks, named ("C5: ..."). `HevcEncoder::create`'s status where
 ///         @p c's session does not open (`Status::Code::Unsupported` where
 ///         there is no hardware path, which a runner skips unless one is
 ///         promised). `Status::Code::InvalidArgument` for a case this build
-///         cannot run: fewer than 4 pictures, targets with no device or
+///         cannot run: fewer than 4 pictures (but for
+///         `HevcEncoderCase::Rules::Sequence`), targets with no device or
 ///         allocator, or pixel buffers off Apple.
 VS_VIDEO_TESTING_API core::Result<std::string> hevc_encoder_breach(
     const HevcEncoderCase& c);

@@ -157,9 +157,10 @@ class VS_VIDEO_API HevcEncoder {
     std::string encoder;  ///< The hardware encoder, by the backend's name.
     ColorCodes color;     ///< What the VUI states: Options::color, normalized.
     int effort = 0;       ///< As applied; 0 where the backend has one speed.
-    /// The horizontal strips each picture is split into across the GPU's
-    /// encoders; 0 for the driver's own choice. NVENC asks for 3 from 4096
-    /// rows, and leaves smaller pictures to the driver.
+    /// The horizontal strips the session asks each picture to be split into
+    /// across the GPU's encoders; 0 for the driver's own choice. NVENC asks
+    /// for 3 from 4096 rows, and leaves smaller pictures to the driver; a GPU
+    /// with fewer encoders codes one strip on each (an RTX 4090 two).
     int strips = 0;
     /// The whole configuration, one line, as the session reports it where
     /// it reports it.
@@ -169,7 +170,9 @@ class VS_VIDEO_API HevcEncoder {
   /// @brief One coded picture, as @ref receive hands it back.
   struct CodedPicture {
     /// Annex B, each NAL unit after `00 00 00 01`, an IDR's VPS, SPS and PPS
-    /// first.
+    /// first. NVENC's also carry a picture-timing SEI before the slices, and
+    /// its SPS states an HRD at FFmpeg's default bit rate, which constant-QP
+    /// pictures do not keep: a reader ignores both, as sensor's decoders do.
     std::vector<std::uint8_t> access_unit;
     std::int64_t pts = 0;  ///< The one sent with it.
     bool key = false;      ///< An IDR, as the hardware marked it.
@@ -197,8 +200,12 @@ class VS_VIDEO_API HevcEncoder {
   ///         later, can); no hardware HEVC encoder, or one that takes no QP a
   ///         picture; or the hardware refusing the session (busy, at its
   ///         session limit, which a GeForce GPU sets at a few sessions, or
-  ///         taking no such parameter). Or `Status::Code::OutOfMemory` or
-  ///         `Status::Code::Backend` if the backend fails.
+  ///         taking no such parameter). Or `Status::Code::OutOfMemory`,
+  ///         `Status::Code::Backend` or `Status::Code::IoError` if the
+  ///         backend fails.
+  ///
+  /// On NVENC the session retains the GPU's primary CUDA context, which
+  /// costs what @ref CudaContext says where nothing else holds it.
   static core::Result<HevcEncoder> create(const Options& options);
 
   HevcEncoder(HevcEncoder&& other) noexcept;
@@ -308,9 +315,11 @@ class VS_VIDEO_API HevcEncoder {
   ///         which keeps the session, and the failure of the host's wait for
   ///         a target's `written` (`Status::Code::Backend`, as for a lost
   ///         device), which keeps it too. Or the backend's failure, which
-  ///         loses it: `Status::Code::IoError` for no access unit within 2 s
-  ///         of the picture's writer, a P-picture where an IDR was asked, or
-  ///         two access units for one picture; `Status::Code::Backend`;
+  ///         loses it: `Status::Code::IoError` for no access unit (on
+  ///         VideoToolbox, none within 2 s of the picture's writer; NVENC
+  ///         returns only once the hardware has, with no limit of its own),
+  ///         a P-picture where an IDR was asked, or two access units for one
+  ///         picture; `Status::Code::Backend`;
   ///         `Status::Code::OutOfMemory`.
   ///         A failed picture fails each picture already sent after it too,
   ///         since each would follow a gap, and a key is owed from the first

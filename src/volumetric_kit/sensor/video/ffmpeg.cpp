@@ -3,6 +3,7 @@
 
 #include "ffmpeg.hpp"
 
+#include <cerrno>
 #include <mutex>
 #include <string>
 
@@ -33,6 +34,31 @@ core::Status ffmpeg_error(const char* who, const std::string& what, int err) {
 core::Status ffmpeg_alloc_error(const char* who, const std::string& what) {
   return core::Status::out_of_memory(std::string(who) + ": " + what +
                                      ": FFmpeg could not allocate");
+}
+
+core::Status nvenc_open_failure(const std::string& what, int err) {
+  const std::string said = " (" + ffmpeg_message(err) + ")";
+  if (err == AVERROR(EINVAL) || err == AVERROR(ENOMEM)) {
+    return core::Status::unsupported(
+        "HevcEncoder: NVENC did not open " + what + said +
+        ": it is at its session limit, busy or out of memory, which another "
+        "session closing clears, or this GPU does not take a parameter of it, "
+        "its size for one");
+  }
+  if (err == AVERROR(ENOSYS) || err == AVERROR(ENOENT)) {
+    return core::Status::unsupported(
+        "HevcEncoder: NVENC on this GPU and driver does not code " + what +
+        said +
+        ": the GPU has no NVENC or no HEVC on it, the picture is past its "
+        "size, or the driver is older than this FFmpeg's NVENC API");
+  }
+  if (err == -1) {
+    return core::Status::unsupported(
+        "HevcEncoder: NVIDIA's encode library (libnvidia-encode) did not "
+        "load, so no NVENC opens " +
+        what + said);
+  }
+  return ffmpeg_error("HevcEncoder", "opening " + what, err);
 }
 
 ColorCodes color_codes(const AVFrame& frame) noexcept {

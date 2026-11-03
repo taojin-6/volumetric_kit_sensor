@@ -55,6 +55,15 @@ core::Status ffmpeg_error(const char* who, const std::string& what, int err);
 /// @return An OutOfMemory for an allocation FFmpeg refused.
 core::Status ffmpeg_alloc_error(const char* who, const std::string& what);
 
+/// @return What `avcodec_open2`'s @p err on hevc_nvenc says, @p what the
+///         session opened: Unsupported where NVENC or its driver refuses it
+///         (EINVAL or ENOMEM: at its session limit, busy or out of memory,
+///         or a parameter this GPU does not take, which FFmpeg's codes do not
+///         tell apart; ENOSYS or ENOENT: this GPU and driver code no such
+///         picture; -1: NVIDIA's encode library did not load), else as
+///         @ref ffmpeg_error.
+core::Status nvenc_open_failure(const std::string& what, int err);
+
 /// @return The colour @p frame declares, as H.273 codes.
 ColorCodes color_codes(const AVFrame& frame) noexcept;
 
