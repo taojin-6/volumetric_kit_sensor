@@ -15,9 +15,6 @@
 #include "cuda_timeline.hpp"
 #include "ffmpeg.hpp"
 #include "frame_color.hpp"
-extern "C" {
-#include <libavutil/hwcontext_cuda.h>
-}
 #elif defined(__APPLE__)
 #include "vt_hevc.hpp"
 #else
@@ -41,11 +38,6 @@ constexpr const char* kPath = "NVDEC";
 // frame, which the copy reads, until its picture's ready value is reached, so
 // CUDA runs at most this many pictures behind the decoder.
 constexpr std::size_t kKeptFrames = 3;
-
-// FFmpeg's device context's free: the context and stream it was given.
-void release_cuda_session(AVHWDeviceContext* device) {
-  delete static_cast<video::CudaSession*>(device->user_opaque);
-}
 
 // Whether this FFmpeg decodes HEVC on the build's hardware path.
 bool has_device_path(const AVCodec* codec) {
@@ -201,7 +193,7 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
         "no allocator to make NVDEC's picture images through "
         "(Options::allocator)");
   }
-  if (options.configure_ffmpeg_logging) av_log_set_level(AV_LOG_ERROR);
+  video::quiet_ffmpeg_log();
   const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
   if (codec == nullptr || !has_device_path(codec)) {
     return unsupported(std::string("this FFmpeg has no ") + kPath +
@@ -224,36 +216,23 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   // The hardware device: the primary context of the Vulkan device's GPU and a
   // stream of this decoder's own, which FFmpeg's device holds and lets go
   // with its last reference.
-  VKC_ASSIGN(std::unique_ptr<video::CudaSession> cuda,
-             video::CudaSession::open(*options.device, kWho));
-  const CudaContext& cuda_context = *cuda->context;
-  AVBufferRef* hw = av_hwdevice_ctx_alloc(kDeviceType);
-  if (hw == nullptr) return video::ffmpeg_alloc_error(kWho, "opening NVDEC");
-  impl->hw_device.reset(hw);
-  auto* hw_context = reinterpret_cast<AVHWDeviceContext*>(hw->data);
-  auto* hw_cuda = static_cast<AVCUDADeviceContext*>(hw_context->hwctx);
-  hw_cuda->cuda_ctx = cuda->context->handle();
-  hw_cuda->stream = cuda->stream->handle();
-  hw_context->user_opaque = cuda.release();
-  hw_context->free = &release_cuda_session;
-  int err = av_hwdevice_ctx_init(hw);
-  if (err < 0) {
-    return unsupported(std::string(kPath) +
-                       ": no device opens: " + video::ffmpeg_message(err));
-  }
+  VKC_ASSIGN(video::FfmpegCudaDevice hw,
+             video::FfmpegCudaDevice::open(*options.device, kWho, kPath));
+  const CudaContext& cuda_context = *hw.cuda->context;
+  const CUstream stream = hw.cuda->stream->handle();
+  impl->hw_device = std::move(hw.device);
   // The pictures' ready values, which CUDA sets on the decoder's stream after
   // each copy.
-  VKC_ASSIGN(impl->timeline,
-             video::CudaTimeline::create(*options.device, cuda_context,
-                                         hw_cuda->stream, kWho));
+  VKC_ASSIGN(impl->timeline, video::CudaTimeline::create(
+                                 *options.device, cuda_context, stream, kWho));
   VKC_ASSIGN(impl->pictures,
              video::CudaPlanePictures::create(
-                 *options.device, *options.allocator, cuda_context,
-                 hw_cuda->stream, *impl->timeline, options.queue_families,
+                 *options.device, *options.allocator, cuda_context, stream,
+                 *impl->timeline, options.queue_families,
                  options.queue_family_count, kWho));
 
   AVCodecContext* context = impl->codec.get();
-  context->hw_device_ctx = av_buffer_ref(hw);
+  context->hw_device_ctx = av_buffer_ref(impl->hw_device.get());
   if (context->hw_device_ctx == nullptr) {
     return video::ffmpeg_alloc_error(kWho, "sharing the device");
   }
@@ -266,7 +245,7 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   // surface, the stream's DPB + 5, about 100 MB more a 4K decoder
   // (DECISIONS.md, the 2026-11-02 hand-over entry).
   context->thread_count = 1;
-  err = avcodec_open2(context, codec, nullptr);
+  const int err = avcodec_open2(context, codec, nullptr);
   if (err < 0) return video::ffmpeg_error(kWho, "opening the decoder", err);
 #else
   VKC_ASSIGN(impl->vt, video::VtHevc::open(

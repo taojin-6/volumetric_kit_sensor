@@ -1,0 +1,50 @@
+#version 450
+// testing::Nv12Writer's kernel for a target in a buffer (nv12_writer.cpp), as
+// NVENC's are: an 8-bit NV12 picture's codes, luma rows then chroma rows
+// packed in a buffer (Nv12Writer::upload), stored into the target's rows,
+// `stride` bytes apart, its luma from byte `luma_at` and its chroma (Cb
+// first) from `chroma_at`, as a producer's kernel writes an encoder's target.
+// Invocation i stores the target's word i of its luma rows, then of its
+// chroma rows; the bytes past a row's codes, up to its stride, are 0.
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 256) in;
+
+// The picture's size, where its chroma starts in the packed codes, and the
+// target's rows: their stride and where each plane starts (bytes, each a
+// multiple of 4).
+layout(push_constant, scalar) uniform Params {
+  uint width;
+  uint height;
+  uint codes_chroma_at;
+  uint stride;
+  uint luma_at;
+  uint chroma_at;
+} pc;
+
+layout(set = 0, binding = 0, scalar) readonly buffer Planes { uint words[]; };
+layout(set = 0, binding = 1, scalar) writeonly buffer Target { uint target[]; };
+
+uint code_at(uint i) { return (words[i >> 2] >> ((i & 3u) * 8u)) & 0xFFu; }
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint row_words = pc.stride / 4u;
+  uint luma_words = row_words * pc.height;
+  uint chroma_rows = (pc.height + 1u) / 2u;
+  // A chroma row's codes: a Cb, Cr pair for every two luma columns.
+  uint chroma_width = 2u * ((pc.width + 1u) / 2u);
+  bool luma = i < luma_words;
+  uint j = luma ? i : i - luma_words;
+  if (!luma && j >= row_words * chroma_rows) return;
+  uint row = j / row_words;
+  uint column = (j % row_words) * 4u;
+  uint width = luma ? pc.width : chroma_width;
+  uint from = luma ? row * pc.width : pc.codes_chroma_at + row * chroma_width;
+  uint word = 0u;
+  for (uint k = 0u; k < 4u; ++k) {
+    if (column + k < width) word |= code_at(from + column + k) << (8u * k);
+  }
+  uint at = (luma ? pc.luma_at : pc.chroma_at) / 4u;
+  target[at + j] = word;
+}

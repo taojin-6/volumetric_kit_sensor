@@ -464,7 +464,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   (`send_pixel_buffer`). The encoder rules C1-C13 are one function any
   runner calls (`sensor_video_testing`). *Amended 2026-11-02:* the
   device-written target (`target`, `send` with a timeline value) followed,
-  with C9 and C13b.
+  with C9 and C13b. *Amended 2026-11-03:* NVENC followed (the 2026-11-03
+  NVENC entry).
 - [**2026-11-02**](#2026-11-02--host-depth-may-carry-a-confidence-plane-which-frame-prep-gates-on-the-gpu-per-raw-sample-before-anything-else-reads-it-level-0-is-never-integrated-and-a-frame-without-a-plane-is-prepared-bit-for-bit-as-before-amends-the-2026-09-28-gpu-pre-processing-entry) —
   Host depth may carry a confidence plane (`RgbdFrame::depth_confidence`, a
   byte a sample in the sensor's levels) and a floor (`min_confidence`):
@@ -540,6 +541,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   `InvalidArgument`, and its host wait for the oldest of three kept
   pictures asks the stream between slices, so a failed one returns its
   error, settled.
+
+- [**2026-11-03**](#2026-11-03--the-encoder-codes-on-nvenc-too-kinflight--1-exported-buffers-a-session-as-its-targets-which-nvenc-reads-through-cuda-with-no-copy-every-qp-set-from-the-options-and-strips-from-4096-rows-amends-the-2026-11-02-encoder-entries) —
+  The encoder codes on NVENC too, through FFmpeg's `hevc_nvenc`: targets
+  only, `kInFlight + 1` exported buffers a session, which NVENC reads through
+  CUDA with no copy, the free one handed out longest ago next; every QP set
+  from the options; 3 strips from 4096 rows, which an FFmpeg before 7.1
+  refuses. FFmpeg's log level is sensor's to set, once.
 
 ## Decision record
 
@@ -6245,7 +6253,8 @@ buffer of the session's size and range, its tags agreeing with the
 session's colour, coded as it is, with no Vulkan device. The device-written
 target (`target`, `send` with a timeline value) and NVENC follow in their
 own PRs; until NVENC, a Linux build's `create` refuses. *Amended
-2026-11-02:* the target landed (the 2026-11-02 target entry).
+2026-11-02:* the target landed (the 2026-11-02 target entry). *Amended
+2026-11-03:* NVENC landed (the 2026-11-03 NVENC entry).
 
 **Why a coding thread.** In this mode VideoToolbox codes inside
 `VTCompressionSessionEncodeFrame`: 5.6-5.9 ms at 1920x1440 and 15.2-15.4 ms
@@ -7123,3 +7132,70 @@ error, and of `receive`'s refusal; the wait not sliced. The suite on that
 RTX 4090, on the lab RTX 5090 (FFmpeg 8, the validation layer, the handover
 and decoder tests also under synchronization validation) and on the M5 Max
 (VideoToolbox, unchanged; validation).
+
+### 2026-11-03 — The encoder codes on NVENC too: `kInFlight + 1` exported buffers a session as its targets, which NVENC reads through CUDA with no copy, every QP set from the options, and strips from 4096 rows (amends the 2026-11-02 encoder entries).
+
+**The rule.** A Linux build with `VS_WITH_FFMPEG` and `VS_WITH_CUDA` codes
+on NVENC through FFmpeg's `hevc_nvenc` (`nvenc_session.cpp`), behind the
+same API, rules and coding thread as VideoToolbox.
+- **Targets only.** `create` needs `Options::device` and
+  `Options::allocator` (`InvalidArgument` without), a device that exports
+  memory, on a GPU CUDA reaches (`Unsupported` otherwise).
+- **Targets are `kInFlight + 1` exported buffers**, made at `create`, each
+  mapped into CUDA once; FFmpeg registers each with NVENC once, by pointer,
+  and NVENC reads it with no copy. NV12 rows: the luma's from 0, the chroma's
+  after them, at a stride of the width rounded up to the GPU's texture
+  alignment, as FFmpeg pads its own CUDA frames. `target` records into the
+  batch the buffer's crossing from outside Vulkan before its commands and
+  back after them. The free buffer handed out longest ago goes next. A lost
+  session's buffers pass to the session that opens again.
+- **One configuration**: preset `p<effort>`, `tune ll`, `rc constqp` with
+  `init_qpP`, `init_qpB` and `init_qpI` all set from the options, forced
+  IDRs, no scene cut, no look-ahead, `delay` 0, zero latency, no multipass,
+  no B-frames, an endless GOP. From 4096 rows, `split_encode_mode` 3; below,
+  the driver's choice. An FFmpeg without that option refuses a picture of
+  4096 rows or more in `create`, naming FFmpeg 7.1 and nv-codec-headers 12.1.
+- **Colour and QP.** The VUI's codes go in as FFmpeg numbers them, H.273's;
+  FFmpeg writes no siting, so sitings 1 to 5 are refused. QP 0 to 51.
+- **FFmpeg's CUDA device** is opened by one helper (`FfmpegCudaDevice`) for
+  NVDEC and NVENC alike. `HevcDecoder::Options::configure_ffmpeg_logging` is
+  removed: the first coder that opens on NVIDIA sets FFmpeg's log level to
+  ERROR, once a process.
+- **The rules run on NVENC.** `hevc_encoder_breach` is every backend's; its
+  pixel-buffer parts (C11) stay Apple's. C9 checks NVENC's buffer target and
+  that a target given up comes back two targets later at the soonest; C10
+  pins NVENC's settings line. `Rules::Sequence` runs what the sequence says
+  on one key (C3-C5, C10), for the colour and effort sweeps. `Nv12Writer`
+  writes a buffer's rows.
+
+**Why.**
+- **3 buffers, not the 2 planned.** `target` keeps the target taken before
+  until the new one is handed out, so a target taken while one picture
+  codes and one target is held needs a third. Handing out the oldest free
+  one makes a target given up the last to come back.
+- **Every QP set.** A QP left unset is FFmpeg's to choose, and the
+  session's QPs are the caller's.
+- **Strips by rows, not by GPU.** FFmpeg reports no engine count, and 3
+  strips equal `auto` on a GPU of 2 engines, so the rule needs no GPU name.
+- **No version floor below 4096 rows.** FFmpeg 6.1 (24.04's) keeps every
+  rule there, so `create` checks only the option the strips need.
+- **No GPU-side wait for NVENC's input.** NVENC holds the coding thread
+  through the encode anyway; a device-side wait would save the thread's wake
+  only.
+- **The test's PSNR floor is 40 dB on NVENC.** NVENC codes the pattern's
+  sharp chroma edges at 43-47 dB at QP 22 (RTX 4090 and 5090); a picture read
+  at the wrong stride fails the pattern's exact squares first.
+
+**Validation.** `sensor_video_hevc_encoder` on NVENC: every rule through
+targets, the stream's at both QP ends (0 and 51) and a 4n+2 width, the
+sequence's on every code of the set and at efforts 1 and 7, the quality and
+writer cases, devices refused, strips at 4094 and 4096 rows. A shared RTX
+4090 (FFmpeg 6.1, CUDA 13.4): the full suite, 56 tests, 3.0 s for the
+encoder test on a quiet GPU, the 4096-row picture refused as the option is
+missing. The lab RTX 5090 (FFmpeg 8): the full suite under the validation
+layer, the encoder test under synchronization validation too, the 4096-row
+picture coded in strips. The M5 Max (VideoToolbox): the full suite, 55
+tests. Planted bugs, each failing its test: an unset `init_qpI` and an
+unset `init_qpB` (C5), `forced-idr` not set (C2), strips
+from 4094 rows (the strips case), the oldest-free hand-out dropped (C9), and
+a target described at another stride than NVENC reads (the quality case).

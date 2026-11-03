@@ -31,6 +31,9 @@ namespace volumetric_kit::sensor {
 ///        order, NV12, on that device (@ref DecodedPicture), and never cross
 ///        to the host.
 ///
+/// On NVIDIA, sensor sets FFmpeg's log level to ERROR once, at the first
+/// coder it opens: FFmpeg has one logger, for the whole process.
+///
 /// Every access unit must be sent: each frame is predicted from earlier ones,
 /// so skipping one costs the pictures after it until the next key frame
 /// (VideoToolbox reports each as `Status::Code::IoError`). Drop pictures after
@@ -50,10 +53,6 @@ class VS_VIDEO_API HevcDecoder {
     /// the samples are the stream's own: VideoToolbox writes them at the
     /// range the stream declares, video range when it declares none.
     std::optional<VideoColorDescription> unlabelled_color;
-    /// Set FFmpeg's log level to ERROR, where NVDEC decodes through it. Does
-    /// nothing on Apple, which uses no FFmpeg. Process-wide: FFmpeg has one
-    /// logger.
-    bool configure_ffmpeg_logging = true;
     /// The device the pictures are handed out on, whose GPU decodes them: one
     /// that imports Metal textures on Apple, one that exports memory and
     /// semaphores and is a CUDA device elsewhere. Required. Borrowed: it must
