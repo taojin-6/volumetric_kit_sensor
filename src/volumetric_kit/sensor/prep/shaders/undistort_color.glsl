@@ -17,8 +17,8 @@
 // (stereo/shaders/rectify.comp) samples and converts through the same
 // functions, from a buffer, where its own rays put each pixel, and averages
 // the samples before converting where its view shrinks the picture. It calls
-// ycbcr_word and ycbcr_to_word alone: its words are prepared again
-// downstream, which applies the response once.
+// ycbcr_word and ycbcr_to_word alone, so its views get no response
+// (DESIGN.md, GpuFramePrep's color_response).
 
 #ifndef VS_PREP_UNDISTORT_COLOR_GLSL
 #define VS_PREP_UNDISTORT_COLOR_GLSL
@@ -105,7 +105,7 @@ float luma_level(float y) {
 }
 
 // R'G'B' as a word with full coverage, each channel clamped and coded.
-uint word(vec3 rgb) {
+uint rgb_word(vec3 rgb) {
   return code(rgb.r) | (code(rgb.g) << 8) | (code(rgb.b) << 16) | 0xFF000000u;
 }
 
@@ -162,7 +162,7 @@ vec3 ycbcr_to_rgb(vec3 ycc) {
 }
 
 // ycbcr_to_rgb's R'G'B' as a word with full coverage; luma alone is grey.
-uint ycbcr_to_word(vec3 ycc) { return word(ycbcr_to_rgb(ycc)); }
+uint ycbcr_to_word(vec3 ycc) { return rgb_word(ycbcr_to_rgb(ycc)); }
 
 // The picture's Y'CbCr at `s`, converted, as an R'G'B' word with full
 // coverage; luma alone is grey.
@@ -183,7 +183,7 @@ uint responded_word(vec3 rgb, vec2 pixel, vec3 gain, float a, float b,
   float q = min(dot(n, n), r_max * r_max);
   float f = 1.0 + a * q + b * q * q;
   vec3 linear = vs_srgb_to_linear(clamp(rgb, 0.0, 1.0)) * (gain * f);
-  return word(vs_linear_to_srgb(linear));
+  return rgb_word(vs_linear_to_srgb(linear));
 }
 
 #endif  // VS_PREP_UNDISTORT_COLOR_GLSL

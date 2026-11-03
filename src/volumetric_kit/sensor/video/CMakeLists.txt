@@ -65,15 +65,15 @@ endif()
 # --- sensor_video: the video coders ------------------------------------------
 # HEVC and JPEG decoders on the GPU's hardware, handing out pictures on the
 # device only, and the HEVC encoder: VideoToolbox's on every Apple platform,
-# with no FFmpeg, and NVDEC and nvJPEG through CUDA elsewhere, built only with
-# VS_WITH_FFMPEG (see cmake/vs_ffmpeg.cmake), where the encoder refuses until
-# its NVENC backend lands. Camera-neutral: it links sensor_frame and, on Apple,
-# sensor_apple, and no camera tier, so a capture driver links it. No FFmpeg type
-# reaches the public headers, and a platform type only Apple's encoder entry
-# (video/hevc_encoder_apple.hpp, CVPixelBufferRef); ffmpeg.hpp is FFmpeg's one
-# include and videotoolbox.hpp the one home of VideoToolbox's sessions.
-# hevc_encoder.cpp holds the encoder's rules and coding thread for every
-# backend, its session the backend's (hevc_encode_session.hpp).
+# with no FFmpeg, and NVDEC, nvJPEG and NVENC through CUDA elsewhere, built only
+# with VS_WITH_FFMPEG (see cmake/vs_ffmpeg.cmake). Camera-neutral: it links
+# sensor_frame and, on Apple, sensor_apple, and no camera tier, so a capture
+# driver links it. No FFmpeg type reaches the public headers, and a platform
+# type only Apple's encoder entry (video/hevc_encoder_apple.hpp,
+# CVPixelBufferRef); ffmpeg.hpp is FFmpeg's one include and videotoolbox.hpp the
+# one home of VideoToolbox's sessions. hevc_encoder.cpp holds the encoder's
+# rules and coding thread for every backend, its session the backend's
+# (hevc_encode_session.hpp).
 add_library(sensor_video)
 add_library(volumetric_kit::sensor_video ALIAS sensor_video)
 
@@ -127,12 +127,14 @@ else()
   # (cuda_pictures.cpp), through the public CUDA interop (cuda_interop.hpp,
   # which includes cuda.h, so the toolkit's headers are PUBLIC), and handed out
   # before CUDA's work has run, with the value of an exported timeline CUDA
-  # signals after it (cuda_timeline.cpp). FFmpeg is PRIVATE. CUDA's headers
-  # only: libcuda and libnvjpeg are loaded at run time (cuda_driver.cpp), so a
-  # program built with CUDA starts where no NVIDIA driver is.
+  # signals after it (cuda_timeline.cpp). NVENC reads the encoder's targets,
+  # exported buffers the device writes, through CUDA too (nvenc_session.cpp).
+  # FFmpeg is PRIVATE. CUDA's headers only: libcuda and libnvjpeg are loaded at
+  # run time (cuda_driver.cpp), so a program built with CUDA starts where no
+  # NVIDIA driver is.
   target_sources(
     sensor_video PRIVATE ffmpeg.cpp cuda_driver.cpp cuda_interop.cpp
-                         cuda_pictures.cpp cuda_timeline.cpp)
+                         cuda_pictures.cpp cuda_timeline.cpp nvenc_session.cpp)
   target_include_directories(sensor_video SYSTEM
                              PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
   target_link_libraries(sensor_video PRIVATE PkgConfig::VS_FFMPEG
@@ -150,16 +152,19 @@ vs_target_warnings(sensor_video)
 # hevc_encoder_breach (testing/hevc_conformance.hpp): the rules every backend's
 # HevcEncoder keeps, checked with sensor's syntax readers and decoder, for the
 # package's tests and an application's on a device; and Nv12Writer
-# (testing/nv12_writer.hpp), the compute kernel that writes a test picture into
-# an encoder's target as a producer's kernel would (shaders/write_nv12.comp,
-# embedded). Static, with no test framework and no core test support, so it
+# (testing/nv12_writer.hpp), the compute kernels that write a test picture into
+# an encoder's target as a producer's kernel would: plane images
+# (shaders/write_nv12.comp) or a buffer's rows (shaders/write_nv12_buffer.comp),
+# embedded. Static, with no test framework and no core test support, so it
 # builds wherever sensor_video does; the test pattern is
 # testing/nv12_pattern.hpp's.
 add_library(sensor_video_testing STATIC hevc_conformance.cpp nv12_writer.cpp)
 add_library(volumetric_kit::sensor_video_testing ALIAS sensor_video_testing)
 include(vs_embed)
-vs_embed_shaders(sensor_video_testing SHADERS
-                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/write_nv12.comp")
+vs_embed_shaders(
+  sensor_video_testing SHADERS
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/write_nv12.comp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/write_nv12_buffer.comp")
 
 generate_export_header(
   sensor_video_testing

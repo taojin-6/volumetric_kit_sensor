@@ -42,7 +42,6 @@ class HevcColorDecoder {
 
   struct Options {
     std::uint32_t fps = 30;  // the stream's rate, which sizes the queue
-    bool configure_ffmpeg_logging = true;
     std::string who;
     // A colour frame's number, by which a loss shows: the SDK's index when
     // unset. A test numbers its own frames, since an SDK frame's index

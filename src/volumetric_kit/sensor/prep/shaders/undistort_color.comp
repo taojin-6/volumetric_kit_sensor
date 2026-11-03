@@ -49,7 +49,7 @@ void main() {
                       rgb_at(lo.x, hi.y), rgb_at(hi.x, hi.y), f) /
              255.0;
   color[gid] = overlap.identity != 0u
-                   ? word(rgb)
+                   ? rgb_word(rgb)
                    : responded_word(rgb, pixel, overlap.gain, overlap.a,
                                     overlap.b, overlap.r_max);
 }
