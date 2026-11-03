@@ -7574,7 +7574,9 @@ the copy is mostly done before the wait (RTX 4090 0.004 ms). nvJPEG (RTX
 `CudaTimeline::wait` itself, the stream held as above and the wait begun
 0.3, 2.5, 7 or 15 ms before the release, 120 waits each, p50 in ms: before
 this change 8.72, 6.52, 2.02, 4.03 on the RTX 4090 and 9.72, 7.52, 2.92,
-5.17 on the RTX 5090; after, 0.05-0.10 and 0.04-0.07, p95 at most 0.12.
+5.17 on the RTX 5090; after, 0.04-0.10 and 0.06-0.07 up to 7 ms, p95 at
+most 0.12, and at 15 ms, the reads 1 ms apart by then, 0.31 and 0.20 (p95
+0.36 and 0.28).
 
 **Why.** A consumer measured about 10 ms more a record once it waited on
 the host for each decoded picture; a read of the counter took the cost
