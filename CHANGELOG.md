@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.31.0] - 2026-11-03
+## [0.32.0] - 2026-11-03
 
 ### Changed
 
@@ -16,6 +16,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as none too: a pair's sequence is still checked, and its time, where it
   has one, on the last one reported. DECISIONS.md, the 2026-11-02 frame
   contract entry, amended.
+
+## [0.31.0] - 2026-11-03
+
+### Fixed
+
+- **A GPU fault leaves no reader waiting for good.** `HevcDecoder` (NVDEC)
+  returns every error from `send` or `receive` but `InvalidArgument` once
+  each ready value it handed out is set, from the host where a failed
+  stream dropped CUDA's signal; with three pictures kept, `receive`'s host
+  wait for the oldest asks the stream between 10 ms slices, so a failed one
+  returns CUDA's error, settled, and one that runs dry with the value unset
+  a Backend error, rather than waiting for good. Each slice that blocks
+  counts as one of the device's `host_waits`. DECISIONS.md, the 2026-11-03
+  fault entry.
+- `sensor_video_handover`'s CUDA table drops ready values' signals and
+  reports a faulted stream, as a GPU fault leaves them. Under a validation
+  layer older than 1.4.341, which reports a host signal after a read of an
+  exported timeline (VUID-VkSemaphoreSignalInfo-value-03259), those tests
+  run in a second, unvalidated run.
 
 ## [0.30.0] - 2026-11-02
 
