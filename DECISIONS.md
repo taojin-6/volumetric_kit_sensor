@@ -5708,7 +5708,8 @@ exactly the pixels above it no return, the rest unchanged) and above all
 (none dropped), between on a 60 x 30 rig, whose network rows are wider
 than its views' (the spread read where the disparity is), and between with
 the near gate at `max_disparity` 30 (0.14 m: a pixel either gate drops no
-return, the frame's `min_depth` the near gate's); a gate on a
+return, the frame's `min_depth` the near gate's), each frame keeping the
+frame contract (`rgbd_breach`); a gate on a
 model without the spread refused, before the build (no plan written) and
 on that model's cached plan; the quarter spread and the fourth output of
 another name refused, with and without a gate, naming them; a negative,

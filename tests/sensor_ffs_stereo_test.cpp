@@ -16,7 +16,8 @@
 // here, and pairs kept past the next on the rectifier's new views. The spread
 // gate runs on a model whose disparity_spread is a sixteenth of the right
 // view, so the pixels it drops are known exactly, on a rig of the network's
-// size and on a smaller one, and beside the near gate.
+// size and on a smaller one, and beside the near gate; each of its frames
+// keeps the frame contract (testing/rgbd_contract.hpp).
 //
 // Where CUDA does not reach the device's GPU, or the device exports no
 // memory, the test skips; VS_TEST_HEVC_BACKEND, which CI sets on the NVIDIA
@@ -52,6 +53,7 @@
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 #include "volumetric_kit/sensor/stereo/stereo_rectifier.hpp"
+#include "volumetric_kit/sensor/testing/rgbd_contract.hpp"
 #include "volumetric_kit/sensor/video/cuda_interop.hpp"
 
 namespace vkc = volumetric_kit::core;
@@ -935,6 +937,16 @@ int run_gated(Fixture& t, std::uint32_t w, std::uint32_t h, float max_spread,
                  static_cast<float>(1.05 * kFocal * kBaseline / max_disparity));
   }
   CHECK(std::abs(frame->min_depth - expected.min_depth) < 1e-6);
+  // A gate changes samples alone: the frame keeps the frame contract on the
+  // rectifier's depth_info(), the info StereoDepthSensor builds on.
+  {
+    sensor::SensorStats one;
+    one.received = one.delivered = 1;
+    const std::string breach =
+        sensor::testing::rgbd_breach(rectifier->depth_info(), {*frame}, one);
+    if (!breach.empty()) std::fprintf(stderr, "%s\n", breach.c_str());
+    CHECK(breach.empty());
+  }
   std::vector<std::optional<std::uint16_t>> want(std::size_t{w} * h);
   for (std::size_t i = 0; i < want.size(); ++i) {
     const double d =
