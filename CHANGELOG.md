@@ -4,6 +4,58 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-11-02
+
+### Added
+
+- **`HevcEncoder`** (`video/hevc_encoder.hpp`, `sensor_video`), the twin
+  of `HevcDecoder`: one hardware H.265 Main session in one low-latency
+  configuration, a slice QP for P-pictures and one for IDRs fixed for the
+  session, keys only when asked, the VUI from `Options::color` normalized
+  and checked against one code set. Pipelined: a send returns at once, a
+  coding thread of its own codes (allocating nothing; user-interactive
+  quality of service on Apple), and `receive(picture, timeout_ns)` hands
+  back each Annex B access unit in the order sent, swapping buffers, at most
+  `kInFlight` (2) in flight; a finite wait sleeps even with none in flight.
+  `key_owed()`, `lost()`, `facts()` and
+  `inject(Fault)` as the header says. On VideoToolbox in every Apple build;
+  `create` refuses on Linux until NVENC lands. DECISIONS.md, the
+  2026-11-02 encoder entry.
+- **`send_pixel_buffer(encoder, pixels, key, pts)`**
+  (`video/hevc_encoder_apple.hpp`, Apple): a camera's `CVPixelBuffer` coded
+  as it is, with no Vulkan device.
+- **`video_backend()`** (`video/backend.hpp`): `VideoToolbox` or `Nvidia`.
+- **`color_codes_of(pixels)`** (`apple/core_video_color.hpp`,
+  `sensor_apple`): a `CVPixelBuffer`'s colour tags as H.273 codes, through
+  Core Video's own mapping.
+- **Test support:** `testing::SliceReader` (`testing/hevc_slices.hpp`,
+  `sensor_video_syntax`): each picture's first slice type and QP and each
+  SPS's profile and sub-layers; `hevc_encoder_breach`
+  (`testing/hevc_conformance.hpp`, new static target
+  `sensor_video_testing`): the encoder rules C1-C13 on one case;
+  `hevc_encoder_promised()` (`VS_TEST_HEVC_ENCODER`);
+  `testing/nv12_pattern.hpp`, the host half of `nv12_picture.hpp`, with
+  `pattern_index`, the band's reader; and on Apple
+  `testing/nv12_pixel_buffer.hpp`'s `pixel_buffer`.
+- `tests/data/hevc/vt_pattern_1920x1440.h265`, coded by VideoToolbox's
+  encoder (`tools/vt_pattern_clip`): the test pattern, 12 pictures, keys at
+  0 and 6. The decoder test decodes it on NVDEC and VideoToolbox to
+  libavcodec's MD5.
+
+### Changed
+
+- `sensor_apple` links `sensor_video_syntax` PUBLIC (for `ColorCodes`);
+  `sensor_video` links CoreVideo PUBLIC on Apple (the encoder's Apple entry
+  names `CVPixelBufferRef`).
+- `testing/nv12_picture.hpp` includes `testing/nv12_pattern.hpp`, where
+  `HostNv12` and `test_pattern` now live, unchanged, with the band's layout
+  from `testing/index_band.hpp`.
+- The H.265 parsers read through internal walks the slice reader shares;
+  what they read and refuse is unchanged.
+- The iOS build check also compiles `sensor_video_testing` and the Apple
+  headers as plain C++, and links an app's encoder calls into an iOS
+  executable.
+
 ## [0.28.0] - 2026-11-02
 
 ### Added

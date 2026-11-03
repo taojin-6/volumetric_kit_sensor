@@ -17,7 +17,8 @@ set(_vs_sensor_video_generated_inc
 add_library(sensor_video_syntax)
 add_library(volumetric_kit::sensor_video_syntax ALIAS sensor_video_syntax)
 
-target_sources(sensor_video_syntax PRIVATE hevc_syntax.cpp key_gate.cpp)
+target_sources(sensor_video_syntax PRIVATE hevc_slices.cpp hevc_syntax.cpp
+                                           key_gate.cpp)
 
 generate_export_header(
   sensor_video_syntax
@@ -56,24 +57,28 @@ target_include_directories(
 
 vs_target_warnings(sensor_video_syntax)
 
-# The decoders, on every Apple platform and elsewhere with FFmpeg.
+# The coders, on every Apple platform and elsewhere with FFmpeg.
 if(NOT APPLE AND NOT VS_WITH_FFMPEG)
   return()
 endif()
 
-# --- sensor_video: the video decoders ----------------------------------------
+# --- sensor_video: the video coders ------------------------------------------
 # HEVC and JPEG decoders on the GPU's hardware, handing out pictures on the
-# device only: VideoToolbox's on every Apple platform, with no FFmpeg, and NVDEC
-# and nvJPEG through CUDA elsewhere, built only with VS_WITH_FFMPEG (see
-# cmake/vs_ffmpeg.cmake). Camera-neutral: it links sensor_frame and, on Apple,
-# sensor_apple, and no camera tier, so a capture driver links it. No FFmpeg or
-# platform type reaches the public headers; ffmpeg.hpp is FFmpeg's one include
-# and videotoolbox.hpp the one home of VideoToolbox's sessions.
+# device only, and the HEVC encoder: VideoToolbox's on every Apple platform,
+# with no FFmpeg, and NVDEC and nvJPEG through CUDA elsewhere, built only with
+# VS_WITH_FFMPEG (see cmake/vs_ffmpeg.cmake), where the encoder refuses until
+# its NVENC backend lands. Camera-neutral: it links sensor_frame and, on Apple,
+# sensor_apple, and no camera tier, so a capture driver links it. No FFmpeg type
+# reaches the public headers, and a platform type only Apple's encoder entry
+# (video/hevc_encoder_apple.hpp, CVPixelBufferRef); ffmpeg.hpp is FFmpeg's one
+# include and videotoolbox.hpp the one home of VideoToolbox's sessions.
+# hevc_encoder.cpp holds the encoder's rules and coding thread for every
+# backend, its session the backend's (hevc_encode_session.hpp).
 add_library(sensor_video)
 add_library(volumetric_kit::sensor_video ALIAS sensor_video)
 
 target_sources(sensor_video PRIVATE frame_color.cpp hevc_decoder.cpp
-                                    jpeg_decoder.cpp)
+                                    hevc_encoder.cpp jpeg_decoder.cpp)
 
 generate_export_header(
   sensor_video
@@ -106,12 +111,16 @@ if(APPLE)
   # VideoToolbox decodes on the hardware directly (vt_hevc.cpp, vt_jpeg.cpp,
   # their sessions in videotoolbox.cpp), and its pictures reach Vulkan through
   # sensor_apple's PixelBufferImporter. The H.265 syntax it is handed slices by
-  # is sensor_video_syntax's.
-  target_sources(sensor_video PRIVATE videotoolbox.cpp vt_hevc.cpp vt_jpeg.cpp)
+  # is sensor_video_syntax's. It encodes on the hardware too
+  # (vt_hevc_encode.cpp), a CVPixelBuffer sent as it is
+  # (hevc_encoder_apple.cpp), whose header makes CoreVideo PUBLIC.
+  target_sources(
+    sensor_video PRIVATE hevc_encoder_apple.cpp videotoolbox.cpp vt_hevc.cpp
+                         vt_hevc_encode.cpp vt_jpeg.cpp)
+  target_link_libraries(sensor_video PUBLIC "-framework CoreVideo")
   target_link_libraries(
-    sensor_video
-    PRIVATE sensor_apple "-framework VideoToolbox" "-framework CoreMedia"
-            "-framework CoreVideo" "-framework CoreFoundation")
+    sensor_video PRIVATE sensor_apple "-framework VideoToolbox"
+                         "-framework CoreMedia" "-framework CoreFoundation")
 else()
   # NVDEC's pictures copied into Vulkan plane images, and nvJPEG's decoded into
   # Vulkan buffers, that CUDA has imported, without a trip through the host
@@ -136,3 +145,38 @@ target_include_directories(
                       "$<BUILD_INTERFACE:${_vs_sensor_video_generated_inc}>")
 
 vs_target_warnings(sensor_video)
+
+# --- sensor_video_testing: the encoder rules, for any runner -----------------
+# hevc_encoder_breach (testing/hevc_conformance.hpp): the rules every backend's
+# HevcEncoder keeps, checked with sensor's syntax readers and decoder, for the
+# package's tests and an application's on a device. Static, with no test
+# framework and no core test support, so it builds wherever sensor_video does;
+# the test pattern is testing/nv12_pattern.hpp's.
+add_library(sensor_video_testing STATIC hevc_conformance.cpp)
+add_library(volumetric_kit::sensor_video_testing ALIAS sensor_video_testing)
+
+generate_export_header(
+  sensor_video_testing
+  BASE_NAME
+  VS_VIDEO_TESTING
+  EXPORT_MACRO_NAME
+  VS_VIDEO_TESTING_API
+  EXPORT_FILE_NAME
+  "${_vs_sensor_video_generated_inc}/volumetric_kit/sensor/video/testing_export.hpp"
+)
+target_compile_definitions(sensor_video_testing
+                           PUBLIC VS_VIDEO_TESTING_STATIC_DEFINE)
+set_target_properties(
+  sensor_video_testing
+  PROPERTIES CXX_VISIBILITY_PRESET hidden
+             VISIBILITY_INLINES_HIDDEN ON
+             POSITION_INDEPENDENT_CODE ON)
+target_compile_features(sensor_video_testing PUBLIC cxx_std_17)
+target_compile_options(sensor_video_testing PRIVATE -fexceptions)
+target_link_libraries(sensor_video_testing PUBLIC sensor_video)
+if(APPLE)
+  target_link_libraries(
+    sensor_video_testing PRIVATE "-framework CoreVideo"
+                                 "-framework CoreFoundation")
+endif()
+vs_target_warnings(sensor_video_testing)

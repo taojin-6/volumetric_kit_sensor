@@ -3,10 +3,12 @@
 
 #pragma once
 
-// VideoToolbox's decoder sessions, the one place the HEVC and JPEG decoders
-// (Apple) open them and decode through them: NV12 on IOSurfaces Metal reads,
-// which PixelBufferImporter hands to Vulkan as images, on the hardware
-// decoder or not at all. Internal.
+// VideoToolbox's sessions: the decoder sessions, the one place the HEVC and
+// JPEG decoders (Apple) open them and decode through them, NV12 on
+// IOSurfaces Metal reads, which PixelBufferImporter hands to Vulkan as
+// images, on the hardware decoder or not at all; the owner of the HEVC
+// encoder's compression session (vt_hevc_encode.cpp); and the Status of a
+// failure of either. Internal.
 
 #include <VideoToolbox/VideoToolbox.h>
 
@@ -40,11 +42,27 @@ using SessionPtr =
     std::unique_ptr<std::remove_pointer_t<VTDecompressionSessionRef>,
                     SessionClose>;
 
-// A VideoToolbox failure as the decoders report it, @p who and @p what naming
+// A compression session, invalidated and released with its owner: no output
+// arrives once that returns.
+struct CompressionClose {
+  void operator()(VTCompressionSessionRef session) const noexcept {
+    VTCompressionSessionInvalidate(session);
+    CFRelease(session);
+  }
+};
+using CompressionPtr =
+    std::unique_ptr<std::remove_pointer_t<VTCompressionSessionRef>,
+                    CompressionClose>;
+
+// An empty dictionary to fill, released with its values.
+CfPtr<CFMutableDictionaryRef> cf_dictionary();
+
+// A VideoToolbox failure as the coders report it, @p who and @p what naming
 // it: bad data IoError (kVTParameterErr too while @p decoding, which a
-// truncated picture returns), a format or decoder the hardware lacks
-// Unsupported, an allocation OutOfMemory, and anything else a Backend error
-// keeping its code.
+// truncated picture returns), a format, decoder or encoder the hardware
+// lacks, or an encoder busy or at its session limit, Unsupported, an
+// allocation OutOfMemory, and anything else a Backend error keeping its
+// code.
 core::Status vt_error(const char* who, const std::string& what, OSStatus error,
                       bool decoding = false);
 

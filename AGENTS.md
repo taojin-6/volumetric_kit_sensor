@@ -46,9 +46,9 @@ PCM in host memory.
 - A tier links only the tiers below it: `camera` the core's base tier and
   GLM; `frame` the core's Vulkan tier; the interface `camera` and `frame`;
   `prep` the interface; `array` the prep; `stereo` the interface and,
-  privately, the prep; `apple` `frame`; `video` `frame` and `video_syntax`
-  (and, on Apple, `apple`); `orbbec` the interface, `video` and
-  `video_syntax`;
+  privately, the prep; `apple` `frame` and `video_syntax`; `video` `frame`
+  and `video_syntax` (and, on Apple, `apple`); `video_testing` `video`;
+  `orbbec` the interface, `video` and `video_syntax`;
   `realsense` the interface and `stereo`; `ffs` `stereo` and, privately,
   `video`; `decklink` `stereo` and, privately, its SDK-free units; `audio`
   the interface; `wire` the interface and `video_syntax`; `video_syntax`
@@ -72,7 +72,9 @@ PCM in host memory.
   Drivers declare the encoding they produce and convert nothing.
 - Full Doxygen on public classes and functions, as in `rgbd_sensor.hpp`.
   `@ref` only this package's names; write the core's in backticks.
-- No `friend` declarations; test through public APIs.
+- No `friend` declarations, but one for a platform's way into a pimpl
+  that keeps its types out of the shared header (`HevcEncoderAccess`);
+  test through public APIs.
 - Mark deferred work `TODO(sensor)`.
 - Keep first-party code warning-clean with `VS_WARNINGS_AS_ERRORS=ON`.
 - Every Vulkan, Metal, CUDA or SDK handle owner deletes copy, provides the
@@ -101,7 +103,8 @@ pre-commit run --all-files --show-diff-on-failure
   `fuse_orbbec`. Report such a check as run or not run, never as a test.
 - Tests are `main()`s on the core's test support; GPU tests run on its
   policy, and CI sets `VKC_TEST_VALIDATION=1`. `VS_TEST_HEVC_BACKEND` makes
-  the decoder tests fail rather than skip where no device path opens.
+  the decoder tests fail rather than skip where no device path opens, and
+  `VS_TEST_HEVC_ENCODER` the encoder tests where no hardware path opens.
 
 ## Keeping the guidance current
 

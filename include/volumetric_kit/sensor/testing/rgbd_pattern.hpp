@@ -6,7 +6,7 @@
 /// @file testing/rgbd_pattern.hpp
 /// @brief Synthetic depth that carries a frame's index, and the index read
 ///        back from it. The family's test picture (`test_pattern`,
-///        testing/nv12_picture.hpp) carries the same index, so a test or a
+///        testing/nv12_pattern.hpp) carries the same index, so a test or a
 ///        stream check sees each frame carry its own picture. Header-only, on
 ///        the standard library alone, so a source that makes this depth
 ///        builds with no GPU headers.

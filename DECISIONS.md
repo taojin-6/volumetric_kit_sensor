@@ -456,6 +456,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   `testing/`; the test pattern's index band is read by square means after
   lossy coding. The Metal device under a Vulkan device is found in one
   place.
+- [**2026-11-02**](#2026-11-02--the-hevc-encoder-is-hevcencoder-the-decoders-twin-in-sensor_video-one-hardware-low-latency-configuration-sent-and-received-through-a-coding-thread-of-its-own-on-videotoolbox-first-a-cameras-pixel-buffer-coded-as-it-is) —
+  The HEVC encoder is `HevcEncoder`, the decoder's twin in `sensor_video`:
+  one hardware low-latency configuration, QPs fixed for the session, sent
+  and received through a coding thread of its own, at most 2 in flight;
+  VideoToolbox first, a camera's `CVPixelBuffer` coded as it is
+  (`send_pixel_buffer`). The encoder rules C1-C13 are one function any
+  runner calls (`sensor_video_testing`).
 - [**2026-11-02**](#2026-11-02--host-depth-may-carry-a-confidence-plane-which-frame-prep-gates-on-the-gpu-per-raw-sample-before-anything-else-reads-it-level-0-is-never-integrated-and-a-frame-without-a-plane-is-prepared-bit-for-bit-as-before-amends-the-2026-09-28-gpu-pre-processing-entry) —
   Host depth may carry a confidence plane (`RgbdFrame::depth_confidence`, a
   byte a sample in the sensor's levels) and a floor (`min_confidence`):
@@ -6182,6 +6189,156 @@ among the clips `first_slice_type` is checked on. Planted bugs, each failing its
 `sensor_video_hevc`), the band's bits read one square off, the padding
 written as 0 rather than 0xEE, and a four-byte start code split as three
 (`sensor_testing_support`).
+
+### 2026-11-02 — The HEVC encoder is `HevcEncoder`, the decoder's twin in `sensor_video`: one hardware low-latency configuration, sent and received through a coding thread of its own, on VideoToolbox first, a camera's pixel buffer coded as it is.
+
+**The rule.** `video/hevc_encoder.hpp` is the family's one HEVC encoder,
+in `sensor_video` beside `HevcDecoder` and shaped like it: `create(Options)`
+returns a move-only value, one backend a build, hardware only, and says
+what is missing (`Unsupported`) rather than falling back. One
+configuration: low latency (P-pictures only, no reordering, no look-ahead,
+every NAL unit in temporal layer 0), `Options::qp` every P-picture's slice
+QP and `Options::key_qp` every IDR's, fixed for the session, keys only when
+asked, and the VUI from `Options::color`. The colour is normalized (matrix
+5 is 6; transfer 6, 14 and 15 are 1) and must be in one set: matrix 1, 6,
+7 or 9 (2 refused as `InvalidArgument`); transfer 1, 2, 7, 8, 13, 16, 17 or
+18; primaries 1, 2, 5, 6, 9, 11, 12 or 22; either range; siting 0, or 1 to 5
+where the backend writes it. A send returns at once; a coding thread of the
+encoder's own codes; `receive(picture, timeout_ns)` hands back each access
+unit in the order sent, its buffer swapped with the caller's, at most
+`kInFlight` (2) in flight. The first picture is a key, and so is the next
+after a failure (`key_owed`); a drop keeps the session, any other failure
+loses it, a failed picture fails those already sent behind it, and the next
+send opens a lost session again. On Apple the way in is
+`send_pixel_buffer` (`video/hevc_encoder_apple.hpp`): an IOSurface NV12
+buffer of the session's size and range, its tags agreeing with the
+session's colour, coded as it is, with no Vulkan device. The device-written
+target (`target`, `send` with a timeline value) and NVENC follow in their
+own PRs; until NVENC, a Linux build's `create` refuses.
+
+**Why a coding thread.** In this mode VideoToolbox codes inside
+`VTCompressionSessionEncodeFrame`: 5.6-5.9 ms at 1920x1440 and 15.2-15.4 ms
+at 3840x2160 on the M5 Max (a probe of the bare session, before this
+encoder), and leaving the mode loses `SupportsBaseFrameQP`. NVENC on Linux blocks the same way. The
+thread keeps that wait off the producer: `send_pixel_buffer` returns in
+0.008 ms p50 (0.021 p95) at 1920x1440 and 0.009 (0.020) at 3840x2160, one
+picture in flight. One session codes no faster with two in flight (181.6
+and 183.3 pictures a second at 1920x1440; 66.9 and 67.2 at 3840x2160); two
+sessions on their own threads code side by side at full speed (2 x 182.8;
+2 x 66.8). With one in flight, send to access unit is 5.51 ms p50 at
+1920x1440 and 14.85 ms at 3840x2160, at or under the synchronous call.
+
+**What VideoToolbox does, measured here** (the M5 Max, macOS 27.2, with
+probes of the bare session on synthetic buffers):
+- It writes every code of the set into the VUI as given; it refuses matrix
+  5 as a property (hence the normalization), and writes transfer 6, 14 and
+  15 as 1.
+- It writes the stream's chroma siting from the buffer's
+  `kCVImageBufferChromaLocationTopFieldKey` (0 to 5) and has no property for
+  it, so the encoder tags a buffer that lacks the tag with the session's
+  siting, and accepts sitings 1 to 5.
+- It codes base QP 0 as 1 (the slice QP, read back), so `create` refuses QP
+  0 there; 1 to 51 code as asked.
+- Its SPS declares two sub-layers though every NAL unit is in layer 0; the
+  rules check the units' temporal ids.
+- It does not report `UsingHardwareAcceleratedVideoEncoder` in this mode;
+  the settings line says "hardware required", which the specification asks.
+- An IOSurface buffer keeps a colour tag as a code, and Core Video names
+  some back as another string (matrix 11 and 12 as primaries' names, matrix
+  15 not at all): `color_codes_of` reads what Core Video keeps, refusing a
+  string it maps to no code.
+
+**The coding thread, after the review.** Each point was found by a probe
+and is now a test:
+- A finite `receive` waits even with nothing in flight. A receive thread
+  of its own, waiting 50 ms beside a 30 Hz sender, returned at once 291
+  million times in 2 s and used 81% of a core; it now sleeps (60 calls, no
+  CPU). `UINT64_MAX` with nothing in flight still returns at once, so one
+  thread never waits for ever. C13 bounds a receive thread's empty returns
+  by its time over the wait.
+- The coding thread allocates nothing and never throws. Its queues are
+  rings of `kInFlight`, the spare buffers are reserved at `create`, and a
+  failure's message that cannot be allocated becomes `OutOfMemory`. Before,
+  one failed allocation in its loop aborted the process; now every
+  allocation in it can fail, and each failure is that picture's
+  `OutOfMemory`.
+- The compression session is the last member of the backend's state, so
+  it is torn down first. VideoToolbox hands an output still pending to the
+  callback inside `VTCompressionSessionInvalidate` (all 6 outputs of a
+  default-mode session came that way). After a stuck picture's 2 s wait,
+  the old order made the callback lock a destroyed mutex: `std::terminate`.
+- A reopen waits for the picture coding at the loss. A test holds that
+  picture in `VTCompressionSessionEncodeFrame` for 50 ms, so the wait is
+  checked whatever the timing. Without the wait the old session is closed
+  under the picture: a crash.
+- The coding thread runs at user-interactive quality of service, as a
+  camera's queue does. A `std::thread` gets DEFAULT, and VideoToolbox's work
+  runs on it. With every core of the M5 Max busy at user-interactive QoS,
+  send to access unit at 1920x1440 and 30 Hz was 16.6-17.6 ms p95 with the
+  thread at user-interactive QoS and 19.6-21.1 ms at DEFAULT. With 12 or 24
+  busy threads, the DEFAULT thread's worst picture took 15-21 ms and the
+  user-interactive thread's at most 5.9 ms.
+- What the rules check holds whatever the timing. C8 accepts each picture
+  in flight at a loss coming back coded or failed, but never one coded
+  after one that failed. C13's drop in flight retries, up to 5 rounds, the
+  race it needs. With the test thread held 1, 2 or 5 ms at C8's loss, no
+  run broke a rule (before: 3 of 5 runs at 1 ms). With it held 2 ms on 4
+  of C13's 5 rounds, no run broke one either.
+- `CodedPicture::key` is the key VideoToolbox marked, not the one asked
+  for. Each picture's options are made once, at `create`. The siting tag
+  is added on the caller's thread, in `send_pixel_buffer`.
+
+**Why `HevcEncoderAccess` is a friend.** The Apple entry is a free function
+in a header of its own, so `hevc_encoder.hpp` names no Core Video type; it
+reaches the pimpl through one internal struct the class befriends. No test
+uses it: the rule against friends keeps tests on public calls, which this
+does not change.
+
+**The rules, once** (`testing/hevc_conformance.hpp`,
+`sensor_video_testing`): `hevc_encoder_breach` checks C1-C13 on one case
+through the public calls, with sensor's syntax readers
+(`testing::SliceReader`, test use only, over the parsers' own walks) and
+`HevcDecoder`, and names the first rule broken; it is static and needs no
+core test support, so an app's device test can run it as it is. C9 (a
+target taken twice) and C13b (the wait for a writer) come with the target.
+
+**Tests.** `sensor_video_hevc_encoder` (Mac; skips elsewhere unless
+`VS_TEST_HEVC_ENCODER` promises an encoder): the rules on 512x512,
+1922x1082 with a key QP of its own, 3840x4096, and 1920x1440 BT.601 at
+either range and BT.709 sited at the centre, QP 1 with key QP 51 and the
+reverse, and every code of the set, 4 pictures each; the pattern at QP 22
+decoded back, its worst PSNR 52.9 dB luma and 48.5 dB chroma, its 0 and
+255 exact, each picture's index read; `color_codes_of` on every string
+Core Video names. `sensor_video_vt_encode_error`: the busy, absent and
+failing opens and no base QP, through `create`'s text and code; a
+dropped, missing (then handed over at the teardown), wrongly keyed and
+doubled output, through `receive`; a loss while a picture codes; and the
+coding thread's quality of service.
+`sensor_video_hevc_syntax`: the slice reader's types and QPs on every
+committed clip, as FFmpeg's `trace_headers` reads them.
+`sensor_video_hevc`: a clip VideoToolbox's encoder coded
+(`vt_pattern_1920x1440.h265`, `tools/vt_pattern_clip`) decodes to
+libavcodec's MD5 on VideoToolbox and NVDEC, each picture's index read. The
+iOS build check links an app's encoder calls into an iOS executable with
+no FFmpeg or CUDA symbol.
+
+**Validation.** Apple M5 Max, MoltenVK, Release with warnings as errors,
+under the validation layer, `VS_TEST_HEVC_BACKEND` and
+`VS_TEST_HEVC_ENCODER` set to videotoolbox: the whole suite passes, 64
+tests with main's at #35 and the Orbbec driver on; the encoder tests pass
+under ThreadSanitizer (Debug). Each of these
+fails a test: `ForceKeyFrame` never set (C3), the session's source format
+always video range (C10) and the buffer's range not checked (C11), a drop
+neither failing the picture behind it nor owing a key (C7) and one owing a
+key but not failing it (C13), the IDR coded at the P-pictures' QP (C5), the
+siting tag not added (C4), and a lost session not reopened (C8). So does
+each of the review round's: `receive` returning at once with nothing in
+flight (C13), a reopen not waiting for the picture coding, and the session
+torn down after its callback's state (`sensor_video_vt_encode_error`, a
+crash and `std::terminate`). The encoder's first timings ran on battery and
+the bare session's on AC power. After the review round, on AC power, one
+picture in flight at 1920x1440 took 5.32 ms p50 from send to access unit,
+and 14.82 ms at 3840x2160.
 
 ### 2026-11-02 — Host depth may carry a confidence plane, which frame prep gates on the GPU per raw sample before anything else reads it; level 0 is never integrated, and a frame without a plane is prepared bit for bit as before (amends the 2026-09-28 GPU pre-processing entry).
 

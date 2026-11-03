@@ -5,7 +5,7 @@
 
 /// @file testing/index_band.hpp
 /// @brief The index band's layout, which the family's test picture
-///        (`test_pattern`, testing/nv12_picture.hpp) and its test depth
+///        (`test_pattern`, testing/nv12_pattern.hpp) and its test depth
 ///        (`pattern_depth`, testing/rgbd_pattern.hpp) both carry: rows 0 to
 ///        @ref kIndexSquare - 1 of an image, 2 + @ref kIndexBits squares of
 ///        @ref kIndexSquare x @ref kIndexSquare from column 0. Square 0 is

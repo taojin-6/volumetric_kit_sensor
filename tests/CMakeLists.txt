@@ -567,6 +567,25 @@ if(APPLE OR VS_WITH_FFMPEG)
   vs_target_warnings(sensor_video_hevc_test)
   add_test(NAME sensor_video_hevc COMMAND sensor_video_hevc_test)
 
+  # The HEVC encoder: the rules (sensor_video_testing's hevc_encoder_breach) on
+  # the public cases and every colour code, decoded back and read on the host,
+  # and color_codes_of; where no hardware path opens it skips, unless
+  # VS_TEST_HEVC_ENCODER promises one. A build with no encoder checks the
+  # refusal only.
+  add_executable(sensor_video_hevc_encoder_test
+                 sensor_video_hevc_encoder_test.cpp)
+  target_link_libraries(
+    sensor_video_hevc_encoder_test
+    PRIVATE volumetric_kit::sensor_video_testing volumetric_kit::sensor_prep
+            volumetric_kit::core_test_policy)
+  if(APPLE)
+    target_link_libraries(sensor_video_hevc_encoder_test
+                          PRIVATE volumetric_kit::sensor_apple)
+  endif()
+  vs_target_warnings(sensor_video_hevc_encoder_test)
+  add_test(NAME sensor_video_hevc_encoder
+           COMMAND sensor_video_hevc_encoder_test)
+
   add_executable(sensor_video_jpeg_test sensor_video_jpeg_test.cpp)
   target_link_libraries(
     sensor_video_jpeg_test
@@ -711,6 +730,22 @@ if(APPLE OR VS_WITH_FFMPEG)
     vs_target_warnings(sensor_video_vt_jpeg_error_test)
     add_test(NAME sensor_video_vt_jpeg_error
              COMMAND sensor_video_vt_jpeg_error_test)
+
+    # The encoder's open and output failures, through its public calls, its
+    # VideoToolbox session's calls replaced here as for the JPEG decoder.
+    add_executable(
+      sensor_video_vt_encode_error_test
+      sensor_video_vt_encode_error_test.cpp ${_vs_video_src}/hevc_encoder.cpp
+      ${_vs_video_src}/hevc_encoder_apple.cpp
+      ${_vs_video_src}/vt_hevc_encode.cpp ${_vs_video_src}/videotoolbox.cpp)
+    target_link_libraries(
+      sensor_video_vt_encode_error_test
+      PRIVATE volumetric_kit::sensor_video volumetric_kit::sensor_apple
+              "-framework VideoToolbox" "-framework CoreMedia"
+              "-framework CoreVideo" volumetric_kit::core_test_policy)
+    vs_target_warnings(sensor_video_vt_encode_error_test)
+    add_test(NAME sensor_video_vt_encode_error
+             COMMAND sensor_video_vt_encode_error_test)
   endif()
 endif()
 
@@ -988,12 +1023,15 @@ vs_target_warnings(sensor_io_image_test)
 add_test(NAME sensor_io_image COMMAND sensor_io_image_test)
 
 # The tests whose code runs threads -- the Orbbec decode workers, the audio
-# capture's queue and the DeckLink driver's upload -- which CI builds and runs
-# again under ThreadSanitizer (.github/workflows/_build.yml): one target to
-# build them.
+# capture's queue, the DeckLink driver's upload and the HEVC encoder's coding
+# thread -- which CI builds and runs again under ThreadSanitizer
+# (.github/workflows/_build.yml): one target to build them.
 add_custom_target(sensor_tsan_tests)
 add_dependencies(sensor_tsan_tests sensor_orbbec_decode_worker_test
                  sensor_audio_capture_test sensor_decklink_upload_test)
+if(TARGET sensor_video_hevc_encoder_test)
+  add_dependencies(sensor_tsan_tests sensor_video_hevc_encoder_test)
+endif()
 if(VS_WITH_ORBBEC)
   add_dependencies(sensor_tsan_tests sensor_orbbec_jpeg_test
                    sensor_orbbec_hevc_test sensor_orbbec_open_sensors_test)

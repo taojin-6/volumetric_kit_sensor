@@ -4,7 +4,9 @@
 // The HEVC decoder on committed clips (tools/make_hevc_fixtures.sh), decoded
 // on this machine's hardware onto the device, as NV12's two plane images, and
 // read back: the pattern the clip was made from, libavcodec's pictures to the
-// bit, the colour an unlabelled stream takes, a reset mid-stream and after
+// bit, VideoToolbox's encoder's clip (tools/vt_pattern_clip) to the bit and
+// its pattern's index, the colour an unlabelled stream takes, a reset
+// mid-stream and after
 // the end, a display window off the coded picture's corner, a held picture
 // never reused, many pictures held at once, each with its ready value on
 // NVDEC, frame prep from the images as from the same samples in a
@@ -46,7 +48,9 @@
 #include "volumetric_kit/sensor/prep/gpu_frame_prep.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/sensor/testing/hevc_clip.hpp"
+#include "volumetric_kit/sensor/testing/nv12_pattern.hpp"
 #include "volumetric_kit/sensor/video/hevc_decoder.hpp"
+#include "volumetric_kit/sensor/video/hevc_syntax.hpp"
 #include "yuv_reference.hpp"
 
 #if !defined(__APPLE__)
@@ -69,6 +73,9 @@ constexpr const char* kRefused = VS_HEVC_DATA "/refused_256x144.h265";
 constexpr const char* kUnlabelled = VS_HEVC_DATA "/unlabelled_256x144.h265";
 constexpr const char* kFullRange = VS_HEVC_DATA "/fullrange_256x144.h265";
 constexpr const char* kCentred = VS_HEVC_DATA "/centred_full_256x144.h265";
+constexpr const char* kVtPattern = VS_HEVC_DATA "/vt_pattern_1920x1440.h265";
+// libavcodec's MD5 of the VideoToolbox-coded clip (make_hevc_fixtures.sh).
+constexpr const char* kVtPatternMd5 = "aa967b47ea3a5eada78eff124e0e63ea";
 // libavcodec's MD5s of the patch clip, the centred one and, on NVDEC, the
 // cropped one (tools/make_hevc_fixtures.sh prints them).
 constexpr const char* kPatchesMd5 = "63171f05c92c231ab96a389291ba67fe";
@@ -500,6 +507,51 @@ int test_reference_md5(const Gpu& gpu) {
       CHECK(p.meta.yuv.chroma_location == c.chroma);
     }
   }
+  return 0;
+}
+
+// The clip VideoToolbox's encoder coded (tools/vt_pattern_clip), as a
+// camera's pictures are sent: on NVDEC and VideoToolbox alike its 12
+// pictures decode to libavcodec's MD5, 1920x1440, BT.601 full range, sited
+// left, primaries no ColorEncoding names (SMPTE 170M), and each picture's
+// index band names its picture; its keys are units 0 and 6.
+int test_vt_clip(const Gpu& gpu) {
+  constexpr std::uint32_t kW = 1920;
+  constexpr std::uint32_t kH = 1440;
+  const auto units = sensor::testing::access_units_of_file(kVtPattern);
+  CHECK(units.size() == 12);
+  for (std::size_t i = 0; i < units.size(); ++i) {
+    const auto type =
+        sensor::hevc::first_slice_type(units[i].data(), units[i].size());
+    CHECK(type.has_value() &&
+          sensor::hevc::is_idr(*type) == (i == 0 || i == 6));
+  }
+  auto decoder = HevcDecoder::create(decoder_options(gpu));
+  CHECK(decoder.ok());
+  const Decoded decoded = decode_clip(*decoder, units, gpu);
+  if (!decoded.status.ok()) {
+    std::fprintf(stderr, "%s\n", decoded.status.message().c_str());
+  }
+  CHECK(decoded.status.ok() && decoded.pictures.size() == 12);
+  vs_test::Md5 sum;
+  for (std::size_t i = 0; i < decoded.pictures.size(); ++i) {
+    const Picture& p = decoded.pictures[i];
+    if (check_on_device(p.meta) != 0) return 1;
+    CHECK(p.meta.yuv.width == kW && p.meta.yuv.height == kH);
+    CHECK(p.meta.pts == pts_of(static_cast<int>(i)));
+    CHECK(yuv_reference::coded_in(p.meta.yuv, sensor::VideoColorMatrix::Bt601,
+                                  true));
+    CHECK(p.meta.yuv.chroma_location == sensor::ChromaLocation::Left);
+    CHECK(!p.meta.encoding.has_value());
+    CHECK(sensor::testing::pattern_index(p.planes[0].data(), kW) ==
+          static_cast<long>(i));
+    for (const std::vector<std::uint8_t>& plane : p.planes) {
+      sum.update(plane.data(), plane.size());
+    }
+  }
+  const std::string got = sum.hex();
+  if (got != kVtPatternMd5) std::fprintf(stderr, "MD5 %s\n", got.c_str());
+  CHECK(got == kVtPatternMd5);
   return 0;
 }
 
@@ -1073,6 +1125,7 @@ int gpu_main(Gpu& gpu) {
   if (test_reset(gpu) != 0) return 1;
   if (test_cropped(gpu) != 0) return 1;
   if (test_reference_md5(gpu) != 0) return 1;
+  if (test_vt_clip(gpu) != 0) return 1;
 #if !defined(__APPLE__)
   if (test_size_change(gpu) != 0) return 1;
 #endif
