@@ -55,4 +55,13 @@ VS_PREP_API core::Status check_ready(const YuvImage& image,
                                      const core::Device& device,
                                      const char* who);
 
+// What holds `image` on the device -- its buffer or plane images, and the
+// timeline its readers wait on -- kept with `batch`'s work (the core's
+// CommandBatch::retain): past a failed wait until the device has waited for
+// it, so the picture's holder may drop it, and a decoder reuse it, as soon as
+// the reader returns. Host planes are copied as the batch is recorded and need
+// nothing. Exported, as check_ready.
+VS_PREP_API void retain_picture(core::CommandBatch& batch,
+                                const YuvImage& image) noexcept;
+
 }  // namespace volumetric_kit::sensor::detail

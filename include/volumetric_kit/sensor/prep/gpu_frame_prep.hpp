@@ -269,11 +269,12 @@ class VS_PREP_API GpuFramePrep {
   /// buffers, which hold the prepared frame once @p batch has run.
   /// @param batch    Records the work; the caller submits it.
   /// @param frame    The frame. Its host depth and colour are copied here.
-  ///                 Device depth and planes are read when @p batch runs, so
-  ///                 keep the frame until the batch has resolved, and after a
-  ///                 failed wait for as long as `PendingBatch::in_flight`
-  ///                 says. A picture with `YuvImage::ready` is read only once
-  ///                 its value is reached: submit @p batch with
+  ///                 Device depth and planes are read when @p batch runs, and
+  ///                 @p batch holds them (`CommandBatch::retain`): until its
+  ///                 work has completed, and after a failed wait until the
+  ///                 device has waited for it, so the frame may go as soon as
+  ///                 this returns. A picture with `YuvImage::ready` is read
+  ///                 only once its value is reached: submit @p batch with
   ///                 `submit_async`, @ref ready_points among its waits.
   /// @param metrics  Optional: a `"frame prep"` row, its host half now and its
   ///                 device half from `PendingBatch::device_rows`.
@@ -296,9 +297,9 @@ class VS_PREP_API GpuFramePrep {
   /// @param batch    As @ref record.
   /// @param preps    One pass per camera, all made with @p batch's `Device`;
   ///                 `preps[i]` records `frames[i]`.
-  /// @param frames   One entry per camera, an empty one skipped; kept as
-  ///                 @ref record says, and @p batch submitted with
-  ///                 `ready_points(frames)` among its waits.
+  /// @param frames   One entry per camera, an empty one skipped; held by
+  ///                 @p batch as @ref record says, and @p batch submitted
+  ///                 with `ready_points(frames)` among its waits.
   /// @param metrics  Optional: one `"frame prep"` row for the set, timed by
   ///                 the first pass used.
   /// @return One `DeviceFrame` per present frame, empty where the frame was;
@@ -399,7 +400,7 @@ class VS_PREP_API GpuFramePrep {
   // The one path record, record_set, prepare and prepare_batch take: the
   // checked frames' buffers taken over (`acquires`), and the frames recorded
   // into `batch`, `preps[i]` recording `*frames[i]` into `out[i]`, timed
-  // under `stage`.
+  // under `stage`; `batch` then holds their device depth and planes.
   static core::Status record_frames(
       core::CommandBatch& batch, GpuFramePrep* preps,
       const RgbdFrame* const* frames, const Layout* layouts,
@@ -433,9 +434,6 @@ class VS_PREP_API GpuFramePrep {
   core::Status record_passes(core::CommandBatch& batch, const RgbdFrame& frame,
                              const Layout& layout, VkBuffer input,
                              core::GpuStageScope* stage);
-  // After a batch that failed and may still run: let go of the device depth
-  // and planes it may read.
-  static void abandon(const RgbdFrame& frame);
   // The frame handed out, its outputs leased to it.
   DeviceFrame finish(const RgbdFrame& frame) const;
 

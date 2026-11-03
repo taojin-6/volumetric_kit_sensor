@@ -84,7 +84,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   and `GpuFramePrep` takes I420 or NV12 from the host or the device. The
   software decoding and fallbacks it kept went on 2026-10-06.
   *Amended 2026-10-25:* VideoToolbox's plane images are sampled where they
-  are, not copied (the plane-image entry).
+  are, not copied (the plane-image entry). *Amended 2026-11-03:* a failed
+  wait leaves the device planes to the device, not leaked (the retain
+  entry).
 - [**2026-10-03**](https://github.com/taojin-6/volumetric_kit_grid/blob/main/DECISIONS.md#2026-10-03--asset-loading-and-export-belong-to-io-with-assimp-as-an-optional-private-backend) —
   Asset loading and export move into the installed `io` tier; Assimp adds
   optional static mesh import, while dataset and normalization policy stay
@@ -127,6 +129,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   An array's set is prepared in one batch, every stream of every sensor, one
   submit and one wait; host colour is staged on a thread per camera first,
   and `prepare_set` goes. (Host colour and the threads went later that day.)
+  *Amended 2026-11-03:* a failed submit leaves the staging and device planes
+  to the device through the batch (the retain entry).
 - [**2026-10-06**](#2026-10-06--every-orbbec-frame-is-handed-out-as-captured-the-sdks-host-path-orbbeccapture-and-fuse_orbbec---gpu-go-amends-the-2026-09-26-2026-09-27-and-2026-09-28-orbbec-entries) —
   Every Orbbec frame is handed out as captured: the SDK's host path,
   `OrbbecCapture` and `fuse_orbbec --gpu` go, and the Orbbec driver needs
@@ -525,6 +529,14 @@ entries relevant to your task; later amendments supersede earlier rules.
   surfaces (a throwaway picture first), so a producer's targets wait for no
   batch; a surface new to the session waits on the host, unlocked. The test
   picture is written by a kernel (`testing::Nv12Writer`), not a copy.
+- [**2026-11-03**](#2026-11-03--a-batch-keeps-what-it-reads-through-the-cores-commandbatchretain-after-a-failed-wait-the-device-keeps-it-until-its-destruction-has-waited-and-gpuframepreprecord-holds-a-frames-device-inputs-itself-amends-the-2026-09-28-decoded-frame-and-2026-10-06-one-batch-entries) —
+  A batch keeps what it reads through the core's `CommandBatch::retain`
+  (core 0.45.0): after a failed wait the device keeps it until its
+  destruction has waited for the work, then frees it, where five readers
+  leaked it for the life of the process and the DeckLink upload gave its
+  device pictures back to their pool. `GpuFramePrep::record` and
+  `record_set` hold a frame's device depth and planes in the caller's batch
+  themselves.
 
 ## Decision record
 
@@ -1924,7 +1936,9 @@ wrote reaches:
 - **Lifetime.** A failed wait already leaked the staging the device may
   still read. It now leaks a reference to the device planes' buffer too,
   which the caller could otherwise drop, or a decoder's ring reuse, as soon
-  as `prepare` returned.
+  as `prepare` returned. *Amended 2026-11-03:* the batch holds both
+  (`CommandBatch::retain`), and the device keeps them until its destruction
+  has waited, not for good (the retain entry).
 - **Binding.** Device planes are bound from the first plane, rounded down to
   `minStorageBufferOffsetAlignment`, not from byte 0, so
   `maxStorageBufferRange` (2^27 on Mali and many Intel drivers) and the
@@ -2647,7 +2661,10 @@ would make four submits to order. Until then it submits and waits, which a
 `TODO:` at the submit marks. A failed submit abandons every pass's staging
 and device planes, since the work may still run and `CommandBatch::submit`
 cannot say whether it does; `PendingBatch::in_flight` will. The RTX 5090 was
-level before the threaded staging and is not re-measured.
+level before the threaded staging and is not re-measured. *Amended
+2026-11-03:* the batch holds them, and the device keeps them past a failed
+wait until its destruction has waited; no caller asks `in_flight` (the
+retain entry).
 
 **Validation.** Apple M5 Max, macOS, Release with warnings as errors,
 Orbbec, FFmpeg and the viewer: the 55 tests pass.
@@ -6964,3 +6981,53 @@ its own, `create` readying no surface or the first pool's, a gone pool not
 losing the session, and a failed second target giving up the first. The suite on
 the M5 Max (Release, validation, both promises) and the threaded tests
 under ThreadSanitizer; the iOS build check links an app's target calls.
+
+### 2026-11-03 — A batch keeps what it reads through the core's `CommandBatch::retain`: after a failed wait the device keeps it until its destruction has waited, and `GpuFramePrep::record` holds a frame's device inputs itself (amends the 2026-09-28 decoded-frame and 2026-10-06 one-batch entries).
+
+**The rule.** A batch here hands the shared owners of what its commands
+read or write, and the batch cannot see, to the batch before it is
+submitted (`CommandBatch::retain`, core 0.45.0): `GpuFramePrep`'s frames'
+device depth and planes (in `record` and `record_set`, so `prepare`,
+`prepare_batch` and `SensorArray::record_process` too); `LumaPass`'s
+outputs and pictures; `PictureReadback`'s staging and pictures;
+`StereoRectifier`'s left and right pictures; the NVIDIA picture slots'
+images at their handover to CUDA; and the DeckLink upload's two device
+pictures and the SDK's two frames. A picture is kept whole, by one
+function (`detail::retain_picture`): its buffer or plane images and the
+timeline its readers wait on. The batch lets them go once its work has
+completed, drops them with a submit that ran nothing, and after a failed
+wait, or a submit that lost the device, leaves them to the device, which
+frees them once its destruction has waited for the work.
+
+**Why.** Each reader kept these by hand past a failed wait, by leaking a
+copy of the owner for the life of the process (`static_cast<void>(new
+std::shared_ptr<…>(…))`), behind its own test of whether the work might
+still run; GpuFramePrep rebuilt that test from `PendingBatch::in_flight`
+and the device-loss code. The DeckLink upload kept the SDK's frames in a
+list, `lost_`, that went with the uploader, and let its device pictures go
+back to their pool, where the next pair after a restart could take one
+the failed copy might still write. The core already keeps a batch's own
+staging and ring slots that way, so one policy now covers both, and the
+leaks become holds that end with the device. `GpuFramePrep::record`'s
+caller had to keep the frame "for as long as `PendingBatch::in_flight`
+says", which no caller could after a failed `submit_async` (it returns a
+Status, no batch to ask); record and record_set now hold the frame
+themselves, so the clause goes. `PictureReadback`'s reused staging is a
+shared owner the batch shares, dropped after a failure so the next read
+stages elsewhere. Only failure paths change, so nothing is re-measured.
+The encoder's targets (`HevcEncoder::target`) are not such inputs: the
+encoder keeps their images and waits for each target's writer.
+
+**Tests.** `sensor_failed_wait` refuses one fence wait (`vkWaitForFences`
+interposed; the work itself runs) on a device of each case's own, drops
+what was read, drains the queue for the validation layer, and checks that
+it outlives the reader and goes as the device is destroyed: frame prep's
+depth and colour buffers (`prepare_batch`), the luma pass's and the
+readback's picture, the rectifier's two views, and the DeckLink upload's
+two SDK frames, their pages still taken, and its two device pictures still
+out of their pool; a read after the readback's failed one reads its
+picture byte for byte. `record` is checked holding a dropped frame's
+buffers until its batch's submit returns. Planted bugs, each failing it:
+`record_frames` keeping nothing, `retain_picture` dropping the buffer, and
+the DeckLink upload not keeping its device pictures. The suite on the M5
+Max (Release, validation) and the CUDA paths on an RTX 4090 (Linux).

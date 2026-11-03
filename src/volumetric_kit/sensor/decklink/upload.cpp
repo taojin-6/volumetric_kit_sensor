@@ -336,16 +336,19 @@ void Uploader::upload(Pair pair) {
   core::CommandBatch batch(*device_, *allocator_);
   core::Status copied = batch.copy(*source[0], 0, *target[0], 0, bytes);
   if (copied.ok()) copied = batch.copy(*source[1], 0, *target[1], 0, bytes);
+  // The device pictures and the SDK's frames go with the batch, which keeps
+  // them past a failed wait: the pictures out of the pool and the pages out
+  // of the card's reach until the device has waited for the copy. The frames
+  // go back to the card as the submit returns, once the copy is done.
+  batch.retain(target[0]);
+  batch.retain(target[1]);
+  batch.retain(std::move(pair.left.hold));
+  batch.retain(std::move(pair.right.hold));
   if (copied.ok()) copied = batch.submit();  // waits for the copy's fence
   if (!copied.ok()) {
-    // The copy may still run: its pages stay out of the card's reach.
-    lost_.push_back(std::move(pair));
     fail(copied.with_context("DecklinkStereo: copying a pair to the device"));
     return;
   }
-  // The copy is done: the card may write these pages again.
-  pair.left.hold.reset();
-  pair.right.hold.reset();
 
   StereoFrame frame;
   frame.left = picture_of(std::move(target[0]), picture_);

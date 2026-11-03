@@ -237,6 +237,19 @@ if(UNIX)
   vs_target_warnings(sensor_gpu_frame_prep_submit_test)
   add_test(NAME sensor_gpu_frame_prep_submit
            COMMAND sensor_gpu_frame_prep_submit_test)
+
+  # A failed fence wait (vkWaitForFences interposed) leaves what each reader's
+  # batch reads to the device until its destruction: frame prep, the luma pass,
+  # the readback, the stereo rectifier and the DeckLink upload; and
+  # GpuFramePrep::record holds the frame in the caller's batch.
+  add_executable(sensor_failed_wait_test sensor_failed_wait_test.cpp)
+  target_link_libraries(
+    sensor_failed_wait_test
+    PRIVATE volumetric_kit::core_test_policy volumetric_kit::sensor_prep
+            volumetric_kit::sensor_stereo volumetric_kit::sensor_decklink_units
+            ${CMAKE_DL_LIBS})
+  vs_target_warnings(sensor_failed_wait_test)
+  add_test(NAME sensor_failed_wait COMMAND sensor_failed_wait_test)
 endif()
 
 # Any picture's 8-bit luma and half on the GPU (sensor_prep's LumaPass): every

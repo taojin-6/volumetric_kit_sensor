@@ -7,6 +7,7 @@
 #include <string>
 
 #include "volumetric_kit/core/vulkan/buffer.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
 
@@ -187,6 +188,13 @@ core::Status check_ready(const YuvImage& image, const core::Device& device,
                   "the picture's ready timeline was made on another device");
   }
   return {};
+}
+
+void retain_picture(core::CommandBatch& batch, const YuvImage& image) noexcept {
+  batch.retain(image.device);
+  batch.retain(image.image[0]);
+  batch.retain(image.image[1]);
+  batch.retain(image.ready);
 }
 
 }  // namespace volumetric_kit::sensor::detail

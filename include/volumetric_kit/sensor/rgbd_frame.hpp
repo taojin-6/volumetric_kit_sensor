@@ -80,8 +80,9 @@ struct DeviceDepth {
   /// frame is prepared, a fence waited on or a CUDA stream synchronized:
   /// unlike a picture (`YuvImage::ready`), depth carries no timeline value
   /// for the pass to wait on. The frame holds it, so its writer cannot reuse
-  /// it while the frame is kept or prepared, and a prepare whose wait fails
-  /// holds it for good, as the device may still read it.
+  /// it while the frame is kept or prepared, and so does the batch that reads
+  /// it: after a failed wait until the device has waited for that batch, as
+  /// the device may still read it.
   std::shared_ptr<const core::Buffer> buffer;
   /// The first sample's byte in @ref buffer, any even one: the pass binds
   /// from below it at the alignment a binding needs, so it need not be

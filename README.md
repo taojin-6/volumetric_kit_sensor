@@ -55,7 +55,8 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 
 Requires CMake ≥ 3.21, a C++17 compiler and the Vulkan toolchain (MoltenVK
 on Apple). The package fetches the core pinned by commit and checks it is
-0.41.0 or newer (a picture's ready value names its `TimelineSemaphore`), or
+0.45.0 or newer (every batch keeps its inputs through
+`CommandBatch::retain`), or
 0.29.0 or newer for a camera-only build (`VS_CAMERA_ONLY`).
 
 ```sh
@@ -415,7 +416,7 @@ pixel buffers or on targets, which `testing/nv12_writer.hpp`'s
 
 ## Versions
 
-The version is `project()`'s (0.30.0), carried by the umbrella as
+The version is `project()`'s (0.31.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per
