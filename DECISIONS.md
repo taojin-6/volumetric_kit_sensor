@@ -6512,6 +6512,12 @@ become bytes for a recording or a live link; the header holds the layout.
 mask: a later producer writes level 0 in its copy of the plane, with no
 wire change.
 
+**The next version.** `kVersion` is both params' version, and
+`decode_depth` and `decode_color` take none: they read version 1's records
+alone. The first version to change a record's layout adds a version
+argument to that record's decode, an API change 0.x allows, so a library
+that writes it still reads version 1 recordings.
+
 **Validation.** Apple M5 Max, Release with warnings as errors: the whole
 suite passes, 53 tests, and the iOS build check links `sensor_wire` with
 the other three targets (11 sources). `sensor_wire_rgbd` checks against
@@ -6522,8 +6528,13 @@ all 52 fraction bits among them; every truncation, an unknown flag, role
 plane, 640 x 576 without, and 1 x 1 and 3 x 5, whose payloads end at an
 odd size (the encode's runs are the frame's own pointers, the decoded
 frame's at `payload + 392` and `+ 392 + 2wh`, holding the payload); each
-refusal named; prep's refusals round-trip as written; colour records and
-params; pattern depth's records keeping the frame contract and their
-index; and a host allocation failure as `OutOfMemory`. Planted bugs, each
-failing it: the plane decoded at `392 + wh`, transforms written
-row-major, and the size check `<` where it is `!=`.
+refusal named, a depth camera whose record's bytes pass a size_t among
+them; reserved bytes of all ones ignored in all three layouts; prep's
+refusals round-trip as written; colour records and params, codes of 255
+and siting 5 accepted; pattern depth's records keeping the frame contract
+and their index; and a host allocation failure as `OutOfMemory`. Planted
+bugs, each failing it: the plane decoded at `392 + wh`, transforms written
+row-major, the size check `<` where it is `!=`, the size_t check removed,
+a decode refusing non-zero reserved bytes (each layout), a siting or code
+bound one off (decode siting, encode siting, encode codes), and the unit
+dropped on decode.

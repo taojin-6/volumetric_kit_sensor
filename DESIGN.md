@@ -1107,10 +1107,8 @@ each chunk whatever the latency.
 rules the 2026-11-02 wire-form entry's) is the form a recording or a live
 link carries any `IRgbdSensor` in: the `SensorInfo` once, as the depth
 track's params, then each frame as a depth record and a colour record. The
-cameras, units, range and noise travel per record, not per track: an
-`RgbdFrame` carries them per frame and a tracked sensor refines its cameras
-per frame, so a per-track copy would need a rule for frames that differ
-from it, and the cost is 392 bytes on a 147 KB record. The encode borrows
+cameras, units, range and noise travel per record, not per track (the
+entry's "Per record" says why). The encode borrows
 the frame's rows and plane and the decode points into the payload it
 holds, so neither copies or reads a sample. The decode checks the layout,
 not the values, which their users check. It links no device code, so it

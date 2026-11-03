@@ -17,8 +17,10 @@
 /// each record's time, number and set, so none of those is here: a reader
 /// sets `RgbdFrame::timestamp_ns` from a record's time and
 /// `RgbdFrame::sequence` from its number. A track's clock 0 (the host's) is
-/// `ClockDomain::Host`, any other `ClockDomain::Device`; a writer names a
-/// device's clock 1.
+/// `ClockDomain::Host`, any other `ClockDomain::Device`. A writer gives each
+/// sensor on `ClockDomain::Device` a clock number of its own above 0, shared
+/// by its depth and picture tracks, since two sensors' device clocks do not
+/// compare.
 ///
 /// Host code, with no device: nothing here reads or copies a depth sample or
 /// a picture. Every field is little-endian, each f32 and f64 bit for bit, and
@@ -112,7 +114,8 @@
 /// // Writing, once: the depth track's params.
 /// VKC_ASSIGN(const std::string params, wire::encode_sensor(sensor.info()));
 /// // Each frame: its depth record, in up to three runs, none of them copied.
-/// VKC_ASSIGN(const wire::DepthRecord d, wire::encode_depth(info, frame));
+/// VKC_ASSIGN(const wire::DepthRecord d,
+///            wire::encode_depth(sensor.info(), frame));
 /// // ... appended as d.prefix, then d.depth, then d.confidence ...
 ///
 /// // Reading: the sensor, then each depth record, held by `bytes`.
@@ -237,7 +240,11 @@ VS_WIRE_API core::Result<RgbdFrame> decode_depth(
     std::shared_ptr<const void> owner);
 
 /// @return The picture track's params for @p codec: @ref kColorParamsBytes
-///         bytes.
+///         bytes. A codec's number is its value, so @p codec is written as
+///         given, where @ref encode_sensor maps a role and a pose to wire
+///         numbers and refuses one it has none for; params of a codec this
+///         version does not name are @ref decode_color_params 's to refuse,
+///         `Unsupported`.
 VS_WIRE_API std::string encode_color_params(ColorCodec codec) noexcept;
 
 /// @return The picture track's codec; `Status::Code::InvalidArgument` for

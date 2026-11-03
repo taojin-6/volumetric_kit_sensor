@@ -8,18 +8,21 @@
 //   colour camera and its controls, primary, the device's clock) and an
 //   ARKit-like one (no lens, no controls, tracked, the host's clock) encode
 //   to their bytes and decode back field for field, every double bit for
-//   bit (-0.0, a subnormal, all 52 fraction bits). Bytes past the model are
-//   ignored. Every truncation, an unknown flag, role 3 and pose 2 are
-//   refused, version 2 is Unsupported, and so is a sensor with no depth
-//   camera at encode.
+//   bit (-0.0, a subnormal, all 52 fraction bits). Bytes past the model and
+//   reserved bytes are ignored. Every truncation, an unknown flag, role 3
+//   and pose 2 are refused, version 2 is Unsupported, and so is a sensor
+//   with no depth camera at encode.
 // - Depth records at 256 x 192 with a plane and 640 x 576 without, and at
 //   1 x 1 and 3 x 5, whose payloads end at an odd size: the encode's runs
 //   are the frame's own rows and plane, the prefix is the golden, the
 //   decoded frame points at payload + 392 and + 392 + 2wh and holds the
-//   payload, and every field is the encoded frame's, bit for bit. Each
-//   refusal is named; values frame prep would refuse round-trip as written.
+//   payload, and every field is the encoded frame's, bit for bit, reserved
+//   bytes ignored. Each refusal is named, a camera whose record's bytes
+//   pass a size_t among them; values frame prep would refuse round-trip as
+//   written.
 // - Colour records: the prefix golden, the camera, codes and exposure read
-//   back, the picture viewed in place, the refusals; the colour params.
+//   back, reserved bytes ignored, the picture viewed in place, codes of 255
+//   and siting 5 accepted, the refusals; the colour params.
 // - Through the contract: pattern depth's records, decoded with an info
 //   decoded from params, keep the frame contract and carry their index.
 // - A host allocation failure is OutOfMemory.
@@ -286,6 +289,13 @@ int test_sensor() {
         wire::decode_sensor(*params + "later", info.id, info.clock, info.fps);
     CHECK(longer.ok());
     CHECK(same_info(*longer, info));
+    // Reserved bytes are ignored: 6 and 7 all ones read as written 0.
+    std::string reserved = *params;
+    reserved[6] = reserved[7] = static_cast<char>(0xFF);
+    const vkc::Result<sensor::SensorInfo> ignored =
+        wire::decode_sensor(reserved, info.id, info.clock, info.fps);
+    CHECK(ignored.ok());
+    CHECK(same_info(*ignored, info));
 
     // Every truncation, the model's bytes included.
     for (std::size_t n = 0; n < golden.size(); ++n) {
@@ -507,6 +517,14 @@ int round_trip(std::uint32_t width, std::uint32_t height, bool plane) {
   CHECK(read->pixels.get() == static_cast<const void*>(payload.get()));
   CHECK(same_depth_half(frame, *read));
   CHECK(left_out(*read));
+  // Reserved bytes are ignored: 386 to 391 all ones read as written 0.
+  const auto reserved = std::make_shared<Bytes>(*payload);
+  std::fill(reserved->begin() + 386, reserved->begin() + 392, 0xFF);
+  const vkc::Result<sensor::RgbdFrame> ignored =
+      wire::decode_depth(info, reserved->data(), reserved->size(), reserved);
+  CHECK(ignored.ok());
+  CHECK(same_depth_half(frame, *ignored));
+  CHECK(left_out(*ignored));
   std::printf("depth: %u x %u %s a plane, %zu bytes, read in place\n", width,
               height, plane ? "with" : "without", payload->size());
   return 0;
@@ -616,6 +634,33 @@ int test_depth_refusals() {
   CHECK(refused(wire::encode_depth(no_depth, frame), Code::InvalidArgument,
                 "a sensor without a depth camera"));
 
+  // A depth camera whose record's bytes a size_t cannot count: w h is
+  // 2^63 + 2, so an unchecked 392 + 2 w h wraps to 396. A 396-byte record
+  // of it is refused, not read past, and so is a frame of it at encode (its
+  // rows are never read). The sensor comes through its params.
+  sensor::SensorInfo huge;
+  camera::CameraModel huge_camera;
+  huge_camera.size = {4294836226u, 2147549185u};
+  huge.depth = huge_camera;
+  const vkc::Result<std::string> huge_params = wire::encode_sensor(huge);
+  CHECK(huge_params.ok());
+  const vkc::Result<sensor::SensorInfo> huge_info =
+      wire::decode_sensor(*huge_params, "huge", sensor::ClockDomain::Host, 0);
+  CHECK(huge_info.ok());
+  Golden wrapped(396);
+  wrapped.camera(0, huge_camera);
+  CHECK(refused(decode(*huge_info, wrapped.bytes, 396), Code::InvalidArgument,
+                "396 bytes, not the layout's count, past a size_t for "
+                "4294836226 x 2147549185 without a plane"));
+  const std::uint16_t sample = 0;
+  sensor::RgbdFrame huge_frame;
+  huge_frame.depth = &sample;
+  huge_frame.depth_camera = huge_camera;
+  CHECK(refused(wire::encode_depth(*huge_info, huge_frame),
+                Code::InvalidArgument,
+                "a depth camera of 4294836226 x 2147549185, too large for a "
+                "record's bytes to be counted"));
+
   // Values frame prep refuses are its to refuse: they round-trip as
   // written. A unit of 0, a NaN range, a reflected pose, unknown noise.
   f = frame;
@@ -634,6 +679,12 @@ int test_depth_refusals() {
   CHECK(same_depth_half(f, *odd_read));
   std::puts("depth: each refusal named; prep's values passed as written");
   return 0;
+}
+
+bool same_codes(const sensor::ColorCodes& a, const sensor::ColorCodes& b) {
+  return a.matrix == b.matrix && a.transfer == b.transfer &&
+         a.primaries == b.primaries && a.full_range == b.full_range &&
+         a.chroma_location == b.chroma_location;
 }
 
 int test_color() {
@@ -692,6 +743,39 @@ int test_color() {
   CHECK(read->picture == payload.data() + 128);
   CHECK(read->picture_bytes == picture.size());
   CHECK(std::equal(picture.begin(), picture.end(), read->picture));
+  // Reserved bytes are ignored: 109 to 111 and 124 to 127 all ones read as
+  // written 0.
+  Bytes reserved = payload;
+  std::fill(reserved.begin() + 109, reserved.begin() + 112, 0xFF);
+  std::fill(reserved.begin() + 124, reserved.begin() + 128, 0xFF);
+  const vkc::Result<wire::ColorRecord> ignored =
+      wire::decode_color(info, reserved.data(), reserved.size());
+  CHECK(ignored.ok());
+  CHECK(same_camera(ignored->camera, read->camera));
+  CHECK(same_codes(ignored->codes, read->codes));
+  CHECK(bits(ignored->exposure.duration_s) == bits(read->exposure.duration_s));
+  CHECK(bits(ignored->exposure.iso) == bits(read->exposure.iso));
+  CHECK(bits(ignored->exposure.bias_ev) == bits(read->exposure.bias_ev));
+  CHECK(ignored->picture == reserved.data() + 128);
+  CHECK(ignored->picture_bytes == picture.size());
+
+  // The bounds, written and read: codes of 255, siting 5.
+  sensor::ColorCodes bounds;
+  bounds.matrix = 255;
+  bounds.transfer = 255;
+  bounds.primaries = 255;
+  bounds.chroma_location = 5;
+  const vkc::Result<Prefix> bounds_prefix =
+      wire::encode_color(info, frame, bounds);
+  CHECK(bounds_prefix.ok());
+  CHECK((*bounds_prefix)[104] == 255 && (*bounds_prefix)[105] == 255 &&
+        (*bounds_prefix)[106] == 255 && (*bounds_prefix)[108] == 5);
+  Bytes bounds_payload(bounds_prefix->begin(), bounds_prefix->end());
+  bounds_payload.push_back(0x26);
+  const vkc::Result<wire::ColorRecord> bounds_read =
+      wire::decode_color(info, bounds_payload.data(), bounds_payload.size());
+  CHECK(bounds_read.ok());
+  CHECK(same_codes(bounds_read->codes, bounds));
 
   // Limited range and an unknown exposure; a one-byte picture.
   sensor::RgbdFrame plain = frame;
