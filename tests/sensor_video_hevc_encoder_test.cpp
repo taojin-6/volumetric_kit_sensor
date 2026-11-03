@@ -2,23 +2,32 @@
 // Copyright (c) 2026 Tao Jin
 
 // The HEVC encoder on this machine's hardware: the encoder rules
-// (testing/hevc_conformance.hpp, C1-C13) at the public sizes, at either
+// (testing/hevc_conformance.hpp, C1-C13b) at the public sizes, at either
 // range, BT.601 and BT.709, sitings 0 and 1, QP 1 and 51 and a key QP of its
-// own, and on every code in the colour set; the pictures it codes decoded
-// back and read on the host, PSNR at QP 22 and the pattern's 0 and 255 and
-// index; video_backend(); and on Apple color_codes_of on every string Core
-// Video names. A build with no encoder refuses in create.
+// own, and on every code in the colour set, through pixel buffers and
+// through targets a kernel writes on the device; the pictures it codes
+// decoded back and read on the host, PSNR at QP 22 and the pattern's 0 and
+// 255 and index, one target written only after a helper thread lets its
+// batch run; a device without hevc_encoder_device_requirements() refused;
+// video_backend(); and on Apple color_codes_of on every string Core Video
+// names. A build with no encoder refuses in create. On every device: the
+// test writer (testing/nv12_writer.hpp) stores a picture into plane images
+// as it is, and refuses what it cannot write.
 //
-// Where no hardware path opens the GPU part skips; VS_TEST_HEVC_ENCODER,
+// Where no hardware path opens the encoder part skips; VS_TEST_HEVC_ENCODER,
 // which CI sets on the legs that promise one (VideoToolbox on macOS), makes
 // it fail instead.
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -26,10 +35,16 @@
 #include "device_picture_readback.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
+#include "volumetric_kit/core/testing/write_image.hpp"
+#include "volumetric_kit/core/vulkan/allocator.hpp"
+#include "volumetric_kit/core/vulkan/command_batch.hpp"
+#include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/core/vulkan/sync.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
 #include "volumetric_kit/sensor/testing/hevc_clip.hpp"
 #include "volumetric_kit/sensor/testing/hevc_conformance.hpp"
 #include "volumetric_kit/sensor/testing/nv12_pattern.hpp"
+#include "volumetric_kit/sensor/testing/nv12_writer.hpp"
 #include "volumetric_kit/sensor/video/backend.hpp"
 #include "volumetric_kit/sensor/video/hevc_decoder.hpp"
 #include "volumetric_kit/sensor/video/hevc_encoder.hpp"
@@ -214,22 +229,27 @@ int test_color_codes_of() {
 }
 #endif
 
+// How a case's pictures go in.
+enum class In { PixelBuffers, Targets };
+
 // The rules on one case: 0 when kept.
-int breach(const char* what, testing::HevcEncoderCase c, Gpu& gpu) {
+int breach(const char* what, testing::HevcEncoderCase c, Gpu& gpu,
+           In in = In::PixelBuffers) {
   c.device = &gpu.device;
   c.allocator = &gpu.allocator;
-  c.pixel_buffers = true;
+  c.pixel_buffers = in == In::PixelBuffers;
+  const char* way = c.pixel_buffers ? "pixel buffers" : "targets";
   const auto broken = testing::hevc_encoder_breach(c);
   if (!broken.ok()) {
-    std::fprintf(stderr, "FAIL %s: %s\n", what,
+    std::fprintf(stderr, "FAIL %s, %s: %s\n", what, way,
                  broken.status().message().c_str());
     return 1;
   }
   if (!broken->empty()) {
-    std::fprintf(stderr, "FAIL %s: %s\n", what, broken->c_str());
+    std::fprintf(stderr, "FAIL %s, %s: %s\n", what, way, broken->c_str());
     return 1;
   }
-  std::printf("rules kept: %s\n", what);
+  std::printf("rules kept: %s, %s\n", what, way);
   return 0;
 }
 
@@ -283,6 +303,67 @@ int test_cases(Gpu& gpu) {
   return 0;
 }
 
+// The same rules through targets the device writes: the public sizes, both
+// ranges and matrices, and a siting VideoToolbox takes from the picture's
+// tag.
+int test_target_cases(Gpu& gpu) {
+  const In t = In::Targets;
+  if (breach("512x512 BT.709 full", make(512, 512, kBt709Full), gpu, t) != 0) {
+    return 1;
+  }
+  auto narrow = make(1922, 1082, kBt709Video);
+  narrow.options.key_qp = 26;
+  if (breach("1922x1082 BT.709 video, key QP 26", narrow, gpu, t) != 0) {
+    return 1;
+  }
+  auto tall = make(3840, 4096, kBt709Full, 30);
+  tall.pictures = 8;
+  if (breach("3840x4096 BT.709 full", tall, gpu, t) != 0) return 1;
+  if (breach("1920x1440 BT.601 full", make(1920, 1440, kBt601Full), gpu, t) !=
+      0) {
+    return 1;
+  }
+  ColorCodes centred = kBt601Video;
+  centred.chroma_location = 1;
+  if (breach("1920x1440 BT.601 video, sited at the centre",
+             make(1920, 1440, centred), gpu, t) != 0) {
+    return 1;
+  }
+  return 0;
+}
+
+#if defined(__APPLE__)
+// A device without what the target's writer needs opens no session on it:
+// one that declares Metal's import and not the storage images' formats, and
+// one that declares neither.
+int test_device_refused(Gpu& gpu) {
+  HevcEncoder::Options o;
+  o.width = 512;
+  o.height = 512;
+  o.color = kBt709Full;
+  static const char* const kMetal[] = {"VK_EXT_metal_objects"};
+  auto metal_only = vs_test::adopted_device(gpu, kMetal, 1);
+  CHECK(metal_only.ok());
+  o.device = &*metal_only;
+  o.allocator = &gpu.allocator;
+  auto refused = HevcEncoder::create(o);
+  CHECK(!refused.ok() &&
+        refused.status().domain() == vkc::Status::Code::Unsupported);
+  CHECK(refused.status().message().find("shaderStorageImageExtendedFormats") !=
+        std::string::npos);
+  auto bare = vs_test::bare_device(gpu);
+  CHECK(bare.ok());
+  o.device = &*bare;
+  refused = HevcEncoder::create(o);
+  CHECK(!refused.ok() &&
+        refused.status().domain() == vkc::Status::Code::Unsupported);
+  // The test's own device has it all.
+  o.device = &gpu.device;
+  CHECK(HevcEncoder::create(o).ok());
+  return 0;
+}
+#endif
+
 // Every code in the set, normalization included, and every siting
 // VideoToolbox writes: each a short run.
 int test_code_set(Gpu& gpu) {
@@ -308,6 +389,17 @@ int test_code_set(Gpu& gpu) {
 }
 
 #if defined(__APPLE__)
+// A thread joined as it goes, so a failed check never leaves one running.
+struct Helper {
+  std::thread thread;
+  Helper() = default;
+  Helper(const Helper&) = delete;
+  Helper& operator=(const Helper&) = delete;
+  ~Helper() {
+    if (thread.joinable()) thread.join();
+  }
+};
+
 double psnr(const std::vector<std::uint8_t>& a,
             const std::vector<std::uint8_t>& b) {
   double sum = 0;
@@ -321,15 +413,34 @@ double psnr(const std::vector<std::uint8_t>& a,
 
 // The pattern coded at QP 22 and decoded back: PSNR at least 45 dB in each
 // plane, square 0's 255 and square 1's 0 exact, and each picture's index.
-int test_quality(Gpu& gpu, const ColorCodes& color) {
+// Through targets, the device writes each picture (testing::Nv12Writer), and
+// picture kGated's batch runs only once a helper thread sets a value, after
+// its send has returned: it decodes to what that batch wrote, so the coding
+// thread coded it only once it was written.
+int test_quality(Gpu& gpu, const ColorCodes& color, In in) {
   constexpr std::uint32_t kW = 1920;
   constexpr std::uint32_t kH = 1440;
   constexpr std::uint32_t kPictures = 6;
+  constexpr std::uint32_t kGated = 3;
+  const bool targets = in == In::Targets;
   HevcEncoder::Options o;
   o.width = kW;
   o.height = kH;
   o.qp = 22;
   o.color = color;
+  if (targets) {
+    o.device = &gpu.device;
+    o.allocator = &gpu.allocator;
+  }
+  // Before the encoder, so they outlive it: its coding thread waits on
+  // `written`, and the batches on `gate`.
+  auto writer = testing::Nv12Writer::create(gpu.device);
+  CHECK(writer.ok());
+  auto written = vkc::TimelineSemaphore::create(gpu.device);
+  auto gate = vkc::TimelineSemaphore::create(gpu.device);
+  CHECK(written.ok() && gate.ok());
+  std::vector<vkc::PendingBatch> pending(kPictures);
+  Helper helper;  // sets `gate`: joined before the batches go
   auto encoder = HevcEncoder::create(o);
   CHECK(encoder.ok());
   sensor::HevcDecoder::Options d;
@@ -342,13 +453,37 @@ int test_quality(Gpu& gpu, const ColorCodes& color) {
   std::uint32_t out = 0;
   for (std::uint32_t i = 0; i < kPictures; ++i) {
     const testing::HostNv12 want = testing::test_pattern(kW, kH, 40 + i);
-    auto pixels = testing::pixel_buffer(want, color);
-    CHECK(pixels.ok());
-    const vkc::Status sent =
-        sensor::send_pixel_buffer(*encoder, *pixels, i == 0, i);
-    CVPixelBufferRelease(*pixels);
-    CHECK(sent.ok());
+    if (targets) {
+      vkc::CommandBatch batch(gpu.device, gpu.allocator);
+      auto target = encoder->target(batch);
+      CHECK(target.ok());
+      CHECK(writer->record_upload(batch, gpu.allocator, want, *target).ok());
+      std::vector<vkc::TimelinePoint> waits;
+      if (i == kGated) waits.push_back({&*gate, 1});
+      auto submitted = batch.submit_async(waits, {{&*written, i + 1}});
+      CHECK(submitted.ok());
+      pending[i] = std::move(submitted).value();
+      if (i == kGated) {
+        helper.thread = std::thread([&gate] {
+          std::this_thread::sleep_for(std::chrono::milliseconds(300));
+          static_cast<void>(gate->signal(1));
+        });
+      }
+      CHECK(encoder->send(i == 0, i, {&*written, i + 1}).ok());
+      if (i == kGated) {
+        auto at_send = written->value();
+        CHECK(at_send.ok() && *at_send < i + 1);  // not yet written
+      }
+    } else {
+      auto pixels = testing::pixel_buffer(want, color);
+      CHECK(pixels.ok());
+      const vkc::Status sent =
+          sensor::send_pixel_buffer(*encoder, *pixels, i == 0, i);
+      CVPixelBufferRelease(*pixels);
+      CHECK(sent.ok());
+    }
     auto got = encoder->receive(coded);
+    if (helper.thread.joinable()) helper.thread.join();
     CHECK(got.ok() && *got);
     CHECK(decoder
               ->send(coded.access_unit.data(), coded.access_unit.size(),
@@ -383,15 +518,122 @@ int test_quality(Gpu& gpu, const ColorCodes& color) {
     }
   }
   CHECK(out == kPictures);
-  std::printf("QP 22, %s range: worst PSNR Y %.2f, Cb %.2f, Cr %.2f dB\n",
-              color.full_range ? "full" : "video", worst[0], worst[1],
+  std::printf("QP 22, %s range, %s: worst PSNR Y %.2f, Cb %.2f, Cr %.2f dB\n",
+              color.full_range ? "full" : "video",
+              targets ? "targets" : "pixel buffers", worst[0], worst[1],
               worst[2]);
   CHECK(worst[0] >= 45 && worst[1] >= 45 && worst[2] >= 45);
   return 0;
 }
 #endif
 
+// A plane image the writer stores into, or not, as @p usage says: 0xEE
+// throughout, in GENERAL.
+vkc::Result<std::shared_ptr<const vkc::Image>> plane_image(
+    Gpu& gpu, std::uint32_t columns, std::uint32_t rows, VkFormat format,
+    std::uint32_t texel, VkImageUsageFlags usage) {
+  vkc::ImageDesc desc;
+  desc.extent = {columns, rows};
+  desc.format = format;
+  desc.usage = usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  VKC_ASSIGN(vkc::Image image, gpu.allocator.create_image(desc));
+  const std::vector<std::uint8_t> filled(std::size_t{columns} * rows * texel,
+                                         0xEE);
+  VKC_TRY(vkc::test::write_image(gpu.device, gpu.allocator, image,
+                                 filled.data(), filled.size(),
+                                 VK_IMAGE_LAYOUT_GENERAL));
+  return std::make_shared<const vkc::Image>(std::move(image));
+}
+
+// NV12 plane images of @p width x @p height, @p pad columns and rows larger.
+vkc::Result<sensor::YuvImage> planes(Gpu& gpu, std::uint32_t width,
+                                     std::uint32_t height, std::uint32_t pad,
+                                     VkImageUsageFlags usage) {
+  sensor::YuvImage yuv;
+  yuv.layout = sensor::YuvLayout::Nv12;
+  yuv.width = width;
+  yuv.height = height;
+  VKC_ASSIGN(yuv.image[0], plane_image(gpu, width + pad, height + pad,
+                                       VK_FORMAT_R8_UNORM, 1, usage));
+  VKC_ASSIGN(yuv.image[1],
+             plane_image(gpu, (width + 1) / 2 + pad, (height + 1) / 2 + pad,
+                         VK_FORMAT_R8G8_UNORM, 2, usage));
+  return yuv;
+}
+
+// The test writer, on any device: a picture stored into plane images reads
+// back as it is, at even and odd sizes, into images larger than the picture
+// too, from their corner; what it cannot write is refused, and a device
+// without the storage images' formats has no writer.
+int test_writer(Gpu& gpu) {
+  auto writer = testing::Nv12Writer::create(gpu.device);
+  CHECK(writer.ok());
+  const struct {
+    std::uint32_t width, height, pad;
+  } sizes[] = {{256, 144, 0}, {255, 143, 3}, {1922, 1082, 0}};
+  for (const auto& size : sizes) {
+    const testing::HostNv12 picture =
+        testing::test_pattern(size.width, size.height, 5);
+    auto yuv = planes(gpu, size.width, size.height, size.pad,
+                      VK_IMAGE_USAGE_STORAGE_BIT);
+    CHECK(yuv.ok());
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    CHECK(writer->record_upload(batch, gpu.allocator, picture, *yuv).ok());
+    CHECK(batch.submit().ok());
+    std::vector<std::uint8_t> back[3];
+    vs_test::read_device_picture(*yuv, gpu.device, gpu.allocator, back);
+    CHECK(back[0] == picture.luma);
+    CHECK(back[1].size() * 2 == picture.chroma.size());
+    for (std::size_t k = 0; k < back[1].size(); ++k) {
+      CHECK(back[1][k] == picture.chroma[2 * k]);
+      CHECK(back[2][k] == picture.chroma[2 * k + 1]);
+    }
+  }
+  const testing::HostNv12 picture = testing::test_pattern(64, 32, 1);
+  const auto refused = [&](const sensor::YuvImage& target,
+                           const testing::HostNv12& p) {
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    return writer->record_upload(batch, gpu.allocator, p, target).domain() ==
+           vkc::Status::Code::InvalidArgument;
+  };
+  auto read_only = planes(gpu, 64, 32, 0, 0);
+  CHECK(read_only.ok());
+  CHECK(refused(*read_only, picture));  // no STORAGE usage
+  auto stored = planes(gpu, 64, 32, 0, VK_IMAGE_USAGE_STORAGE_BIT);
+  CHECK(stored.ok());
+  CHECK(refused(*stored, testing::test_pattern(62, 32, 1)));  // another size
+  sensor::YuvImage swapped = *stored;
+  std::swap(swapped.image[0], swapped.image[1]);
+  CHECK(refused(swapped, picture));  // R8G8 as the luma
+  sensor::YuvImage larger = *stored;
+  larger.width = 66;
+  CHECK(refused(larger, testing::test_pattern(66, 32, 1)));  // too small
+  {
+    vkc::CommandBatch batch(gpu.device, gpu.allocator);
+    auto few = testing::Nv12Writer::upload(batch, gpu.allocator,
+                                           testing::test_pattern(32, 32, 1));
+    CHECK(few.ok());
+    CHECK(writer->record(batch, *few, *stored).domain() ==
+          vkc::Status::Code::InvalidArgument);  // planes of a smaller picture
+  }
+  auto bare = vs_test::bare_device(gpu);
+  CHECK(bare.ok());
+  CHECK(testing::Nv12Writer::create(*bare).status().domain() ==
+        vkc::Status::Code::Unsupported);
+  std::puts("the test writer stores pictures as they are");
+  return 0;
+}
+
 int gpu_main(Gpu& gpu) {
+  if (test_writer(gpu) != 0) return 1;
+#if !defined(__APPLE__)
+  // No encoder off Apple yet: the writer was all there is to run.
+  if (!testing::hevc_encoder_promised()) {
+    std::puts("sensor_video_hevc_encoder: OK (no encoder in this build)");
+    return 0;
+  }
+#endif
   HevcEncoder::Options probe;
   probe.width = 512;
   probe.height = 512;
@@ -404,10 +646,14 @@ int gpu_main(Gpu& gpu) {
     return no_encoder(made.status().message());
   }
   if (test_cases(gpu) != 0) return 1;
+  if (test_target_cases(gpu) != 0) return 1;
   if (test_code_set(gpu) != 0) return 1;
 #if defined(__APPLE__)
-  if (test_quality(gpu, kBt601Full) != 0) return 1;
-  if (test_quality(gpu, kBt601Video) != 0) return 1;
+  if (test_device_refused(gpu) != 0) return 1;
+  for (const In in : {In::PixelBuffers, In::Targets}) {
+    if (test_quality(gpu, kBt601Full, in) != 0) return 1;
+    if (test_quality(gpu, kBt601Video, in) != 0) return 1;
+  }
 #endif
   std::puts("sensor_video_hevc_encoder: OK");
   return 0;
@@ -420,12 +666,7 @@ int main() {
   if (test_backend() != 0) return 1;
 #if defined(__APPLE__)
   if (test_color_codes_of() != 0) return 1;
-#else
-  // No encoder off Apple yet: nothing to run on the GPU.
-  if (!testing::hevc_encoder_promised()) {
-    std::puts("sensor_video_hevc_encoder: OK (no encoder in this build)");
-    return 0;
-  }
 #endif
-  return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
+  return vkc::test::run_on_gpu(sensor::hevc_encoder_device_requirements(),
+                               gpu_main);
 }

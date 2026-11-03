@@ -100,6 +100,10 @@ constexpr YcbcrWeights ycbcr_weights(VideoColorMatrix matrix) noexcept {
 /// V210's or Luma's one plane. They are ranges of @ref device or of
 /// @ref host that do not overlap, or the @ref image planes; one of the three.
 ///
+/// A picture is held by whoever holds its planes, as below. An encoder's
+/// target (`HevcEncoder::target`) is not held this way: it is valid only
+/// until `send`.
+///
 /// @code
 /// YuvImage image;  // a decoder's NV12 picture, left on the device
 /// image.layout = YuvLayout::Nv12;
