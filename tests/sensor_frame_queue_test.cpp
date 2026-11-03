@@ -6,7 +6,9 @@
 //   - a deeper queue drains oldest first, a frame pushed out of a full queue
 //     counted dropped; its depth reads back, held at 1 or more;
 //   - the consumer is woken once a frame or a failure, after it is held, and
-//     by a wake with nothing held;
+//     by a wake with nothing held; each wake-up after the lock, so one that
+//     takes from the queue finds what woke it (a wake-up under the lock
+//     hangs or aborts, and the test's 60-s limit fails a hang);
 //   - a failure is reported to every later take as it was given, the first
 //     one kept, until a reset forgets it;
 //   - a stop clears it and keeps the count, which a start restarts; a
@@ -48,6 +50,25 @@ int test_newest_wins() {
   CHECK(woken == 5 && q.dropped() == 3);
   none = q.take_newest();
   CHECK(none.ok() && !none.value());
+  return 0;
+}
+
+// A wake-up that takes from the queue itself, as a consumer that polls under
+// its own lock may: it runs after the frame or the failure is held and after
+// the queue's lock is let go.
+int test_wake_up_takes() {
+  Queue q;
+  int seen = 0;  // the frame taken, -1 for none, -2 for the failure
+  q.set_notify([&] {
+    auto taken = q.take_newest();
+    seen = !taken.ok() ? -2 : (taken.value() ? *taken.value() : -1);
+  });
+  q.push(7);
+  CHECK(seen == 7);
+  q.wake();
+  CHECK(seen == -1);
+  q.fail(vkc::Status::io_error("gone"));
+  CHECK(seen == -2);
   return 0;
 }
 
@@ -220,6 +241,7 @@ int test_woken_consumer() {
 
 int main() {
   if (test_newest_wins() != 0) return 1;
+  if (test_wake_up_takes() != 0) return 1;
   if (test_drain_oldest_first() != 0) return 1;
   if (test_failure() != 0) return 1;
   if (test_clear() != 0) return 1;

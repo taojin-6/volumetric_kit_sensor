@@ -1160,3 +1160,6 @@ get_property(
   DIRECTORY
   PROPERTY TESTS)
 set_tests_properties(${_vs_tests} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+# The frame queue's test takes well under a second, ThreadSanitizer's included;
+# a wake-up called under its lock may hang it, failed in 60 s.
+set_tests_properties(sensor_frame_queue PROPERTIES TIMEOUT 60)

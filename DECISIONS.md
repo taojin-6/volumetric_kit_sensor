@@ -6999,17 +6999,26 @@ received count; a discard is the queue's drop, as RealSense's is.
 **Why.** The same rule was written three times, and the Orbbec copy never
 ran in CI: its camera stub replaced the mailbox with a copy of its own.
 Now the stub lands its captures in the driver's own mailbox and queue, so
-`OrbbecSensor`'s tests count the queue's drops, and the queue's own test
-runs on every leg and under ThreadSanitizer, where before it built only
-with librealsense. The iPad's ARKit driver (planned, not built) holds the
-same queue from its first version rather than a fourth copy.
+`OrbbecSensor`'s tests count the queue's drops (pushed out, passed over by
+a poll of a two-frame queue, discarded), and the queue's own test runs on
+every leg and under ThreadSanitizer, where before it built only with
+librealsense.
 
-**Ordering.** A drop is counted with release and read with acquire.
+**Ordering.** A drop is counted with release and read with acquire, and
+each driver's `stats` reads what its frames arrived as last, so `delivered
++ dropped + failed (+ lost) <= received` holds in every snapshot: each of
+those counts is made after the arrival it covers. RealSense read
+`received` last already. The Orbbec driver read it first: a frame counted
+between that read and the drops' was dropped and not yet received, which
+a stress harness on the queue showed (35-70 snapshots of about 3.7 million
+a run over the bound, in Release on a shared 64-core Linux host; none with
+`received` read last); it now reads it
+last, with acquire, and the colour decoder's lost and dropped counts are
+made with release and read with acquire, as the queue's are.
 `StereoDepthSensor::stats` read its counts and the camera's under one lock
-before; now it reads its own first, then the camera's, so `delivered +
-dropped + failed <= received` holds without that lock: each of its counts
-is written after the camera's counts that include its pair. RealSense and
-Orbbec read as before.
+before; now it reads its own first, then the camera's, under the lock:
+each of its counts is written after the camera's counts that include its
+pair.
 
 **Not here.** DeckLink's driver keeps its newest stereo frame in its
 upload, an `IStereoSensor` with no queue depth; recon's reader of recorded
@@ -7029,4 +7038,14 @@ host-threaded tests of `sensor_tsan_tests` (the queue's, the Orbbec decode
 worker's, `sensor_orbbec_open_sensors` on the stub, the audio capture's)
 under GCC 13's ThreadSanitizer there too, the queue's 20 times more.
 `StereoDepthSensor`'s source was syntax-checked on the Mac; its test runs
-where FFS builds, CI's FFS leg.
+where FFS builds, CI's FFS leg. After review: a wake-up that takes from
+the queue itself (each one after the lock and after the frame or failure
+is held), the queue's test failing in 60 s rather than 300 when it hangs;
+`sensor_orbbec_contract` polling a two-frame queue; and
+`sensor_ffs_depth_sensor` starting the sensor again after its camera's
+failure, which `reset_failure` alone lets it do. Planted bugs, each
+failing a test: the frames a poll passes over not counted (now
+`sensor_orbbec_contract` too), a push waking the consumer under the lock
+or before the frame is in, and a failure waking it under the lock (the
+two under the lock hang until the 60-s limit). The Orbbec stream's read
+order has no test: `CameraStream::stats` runs only on a camera.

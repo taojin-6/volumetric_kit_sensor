@@ -18,17 +18,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   driver hands out, drops and reports is unchanged: the same frames from
   `poll` and `drain`, the same counts, the same failures with the same
   codes and messages, the same wake-ups. A drop is now counted with release
-  and read with acquire, so no reader sees it before what was counted
-  ahead of it. DECISIONS.md, the 2026-11-03 frame-queue entry.
+  and read with acquire. Internal only: no public header, target or option
+  changes, and no consumer re-pins for it. DECISIONS.md, the 2026-11-03
+  frame-queue entry.
 - **Tests:** `sensor_realsense_queue` becomes `sensor_frame_queue`, built on
   every leg and in `sensor_tsan_tests`, with a consumer woken as a driver's
-  is; the Orbbec camera stub lands its captures in the driver's own mailbox
-  and queue, so its tests count the queue's drops.
+  is and a wake-up that takes from the queue itself, failing in 60 s rather
+  than 300 if it hangs. The Orbbec camera stub lands its captures in the
+  driver's own mailbox and queue, and its contract test polls a two-frame
+  queue, so its tests count every drop the queue makes: frames pushed out,
+  passed over and discarded. The FFS depth sensor's test starts it again
+  after its camera's failure and gets a frame.
 
-### Migration notes
+### Fixed
 
-- None: no public header, target or option changes, and no consumer
-  re-pins for it.
+- `OrbbecSensor::stats()` could count, in one snapshot, more frames handled
+  than received (`delivered + dropped + failed + lost`): the driver read
+  `received` first and the drops after, so a frame counted between the two
+  reads was dropped but not yet received. It now reads `received` last, as
+  the RealSense driver does, and the colour decoder's lost and dropped
+  counts are made with release and read with acquire.
 
 ## [0.30.0] - 2026-11-02
 
