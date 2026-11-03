@@ -484,14 +484,16 @@ entries relevant to your task; later amendments supersede earlier rules.
   depth; `testing/rgbd_pattern.hpp`'s depth carries the picture's index
   band.
 
-- [**2026-11-02**](#2026-11-02--nvidias-decoded-pictures-hand-over-on-the-gpu-each-carries-the-value-of-a-timeline-cuda-signals-after-its-copy-yuvimageready-every-reader-waits-for-it-on-the-device-and-ffmpegs-own-copy-of-nvdecs-output-goes-amends-the-2026-10-06-device-only-decoder-and-2026-10-26-plane-image-entries) —
+- [**2026-11-02**](#2026-11-02--nvidias-decoded-pictures-hand-over-on-the-gpu-each-carries-the-value-of-a-timeline-cuda-signals-after-its-copy-yuvimageready-every-reader-waits-for-it-on-the-device-and-ffmpegs-own-copy-of-nvdecs-output-stays-amends-the-2026-10-06-device-only-decoder-and-2026-10-26-plane-image-entries) —
   NVIDIA's decoded pictures hand over on the GPU: NVDEC and nvJPEG queue
   their copy or decode, CUDA signals an exported timeline after it, and the
   picture carries that value (`YuvImage::ready`), which every reader here
-  waits for on the device and a caller recording frame prep passes
-  (`ready_points`). FFmpeg's own copy of NVDEC's output goes
-  (`AV_HWACCEL_FLAG_UNSAFE_OUTPUT`); each mapped frame is kept until its
-  value is reached, never by the picture's holder.
+  waits for on the device and a caller reading in its own batch passes
+  (`ready_points`, `add_ready_point`). FFmpeg's own copy of NVDEC's output
+  stays: dropping it (`AV_HWACCEL_FLAG_UNSAFE_OUTPUT`) costs about 100 MB
+  more a 4K decoder on the low-delay streams NVENC writes. Each frame FFmpeg
+  hands out is kept until its value is reached, never by the picture's
+  holder.
 
 ## Decision record
 
@@ -6431,7 +6433,7 @@ a 0 kept as the last time, and a confidence plane taken beside device
 depth or at a floor of 0, or a floor of 1 without one
 (`sensor_rgbd_contract`).
 
-### 2026-11-02 — NVIDIA's decoded pictures hand over on the GPU: each carries the value of a timeline CUDA signals after its copy (`YuvImage::ready`), every reader waits for it on the device, and FFmpeg's own copy of NVDEC's output goes (amends the 2026-10-06 device-only decoder and 2026-10-26 plane-image entries).
+### 2026-11-02 — NVIDIA's decoded pictures hand over on the GPU: each carries the value of a timeline CUDA signals after its copy (`YuvImage::ready`), every reader waits for it on the device, and FFmpeg's own copy of NVDEC's output stays (amends the 2026-10-06 device-only decoder and 2026-10-26 plane-image entries).
 
 **The rule.** `YuvImage` gains `ready` and `ready_value`: the timeline value
 a writer that did not wait for its work sets once the picture is written.
@@ -6445,66 +6447,75 @@ synchronize or the event wait, then hands the picture out. A reader's
 submission waits for the value: `GpuFramePrep::prepare` and
 `prepare_batch`, `PictureReadback`, `LumaPass` and `StereoRectifier` each
 pass every picture's value among their `submit_async` waits, one a
-timeline at its highest value, and refuse a timeline made on another
-device before they record anything. A caller of `GpuFramePrep::record` or
-`record_set` passes `ready_points(frame)` (`prep/gpu_frame_prep.hpp`).
-VideoToolbox's pictures, a camera's and host planes carry none, nor does
-`DeviceDepth`.
+timeline at its highest value (`frame/ready_points.hpp`'s
+`add_ready_point`), and refuse a timeline made on another device before
+they record anything. A caller of `GpuFramePrep::record` passes
+`ready_points(frame)`, one of `record_set` or `SensorArray::record_process`
+`ready_points(frames)` (`set.frames`), and a reader of its own, which
+samples or copies a picture in a batch it submits, gathers its waits with
+`add_ready_point`. VideoToolbox's pictures, a camera's and host planes carry
+none, nor does `DeviceDepth`.
 
 **The crossing.** On the decoder's stream: NVDEC's post-processing into its
-output surface, the copy into the plane images, the signal. The reader takes
-the images or buffer over from `VK_QUEUE_FAMILY_EXTERNAL` as before, its
-submission waiting at every stage. The signal is queued before the picture
-is handed out, so before any batch that waits for it is submitted, as the
-core asks. A ring slot no picture holds is reused at once, its next write
-queued behind its last on the one stream; one that does not fit is let go
-only once its last write's value is reached, since a holder may drop a
-picture CUDA has not written yet. After a CUDA failure the decoder
-synchronizes its stream, then sets the last value it handed out from the
-host if the counter is below it, so no batch waits for good; its destructor
-does the same before CUDA's import goes. nvJPEG's next decode waits on the
-host for the last one's work (an event, long done at a camera's rate) before
-it rewrites nvJPEG's pinned, device and state buffers.
+output surface, FFmpeg's copy into a pool frame, the copy into the plane
+images, the signal. The reader takes the images or buffer over from
+`VK_QUEUE_FAMILY_EXTERNAL` as before, its submission waiting at every stage.
+The signal is queued before the picture is handed out, so before any batch
+that waits for it is submitted, as the core asks. A ring slot no picture
+holds is reused at once, its next write queued behind its last on the one
+stream; one that does not fit is let go only once its last write's value is
+reached, since a holder may drop a picture CUDA has not written yet. After a
+CUDA failure the decoder synchronizes its stream, then sets the last value
+it handed out from the host if the counter is below it, so no batch waits
+for good; its destructor does the same before CUDA's import goes. The host
+sets nothing where the stream could not be waited for, as the core's
+`ExportedTimeline` asks. nvJPEG's next decode waits on the host for the last
+one's work (an event, long done at a camera's rate) before it rewrites
+nvJPEG's pinned, device and state buffers.
 
-**FFmpeg's copy.** With `AV_HWACCEL_FLAG_UNSAFE_OUTPUT` (FFmpeg 6.1 has it,
-the floor) NVDEC's mapped output surface is the frame FFmpeg hands out, with
-no `av_frame_make_writable` copy into a pool frame, so a picture is one
-device copy, not two. NVDEC then has as many output surfaces as decode
-surfaces (FFmpeg's pool: the SPS's DPB + 2 + 3) instead of one. The decoder
-keeps each frame it mapped, up to three, until its picture's value is
-reached, and lets it go then, whoever holds the picture: held pictures hold
-no surface of NVDEC's, and with three kept the next `receive` waits on the
-host for the oldest. VRAM per decoder, NVIDIA's per-process accounting,
-the GPU's primary context in the baseline, synthetic `testsrc2` clips of
-60 pictures, P-only (DPB 3) and with two reordered B-pictures (DPB 5):
+**FFmpeg's copy stays.** `AV_HWACCEL_FLAG_UNSAFE_OUTPUT` (FFmpeg 6.1 has
+it, the floor) would hand out NVDEC's mapped output surface with no
+`av_frame_make_writable` copy into a pool frame, so a picture would take one
+device copy, not two; but NVDEC then has as many output surfaces as decode
+surfaces (FFmpeg's pool: the SPS's DPB + 2 + 3) instead of one. The cost
+follows the DPB the stream declares (`sps_max_dec_pic_buffering_minus1` +
+1), not whether it reorders. The bar was about 100 MB a 4K decoder, and
+NVENC's default low-delay stream declares a DPB of 5 with no reordering (4
+reference pictures): the flag adds 98-112 MiB (103-117 MB) there, past the
+bar, so the decoder sets no flag and FFmpeg's copy stays. The decoder still keeps
+each frame FFmpeg hands out, up to three, until its picture's value is
+reached, and lets it go then, whoever holds the picture; with three kept the
+next `receive` waits on the host for the oldest, so CUDA runs at most three
+pictures behind. VRAM per decoder, NVIDIA's per-process accounting, the
+GPU's primary context in the baseline, synthetic `testsrc2` clips:
 
-| MiB a decoder, lab RTX 5090, FFmpeg 8 | sensor 0.26.0 | FFmpeg's copy kept | 0.27.0 | the flag adds |
+| MiB a decoder, lab RTX 5090, FFmpeg 8 | sensor 0.26.0 | 0.27.0 | with the flag | the flag adds |
 | --- | --- | --- | --- | --- |
-| 2560x1440, P-only | 96 | 102 | 138 | 36 |
-| 3840x2160, P-only | 190 | 204 | 288 | 84 |
-| 3840x2160, B-pictures | 214 | 228 | 340 | 112 |
-| 4 x 3840x2160, P-only, each | 186.5 | 200.5 | 284.5 | 84 |
+| 2560x1440, P-only, DPB 3 | 96 | 102 | 138 | 36 |
+| 3840x2160, P-only, DPB 3 | 190 | 204 | 288 | 84 |
+| 3840x2160, two reordered B-pictures, DPB 5 | 214 | 228 | 340 | 112 |
+| 4 x 3840x2160, P-only, DPB 3, each | 186.5 | 200.5 | 284.5 | 84 |
 
-A nunga RTX 4090 with FFmpeg 6.1 gives the same to within 2 MiB but for the
-B-picture stream (240 and 338, 98 added). "FFmpeg's copy kept" is this
-change without the flag: the kept frames then hold pool frames, 14 MiB at
-4K. The bar was about 100 MB a 4K decoder: the flag adds 88 MB on the P-only
-stream every family source sends (the cameras', VideoToolbox's and NVENC's
-low-delay streams), under it, and 117 MB on a stream with reordering, over
-it; so the flag stays, and a source that declares a DPB of 5 or more costs
-past the bar.
+| MiB a decoder, a shared RTX 4090, FFmpeg 6.1, two rounds | sensor 0.26.0 | 0.27.0 | with the flag | the flag adds |
+| --- | --- | --- | --- | --- |
+| 3840x2160, P-only, DPB 3 | 188 | 202-216 | 286 | 70-84 |
+| 3840x2160, P-only, DPB 5 (NVENC's default) | 212 | 226-240 | 338 | 98-112 |
 
-**Why.** The owner's pipelined, zero-copy rule (the efficiency review, F3
-and F4): between decode and fusion the host waited on the copies, and NVDEC's
-output was copied twice. Both costs are small. `receive`'s wall time a
-picture, decoding back to back, the lab RTX 5090 quiet, two rounds, p50 /
-p95: 0.023-0.024 / 0.029-0.031 ms at 1440p before, 0.006-0.013 /
-0.017-0.037 ms after; 0.051-0.054 / 0.055 ms at 4K before, 0.006-0.013 /
-0.013-0.024 ms after; four 4K decoders 0.054 / 0.057-0.064 ms before,
-0.008 / 0.033-0.044 ms after. Nsight Systems over 60 pictures at 1440p:
-240 `cuMemcpy2DAsync` and 65 `cuStreamSynchronize` before, 120
-`cuMemcpy2DAsync`, 60 `cuSignalExternalSemaphoresAsync` and 7
-`cuStreamSynchronize` (the decoder's teardown) after.
+0.27.0's kept frames hold one or two more pool frames than 0.26.0: 14 MiB at
+4K on the lab, 14 to 28 on the RTX 4090. The flag
+could return for streams whose coded size times DPB is small (FFmpeg reads
+`hwaccel_flags` as NVDEC starts, so the decoder's `get_format` could set it
+per stream), or for sources that write a DPB of 2; neither is here.
+
+**Why.** The owner's pipelined rule (the efficiency review, F3): between
+decode and fusion the host waited on the copies. The cost was small.
+The `receive()` call, decoding back to back, the lab RTX 5090 quiet, two
+rounds, p50 / p95: 0.023-0.024 / 0.029-0.031 ms at 1440p before,
+0.005-0.010 / 0.012-0.021 ms after; 0.051-0.054 / 0.055 ms at 4K before,
+0.006-0.011 / 0.031-0.032 ms after; four 4K decoders 0.054 / 0.057-0.064 ms
+before, 0.006 / 0.017-0.024 ms after. FFmpeg maps NVDEC's picture and makes
+its copy inside `send()`, which these times leave out, and which this
+change leaves as it was.
 
 **Not here.** Depth from a GPU stage (`DeviceDepth`) carries no value, so
 its writer still finishes first; FFS's crossing is the timeline's second
@@ -6515,14 +6526,22 @@ sources over a CUDA table that holds their stream behind a flag
 (`cuStreamWaitValue32`): the picture comes out with its value unset, and a
 batch recorded with `ready_points`, still waiting after 50 ms, `prepare`,
 `PictureReadback` and `LumaPass`, each started before the flag is raised,
-read what the picture reads unheld, to the bit; nvJPEG's picture likewise on
-a GPU with the engine (the lab RTX 5090). `sensor_video_hevc` holds 72
-pictures at once, each read back to its frame's pattern, with values that
-rise. A device that exports memory and not semaphores is refused by both
-decoders. Planted bugs, each failing its test: prepare, the readback and the
-luma pass each skipping the wait, `ready_points` empty and the copy waited
-on the host (`sensor_video_handover`); a mapped frame held by the picture's
-holder (`sensor_video_hevc`, NVDEC's surfaces run out). The suite on a
-nunga RTX 4090 (FFmpeg 6.1), the lab RTX 5090 (FFmpeg 8, the validation
-layer 1.4.341 with synchronization validation) and the M5 Max (VideoToolbox,
-the Orbbec driver, validation); recon's suite on this checkout on the Mac.
+read what the picture reads unheld, to the bit. One hold before picture 0's
+copy holds the stream: pictures 0 to 2 come out at once and the fourth only
+after the raise, all four reading as unheld. A decoder destroyed while its
+stream is held waits for it, and the picture it handed out reads as unheld,
+its value reached. nvJPEG's picture likewise on a GPU with the engine (the
+lab RTX 5090), with its bytes overwritten once `decode` returns.
+`sensor_video_hevc` holds 72 pictures at once, each read back to its
+frame's pattern, with values that rise. `sensor_gpu_frame_prep` checks
+`ready_points(frames)` and `add_ready_point` (one a timeline, its highest
+value) and a `record_set` batch submitted with them waiting until the host
+sets both timelines. A device that exports memory and not semaphores is
+refused by both decoders. Planted bugs, each failing its test: prepare, the
+readback and the luma pass each skipping the wait, `ready_points` empty, the
+copy waited on the host and the full ring not waited for
+(`sensor_video_handover`); a set's `ready_points` empty
+(`sensor_gpu_frame_prep`). The suite on a shared RTX 4090 (FFmpeg 6.1), the
+lab RTX 5090 (FFmpeg 8, the validation layer 1.4.341 with synchronization
+validation) and the M5 Max (VideoToolbox, the Orbbec driver, validation);
+recon's suite on this checkout on the Mac.

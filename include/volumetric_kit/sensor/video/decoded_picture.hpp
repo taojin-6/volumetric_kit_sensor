@@ -36,8 +36,11 @@ struct DecodedPicture {
   /// when the decoder hands it out. NVDEC's and nvJPEG's copy may still be
   /// queued on the GPU then: the picture carries the timeline value CUDA sets
   /// once it is written (`YuvImage::ready`), which a reader's batch waits for
-  /// on the device, so neither the decoder nor the reader waits on the host.
-  /// Drop it before the device it is on is destroyed.
+  /// on the device, so neither the decoder nor the reader waits on the host:
+  /// this package's readers wait for it themselves, `GpuFramePrep`'s callers
+  /// pass `ready_points`, and a reader of its own @ref add_ready_point
+  /// (`frame/ready_points.hpp`). Drop it before the device it is on is
+  /// destroyed.
   ///
   /// The matrix and range are the ones it is coded in. A stream that declares
   /// no matrix takes the decoder's `Options::unlabelled_color` when it has

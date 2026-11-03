@@ -54,7 +54,9 @@ class CudaTimeline {
   // which returns once its queued work has run or failed, so CUDA sets
   // nothing more; then, if the counter is below the last value handed out,
   // set that value from the host, so no batch waits for good on a signal a
-  // failed stream dropped (core's ExportedTimeline orders it so).
+  // failed stream dropped (core's ExportedTimeline orders it so). Where the
+  // context cannot be made current the stream is not waited for, and the
+  // host sets nothing.
   void settle() noexcept;
 
  private:

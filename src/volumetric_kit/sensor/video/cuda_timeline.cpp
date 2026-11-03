@@ -81,10 +81,12 @@ core::Status CudaTimeline::wait(std::uint64_t value) const {
 }
 
 void CudaTimeline::settle() noexcept {
-  {
-    const CudaContextScope scope(context_);
-    if (scope.ok()) cuda_driver()->cuStreamSynchronize(stream_);
-  }
+  const CudaContextScope scope(context_);
+  // Without the stream waited for, CUDA might still set a value below the
+  // host's: nothing is set.
+  if (!scope.ok()) return;
+  // Returns once the stream's work has run or failed, either way for good.
+  static_cast<void>(cuda_driver()->cuStreamSynchronize(stream_));
   if (!reached(last_)) static_cast<void>(semaphore_->signal(last_));
 }
 

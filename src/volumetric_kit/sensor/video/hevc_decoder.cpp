@@ -37,10 +37,9 @@ core::Status unsupported(const std::string& why) {
 constexpr AVHWDeviceType kDeviceType = AV_HWDEVICE_TYPE_CUDA;
 constexpr AVPixelFormat kDeviceFormat = AV_PIX_FMT_CUDA;
 constexpr const char* kPath = "NVDEC";
-// Frames handed out whose copy may still be queued: each keeps NVDEC's mapped
-// output surface until its picture's ready value is reached. NVDEC has the
-// pool's count of them, at least 6 (FFmpeg's dpb + 2, + 3), so this many and
-// the one being mapped always fit.
+// Frames handed out whose copy may still be queued: each keeps FFmpeg's
+// frame, which the copy reads, until its picture's ready value is reached, so
+// CUDA runs at most this many pictures behind the decoder.
 constexpr std::size_t kKeptFrames = 3;
 
 // FFmpeg's device context's free: the context and stream it was given.
@@ -97,7 +96,7 @@ struct HevcDecoder::Impl {
   std::unique_ptr<video::CudaPlanePictures> pictures;
   // The frames handed out whose copy may still be queued, oldest first, from
   // kept[first]: released once the timeline reaches their value, never by
-  // the pictures' holders, so held pictures never hold NVDEC's surfaces.
+  // the pictures' holders, so held pictures hold none of FFmpeg's frames.
   // Their shells are made at create, so a picture allocates none.
   std::array<Kept, kKeptFrames> kept;
   std::size_t first = 0;
@@ -254,11 +253,11 @@ core::Result<HevcDecoder> HevcDecoder::create(const Options& options) {
   context->get_format = &Impl::pick_format;
   // Parameter-only packets are parsed by send(), before it returns. Hardware
   // decoding needs no frame threads holding those packets for a later call.
+  // FFmpeg copies NVDEC's output into a pool frame: without that copy
+  // (AV_HWACCEL_FLAG_UNSAFE_OUTPUT) NVDEC keeps an output surface per decode
+  // surface, the stream's DPB + 5, about 100 MB more a 4K decoder
+  // (DECISIONS.md, the 2026-11-02 hand-over entry).
   context->thread_count = 1;
-  // NVDEC's mapped output surface is the frame handed out, with no copy of
-  // FFmpeg's own into a pool frame: the one copy is ours, into the images,
-  // and the frame stays mapped until the timeline says it is done (kept).
-  context->hwaccel_flags |= AV_HWACCEL_FLAG_UNSAFE_OUTPUT;
   err = avcodec_open2(context, codec, nullptr);
   if (err < 0) return video::ffmpeg_error(kWho, "opening the decoder", err);
 #else
@@ -322,8 +321,10 @@ core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
   }
 #if VS_VIDEO_WITH_CUDA
   Impl& d = *impl_;
-  // Frames whose copy is done let go of NVDEC's surfaces; with every shell
-  // held, CUDA is that many pictures behind, and the oldest is waited for.
+  // Frames whose copy is done go back to FFmpeg; with every shell held, CUDA
+  // is that many pictures behind, and the oldest is waited for on the host,
+  // before FFmpeg says whether a picture follows: a wait that may precede no
+  // picture, harmless while CUDA keeps up with the stream's rate.
   d.release_copied();
   if (d.kept_count == d.kept.size()) {
     VKC_TRY(d.timeline->wait(d.kept[d.first].value));
@@ -356,7 +357,7 @@ core::Result<std::optional<DecodedPicture>> HevcDecoder::receive() {
   picture.value().pts = decoded->pts != AV_NOPTS_VALUE
                             ? decoded->pts
                             : decoded->best_effort_timestamp;
-  // Kept, and NVDEC's surface with it, until the copy from it is done.
+  // Kept until the copy from it is done.
   Impl::Kept& k = d.kept[(d.first + d.kept_count) % d.kept.size()];
   av_frame_move_ref(k.frame.get(), decoded);
   k.value = picture.value().yuv.ready_value;

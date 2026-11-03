@@ -338,7 +338,9 @@ pkg-config, and nvJPEG, with the CUDA 13 toolkit's headers
 them has run, with the timeline value CUDA sets once it has
 (`YuvImage::ready`): the package's readers wait for it on the device, and a
 caller that records `GpuFramePrep` into its own batch passes
-`ready_points(frame)` among the batch's `submit_async` waits.
+`ready_points(frame)`, or a set's `ready_points(set.frames)`, among the
+batch's `submit_async` waits; a reader of its own gathers them with
+`add_ready_point` (`frame/ready_points.hpp`).
 `VS_WITH_FFMPEG` on Apple fails the configure. The
 H.265 syntax the Apple decoder reads (`volumetric_kit::sensor_video_syntax`,
 `video/hevc_syntax.hpp`) and the key gate (`video/key_gate.hpp`) are host

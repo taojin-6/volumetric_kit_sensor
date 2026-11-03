@@ -13,6 +13,7 @@
 #include "../sharing_families.hpp"
 #include "volumetric_kit/core/vulkan/command_batch.hpp"
 #include "volumetric_kit/core/vulkan/image.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
 #include "yuv_planes.hpp"
 
 namespace volumetric_kit::sensor {
@@ -203,7 +204,7 @@ core::Status PictureReadback::read_pictures(YuvImage* const* pictures,
     const YuvImage& picture = *pictures[i];
     VKC_ASSIGN(plans[i], plan(picture, planes, staged));
     VKC_TRY(detail::check_ready(picture, device_, kWho));
-    detail::add_ready_point(picture, ready);
+    add_ready_point(picture, ready);
     copies += static_cast<std::uint32_t>(plans[i].count);
     if (picture.device == nullptr) continue;
     const VkBuffer handle = picture.device->handle();

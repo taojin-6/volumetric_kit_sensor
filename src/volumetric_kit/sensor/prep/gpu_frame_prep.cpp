@@ -28,6 +28,7 @@
 #include "volumetric_kit/core/vulkan/shader.hpp"
 #include "volumetric_kit/core/vulkan/vk_result.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
 #include "yuv_planes.hpp"
 
 namespace volumetric_kit::sensor {
@@ -999,7 +1000,7 @@ core::Status GpuFramePrep::prepare_frames(GpuFramePrep* preps,
   // copies) set these values, which the batch waits for on the device.
   std::vector<core::TimelinePoint> ready;
   for (std::size_t i = 0; i < count; ++i) {
-    if (frames[i] != nullptr) detail::add_ready_point(frames[i]->color, ready);
+    if (frames[i] != nullptr) add_ready_point(frames[i]->color, ready);
   }
   core::CommandBatch batch(*first->device_, *first->allocator_);
   VKC_TRY(record_frames(batch, preps, frames, layouts, acquires, out, count,
@@ -1054,7 +1055,16 @@ core::Status GpuFramePrep::ensure_output(std::shared_ptr<Output>& output,
 
 std::vector<core::TimelinePoint> ready_points(const RgbdFrame& frame) {
   std::vector<core::TimelinePoint> points;
-  detail::add_ready_point(frame.color, points);
+  add_ready_point(frame.color, points);
+  return points;
+}
+
+std::vector<core::TimelinePoint> ready_points(
+    const std::vector<std::optional<RgbdFrame>>& frames) {
+  std::vector<core::TimelinePoint> points;
+  for (const std::optional<RgbdFrame>& frame : frames) {
+    if (frame) add_ready_point(frame->color, points);
+  }
   return points;
 }
 

@@ -25,6 +25,7 @@
 #include "volumetric_kit/core/vulkan/host_ring.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
 
 namespace volumetric_kit::sensor {
 namespace {
@@ -511,7 +512,7 @@ core::Result<RectifiedPair> StereoRectifier::Impl::rectify(
   // The values of the views' writers that did not wait for their work
   // (YuvImage::ready), which the batch waits for on the device.
   std::vector<core::TimelinePoint> ready;
-  for (const YuvImage* image : images) detail::add_ready_point(*image, ready);
+  for (const YuvImage* image : images) add_ready_point(*image, ready);
   core::Result<core::PendingBatch> pending = batch.submit_async(ready, {});
   const core::Status ran = pending.ok() ? pending->wait() : pending.status();
   if (!ran.ok()) {

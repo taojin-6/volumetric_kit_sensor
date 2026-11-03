@@ -26,6 +26,7 @@
 #include "volumetric_kit/core/vulkan/image.hpp"
 #include "volumetric_kit/core/vulkan/vulkan.hpp"
 #include "volumetric_kit/sensor/frame/device_requirements.hpp"
+#include "volumetric_kit/sensor/frame/ready_points.hpp"
 #include "yuv_planes.hpp"
 
 namespace volumetric_kit::sensor {
@@ -343,7 +344,7 @@ core::Result<std::vector<DeviceLuma>> LumaPass::Impl::run(
   for (std::size_t i = 0; i < count; ++i) {
     VKC_ASSIGN(plans[i], check(pictures[i], i));
     VKC_TRY(detail::check_ready(*pictures[i], *device, "LumaPass"));
-    detail::add_ready_point(*pictures[i], ready);
+    add_ready_point(*pictures[i], ready);
   }
   // Each buffer the pictures are in is taken over once, however many name
   // it -- a side-by-side pair in one, say -- since its writer released it

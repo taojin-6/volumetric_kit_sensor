@@ -11,9 +11,12 @@
 // flag the test raises. So held, receive and decode return with the value
 // unset, and a batch that records prep and submits with ready_points, prepare,
 // PictureReadback and LumaPass, each started before the flag is raised, read
-// what the same picture reads unheld, to the bit. A watchdog raises a flag the
-// test has not after 10 s, so a decoder that waits on the host fails rather
-// than hangs.
+// what the same picture reads unheld, to the bit. With CUDA three pictures
+// behind, the next receive waits on the host for the oldest; a decoder
+// destroyed while its stream is held waits for it, so the picture it handed
+// out reads as unheld. A watchdog raises a flag the test has not after 10 s,
+// so a decoder that waits on the host where it should not fails rather than
+// hangs.
 //
 // Where no device path opens the test skips, or fails where
 // VS_TEST_HEVC_BACKEND promises one, as the decoder tests do; the JPEG part
@@ -22,6 +25,7 @@
 #include <cuda.h>
 #include <dlfcn.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -396,53 +400,67 @@ int check_record(const Gpu& gpu, sensor::GpuFramePrep& prep,
 
 // --- NVDEC -------------------------------------------------------------------
 
-// The patch clip's pictures, unheld and held. Picture 0 held for a recorded
-// batch, 1 for prepare, 2 for PictureReadback and 3 for LumaPass, each started
-// before the flag is raised; the rest unheld.
-int test_hevc(const Gpu& gpu, const Flag& flag) {
-  auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
-  CHECK(prep.ok());
-  auto luma = sensor::LumaPass::create(gpu.device, gpu.allocator);
-  CHECK(luma.ok());
-  const Frames frames;
-  const AccessUnits units = sensor::testing::access_units_of_file(kPatches);
-  CHECK(!units.empty());
+// The patch clip, and each of its pictures as it reads unheld.
+struct Clip {
+  AccessUnits units;
+  std::vector<Reads> want;
+};
+
+sensor::HevcDecoder::Options options_of(const Gpu& gpu) {
   sensor::HevcDecoder::Options options;
   options.device = &gpu.device;
   options.allocator = &gpu.allocator;
+  return options;
+}
 
-  // Unheld.
-  std::vector<Reads> want;
-  {
-    auto decoder = sensor::HevcDecoder::create(options);
-    CHECK(decoder.ok());
-    for (std::size_t i = 0; i <= units.size(); ++i) {
-      const bool end = i == units.size();
-      CHECK(decoder
-                ->send(end ? nullptr : units[i].data(),
-                       end ? 0 : units[i].size(), static_cast<std::int64_t>(i))
-                .ok());
-      for (;;) {
-        auto picture = decoder->receive();
-        CHECK(picture.ok());
-        if (!picture.value()) break;
-        want.push_back(
-            reads_of(gpu, prep.value(), frames, picture.value()->yuv));
-        CHECK(want.back().words.size() == kPixels &&
-              want.back().planes[0].size() == kPixels);
-      }
+double ms_since(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now() - start)
+      .count();
+}
+
+int read_clip(const Gpu& gpu, sensor::GpuFramePrep& prep, const Frames& frames,
+              Clip& clip) {
+  clip.units = sensor::testing::access_units_of_file(kPatches);
+  CHECK(!clip.units.empty());
+  auto decoder = sensor::HevcDecoder::create(options_of(gpu));
+  CHECK(decoder.ok());
+  const AccessUnits& units = clip.units;
+  for (std::size_t i = 0; i <= units.size(); ++i) {
+    const bool end = i == units.size();
+    CHECK(decoder
+              ->send(end ? nullptr : units[i].data(), end ? 0 : units[i].size(),
+                     static_cast<std::int64_t>(i))
+              .ok());
+    for (;;) {
+      auto picture = decoder->receive();
+      CHECK(picture.ok());
+      if (!picture.value()) break;
+      clip.want.push_back(reads_of(gpu, prep, frames, picture.value()->yuv));
+      CHECK(clip.want.back().words.size() == kPixels &&
+            clip.want.back().planes[0].size() == kPixels);
     }
   }
-  CHECK(want.size() == units.size());
+  CHECK(clip.want.size() == units.size());
   // Each held picture reads otherwise than the one before it, whose images a
   // reader that did not wait would find.
   for (std::size_t k = 1; k < 4; ++k) {
-    CHECK(want[k].words != want[k - 1].words &&
-          want[k].planes[0] != want[k - 1].planes[0]);
+    CHECK(clip.want[k].words != clip.want[k - 1].words &&
+          clip.want[k].planes[0] != clip.want[k - 1].planes[0]);
   }
+  return 0;
+}
 
-  // Held.
-  auto decoder = sensor::HevcDecoder::create(options);
+// The patch clip's pictures held. Picture 0 held for a recorded batch, 1 for
+// prepare, 2 for PictureReadback and 3 for LumaPass, each started before the
+// flag is raised; the rest unheld.
+int test_hevc(const Gpu& gpu, const Flag& flag, sensor::GpuFramePrep& prep,
+              const Frames& frames, const Clip& clip) {
+  auto luma = sensor::LumaPass::create(gpu.device, gpu.allocator);
+  CHECK(luma.ok());
+  const AccessUnits& units = clip.units;
+  const std::vector<Reads>& want = clip.want;
+  auto decoder = sensor::HevcDecoder::create(options_of(gpu));
   CHECK(decoder.ok());
   std::size_t next = 0;  // the next picture to come out
   for (std::size_t i = 0; i <= units.size(); ++i) {
@@ -464,7 +482,7 @@ int test_hevc(const Gpu& gpu, const Flag& flag) {
       sensor::YuvImage& yuv = picture.value()->yuv;
       const Reads& w = want[next];
       if (!holds) {
-        CHECK(prepared_words(gpu, prep.value(), frames.of(yuv)) == w.words);
+        CHECK(prepared_words(gpu, prep, frames.of(yuv)) == w.words);
         ++next;
         continue;
       }
@@ -473,10 +491,9 @@ int test_hevc(const Gpu& gpu, const Flag& flag) {
       CHECK(!hold->raised());
       CHECK(unset(yuv));
       if (next == 0) {
-        CHECK(check_record(gpu, prep.value(), frames.of(yuv), *hold, w.words) ==
-              0);
+        CHECK(check_record(gpu, prep, frames.of(yuv), *hold, w.words) == 0);
       } else if (next == 1) {
-        CHECK(prepared_words(gpu, prep.value(), frames.of(yuv)) == w.words);
+        CHECK(prepared_words(gpu, prep, frames.of(yuv)) == w.words);
         CHECK(hold->raised());  // prepare waited for it, on the device
       } else if (next == 2) {
         std::vector<std::uint8_t> planes[3];
@@ -500,6 +517,77 @@ int test_hevc(const Gpu& gpu, const Flag& flag) {
   return 0;
 }
 
+// One hold before picture 0's copy holds every later copy on the stream:
+// pictures 0 to 2 come out at once, and with three kept the decoder waits on
+// the host for picture 0's value before it hands out another, until the
+// watchdog raises the flag. All four then read as unheld.
+int test_back_pressure(const Gpu& gpu, const Flag& flag,
+                       sensor::GpuFramePrep& prep, const Frames& frames,
+                       const Clip& clip) {
+  constexpr auto kAfter = 2000ms;
+  auto decoder = sensor::HevcDecoder::create(options_of(gpu));
+  CHECK(decoder.ok());
+  std::vector<sensor::DecodedPicture> got;
+  std::vector<double> out_ms;  // when each came out, from the hold
+  {
+    Hold hold(flag, kCopy, kAfter);
+    const auto start = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < clip.units.size() && got.size() < 4; ++i) {
+      CHECK(decoder
+                ->send(clip.units[i].data(), clip.units[i].size(),
+                       static_cast<std::int64_t>(i))
+                .ok());
+      while (got.size() < 4) {
+        auto picture = decoder->receive();
+        CHECK(picture.ok());
+        if (!picture.value()) break;
+        out_ms.push_back(ms_since(start));
+        got.push_back(std::move(*picture.value()));
+      }
+    }
+    CHECK(got.size() == 4 && Hold::taken());
+  }
+  for (std::size_t k = 0; k < 3; ++k) CHECK(out_ms[k] < 1000.0);
+  CHECK(out_ms[3] >= 1500.0);  // after the watchdog's raise
+  for (std::size_t k = 0; k < 4; ++k) {
+    CHECK(prepared_words(gpu, prep, frames.of(got[k].yuv)) ==
+          clip.want[k].words);
+  }
+  return 0;
+}
+
+// The decoder destroyed while its stream is held: the destructor waits for
+// the stream (until the watchdog raises the flag), so the picture it handed
+// out reaches its value and reads as unheld, and no batch is left waiting.
+int test_destroy_held(const Gpu& gpu, const Flag& flag,
+                      sensor::GpuFramePrep& prep, const Frames& frames,
+                      const Clip& clip) {
+  std::optional<sensor::DecodedPicture> kept;
+  {
+    Hold hold(flag, kCopy, 1000ms);  // outlives the decoder
+    auto decoder = sensor::HevcDecoder::create(options_of(gpu));
+    CHECK(decoder.ok());
+    for (std::size_t i = 0; i < clip.units.size() && !kept; ++i) {
+      CHECK(decoder
+                ->send(clip.units[i].data(), clip.units[i].size(),
+                       static_cast<std::int64_t>(i))
+                .ok());
+      auto picture = decoder->receive();
+      CHECK(picture.ok());
+      if (picture.value()) kept = std::move(*picture.value());
+    }
+    CHECK(kept && Hold::taken() && unset(kept->yuv));
+    const auto start = std::chrono::steady_clock::now();
+    {
+      sensor::HevcDecoder gone = std::move(decoder).value();
+    }
+    CHECK(ms_since(start) > 500.0);  // it waited for the raise
+    CHECK(!unset(kept->yuv));
+  }
+  CHECK(prepared_words(gpu, prep, frames.of(kept->yuv)) == clip.want[0].words);
+  return 0;
+}
+
 // --- nvJPEG ------------------------------------------------------------------
 
 std::vector<std::uint8_t> read_file(const char* path) {
@@ -508,8 +596,8 @@ std::vector<std::uint8_t> read_file(const char* path) {
 }
 
 // A JPEG decoded with the decoder's stream held: decode returns before the
-// flag is raised, and a recorded batch, then PictureReadback, read what it
-// reads unheld.
+// flag is raised, and a recorded batch, then PictureReadback (its bytes
+// overwritten after decode), read what it reads unheld.
 int test_jpeg(const Gpu& gpu, const Flag& flag) {
   sensor::JpegDecoder::Options options;
   options.device = &gpu.device;
@@ -550,8 +638,12 @@ int test_jpeg(const Gpu& gpu, const Flag& flag) {
                        want.words) == 0);
   }
   {
+    // The bytes are read during decode only: overwritten once it returns,
+    // with the stream still held, they decode the same.
+    std::vector<std::uint8_t> scratch = bytes;
     Hold hold(flag, kJpeg, 1000ms);
-    auto picture = decoder->decode(bytes.data(), bytes.size());
+    auto picture = decoder->decode(scratch.data(), scratch.size());
+    std::fill(scratch.begin(), scratch.end(), std::uint8_t{0});
     CHECK(picture.ok());
     CHECK(Hold::taken());
     CHECK(!hold.raised());
@@ -581,7 +673,21 @@ int gpu_main(Gpu& gpu) {
     std::fprintf(stderr, "FAIL: %s\n", flag.status().message().c_str());
     return 1;
   }
-  if (test_hevc(gpu, **flag) != 0) return 1;
+  auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
+  if (!prep) {
+    std::fprintf(stderr, "FAIL: %s\n", prep.status().message().c_str());
+    return 1;
+  }
+  const Frames frames;
+  Clip clip;
+  if (read_clip(gpu, prep.value(), frames, clip) != 0) return 1;
+  if (test_hevc(gpu, **flag, prep.value(), frames, clip) != 0) return 1;
+  if (test_back_pressure(gpu, **flag, prep.value(), frames, clip) != 0) {
+    return 1;
+  }
+  if (test_destroy_held(gpu, **flag, prep.value(), frames, clip) != 0) {
+    return 1;
+  }
   if (test_jpeg(gpu, **flag) != 0) return 1;
   std::puts("sensor_video_handover: OK");
   return 0;

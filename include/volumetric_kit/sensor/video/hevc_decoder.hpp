@@ -109,9 +109,9 @@ class VS_VIDEO_API HevcDecoder {
   ///
   /// On NVDEC the picture's copy into its images is queued, not waited for:
   /// the picture carries the value CUDA sets once it is done
-  /// (`YuvImage::ready`). The decoder keeps NVDEC's surface mapped until
-  /// then, whoever holds the picture, and waits on the host only when CUDA
-  /// is three pictures behind.
+  /// (`YuvImage::ready`). The decoder keeps the frame FFmpeg copied NVDEC's
+  /// output into until then, whoever holds the picture, and waits on the
+  /// host only when CUDA is three pictures behind.
   /// @return The picture; empty when the decoder needs more input or has
   ///         drained; `Status::Code::Unsupported`, as from @ref send, once the
   ///         pictures decoded before a refusal are taken;

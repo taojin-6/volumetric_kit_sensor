@@ -296,9 +296,9 @@ class VS_PREP_API GpuFramePrep {
   /// @param batch    As @ref record.
   /// @param preps    One pass per camera, all made with @p batch's `Device`;
   ///                 `preps[i]` records `frames[i]`.
-  /// @param frames   One entry per camera, an empty one skipped; kept, and
-  ///                 each one's @ref ready_points waited for, as @ref record
-  ///                 says.
+  /// @param frames   One entry per camera, an empty one skipped; kept as
+  ///                 @ref record says, and @p batch submitted with
+  ///                 `ready_points(frames)` among its waits.
   /// @param metrics  Optional: one `"frame prep"` row for the set, timed by
   ///                 the first pass used.
   /// @return One `DeviceFrame` per present frame, empty where the frame was;
@@ -503,12 +503,28 @@ class VS_PREP_API GpuFramePrep {
 /// @param frame  A frame whose colour may carry `YuvImage::ready`.
 /// @return The timeline values @p frame's colour must reach before a batch
 ///         reads it (`YuvImage::ready`): none, or one. Depth carries none. For
-///         a caller of @ref GpuFramePrep::record or
-///         @ref GpuFramePrep::record_set (`SensorArray::record_process`) to
-///         pass among its `submit_async` waits, each frame's; @ref
-///         GpuFramePrep::prepare and @ref GpuFramePrep::prepare_batch wait for
-///         them on the device themselves.
+///         a caller of @ref GpuFramePrep::record to pass among its
+///         `submit_async` waits (a set's, below); @ref GpuFramePrep::prepare
+///         and @ref GpuFramePrep::prepare_batch wait for them on the device
+///         themselves.
 VS_PREP_API std::vector<core::TimelinePoint> ready_points(
     const RgbdFrame& frame);
+
+/// @brief What a batch that reads @p frames waits for on the device.
+///
+/// @code
+/// VKC_ASSIGN(DeviceFrameSet prepared, array.record_process(batch, set));
+/// // ... fusion recorded into the same batch ...
+/// VKC_ASSIGN(core::PendingBatch fused,
+///            batch.submit_async(ready_points(set.frames), {}));
+/// @endcode
+/// @param frames  One entry per camera, an empty one skipped, as
+///                @ref GpuFramePrep::record_set takes them.
+/// @return Every frame's @ref ready_points, one point a timeline at its
+///         highest value: for a caller of @ref GpuFramePrep::record_set or
+///         `SensorArray::record_process` to pass among its `submit_async`
+///         waits.
+VS_PREP_API std::vector<core::TimelinePoint> ready_points(
+    const std::vector<std::optional<RgbdFrame>>& frames);
 
 }  // namespace volumetric_kit::sensor

@@ -3,7 +3,6 @@
 
 #include "yuv_planes.hpp"
 
-#include <algorithm>
 #include <limits>
 #include <string>
 
@@ -188,18 +187,6 @@ core::Status check_ready(const YuvImage& image, const core::Device& device,
                   "the picture's ready timeline was made on another device");
   }
   return {};
-}
-
-void add_ready_point(const YuvImage& image,
-                     std::vector<core::TimelinePoint>& points) {
-  if (image.ready == nullptr) return;
-  for (core::TimelinePoint& point : points) {
-    if (point.semaphore == image.ready.get()) {
-      point.value = std::max(point.value, image.ready_value);
-      return;
-    }
-  }
-  points.push_back({image.ready.get(), image.ready_value});
 }
 
 }  // namespace volumetric_kit::sensor::detail

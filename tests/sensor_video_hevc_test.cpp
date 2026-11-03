@@ -587,8 +587,8 @@ int test_held_pictures(const Gpu& gpu) {
 }
 
 // Many pictures held at once -- 72, the patch clip 9 times, more than NVDEC
-// has output surfaces -- all come out, each its own frame's pattern once read
-// back: the decoder lets go of NVDEC's surface once a picture's copy is done,
+// has decode surfaces -- all come out, each its own frame's pattern once read
+// back: the decoder lets go of FFmpeg's frame once a picture's copy is done,
 // never when its holder lets go of the picture. On NVDEC each picture
 // carries a ready value above the last, reached once it is read;
 // VideoToolbox's carry none.

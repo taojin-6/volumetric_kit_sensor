@@ -164,10 +164,11 @@ struct YuvImage {
   ChromaLocation chroma_location = ChromaLocation::Left;  ///< Sample positions.
   /// When the writer's work on the device is done, for a writer that did not
   /// wait for it: a timeline value its submission sets. A reader's
-  /// submission waits for it (`CommandBatch::submit_async`) before reading,
-  /// so neither host waits. Null when the writer had finished before handing
-  /// the picture over. NVDEC's and nvJPEG's pictures carry one;
-  /// VideoToolbox's, a camera's and host planes do not.
+  /// submission waits for it (`CommandBatch::submit_async`; the waits
+  /// gathered by `frame/ready_points.hpp`) before reading, so neither host
+  /// waits. Null when the writer had finished before handing the picture
+  /// over. NVDEC's and nvJPEG's pictures carry one; VideoToolbox's, a
+  /// camera's and host planes do not.
   std::shared_ptr<const core::TimelineSemaphore> ready;
   std::uint64_t ready_value = 0;  ///< See @ref ready.
 };
