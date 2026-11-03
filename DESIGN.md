@@ -11,7 +11,8 @@ volumetric_kit_recon's DESIGN.md with the package (2026-10-29).
 - [Colour at the boundary](#colour-at-the-boundary)
 - Implementation: [camera](#camera), [frame](#frame), [the interface and
   the tiers on it](#sensor), [stereo](#stereo), [stereo depth
-  (FFS)](#stereo-depth-ffs), [audio](#audio), [image I/O](#image-io)
+  (FFS)](#stereo-depth-ffs), [audio](#audio), [wire](#wire), [image
+  I/O](#image-io)
 - [Next work](#next-work)
 
 ## Tiers
@@ -79,6 +80,10 @@ recon's examples assemble the rest.
   (`audio_sensor.hpp`, in `sensor_interface`), and `Microphone`, an OS input
   through PortAudio (`sensor_microphone`, `VS_WITH_PORTAUDIO`), on the
   interface.
+- **`wire`** — an RGB-D sensor's frames as bytes for a recording or a
+  live link (`sensor_wire`, `wire/rgbd_wire.hpp`): the sensor once, each
+  frame's depth half and colour half a record each, read back in place.
+  On the interface and `video_syntax`'s colour codes, with no device code.
 - **`io`** — image files (`sensor_image_io`, `io/image_io.hpp`): encoded
   images, depth PNGs and PNG export, on the family core's base tier alone,
   with stb private.
@@ -95,7 +100,7 @@ recon's examples assemble the rest.
 - Macros: `VS_` (`VS_PREP_API`, `VS_WITH_CUDA`); GLSL functions `vs_`.
 - CMake targets `volumetric_kit::sensor_<tier>`: `sensor_camera`,
   `sensor_frame`, `sensor_interface`, `sensor_prep`, `sensor_array`,
-  `sensor_stereo`, `sensor_video`, `sensor_video_syntax`, `sensor_apple`,
+  `sensor_stereo`, `sensor_video`, `sensor_video_syntax`, `sensor_wire`, `sensor_apple`,
   `sensor_orbbec`, `sensor_realsense`, `sensor_ffs`, `sensor_microphone` and `sensor_image_io`; the umbrella `volumetric_kit::sensor` (real target
   `sensor`, which is why the interface's is `sensor_interface`). `io` and
   `audio` are the exceptions to `sensor_<tier>` and `<tier>/export.hpp`:
@@ -1095,6 +1100,21 @@ silence check on a steady time passed in. `Capture` holds no PortAudio, so
 its tests run in every build. The input opens at its default high latency:
 a deeper host buffer rides out a late callback, and the ADC time places
 each chunk whatever the latency.
+
+### wire
+
+`wire/rgbd_wire.hpp` (`sensor_wire`; the layout is the header's, the
+rules the 2026-11-02 wire-form entry's) is the form a recording or a live
+link carries any `IRgbdSensor` in: the `SensorInfo` once, as the depth
+track's params, then each frame as a depth record and a colour record. The
+cameras, units, range and noise travel per record, not per track (the
+entry's "Per record" says why). The encode borrows
+the frame's rows and plane and the decode points into the payload it
+holds, so neither copies or reads a sample. The decode checks the layout,
+not the values, which their users check. It links no device code, so it
+builds wherever the interface does, iOS included (the iOS build check
+compiles it). The container is grid's `.vrst` session, which this package
+does not include, so the writer and the reader live above both.
 
 ### image I/O
 

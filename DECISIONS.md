@@ -483,6 +483,15 @@ entries relevant to your task; later amendments supersede earlier rules.
   `color_from_registered_depth` derives the colour camera from registered
   depth; `testing/rgbd_pattern.hpp`'s depth carries the picture's index
   band.
+- [**2026-11-02**](#2026-11-02--an-rgb-d-sensors-frames-as-bytes-are-the-sensor-packages-sensor_wire-writes-the-sensorinfo-once-and-each-rgbdframes-depth-and-colour-halves-a-record-each-for-any-sensor-a-container-carries-them-unread-the-version-is-in-the-params-and-the-decode-checks-the-layout-not-the-values) —
+  An RGB-D sensor's frames as bytes are this package's
+  (`wire/rgbd_wire.hpp`, `sensor_wire`): the `SensorInfo` once, as a
+  depth track's params, then each frame's depth half and colour half a
+  record each, for any sensor. The depth is raw, the cameras, units, range
+  and noise per record, the colour one coded picture with its codes and
+  exposure. A container carries the bytes and reads none; the version is
+  in the params; the decode reads in place and checks the layout, not the
+  values. `RgbdFrame::color_exposure` comes with it.
 
 ## Decision record
 
@@ -6421,3 +6430,111 @@ picture refused only when both differ, a time of 0 ordered as a time,
 a 0 kept as the last time, and a confidence plane taken beside device
 depth or at a floor of 0, or a floor of 1 without one
 (`sensor_rgbd_contract`).
+
+### 2026-11-02 — An RGB-D sensor's frames as bytes are the sensor package's: `sensor_wire` writes the `SensorInfo` once and each `RgbdFrame`'s depth and colour halves a record each, for any sensor; a container carries them unread, the version is in the params, and the decode checks the layout, not the values.
+
+**The rule.** `wire/rgbd_wire.hpp` (`sensor_wire`, on the interface and
+`sensor_video_syntax`, every build) is how any RGB-D sensor's frames
+become bytes for a recording or a live link; the header holds the layout.
+- `encode_sensor` writes a `SensorInfo`, less its id, clock and rate, as a
+  depth track's params; `decode_sensor` reads it back, given those three
+  by the track.
+- `encode_depth` makes a frame's depth half a record: a 392-byte prefix
+  (the depth camera with its lens, `color_to_world`, `depth_to_color`, the
+  units, the range, the noise, whether a confidence plane follows, its
+  floor), then the rows and the plane as the driver handed them out,
+  borrowed, not copied. Every depth record is a key. `decode_depth` returns
+  an `RgbdFrame` whose depth and plane point into the payload and whose
+  `pixels` holds it; the reader sets the time and the sequence from the
+  container's.
+- `encode_color` makes a frame's colour half a 128-byte prefix (the colour
+  camera, the `ColorCodes` its picture's stream states, its exposure)
+  before one coded picture, `ColorCodec::HevcMain8` the only codec;
+  `decode_color` reads it in place. `ColorExposure` and
+  `RgbdFrame::color_exposure` hold a picture's exposure time, ISO and bias
+  as the camera reported them, 0 where it does not.
+- Each track's params begin with the version, 1, which lays out every
+  record of the track. Reserved bytes are written 0 and ignored; a field
+  an old reader may ignore takes reserved bytes or comes after the params'
+  last, and one it must not takes the next version, which the decode
+  refuses, `Unsupported`, before it reads anything else.
+- The decode refuses bytes that are not a record of the sensor it is
+  given: a size, a camera of another size than `SensorInfo` names (the
+  contract's sizes), a flag, role or pose it does not name, a plane at a
+  floor of 0 or a floor without one, an odd payload address. It passes
+  every value as written. The encode refuses a frame that breaks the frame
+  contract where the record states it (the sizes, the plane and its
+  floor), and depth on the device alone, `Unsupported`.
+- Little-endian, each f32 and f64 bit for bit; the target builds only for
+  a little-endian host, and the role and the pose take wire numbers of
+  their own, not the enumerations' order.
+
+**Why.**
+- **The frame itself, for any sensor.** Every source is an `IRgbdSensor`
+  handing out `RgbdFrame`s, so the bytes of one carry any: one writer
+  records any sensor, and one reader replays any recording or link as an
+  `IRgbdSensor`, where a camera-specific record would need a reader of its
+  own per sensor. The bytes live beside `RgbdFrame`, here; grid's `.vrst`
+  session carries them as bytes, since neither package may include the
+  other, and the writer and the reader live above both.
+- **The depth raw.** No delta and no compression: what fusion reads is
+  what the driver handed out, bit for bit, and neither side copies a
+  sample (the payload goes out in three runs: prefix, rows, plane).
+- **Per record, not per track.** `RgbdFrame` carries its cameras, units,
+  range and noise per frame, and a tracked sensor refines its cameras per
+  frame; a per-track copy would need a rule for frames that differ from
+  it. The prefix is 392 of a record's 147,848 bytes at 256 x 192 with a
+  plane.
+- **The colour's codes on the record.** A JPEG or a camera's untagged
+  H.265 (the Femto Mega's) cannot state its colour, so the record does. An
+  encoder writes the same codes into its VUI, and a reader drops a frame
+  whose decoded description differs from its record's, so the two cannot
+  drift silently. JPEG becomes codec 2 when a writer records one; none
+  does now.
+- **The layout, not the values.** A recording holds what the driver said.
+  Each value's user checks it already (`GpuFramePrep` the units, range,
+  cameras and poses; a consumer that needs a noise model the noise), so a
+  second check here could only disagree with theirs.
+- **No field is a tracked sensor's alone in version 1** (the owner,
+  2026-11-02). Every record carries `color_to_world`, a tracked sensor's
+  own estimate. There is no tracking state, since a tracked source
+  withholds frames it did not track normally, and no world epoch, since
+  one open is one world, epoch 0; each comes with its first producer, as
+  an `RgbdFrame` field and the next version, because an old reader must
+  not mix two worlds. No log of a tracker's map steps travels either: no
+  `RgbdFrame` field holds one.
+- **The rows at an even address.** The prefix is a multiple of 8, so a
+  payload at an even address, as any allocation is, puts the rows where a
+  u16 read is aligned.
+
+**Not here.** The container's two track kinds and its third payload run
+(grid), the writer and the reader (their PRs, above both packages), and a
+mask: a later producer writes level 0 in its copy of the plane, with no
+wire change.
+
+**The next version.** `kVersion` is both params' version, and
+`decode_depth` and `decode_color` take none: they read version 1's records
+alone. The first version to change a record's layout adds a version
+argument to that record's decode, an API change 0.x allows, so a library
+that writes it still reads version 1 recordings.
+
+**Validation.** Apple M5 Max, Release with warnings as errors: the whole
+suite passes, 53 tests, and the iOS build check links `sensor_wire` with
+the other three targets (11 sources). `sensor_wire_rgbd` checks against
+goldens built from the layout by hand, never by the library: a Femto-like
+and an ARKit-like sensor (every double bit for bit, -0.0, a subnormal and
+all 52 fraction bits among them; every truncation, an unknown flag, role
+3, pose 2 and version 2 refused); depth records at 256 x 192 with a
+plane, 640 x 576 without, and 1 x 1 and 3 x 5, whose payloads end at an
+odd size (the encode's runs are the frame's own pointers, the decoded
+frame's at `payload + 392` and `+ 392 + 2wh`, holding the payload); each
+refusal named, a depth camera whose record's bytes pass a size_t among
+them; reserved bytes of all ones ignored in all three layouts; prep's
+refusals round-trip as written; colour records and params, codes of 255
+and siting 5 accepted; pattern depth's records keeping the frame contract
+and their index; and a host allocation failure as `OutOfMemory`. Planted
+bugs, each failing it: the plane decoded at `392 + wh`, transforms written
+row-major, the size check `<` where it is `!=`, the size_t check removed,
+a decode refusing non-zero reserved bytes (each layout), a siting or code
+bound one off (decode siting, encode siting, encode codes), and the unit
+dropped on decode.

@@ -4,7 +4,8 @@
 #
 # The iOS build check the macOS CI leg runs (.github/workflows/_build.yml):
 # sensor_apple, sensor_video and the H.265 syntax it reads with
-# (sensor_video_syntax), which every Apple build has,
+# (sensor_video_syntax), which every Apple build has, and the frames' wire form
+# (sensor_wire), which an iOS writer links,
 # compiled for the iOS floor with the include paths and definitions of a macOS
 # build's compile commands, warnings as errors, the importer with ARC and its
 # header as plain C++ too; then linked into an iOS library against the SDK's
@@ -22,14 +23,14 @@ out="$2"
 mkdir -p "$out"
 ios=(xcrun --sdk iphoneos clang++ -target arm64-apple-ios26.0)
 
-# Each source of the three targets, with its own flags, listed as compiled.
+# Each source of the four targets, with its own flags, listed as compiled.
 python3 -I - "$db" "$out" "${ios[@]}" >"$out/objects.txt" <<'EOF'
 import json, os, shlex, subprocess, sys
 
 db, out, ios = sys.argv[1], sys.argv[2], sys.argv[3:]
 ios += ["-std=c++17", "-Wall", "-Wextra", "-Wpedantic", "-Werror"]
 header = b'#include "volumetric_kit/sensor/apple/pixel_buffer_importer.hpp"\n'
-targets = ("sensor_apple", "sensor_video", "sensor_video_syntax")
+targets = ("sensor_apple", "sensor_video", "sensor_video_syntax", "sensor_wire")
 objects = []
 for entry in json.load(open(db)):
     output = entry.get("output", "")

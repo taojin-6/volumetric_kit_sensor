@@ -334,6 +334,18 @@ target_link_libraries(sensor_rgbd_contract_test
 vs_target_warnings(sensor_rgbd_contract_test)
 add_test(NAME sensor_rgbd_contract COMMAND sensor_rgbd_contract_test)
 
+# An RGB-D sensor's frames as bytes (wire/rgbd_wire.hpp), against goldens built
+# by hand from the layout: the sensor, depth and colour records round-trip bit
+# for bit and are read in place, every refusal named, pattern depth's records
+# keep the frame contract, and a host allocation failure is OutOfMemory.
+# Host-only.
+add_executable(sensor_wire_rgbd_test wire_rgbd_test.cpp)
+target_link_libraries(
+  sensor_wire_rgbd_test PRIVATE volumetric_kit::sensor_wire
+                                volumetric_kit::core_test_allocation_failure)
+vs_target_warnings(sensor_wire_rgbd_test)
+add_test(NAME sensor_wire_rgbd COMMAND sensor_wire_rgbd_test)
+
 # The sensor array's trigger grouper, driven by synthetic streams -- drops, a
 # silent sensor, a slow poll, a clock off by more than the tolerance, a late
 # frame, the start-up frames. Host-only. Internal and unexported, so the test
