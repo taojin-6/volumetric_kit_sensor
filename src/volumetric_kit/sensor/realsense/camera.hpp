@@ -24,8 +24,8 @@
 
 #include <librealsense2/rs.hpp>
 
+#include "../frame_queue.hpp"
 #include "conversion.hpp"
-#include "frame_queue.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/sensor/camera/color_controls.hpp"
 #include "volumetric_kit/sensor/realsense/realsense_sensor.hpp"
@@ -124,9 +124,8 @@ class Camera {
     shared_->failed.fetch_add(1, std::memory_order_release);
   }
 
-  bool disconnected() const noexcept {
-    return shared_->disconnected.load(std::memory_order_acquire);
-  }
+  // The queue's only failure is a disconnect.
+  bool disconnected() const noexcept { return shared_->queue.failed(); }
   // The counters since the last start, kept through a stop.
   SensorStats stats() const noexcept;
 
@@ -134,10 +133,9 @@ class Camera {
   // What the SDK's threads write and the polling thread reads, held by the
   // callbacks too, since neither is guaranteed gone when the camera is.
   struct Shared {
-    FrameQueue<Arrived> queue;
+    detail::FrameQueue<Arrived> queue;
     std::atomic<std::uint64_t> received{0};
     std::atomic<std::uint64_t> failed{0};
-    std::atomic<bool> disconnected{false};
   };
 
   Camera() = default;

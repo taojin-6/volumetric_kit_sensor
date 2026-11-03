@@ -26,12 +26,13 @@ namespace {
 std::string opening;
 
 // The captures landed and not yet read, by the SDK frame set that stands for
-// each in the camera's mailbox.
+// each in the camera's mailbox. One the queue pushed out or passed over stays
+// until reset, or until a new set at its address replaces it as it lands.
 std::map<const ob::FrameSet*, FakeCapture> held;
 
-// The next of `fake`'s batches landed in `box`, as the SDK's thread lands
-// captures: each counted received, a lost one counted lost and never held,
-// and the oldest pushed out of a full queue counted dropped.
+// The next of `fake`'s batches landed in `box`'s queue, as the SDK's thread
+// lands captures: each counted received, a lost one counted lost and never
+// held, and the oldest pushed out of a full queue counted dropped by it.
 void land(volumetric_kit::sensor::orbbec::Mailbox& box, FakeCamera& fake) {
   if (fake.batches.empty()) return;
   std::vector<FakeCapture> batch = std::move(fake.batches.front());
@@ -44,12 +45,7 @@ void land(volumetric_kit::sensor::orbbec::Mailbox& box, FakeCamera& fake) {
     }
     std::shared_ptr<ob::FrameSet> set = ob::FrameFactory::createFrameSet();
     held[set.get()] = std::move(capture);
-    box.pending.push_back(std::move(set));
-    while (box.pending.size() > box.depth) {
-      held.erase(box.pending.front().get());
-      box.pending.pop_front();
-      box.dropped.fetch_add(1);
-    }
+    box.queue.push(std::move(set));
   }
 }
 
@@ -201,12 +197,11 @@ core::Status CameraStream::sync_clock_to_host() { return {}; }
 // driver's do, and the batches land one a take.
 core::Status CameraStream::start() {
   if (running_) return {};
-  mailbox_->pending.clear();
+  mailbox_->queue.clear();
   mailbox_->received = 0;
-  mailbox_->dropped = 0;
+  mailbox_->queue.reset_dropped();
   delivered_ = 0;
   failed_ = 0;
-  discarded_ = 0;
   orbbec_stub::cameras.at(info_.serial).lost = 0;
   running_ = true;
   return {};
@@ -214,11 +209,11 @@ core::Status CameraStream::start() {
 
 void CameraStream::stop() noexcept {
   running_ = false;
-  mailbox_->pending.clear();
+  mailbox_->queue.clear();
 }
 
 void CameraStream::set_queue_depth(std::size_t depth) {
-  mailbox_->depth = depth;
+  mailbox_->queue.set_depth(depth);
 }
 void CameraStream::set_frame_notify(std::function<void()>) {}
 
@@ -226,33 +221,27 @@ OrbbecStreamStats CameraStream::stats() const noexcept {
   OrbbecStreamStats s;
   s.received = mailbox_->received.load();
   s.delivered = delivered_;
-  s.dropped = mailbox_->dropped.load() + discarded_;
+  s.dropped = mailbox_->queue.dropped();
   s.failed = failed_;
   s.lost = orbbec_stub::cameras.at(info_.serial).lost;
   return s;
 }
 
-void CameraStream::discard() noexcept { ++discarded_; }
+void CameraStream::discard() noexcept { mailbox_->queue.discard(); }
 
 core::Result<std::shared_ptr<ob::FrameSet>> CameraStream::take() {
   orbbec_stub::land(*mailbox_, orbbec_stub::cameras.at(info_.serial));
-  Mailbox& box = *mailbox_;
-  if (!running_ || box.pending.empty()) return std::shared_ptr<ob::FrameSet>{};
-  std::shared_ptr<ob::FrameSet> newest = std::move(box.pending.back());
-  box.pending.pop_back();
-  for (const auto& older : box.pending) orbbec_stub::held.erase(older.get());
-  box.dropped.fetch_add(box.pending.size());
-  box.pending.clear();
-  return newest;
+  if (!running_) return std::shared_ptr<ob::FrameSet>{};
+  VKC_ASSIGN(std::optional<std::shared_ptr<ob::FrameSet>> newest,
+             mailbox_->queue.take_newest());
+  return newest ? std::move(*newest) : std::shared_ptr<ob::FrameSet>{};
 }
 
 core::Status CameraStream::take_all(
     std::vector<std::shared_ptr<ob::FrameSet>>* out) {
   orbbec_stub::land(*mailbox_, orbbec_stub::cameras.at(info_.serial));
   if (!running_) return {};
-  for (auto& set : mailbox_->pending) out->push_back(std::move(set));
-  mailbox_->pending.clear();
-  return {};
+  return mailbox_->queue.take_all(out);
 }
 
 // A held capture as its script says: the frame, which holds the frame set as

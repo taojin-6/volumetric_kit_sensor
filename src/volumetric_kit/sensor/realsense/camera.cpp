@@ -239,8 +239,7 @@ core::Status Camera::set_streams(
       [shared = shared_, device = device_,
        who = who_](rs2::event_information& event) {
         if (!event.was_removed(device)) return;
-        shared->disconnected.store(true, std::memory_order_release);
-        shared->queue.fail(who + " disconnected");
+        shared->queue.fail(core::Status::io_error(who + " disconnected"));
       });
   return {};
 }
@@ -271,7 +270,7 @@ core::Status Camera::start() {
   VKC_CHECK(pipeline_.has_value(), "Camera::start before set_streams");
   // Before the idempotent return: a camera gone while running is not
   // running, whatever the flag says.
-  if (disconnected()) return core::Status::io_error(who_ + " disconnected");
+  VKC_TRY(shared_->queue.failure());
   if (running_) return {};
   // The counters restart here, not at a stop, so they read the same after
   // one.

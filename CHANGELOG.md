@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.1] - 2026-11-03
+
+### Changed
+
+- **One frame queue for every threaded driver.** The RealSense driver's
+  internal `FrameQueue<T>` moves to `src/volumetric_kit/sensor/frame_queue.hpp`
+  (`sensor::detail`, internal, not installed) and gains `wake()`, a
+  `core::Status` failure (`fail(Status)`, `failure()`), `reset_failure()`
+  and `depth()`. The Orbbec driver's mailbox is that queue and its received
+  count; `StereoDepthSensor` holds its frames, its drops and its thread's
+  failure in it, the failure forgotten at each `start` as before. What each
+  driver hands out, drops and reports is unchanged: the same frames from
+  `poll` and `drain`, the same counts, the same failures with the same
+  codes and messages, the same wake-ups. A drop is now counted with release
+  and read with acquire, so no reader sees it before what was counted
+  ahead of it. DECISIONS.md, the 2026-11-03 frame-queue entry.
+- **Tests:** `sensor_realsense_queue` becomes `sensor_frame_queue`, built on
+  every leg and in `sensor_tsan_tests`, with a consumer woken as a driver's
+  is; the Orbbec camera stub lands its captures in the driver's own mailbox
+  and queue, so its tests count the queue's drops.
+
+### Migration notes
+
+- None: no public header, target or option changes, and no consumer
+  re-pins for it.
+
 ## [0.29.0] - 2026-11-02
 
 ### Added

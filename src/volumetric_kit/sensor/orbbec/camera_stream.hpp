@@ -10,16 +10,15 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <libobsensor/ObSensor.hpp>
 
+#include "../frame_queue.hpp"
 #include "frame_conversion.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
@@ -40,26 +39,14 @@ class JpegColorDecoder;
 // releasing its lock, so unregistering does not wait for a call in flight, and
 // a pipeline stop that throws may leave the SDK holding the frame callback.
 struct Mailbox {
-  std::mutex mutex;
-  // The newest pairs not yet taken, oldest first, at most `depth` of them: one
+  // The decoded pairs not yet taken, at most the queue's depth of them: one
   // for a camera on its own (newest wins), a few in a sensor array, whose
   // cameras must all still hold a trigger's frame when a slow poll comes to
-  // group them.
-  std::deque<std::shared_ptr<ob::FrameSet>> pending;  // guarded by mutex
-  std::size_t depth = 1;                              // guarded by mutex
-  std::string fault;                                  // guarded by mutex
-  // The consumer's wake-up (IRgbdSensor::set_frame_notify), copied under the
-  // mutex and called after it is released; guarded by mutex.
-  std::function<void()> notify;
-  // Set, after `fault`, once the camera is gone; read without the lock.
-  std::atomic<bool> disconnected{false};
+  // group them. Its one failure is the camera's disconnect.
+  detail::FrameQueue<std::shared_ptr<ob::FrameSet>> queue;
+  // Each pair the SDK delivers, counted before its colour is decoded.
   std::atomic<std::uint64_t> received{0};
-  std::atomic<std::uint64_t> dropped{0};
 
-  // A pair into `pending`, uncounted: one the SDK delivered already and a
-  // colour decoder has decoded; then the consumer woken. A null pair wakes it
-  // alone: the decoder failed, which its next take reports.
-  void post(std::shared_ptr<ob::FrameSet> frameset);
   void on_devices_changed(const std::string& serial,
                           const ob::DeviceList& removed);
 };
@@ -105,9 +92,7 @@ class CameraStream {
   // context's enableDeviceClockSync, which re-syncs every camera in the
   // process on a thread of its own. IoError if the camera cannot.
   core::Status sync_clock_to_host();
-  bool disconnected() const noexcept {
-    return mailbox_->disconnected.load(std::memory_order_acquire);
-  }
+  bool disconnected() const noexcept { return mailbox_->queue.failed(); }
   OrbbecStreamStats stats() const noexcept;
 
   // Start both streams, with fresh counters. OK if already running; IoError
@@ -195,10 +180,10 @@ class CameraStream {
   OrbbecSyncSettings sync_settings_;
   bool host_clock_ = false;  // global timestamps, set by use_host_clock()
 
-  // The polling thread's counters; the SDK's thread counts in the mailbox.
+  // The polling thread's counters; the SDK's thread counts in the mailbox,
+  // and the mailbox's queue the drops, a discard among them.
   std::uint64_t delivered_ = 0;
   std::uint64_t failed_ = 0;
-  std::uint64_t discarded_ = 0;
   std::uint32_t failed_in_a_row_ = 0;
   bool running_ = false;
 

@@ -511,6 +511,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   hands out is kept until its value is reached, never by the picture's
   holder.
 
+- [**2026-11-03**](#2026-11-03--one-frame-queue-for-every-threaded-driver-frame_queuehpp-in-sensordetail-holds-the-realsense-orbbec-and-stereodepthsensor-frames-their-drops-and-their-failure) —
+  One frame queue for every threaded driver: `frame_queue.hpp`, in
+  `sensor::detail`, holds the RealSense, Orbbec and `StereoDepthSensor`
+  frames, their drops and their failure, a `core::Status`; a disconnect is
+  final, the FFS thread's failure ends one run. Each driver hands out,
+  drops and reports what it did before.
+
 ## Decision record
 
 ### 2026-08-02 — The `sensor` tier is a *contract*, not a driver collection: a capture driver lives here only if this repo can build
@@ -6819,3 +6826,57 @@ copy waited on the host and the full ring not waited for
 lab RTX 5090 (FFmpeg 8, the validation layer 1.4.341 with synchronization
 validation) and the M5 Max (VideoToolbox, the Orbbec driver, validation);
 recon's suite on this checkout on the Mac.
+
+### 2026-11-03 — One frame queue for every threaded driver: `frame_queue.hpp`, in `sensor::detail`, holds the RealSense, Orbbec and `StereoDepthSensor` frames, their drops and their failure.
+
+**The rule.** A driver whose frames are made on a thread of its own (an
+SDK's callback, a decoder's, a GPU stage's) holds them in
+`detail::FrameQueue<T>` (`src/volumetric_kit/sensor/frame_queue.hpp`,
+header-only, internal to the targets whose sources include it, as
+`sharing_families.hpp` is; not under `frame/`, the header-only contract
+tier recon links). It is the 2026-10-06 `IRgbdSensor` holding rule written
+once: a push trims to the depth and counts each frame pushed out dropped;
+`take_newest` hands out the newest and counts the older dropped;
+`take_all` hands every frame over oldest first; the consumer's
+notification is copied under the lock and called after it, for a frame,
+a failure or a bare `wake()`; the first failure, a `core::Status`, is what
+every later take returns; a stop's `clear` lets the frames go uncounted,
+and a start restarts the drops. A disconnect is final: the RealSense and
+Orbbec queues' only failure, refused again at `start`. `StereoDepthSensor`'s
+thread failure ends one run, and its `start` forgets it
+(`reset_failure`), as it cleared its own before. What stays each
+driver's: the Orbbec colour decoder's failure, reported ahead of the
+queue's, and nothing handed out while stopped; the counts each driver
+keeps beside the queue (received; delivered and failed, which
+`StereoDepthSensor` now keeps as atomics as RealSense does, and the
+camera's counts it adds). The Orbbec mailbox is the queue and its
+received count; a discard is the queue's drop, as RealSense's is.
+
+**Why.** The same rule was written three times, and the Orbbec copy never
+ran in CI: its camera stub replaced the mailbox with a copy of its own.
+Now the stub lands its captures in the driver's own mailbox and queue, so
+`OrbbecSensor`'s tests count the queue's drops, and the queue's own test
+runs on every leg and under ThreadSanitizer, where before it built only
+with librealsense. The iPad's ARKit driver (planned, not built) holds the
+same queue from its first version rather than a fourth copy.
+
+**Ordering.** A drop is counted with release and read with acquire.
+`StereoDepthSensor::stats` read its counts and the camera's under one lock
+before; now it reads its own first, then the camera's, so `delivered +
+dropped + failed <= received` holds without that lock: each of its counts
+is written after the camera's counts that include its pair. RealSense and
+Orbbec read as before.
+
+**Not here.** DeckLink's driver keeps its newest stereo frame in its
+upload, an `IStereoSensor` with no queue depth; recon's reader of recorded
+frames polls in place and holds no queue.
+
+**Validation.** `sensor_frame_queue` (from `sensor_realsense_queue`): the
+newest wins, a drain oldest first, the depth read back and held at 1, a
+wake with nothing held, a failure kept as given, the first one, until a
+reset forgets it, a consumer asleep until woken that sees every frame in
+order and the failure that ends the run, and a producer racing a drain,
+each frame taken or dropped once. Planted bugs, each failing it: the
+frames a poll passes over not counted, the last failure kept instead of
+the first, a wake that wakes no one, and a discard not counted, which
+fails `sensor_orbbec_contract` too.

@@ -799,12 +799,23 @@ vs_target_warnings(sensor_orbbec_decode_worker_test)
 add_test(NAME sensor_orbbec_decode_worker
          COMMAND sensor_orbbec_decode_worker_test)
 
+# The frame queue every threaded driver holds (frame_queue.hpp: RealSense,
+# Orbbec, StereoDepthSensor), with no SDK, on every leg, the sanitizers'
+# included.
+add_executable(sensor_frame_queue_test sensor_frame_queue_test.cpp)
+target_link_libraries(sensor_frame_queue_test PRIVATE volumetric_kit::core_base)
+target_include_directories(
+  sensor_frame_queue_test
+  PRIVATE ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor)
+vs_target_warnings(sensor_frame_queue_test)
+add_test(NAME sensor_frame_queue COMMAND sensor_frame_queue_test)
+
 # The RealSense drivers (VS_WITH_REALSENSE only), with no camera: the SDK that
 # loads is the one configured; the drivers' arithmetic against librealsense's
 # own rsutil.h (the camera models, the extrinsics, the infrared pair's
-# StereoInfo, the frame and the pair, the pairing rule), their frame queue, and
-# the options each open refuses. conversion.cpp's functions are not exported, so
-# the tests that need them compile it themselves, as the Orbbec tests do.
+# StereoInfo, the frame and the pair, the pairing rule), and the options each
+# open refuses. conversion.cpp's functions are not exported, so the tests that
+# need them compile it themselves, as the Orbbec tests do.
 if(VS_WITH_REALSENSE)
   set(_vs_realsense_src
       ${PROJECT_SOURCE_DIR}/src/volumetric_kit/sensor/realsense)
@@ -831,14 +842,6 @@ if(VS_WITH_REALSENSE)
   vs_target_warnings(sensor_realsense_conversion_test)
   add_test(NAME sensor_realsense_conversion
            COMMAND sensor_realsense_conversion_test)
-
-  add_executable(sensor_realsense_queue_test sensor_realsense_queue_test.cpp)
-  target_link_libraries(sensor_realsense_queue_test
-                        PRIVATE volumetric_kit::sensor_interface)
-  target_include_directories(sensor_realsense_queue_test
-                             PRIVATE ${_vs_realsense_src})
-  vs_target_warnings(sensor_realsense_queue_test)
-  add_test(NAME sensor_realsense_queue COMMAND sensor_realsense_queue_test)
 
   add_executable(sensor_realsense_open_test sensor_realsense_open_test.cpp)
   target_link_libraries(sensor_realsense_open_test
@@ -1022,13 +1025,14 @@ target_link_libraries(
 vs_target_warnings(sensor_io_image_test)
 add_test(NAME sensor_io_image COMMAND sensor_io_image_test)
 
-# The tests whose code runs threads -- the Orbbec decode workers, the audio
-# capture's queue, the DeckLink driver's upload and the HEVC encoder's coding
-# thread -- which CI builds and runs again under ThreadSanitizer
-# (.github/workflows/_build.yml): one target to build them.
+# The tests whose code runs threads -- the Orbbec decode workers, the drivers'
+# frame queue, the audio capture's queue, the DeckLink driver's upload and the
+# HEVC encoder's coding thread -- which CI builds and runs again under
+# ThreadSanitizer (.github/workflows/_build.yml): one target to build them.
 add_custom_target(sensor_tsan_tests)
-add_dependencies(sensor_tsan_tests sensor_orbbec_decode_worker_test
-                 sensor_audio_capture_test sensor_decklink_upload_test)
+add_dependencies(
+  sensor_tsan_tests sensor_orbbec_decode_worker_test sensor_frame_queue_test
+  sensor_audio_capture_test sensor_decklink_upload_test)
 if(TARGET sensor_video_hevc_encoder_test)
   add_dependencies(sensor_tsan_tests sensor_video_hevc_encoder_test)
 endif()
