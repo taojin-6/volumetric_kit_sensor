@@ -27,6 +27,7 @@ leak:__libc_dlopen
 # NVIDIA's encode and decode libraries (libnvidia-encode, libnvcuvid), which
 # FFmpeg loads and unloads before the leak check, so their frames name no
 # module: they are built against glibc's pre-2.3.2 condition variables, whose
-# shim allocates each on first use and keeps it. No code built against the
-# current ABI reaches the shim's files.
-leak:old_pthread_cond_
+# shim allocates each on first use and keeps it (`__pthread_cond_*_2_0`, or
+# `pthread_cond_*` where glibc has no debug symbols). The current ABI's
+# condition variables allocate nothing.
+leak:pthread_cond_
