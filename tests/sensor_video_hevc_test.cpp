@@ -1129,14 +1129,16 @@ int gpu_main(Gpu& gpu) {
   }
 #if !defined(__APPLE__)
   // Before anything holds the GPU's primary CUDA context; then it is held
-  // for the rest: each decoder retains it, and one let go by its last holder
-  // is made again by the next, at the cost CudaContext states.
+  // for the rest, and let go at the end, when no decoder may hold it still:
+  // each decoder retains it, and one let go by its last holder is made again
+  // by the next, at the cost CudaContext states.
   if (test_primary_context(gpu) != 0) return 1;
-  auto held = sensor::CudaContext::open(gpu.device);
-  if (!held) {
-    std::fprintf(stderr, "FAIL: %s\n", held.status().message().c_str());
+  auto opened = sensor::CudaContext::open(gpu.device);
+  if (!opened) {
+    std::fprintf(stderr, "FAIL: %s\n", opened.status().message().c_str());
     return 1;
   }
+  std::unique_ptr<sensor::CudaContext> held = std::move(opened).value();
 #endif
 
   if (test_pattern(gpu) != 0) return 1;
@@ -1162,6 +1164,10 @@ int gpu_main(Gpu& gpu) {
   if (test_queue_families(gpu) != 0) return 1;
   if (test_arguments(gpu) != 0) return 1;
   if (test_moves(gpu) != 0) return 1;
+#if !defined(__APPLE__)
+  held.reset();
+  CHECK(active_primary_contexts() == 0);  // no decoder kept it
+#endif
   std::puts("sensor_video_hevc: OK");
   return 0;
 }

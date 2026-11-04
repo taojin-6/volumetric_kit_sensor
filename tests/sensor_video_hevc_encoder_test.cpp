@@ -511,8 +511,8 @@ int test_device_refused(Gpu& gpu) {
 // The run with --off-cuda, on a device CUDA does not reach (lavapipe, the
 // one ICD ctest's sensor_video_hevc_encoder_off_cuda gives the loader): a
 // create that codes targets alone is refused, as no CUDA device is that
-// GPU. Where CUDA does not start at all it skips, or fails where
-// VS_TEST_HEVC_ENCODER promises an encoder.
+// GPU. Where CUDA does not load or start at all it skips, or fails where
+// VS_TEST_HEVC_ENCODER promises an encoder; any other refusal fails.
 int off_cuda_main(Gpu& gpu) {
   HevcEncoder::Options o;
   o.width = kW;
@@ -524,10 +524,14 @@ int off_cuda_main(Gpu& gpu) {
   CHECK(!refused.ok() &&
         refused.status().domain() == vkc::Status::Code::Unsupported);
   const std::string& why = refused.status().message();
-  if (why.find("no CUDA device is the Vulkan device's GPU") ==
-      std::string::npos) {
+  if (why.find("libcuda does not load") != std::string::npos ||
+      why.find("starting CUDA") != std::string::npos) {
     return no_encoder(why);
   }
+  const bool off_cuda = why.find("no CUDA device is the Vulkan device's GPU") !=
+                        std::string::npos;
+  if (!off_cuda) std::fprintf(stderr, "refused otherwise: %s\n", why.c_str());
+  CHECK(off_cuda);
   std::puts("a device CUDA does not reach is refused");
   return 0;
 }

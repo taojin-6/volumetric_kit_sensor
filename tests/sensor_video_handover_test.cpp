@@ -15,7 +15,7 @@
 // behind, the next receive waits on the host for the oldest; a decoder
 // destroyed while its stream is held waits for it, so the picture it handed
 // out reads as unheld. A step that blocks on the flag has it raised 50 ms
-// after its own submit, or after it starts where it waits on the host, so
+// after its own last submit, or after it starts where it waits on the host, so
 // one that does not wait is done before the raise, and the test waits no
 // fixed second for it. A watchdog raises a flag the test has not after
 // 10 s, so a decoder or reader that waits where it should not fails rather
@@ -284,13 +284,14 @@ class Hold {
   Hold(const Hold&) = delete;
   Hold& operator=(const Hold&) = delete;
 
-  // Raise the flag kMargin after now, or, given @p device, after its next
-  // submit: for a step about to block on the flag.
+  // Raise the flag kMargin after now, or, given @p device, after its last
+  // submit from now on: for a step about to block on the flag.
   void raise_in(const vkc::Device* device = nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
     timed_ = true;
     device_ = device;
     submits_ = device != nullptr ? device->counters().submits : 0;
+    submitted_ = false;
     since_ = Clock::now();
     cv_.notify_all();
   }
@@ -320,8 +321,8 @@ class Hold {
 
  private:
   // The watchdog's thread: waits for raise(), raise_in's time (polling the
-  // device's submits every millisecond until one is seen) or 10 s, then
-  // raises the flag.
+  // device's submits every millisecond, the margin restarting at each) or
+  // 10 s, then raises the flag.
   void watch() {
     std::unique_lock<std::mutex> lock(mutex_);
     const Clock::time_point give_up = Clock::now() + 10s;
@@ -334,19 +335,21 @@ class Hold {
       }
       if (now >= give_up) break;
       Clock::time_point until = give_up;
-      if (timed_ && device_ != nullptr &&
-          device_->counters().submits > submits_) {
-        device_ = nullptr;  // the submit seen: the margin runs from here
-        since_ = now;
+      if (timed_ && device_ != nullptr) {
+        const std::uint64_t submits = device_->counters().submits;
+        if (submits > submits_) {  // the margin runs from the last submit
+          submits_ = submits;
+          since_ = now;
+          submitted_ = true;
+        }
+        until = std::min(until, now + 1ms);  // polled for the next
       }
-      if (timed_ && device_ == nullptr) {
+      if (timed_ && (device_ == nullptr || submitted_)) {
         if (now >= since_ + kMargin) {
           by = By::kTime;
           break;
         }
         until = std::min(until, since_ + kMargin);
-      } else if (timed_) {
-        until = std::min(until, now + 1ms);
       }
       cv_.wait_until(lock, until);
     }
@@ -365,6 +368,7 @@ class Hold {
   bool timed_ = false;
   const vkc::Device* device_ = nullptr;
   std::uint64_t submits_ = 0;
+  bool submitted_ = false;  // a submit counted since raise_in
   Clock::time_point since_;
   Clock::time_point raised_at_;
   By by_ = By::kNotYet;
