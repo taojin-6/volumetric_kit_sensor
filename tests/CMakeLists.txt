@@ -415,14 +415,19 @@ add_test(NAME sensor_array_process COMMAND sensor_array_process_test)
 # rows aligned and the host reference of the remap on a scene an independent
 # renderer images, every layout from the host and the device, a pair rectified
 # already, the depth view, the views' lease and export, the area prefilter where
-# a view shrinks its picture, the refusals, and the pass's time. Skips without a
-# device.
+# a view shrinks its picture, and the refusals. Skips without a device. The
+# pass's time, printed and asserting nothing more, is an entry of its own
+# labelled manual: CI runs `ctest -LE manual`, and it is run by hand on an idle
+# GPU (`ctest -L manual -R stereo_rectifier`).
 add_executable(sensor_stereo_rectifier_test sensor_stereo_rectifier_test.cpp)
 target_link_libraries(
   sensor_stereo_rectifier_test PRIVATE volumetric_kit::sensor_stereo
                                        volumetric_kit::core_test_policy)
 vs_target_warnings(sensor_stereo_rectifier_test)
 add_test(NAME sensor_stereo_rectifier COMMAND sensor_stereo_rectifier_test)
+add_test(NAME sensor_stereo_rectifier_timing
+         COMMAND sensor_stereo_rectifier_test --timing)
+set_tests_properties(sensor_stereo_rectifier_timing PROPERTIES LABELS manual)
 
 # The stereo tier's own pieces: the contract every stereo source keeps
 # (stereo_contract.hpp: the calibration as the source was opened, the sync
@@ -524,7 +529,8 @@ endif()
 # info, a feeding thread, an interruption, the open's refusals and an open
 # again, the session's failure. The pattern test opens ArkitSensor with its test
 # pattern: every frame's depth and picture carry its sequence, the contract over
-# 300 frames, a skipped tick, the refusals. These two skip without a device.
+# 30 frames and over 300 small ones, a skipped tick, the refusals. These two
+# skip without a device.
 if(APPLE)
   add_executable(sensor_arkit_conversion_test sensor_arkit_conversion_test.cpp)
   target_link_libraries(
@@ -1243,9 +1249,9 @@ if(NOT VS_WITH_DECKLINK)
 endif()
 
 # Start the slowest test first under `ctest --parallel`: without a COST, CTest
-# runs tests in the order they were added. Waits out RigSets' 10-s silence
-# limit, under any build.
-set_tests_properties(sensor_array_rig_sets PROPERTIES COST 11)
+# runs tests in the order they were added. The rectifier's host reference is the
+# longest under the sanitizers and in Debug.
+set_tests_properties(sensor_stereo_rectifier PROPERTIES COST 20)
 
 # A test skips by exiting with the core's test::kSkipExitCode (gpu_test.hpp). A
 # hang (a fence never signalled, a deadlocked thread) fails in 300 s rather than

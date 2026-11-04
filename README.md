@@ -64,8 +64,12 @@ on Apple). The package fetches the core pinned by commit and checks it is
 sensor_root="$(git rev-parse --show-toplevel)"
 cmake -S "$sensor_root" -B "$sensor_root/build" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$sensor_root/build" --parallel
-ctest --test-dir "$sensor_root/build" --output-on-failure
+ctest --test-dir "$sensor_root/build" --output-on-failure -LE manual
 ```
+
+An entry labelled `manual` only prints a measurement, best taken on an idle
+GPU, and CI never runs it: `ctest --test-dir "$sensor_root/build" -L manual`
+(the rectifier's pass time, `sensor_stereo_rectifier_timing`).
 
 | Option | Default | Effect |
 | --- | --- | --- |
@@ -458,7 +462,7 @@ pixel buffers or on targets, which `testing/nv12_writer.hpp`'s
 
 ## Versions
 
-The version is `project()`'s (0.44.0), carried by the umbrella as
+The version is `project()`'s (0.45.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

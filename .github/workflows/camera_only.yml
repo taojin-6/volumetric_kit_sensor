@@ -56,4 +56,4 @@ jobs:
       - name: Test
         run: |
           ctest --test-dir build --output-on-failure --no-tests=error \
-            --parallel "$(nproc)"
+            -LE manual --parallel "$(nproc)"

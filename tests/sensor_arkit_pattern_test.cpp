@@ -2,13 +2,14 @@
 // Copyright (c) 2026 Tao Jin
 
 // ArkitSensor with its test pattern (ArkitSource::Pattern), through the
-// public header alone, on the device: info; 300 frames taken through
-// set_frame_notify, each one's depth band (depth_index) and picture band
-// (pattern_index, its luma read back on the device's queue by
-// PictureReadback) naming its sequence, the frame contract (rgbd_breach) and
-// no failures; a tick finding all 4 pictures held is skipped and counted
-// missed, leaving no gap in the sequences; sequences and counters from 0 at
-// each start; the refusals of open; and moves.
+// public header alone, on the device: info; 30 frames at 1920x1440 and 300
+// at 320x240 (not under a sanitizer) taken through set_frame_notify, each
+// one's depth band (depth_index) and picture band (pattern_index, its luma
+// read back on the device's queue by PictureReadback) naming its sequence,
+// the frame contract (rgbd_breach) and no failures; a tick finding all 4
+// pictures held is skipped and counted missed, leaving no gap in the
+// sequences; sequences and counters from 0 at each start; the refusals of
+// open; and moves.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -134,9 +135,20 @@ int test_info(const Gpu& gpu) {
   return 0;
 }
 
-// 300 frames, each carrying its sequence in its depth and its picture.
-int test_frames(const Gpu& gpu) {
-  vkc::Result<ArkitSensor> opened = ArkitSensor::open(pattern(gpu));
+// `count` frames of a `width` x `height` pattern at `fps`, each carrying its
+// sequence in its depth and its picture: odd and even frames alike, every
+// picture imported and read back. 30 at the pattern's 1920x1440:
+// ThreadSanitizer finds a race on the depth pool within a few frames, and
+// more add only the host's time drawing the pattern. 300 at 320x240,
+// ticking at 2400 Hz, carry indices past a byte through the feed; not under
+// a sanitizer, where drawing them takes 5 s and the 30 find the races.
+int test_frames(const Gpu& gpu, std::uint32_t width, std::uint32_t height,
+                std::uint32_t fps, std::uint64_t count) {
+  ArkitSensor::Options o = pattern(gpu);
+  o.color_width = width;
+  o.color_height = height;
+  o.fps = fps;
+  vkc::Result<ArkitSensor> opened = ArkitSensor::open(o);
   CHECK(opened.ok());
   ArkitSensor camera = std::move(opened).value();
   vkc::Result<std::unique_ptr<sensor::PictureReadback>> readback =
@@ -151,7 +163,7 @@ int test_frames(const Gpu& gpu) {
   std::uint64_t seen = 0;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(120);
-  while (taken < 300) {
+  while (taken < count) {
     CHECK(std::chrono::steady_clock::now() < deadline);
     seen = waker.wait(seen, std::chrono::milliseconds(200));
     std::vector<sensor::RgbdFrame> frames;
@@ -165,7 +177,7 @@ int test_frames(const Gpu& gpu) {
       vkc::Result<sensor::PictureView> view =
           (*readback)->read(frame.color, sensor::PictureReadback::Planes::Luma);
       CHECK(view.ok());
-      CHECK(view->width == 1920 && view->height == 1440 && view->full_range);
+      CHECK(view->width == width && view->height == height && view->full_range);
       CHECK(testing::pattern_index(view->luma, view->stride) ==
             static_cast<long>(index));
       ++taken;
@@ -304,7 +316,10 @@ int gpu_main(Gpu& gpu) {
   }
   if (test_refusals(gpu) != 0) return 1;
   if (test_info(gpu) != 0) return 1;
-  if (test_frames(gpu) != 0) return 1;
+  if (test_frames(gpu, 1920, 1440, 60, 30) != 0) return 1;
+#ifndef VKC_TEST_SANITIZED
+  if (test_frames(gpu, 320, 240, 2400, 300) != 0) return 1;
+#endif
   if (test_skipped_ticks(gpu) != 0) return 1;
   if (test_restart(gpu) != 0) return 1;
   if (test_moves(gpu) != 0) return 1;

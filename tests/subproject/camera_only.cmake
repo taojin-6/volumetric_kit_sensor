@@ -83,5 +83,7 @@ endforeach()
 
 _vs_configure(fetched ${_fetch})
 _vs_succeeded("Configuring the package's source camera-only")
-_vs_cmake(--build "${BINARY_DIR}/fetched" --config Release)
+# Four jobs: the camera tier's build is most of the test's time, and an umbrella
+# naming a tier camera-only lacks fails only at the consumer's link.
+_vs_cmake(--build "${BINARY_DIR}/fetched" --config Release --parallel 4)
 _vs_succeeded("Building against the package's source")

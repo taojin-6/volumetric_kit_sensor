@@ -485,7 +485,8 @@ jobs:
             --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 
       # Runs CTEST_PARALLEL_LEVEL tests at once: from the runner's .env on the
-      # Mac, from the container env ci.yml sets on the Ubuntu legs.
+      # Mac, from the container env ci.yml sets on the Ubuntu legs. Entries
+      # labelled manual are run by hand (tests/CMakeLists.txt).
       - name: Test
         env:
           VS_TEST_HEVC_BACKEND: ${{ inputs.hevc_backend }}
@@ -505,7 +506,7 @@ jobs:
             echo "::error::lavapipe is installed, but sensor_video_hevc_encoder_off_cuda is no test"
             exit 1
           fi
-          ctest --test-dir build --output-on-failure --no-tests=error
+          ctest --test-dir build --output-on-failure --no-tests=error -LE manual
 
       # NVENC's code under AddressSanitizer and UndefinedBehaviorSanitizer
       # (DECISIONS.md, the 2026-11-03 NVENC entry): a Debug tree of its own

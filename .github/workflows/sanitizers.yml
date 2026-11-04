@@ -157,7 +157,8 @@ jobs:
       # Runs CTEST_PARALLEL_LEVEL tests at once (the container env above), or
       # one per core where unset; lavapipe sizes its thread pool to the whole
       # host, so each test takes more than a core. The slowest test starts
-      # first, by the COST tests/CMakeLists.txt gives it.
+      # first, by the COST tests/CMakeLists.txt gives it; entries labelled
+      # manual are run by hand.
       - name: Test
         env:
           # The core's test policy (core/testing/gpu_test.hpp). lavapipe is
@@ -169,4 +170,5 @@ jobs:
           VKC_TEST_SYNC_VALIDATION: '1'
         run: |
           ctest --test-dir build --output-on-failure --no-tests=error \
+            -LE manual \
             --parallel "${CTEST_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
