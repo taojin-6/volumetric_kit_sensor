@@ -375,6 +375,13 @@ class Hold {
   std::thread watchdog_;  // last: it runs on the members above
 };
 
+// Whether raise_in's time raised @p hold and a step done at @p done ended
+// after it: a step that did not wait for the flag ends before the raise,
+// however late this is asked.
+bool released_by(Hold& hold, Clock::time_point done) {
+  return hold.by() == Hold::By::kTime && done >= hold.raised_at();
+}
+
 // --- What the readers read ---------------------------------------------------
 
 using Gpu = vkc::test::GpuContext;
@@ -593,20 +600,20 @@ int test_hevc(const Gpu& gpu, const Flag& flag, sensor::GpuFramePrep& prep,
         hold->raise_in(&gpu.device);
         CHECK(prepared_words(gpu, prep, frames.of(yuv)) == w.words);
         // prepare waited for it, on the device
-        CHECK(hold->by() == Hold::By::kTime);
+        CHECK(released_by(*hold, Clock::now()));
       } else if (next == 2) {
         std::vector<std::uint8_t> planes[3];
         sensor::YuvImage copy = yuv;
         hold->raise_in(&gpu.device);
         vs_test::read_device_picture(copy, gpu.device, gpu.allocator, planes);
-        CHECK(hold->by() == Hold::By::kTime);
+        CHECK(released_by(*hold, Clock::now()));
         for (int p = 0; p < 3; ++p) CHECK(planes[p] == w.planes[p]);
       } else {
         sensor::YuvImage copy = yuv;
         hold->raise_in(&gpu.device);
         auto made = luma.value()->run({&copy});
+        CHECK(released_by(*hold, Clock::now()));
         CHECK(made.ok() && made->size() == 1);
-        CHECK(hold->by() == Hold::By::kTime);
         CHECK(luma_of(gpu, (*made)[0].full) == w.planes[0]);
       }
       const vkc::Result<std::uint64_t> counter = yuv.ready->value();
@@ -667,10 +674,11 @@ int test_back_pressure(const Gpu& gpu, const Flag& flag,
   CHECK(by == Hold::By::kTime && out[3] >= raised_at);
   // The wait for picture 0 reads the counter: none of the device's host
   // waits (the one allowed is the fourth picture's new slot's submit), and
-  // its time reaches the scope open around it.
-  const double half_margin =
-      std::chrono::duration<double, std::milli>(kMargin).count() / 2;
-  CHECK(kept.rows().size() == 1 && kept.rows()[0].wait_ms >= half_margin);
+  // its time reaches the scope open around it: 5 ms, which a wait the scope
+  // missed reads under, leaves 45 ms of the margin to a preemption before
+  // the wait starts.
+  constexpr double kReachedMs = 5.0;
+  CHECK(kept.rows().size() == 1 && kept.rows()[0].wait_ms >= kReachedMs);
   CHECK(kept_waits <= 1);
   for (std::size_t k = 0; k < 4; ++k) {
     CHECK(prepared_words(gpu, prep, frames.of(got[k].yuv)) ==
@@ -707,7 +715,7 @@ int test_destroy_held(const Gpu& gpu, const Flag& flag,
     }
     const Clock::time_point gone_at = Clock::now();
     // it waited for the raise
-    CHECK(hold.by() == Hold::By::kTime && gone_at >= hold.raised_at());
+    CHECK(released_by(hold, gone_at));
     CHECK(!unset(kept->yuv));
   }
   CHECK(prepared_words(gpu, prep, frames.of(kept->yuv)) == clip.want[0].words);
@@ -950,7 +958,7 @@ int test_jpeg(const Gpu& gpu, const Flag& flag) {
     hold.raise_in(&gpu.device);
     vs_test::read_device_picture(picture->yuv, gpu.device, gpu.allocator,
                                  planes);
-    CHECK(hold.by() == Hold::By::kTime);
+    CHECK(released_by(hold, Clock::now()));
     for (int p = 0; p < 3; ++p) CHECK(planes[p] == want.planes[p]);
   }
   return 0;

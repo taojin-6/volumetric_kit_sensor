@@ -272,9 +272,10 @@ int test_device_picture(const vkc::test::Gpu& gpu) {
 }
 
 // The planes CONCURRENT across the queue families named when they are two
-// or more distinct ones, exclusive with none or one family twice, and still
-// the plane at their corner; a family the GPU lacks refused. On a GPU of
-// one family the CONCURRENT case cannot be made, and is skipped.
+// or more distinct ones, exclusive with none, one family twice or another
+// family alone, and still the plane at their corner; a family the GPU lacks
+// refused. On a GPU of one family the cases naming another cannot be made,
+// and are skipped.
 int test_device_picture_families(const vkc::test::Gpu& gpu) {
   std::uint32_t count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(gpu.device.physical_device(), &count,
@@ -303,8 +304,9 @@ int test_device_picture_families(const vkc::test::Gpu& gpu) {
   if (count > 1) {
     const std::uint32_t other = own == 0 ? 1 : 0;
     CHECK(shared({other, own}, VK_SHARING_MODE_CONCURRENT) == 0);
+    CHECK(shared({other}, VK_SHARING_MODE_EXCLUSIVE) == 0);
   } else {
-    std::puts("one queue family on this GPU: the CONCURRENT case skipped");
+    std::puts("one queue family on this GPU: the cases naming another skipped");
   }
   CHECK(testing::device_picture(gpu.device, gpu.allocator, p, 0, {own, count})
             .status()
