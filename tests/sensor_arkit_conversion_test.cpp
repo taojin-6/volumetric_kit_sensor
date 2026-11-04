@@ -6,9 +6,10 @@
 // depth copy out of buffers with padded rows, and its refusals, each named;
 // the picture's checks; its colour from its tags (601, 709, untagged as 601,
 // the range, the siting, HLG refused); ARKit's pinhole read column-major and
-// the depth camera registered to it; ARKit's pose in this package's axes; the
-// clock's offset, kept across an interruption's re-measure; and the missed
-// periods.
+// the depth camera registered to it; ARKit's pose in this package's axes,
+// and its float poses (the corner a few ulp off 1, the rotation 4e-7 off
+// orthonormal) made exactly rigid, one further off refused; the clock's
+// offset, kept across an interruption's re-measure; and the missed periods.
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreVideo/CoreVideo.h>
@@ -312,6 +313,16 @@ int test_cameras() {
   return 0;
 }
 
+// ARCamera.transform in this package's axes, as float left it: the columns
+// negated, nothing made exact.
+sensor::camera::Mat4d raw_pose(const std::array<float, 16>& t) {
+  sensor::Mat4f gl(1.0f);
+  for (int c = 0; c < 4; ++c) {
+    for (int r = 0; r < 4; ++r) gl[c][r] = t[std::size_t(c * 4 + r)];
+  }
+  return sensor::camera::Mat4d(sensor::cv_from_gl_camera(gl));
+}
+
 int test_pose() {
   // ARKit's camera at (1, 2, 3), yawed 90 degrees about +Y (up): its -Z,
   // ARKit's forward, points along world -X. Column-major.
@@ -319,7 +330,10 @@ int test_pose() {
                                    0.0f, 1.0f, 0.0f,  0.0f,  //
                                    1.0f, 0.0f, 0.0f,  0.0f,  //
                                    1.0f, 2.0f, 3.0f,  1.0f};
-  const sensor::camera::Mat4d pose = arkit::color_to_world_of(t);
+  const vkc::Result<sensor::camera::Mat4d> converted =
+      arkit::color_to_world_of(t);
+  CHECK(converted.ok());
+  const sensor::camera::Mat4d& pose = *converted;
   const sensor::camera::Mat4d to_camera = sensor::camera::rigid_inverse(pose);
   const auto in_camera = [&](double x, double y, double z) {
     return sensor::camera::Vec3d(to_camera * glm::dvec4(x, y, z, 1.0));
@@ -338,6 +352,91 @@ int test_pose() {
   // The translation is kept.
   CHECK(pose[3][0] == 1.0 && pose[3][1] == 2.0 && pose[3][2] == 3.0);
   CHECK(sensor::camera::check_rigid(pose).ok());
+  // Exact already: as given, the two columns negated.
+  CHECK(pose == raw_pose(t));
+  return 0;
+}
+
+// The largest entry's distance of R^T R from the identity's.
+double orthonormal_offset(const sensor::camera::Mat4d& m) {
+  const sensor::camera::Mat3d r(m);
+  double offset = 0.0;
+  for (int a = 0; a < 3; ++a) {
+    for (int b = 0; b < 3; ++b) {
+      offset = std::fmax(
+          offset, std::fabs(glm::dot(r[a], r[b]) - (a == b ? 1.0 : 0.0)));
+    }
+  }
+  return offset;
+}
+
+// ARCamera.transform as ARKit hands one over, in float: a turn and a
+// translation rounded, its second column stretched 2e-7 (R^T R 4e-7 off the
+// identity), the corner `corner` and the row's first entry `row`.
+std::array<float, 16> arkit_like(float corner, float row) {
+  sensor::camera::Mat3d r =
+      sensor::camera::rotation_from_rodrigues({0.21, 1.13, -0.17});
+  r[1] *= 1.0 + 2.0e-7;
+  std::array<float, 16> t{};
+  for (int c = 0; c < 3; ++c) {
+    for (int k = 0; k < 3; ++k) t[std::size_t(c * 4 + k)] = float(r[c][k]);
+  }
+  t[3] = row;
+  t[12] = 0.375f;
+  t[13] = 1.3f;
+  t[14] = -2.0625f;
+  t[15] = corner;
+  return t;
+}
+
+// ARKit's float poses come out exactly rigid: the bottom row [0, 0, 0, 1],
+// the rotation the nearest one, orthonormal to double's rounding; one further
+// from rigid than float leaves one is refused, named.
+int test_pose_exact() {
+  const float above = std::nextafter(
+      std::nextafter(std::nextafter(1.0f, 2.0f), 2.0f), 2.0f);  // 3 ulp
+  const float below = std::nextafter(1.0f, 0.0f);
+  for (const std::array<float, 16>& t :
+       {arkit_like(above, 0.0f), arkit_like(below, 1.0e-7f),
+        arkit_like(1.0f, 0.0f)}) {
+    const sensor::camera::Mat4d raw = raw_pose(t);
+    CHECK(orthonormal_offset(raw) > 2.5e-7);
+    CHECK(!sensor::camera::check_rigid(raw).ok() || t[15] == 1.0f);
+    const vkc::Result<sensor::camera::Mat4d> pose = arkit::color_to_world_of(t);
+    CHECK(pose.ok());
+    const sensor::camera::Mat4d& m = *pose;
+    CHECK(m[0][3] == 0.0 && m[1][3] == 0.0 && m[2][3] == 0.0 && m[3][3] == 1.0);
+    CHECK(orthonormal_offset(m) < 1e-12);
+    CHECK(sensor::camera::check_rigid(m).ok());
+    // The translation as ARKit gave it; the rotation within its rounding.
+    CHECK(m[3][0] == 0.375 && m[3][1] == double(1.3f) && m[3][2] == -2.0625);
+    for (int c = 0; c < 3; ++c) {
+      for (int r = 0; r < 3; ++r) CHECK(std::fabs(m[c][r] - raw[c][r]) < 1e-6);
+    }
+    // Deterministic: the same transform, the same bits.
+    const vkc::Result<sensor::camera::Mat4d> again =
+        arkit::color_to_world_of(t);
+    CHECK(again.ok() && *again == m);
+  }
+
+  // Further off than float leaves a pose: refused, named.
+  std::array<float, 16> stretched = arkit_like(1.0f, 0.0f);
+  for (int k = 0; k < 3; ++k) stretched[std::size_t(k)] *= 1.001f;
+  const vkc::Result<sensor::camera::Mat4d> far =
+      arkit::color_to_world_of(stretched);
+  CHECK(!far.ok() &&
+        far.status().domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(far.status().message() ==
+        "ARKit's pose: transform's rotation is more than 1e-4 off orthonormal");
+  std::array<float, 16> lifted = arkit_like(1.0f, 0.0f);
+  lifted[7] = 1.0e-3f;
+  CHECK(arkit::color_to_world_of(lifted).status().message() ==
+        "ARKit's pose: transform's bottom row is more than 1e-6 off "
+        "[0, 0, 0, 1]");
+  std::array<float, 16> lost = arkit_like(1.0f, 0.0f);
+  lost[13] = std::numeric_limits<float>::quiet_NaN();
+  CHECK(arkit::color_to_world_of(lost).status().message() ==
+        "ARKit's pose: transform is not finite");
   return 0;
 }
 
@@ -421,6 +520,7 @@ int main() {
   if (test_picture_color() != 0) return 1;
   if (test_cameras() != 0) return 1;
   if (test_pose() != 0) return 1;
+  if (test_pose_exact() != 0) return 1;
   if (test_clock() != 0) return 1;
   if (test_missed() != 0) return 1;
   if (test_tracking_names() != 0) return 1;

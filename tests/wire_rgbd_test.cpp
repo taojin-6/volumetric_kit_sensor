@@ -24,7 +24,10 @@
 //   back, reserved bytes ignored, the picture viewed in place, codes of 255
 //   and siting 5 accepted, the refusals; the colour params.
 // - Through the contract: pattern depth's records, decoded with an info
-//   decoded from params, keep the frame contract and carry their index.
+//   decoded from params, keep the frame contract and carry their index,
+//   each posed as ARKit's driver hands a float pose out (made exact): the
+//   pose comes back bit for bit, its bottom row exactly [0, 0, 0, 1]; one
+//   left as float wrote it breaks the contract, named.
 // - A host allocation failure is OutOfMemory.
 
 #include <algorithm>
@@ -880,8 +883,24 @@ int test_color() {
   return 0;
 }
 
+// A tracked pose as a float device writes it: a turn of `angle` about +Y and a
+// translation, rounded to float, its first column 2e-7 long (R^T R 4e-7 off
+// the identity), the corner 3 ulp past 1.
+camera::Mat4d float_pose(double angle) {
+  camera::Mat4d m(1.0);
+  m[0][0] = std::cos(angle) * (1.0 + 2.0e-7);
+  m[0][2] = -std::sin(angle) * (1.0 + 2.0e-7);
+  m[2][0] = std::sin(angle);
+  m[2][2] = std::cos(angle);
+  m[3] = glm::dvec4(0.5 * angle, 1.25, -2.0 + angle, 1.0);
+  camera::Mat4d rounded = camera::Mat4d(glm::mat4(m));
+  rounded[3][3] = double(
+      std::nextafter(std::nextafter(std::nextafter(1.0f, 2.0f), 2.0f), 2.0f));
+  return rounded;
+}
+
 // Pattern depth's records, decoded with an info decoded from the params,
-// keep the frame contract, and each carries its own index.
+// keep the frame contract, and each carries its own index and its exact pose.
 int test_contract() {
   const sensor::SensorInfo arkit = arkit_info();
   const vkc::Result<std::string> params = wire::encode_sensor(arkit);
@@ -905,12 +924,24 @@ int test_contract() {
     f.depth_camera = *arkit.depth;
     f.min_depth = 0.25f;
     f.max_depth = 5.0f;
+    // As ARKit's driver hands its float pose out.
+    const camera::Mat4d rounded = float_pose(0.1 * i);
+    CHECK(!camera::check_rigid(rounded).ok());
+    const vkc::Result<camera::Mat4d> exact = camera::exact_rigid(rounded);
+    CHECK(exact.ok());
+    f.color_to_world = *exact;
     const vkc::Result<wire::DepthRecord> record = wire::encode_depth(arkit, f);
     CHECK(record.ok());
     const std::shared_ptr<Bytes> payload = payload_of(*record);
     vkc::Result<sensor::RgbdFrame> frame =
         wire::decode_depth(info, payload->data(), payload->size(), payload);
     CHECK(frame.ok());
+    // The pose comes back bit for bit, its row exact.
+    const camera::Mat4d& pose = frame->color_to_world;
+    CHECK(same_transform(pose, *exact));
+    CHECK(pose[0][3] == 0.0 && pose[1][3] == 0.0 && pose[2][3] == 0.0 &&
+          pose[3][3] == 1.0);
+    CHECK(camera::check_rigid(pose).ok());
     frame->timestamp_ns = 1'000'000'000 + 100'000'000ull * i;  // the pts
     frame->sequence = i;                                       // the seq
     frames.push_back(std::move(*frame));
@@ -927,7 +958,13 @@ int test_contract() {
   CHECK(testing::rgbd_breach(info, frames, stats).empty());
   CHECK(testing::rgbd_breach(*read, frames, stats) ==
         "frame 0: no colour from a sensor with a colour camera");
-  std::puts("contract: pattern depth's records keep it and their index");
+  // A pose as float wrote it, not made exact: the contract names it.
+  frames[3].color_to_world = float_pose(0.3);
+  CHECK(testing::rgbd_breach(info, frames, stats) ==
+        "frame 3: color_to_world: transform's bottom row is not [0, 0, 0, 1]");
+  std::puts(
+      "contract: pattern depth's records keep it, their index and their "
+      "exact poses");
   return 0;
 }
 

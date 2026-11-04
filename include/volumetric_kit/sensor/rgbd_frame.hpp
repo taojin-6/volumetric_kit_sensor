@@ -181,9 +181,16 @@ struct RgbdFrame {
   /// The colour camera's frame to the world's, in this package's camera axes
   /// (+Z forward, +Y down): where the sensor sits, from its calibration or,
   /// for a tracked sensor, its own estimate for this frame.
+  ///
+  /// Rigid, as every driver hands it out and `camera::check_rigid` holds it.
+  /// A driver whose float leaves a pose off that, as ARKit's corner a few ulp
+  /// off 1, makes it exact with `camera::exact_rigid` and hands out no frame
+  /// whose pose that call refuses. So does a reader of recordings made before
+  /// 0.46.0, whose ARKit poses are as float left them: it drops such a frame.
   camera::Mat4d color_to_world = camera::Mat4d(1.0);
   /// The depth camera's frame to the colour camera's: the sensor's own
   /// extrinsic, so the depth camera sits at `color_to_world * depth_to_color`.
+  /// Rigid, as @ref color_to_world is.
   camera::Mat4d depth_to_color = camera::Mat4d(1.0);
 
   /// Capture time in nanoseconds, on the sensor's clock (`SensorInfo::clock`):

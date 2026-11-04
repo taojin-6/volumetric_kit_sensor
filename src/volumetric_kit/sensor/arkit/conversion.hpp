@@ -68,8 +68,11 @@ core::Result<camera::CameraModel> depth_camera_of(
     float min_depth, float max_depth);
 
 // ARCamera.transform (column-major, ARKit's axes) as the colour camera's
-// pose in this package's: cv_from_gl_camera, in double.
-camera::Mat4d color_to_world_of(const std::array<float, 16>& transform);
+// pose in this package's: cv_from_gl_camera, in double, made exactly rigid
+// (camera::exact_rigid: the bottom row [0, 0, 0, 1], the rotation the
+// nearest one). InvalidArgument where exact_rigid refuses it.
+core::Result<camera::Mat4d> color_to_world_of(
+    const std::array<float, 16>& transform);
 
 // ARKit's capture times (the uptime clock, seconds) on the host's
 // system_clock (ns): plus an offset measured at each start, and again when

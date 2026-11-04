@@ -15,7 +15,9 @@
 #include <utility>
 #include <vector>
 
+#include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/sensor/camera/camera_model.hpp"
+#include "volumetric_kit/sensor/camera/geometry.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/sensor/rgbd_sensor.hpp"
 
@@ -101,6 +103,9 @@ class RgbdContract {
   ///         - with `SensorInfo::color`, it has colour, its colour camera is
   ///           that size, and its picture (`RgbdFrame::color`) is its
   ///           camera's size; without it, it has no colour;
+  ///         - its poses, `RgbdFrame::color_to_world` then
+  ///           `RgbdFrame::depth_to_color`, are rigid
+  ///           (`camera::check_rigid`, whose message it names);
   ///         - its sequence increases on the frame's before it, and its
   ///           timestamp on the last non-zero one taken, where it is
   ///           non-zero itself: 0 is no time (`RgbdFrame::timestamp_ns`)
@@ -178,6 +183,11 @@ inline std::string RgbdContract::frame_breach(const RgbdFrame& frame) const {
              ", not its camera's " + size_text(color.width, color.height);
     }
   }
+  // As GpuFramePrep takes the poses (RgbdFrame::color_to_world).
+  const core::Status world = camera::check_rigid(frame.color_to_world);
+  if (!world.ok()) return "color_to_world: " + world.message();
+  const core::Status extrinsic = camera::check_rigid(frame.depth_to_color);
+  if (!extrinsic.ok()) return "depth_to_color: " + extrinsic.message();
   if (taken_ == 0) return {};
   return order_breach(last_sequence_, last_time_, frame.sequence,
                       frame.timestamp_ns);

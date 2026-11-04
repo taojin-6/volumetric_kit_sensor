@@ -181,6 +181,9 @@ core::Result<Driver::Held> Driver::convert(const Capture& capture) {
   const camera::ImageSize& color_size = info_.color->size;
   const camera::ImageSize& depth_size = info_.depth->size;
   VKC_TRY(check_picture(capture.picture, color_size.width, color_size.height));
+  // The pose before the depth is taken: a refused one costs no copy.
+  VKC_ASSIGN(const camera::Mat4d color_to_world,
+             color_to_world_of(capture.transform));
   const std::shared_ptr<DepthCopy> depth =
       copies_->take(std::size_t{depth_size.width} * depth_size.height);
   VKC_TRY(copy_depth(
@@ -196,7 +199,7 @@ core::Result<Driver::Held> Driver::convert(const Capture& capture) {
       held.depth_camera,
       depth_camera_of(held.color_camera, depth_size.width, depth_size.height,
                       options_.min_depth, options_.max_depth));
-  held.color_to_world = color_to_world_of(capture.transform);
+  held.color_to_world = color_to_world;
   held.exposure = capture.exposure;
   held.picture = Retained(capture.picture);
   held.depth = depth;

@@ -3,11 +3,14 @@
 
 // The camera tier's geometry: what check_rigid refuses, the rigid inverse,
 // Rodrigues against OpenCV's matrix and back to its vector at every angle,
-// and OpenCV's extrinsic turned into a camera's pose and back. Host-only.
+// exact_rigid on a transform as float leaves one (made exact, deterministic,
+// the polar factor of a shear, at and past its tolerances), and OpenCV's
+// extrinsic turned into a camera's pose and back. Host-only.
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 
 #include <glm/gtc/constants.hpp>
 
@@ -125,6 +128,103 @@ int test_nearest_rotation() {
   return 0;
 }
 
+// The largest entry's distance of R^T R from the identity's.
+double orthonormal_offset(const camera::Mat4d& m) {
+  const camera::Mat3d r(m);
+  double offset = 0.0;
+  for (int a = 0; a < 3; ++a) {
+    for (int b = 0; b < 3; ++b) {
+      offset = std::max(offset,
+                        std::fabs(glm::dot(r[a], r[b]) - (a == b ? 1.0 : 0.0)));
+    }
+  }
+  return offset;
+}
+
+bool refused_exact(const camera::Mat4d& m, const char* why) {
+  const vkc::Result<camera::Mat4d> r = camera::exact_rigid(m);
+  if (r.ok() || r.status().domain() != vkc::Status::Code::InvalidArgument ||
+      r.status().message() != why) {
+    std::fprintf(stderr, "expected \"%s\", got \"%s\"\n", why,
+                 r.ok() ? "OK" : r.status().message().c_str());
+    return false;
+  }
+  return true;
+}
+
+int test_exact_rigid() {
+  camera::Mat4d general(camera::rotation_from_rodrigues({0.3, -0.8, 0.52}));
+  general[3] = glm::dvec4(1.25, -2.5, 3.75e-3, 1.0);
+  // Rigid to double's rounding already (a calibration's): bit for bit.
+  const vkc::Result<camera::Mat4d> kept = camera::exact_rigid(general);
+  CHECK(kept.ok() && *kept == general);
+
+  // As a float device leaves it: rounded to float, the corner 3 ulp past 1,
+  // a row entry 1e-7, a column stretched 4e-7 off orthonormal.
+  camera::Mat4d rounded = camera::Mat4d(glm::mat4(general));
+  rounded[3][3] = double(
+      std::nextafter(std::nextafter(std::nextafter(1.0f, 2.0f), 2.0f), 2.0f));
+  rounded[1][3] = double(1.0e-7f);
+  for (int r = 0; r < 3; ++r) rounded[0][r] *= 1.0 + 2.0e-7;
+  CHECK(orthonormal_offset(rounded) > 3e-7);
+  CHECK(!camera::check_rigid(rounded).ok());
+  const vkc::Result<camera::Mat4d> exact = camera::exact_rigid(rounded);
+  CHECK(exact.ok());
+  const camera::Mat4d& m = *exact;
+  CHECK(m[0][3] == 0.0 && m[1][3] == 0.0 && m[2][3] == 0.0 && m[3][3] == 1.0);
+  CHECK(orthonormal_offset(m) < 1e-12);
+  CHECK(glm::determinant(camera::Mat3d(m)) > 0.0);
+  CHECK(camera::check_rigid(m).ok());
+  CHECK(m[3] == glm::dvec4(glm::dvec3(rounded[3]), 1.0));  // translation kept
+  CHECK(near(m, general, 1e-6));  // the rotation nearest, not another one
+  // Deterministic: the same transform, the same bits; and exact is a fixed
+  // point.
+  const vkc::Result<camera::Mat4d> again = camera::exact_rigid(rounded);
+  CHECK(again.ok() && *again == m);
+  const vkc::Result<camera::Mat4d> fixed = camera::exact_rigid(m);
+  CHECK(fixed.ok() && *fixed == m);
+
+  // A shear, column 0 leaning 4e-5 toward column 1: the rotation is the
+  // polar factor, so R^T M is symmetric; Gram-Schmidt's would leave it
+  // triangular, 4e-5 off symmetric.
+  camera::Mat4d sheared = general;
+  sheared[0] += 4e-5 * sheared[1];
+  const vkc::Result<camera::Mat4d> polar = camera::exact_rigid(sheared);
+  CHECK(polar.ok());
+  CHECK(orthonormal_offset(*polar) < 1e-12);
+  const camera::Mat3d factor =
+      glm::transpose(camera::Mat3d(*polar)) * camera::Mat3d(sheared);
+  for (int a = 0; a < 3; ++a) {
+    for (int b = 0; b < 3; ++b) {
+      CHECK(std::fabs(factor[a][b] - factor[b][a]) < 1e-12);
+    }
+  }
+
+  // At the tolerances, taken; past them, refused, each named.
+  camera::Mat4d row = general;
+  row[3][3] = 1.0 + 0.9e-6;
+  row[0][3] = -0.9e-6;
+  CHECK(camera::exact_rigid(row).ok());
+  row[0][3] = -1.1e-6;
+  CHECK(refused_exact(
+      row, "transform's bottom row is more than 1e-6 off [0, 0, 0, 1]"));
+  camera::Mat4d drifted = general;
+  for (int r = 0; r < 3; ++r) drifted[2][r] *= 1.0 + 0.45e-4;  // 0.9e-4 off
+  const vkc::Result<camera::Mat4d> pulled = camera::exact_rigid(drifted);
+  CHECK(pulled.ok() && orthonormal_offset(*pulled) < 1e-12);
+  CHECK(near(*pulled, general, 1e-12));
+  for (int r = 0; r < 3; ++r) drifted[2][r] *= 1.0 + 0.1e-4;  // 1.1e-4 off
+  CHECK(refused_exact(
+      drifted, "transform's rotation is more than 1e-4 off orthonormal"));
+  camera::Mat4d mirror = general;
+  mirror[2] = -mirror[2];
+  CHECK(refused_exact(mirror, "transform's rotation is a reflection"));
+  camera::Mat4d nan = general;
+  nan[3][1] = std::nan("");
+  CHECK(refused_exact(nan, "transform is not finite"));
+  return 0;
+}
+
 int test_extrinsic_is_world_to_camera() {
   // OpenCV's extrinsic of a camera turned 90 degrees about +Y, tvec (0, 0, 2):
   // x_camera = R x_world + t, so the camera sits at -R^T t = (2, 0, 0), and a
@@ -156,6 +256,7 @@ int main() {
   if (test_rodrigues() != 0) return 1;
   if (test_rodrigues_inverse() != 0) return 1;
   if (test_nearest_rotation() != 0) return 1;
+  if (test_exact_rigid() != 0) return 1;
   if (test_extrinsic_is_world_to_camera() != 0) return 1;
   std::printf("camera geometry tests passed\n");
   return 0;
