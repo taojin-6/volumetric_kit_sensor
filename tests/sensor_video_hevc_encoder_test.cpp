@@ -20,7 +20,8 @@
 // its target only once its writer is done; NVENC handing out no buffer a
 // sent picture holds, and its buffers passing to the session that opens
 // again; a device without hevc_encoder_device_requirements(), or on NVENC
-// one that exports no memory, refused; NVENC's strips asked from 4096 rows;
+// one that exports no memory, refused, and with --off-cuda one CUDA does
+// not reach (lavapipe); NVENC's strips asked from 4096 rows;
 // video_backend(); and on Apple color_codes_of on every string Core Video
 // names. On every device: the test writer (testing/nv12_writer.hpp) stores a
 // picture into plane images or a buffer's rows as it is, and refuses what it
@@ -504,6 +505,34 @@ int test_device_refused(Gpu& gpu) {
   o.device = &gpu.device;
   CHECK(HevcEncoder::create(o).ok());
   std::puts("devices NVENC cannot read targets from are refused");
+  return 0;
+}
+
+// The run with --off-cuda, on a device CUDA does not reach (lavapipe, the
+// one ICD ctest's sensor_video_hevc_encoder_off_cuda gives the loader): a
+// create that codes targets alone is refused, as no CUDA device is that
+// GPU. Where CUDA does not load or start at all it skips, or fails where
+// VS_TEST_HEVC_ENCODER promises an encoder; any other refusal fails.
+int off_cuda_main(Gpu& gpu) {
+  HevcEncoder::Options o;
+  o.width = kW;
+  o.height = kH;
+  o.color = kBt709Full;
+  o.device = &gpu.device;
+  o.allocator = &gpu.allocator;
+  auto refused = HevcEncoder::create(o);
+  CHECK(!refused.ok() &&
+        refused.status().domain() == vkc::Status::Code::Unsupported);
+  const std::string& why = refused.status().message();
+  if (why.find("libcuda does not load") != std::string::npos ||
+      why.find("starting CUDA") != std::string::npos) {
+    return no_encoder(why);
+  }
+  const bool off_cuda = why.find("no CUDA device is the Vulkan device's GPU") !=
+                        std::string::npos;
+  if (!off_cuda) std::fprintf(stderr, "refused otherwise: %s\n", why.c_str());
+  CHECK(off_cuda);
+  std::puts("a device CUDA does not reach is refused");
   return 0;
 }
 
@@ -1348,8 +1377,18 @@ int gpu_main(Gpu& gpu) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
+#if !defined(__APPLE__)
+  if (argc == 2 && std::string(argv[1]) == "--off-cuda") {
+    return vkc::test::run_on_gpu(sensor::hevc_encoder_device_requirements(),
+                                 off_cuda_main);
+  }
+#endif
+  if (argc != 1) {
+    std::fprintf(stderr, "usage: %s [--off-cuda (off Apple)]\n", argv[0]);
+    return 1;
+  }
   if (test_backend() != 0) return 1;
 #if defined(__APPLE__)
   if (test_color_codes_of() != 0) return 1;

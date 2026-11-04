@@ -45,21 +45,29 @@
 
 namespace volumetric_kit::sensor::testing {
 
+/// @param queue_families  The queue families that read the planes, as a
+///        decoder's are for a consumer on several (the drivers'
+///        `color_queue_families`): `CONCURRENT` across them when they name
+///        two or more distinct families, else exclusive to @p device's
+///        family. Each is a family of @p device's GPU.
 /// @return @p picture on @p device as a hardware decoder hands one out:
 ///         NV12's two plane images (`YuvImage::image`), R8 and R8G8, in
 ///         `GENERAL`, each with a view and `SAMPLED` and `TRANSFER_SRC`
-///         usage, and `TRANSFER_DST`, which writing them takes; exclusive
-///         to the device's queue family, and written and waited on. Each
-///         image is @p pad columns wider and @p pad rows taller than its
-///         plane, as VideoToolbox's can be: the plane at its corner, 0xEE
-///         past it. The colour fields are `YuvImage`'s defaults: set the
-///         matrix's weights, the range and the siting the test means.
-///         InvalidArgument for a picture of no size or with planes of
-///         other lengths; else an image's or a write's failure.
-inline core::Result<YuvImage> device_picture(const core::Device& device,
-                                             core::Allocator& allocator,
-                                             const HostNv12& picture,
-                                             std::uint32_t pad = 0) {
+///         usage, and `TRANSFER_DST`, which writing them takes; shared as
+///         @p queue_families says, and written on @p device's queue and
+///         waited on. The images are not const objects, so a test that
+///         rewrites a plane, as a decoder writes its next picture, may cast
+///         the const away. Each image is @p pad columns wider and @p pad
+///         rows taller than its plane, as VideoToolbox's can be: the plane
+///         at its corner, 0xEE past it. The colour fields are `YuvImage`'s
+///         defaults: set the matrix's weights, the range and the siting the
+///         test means. InvalidArgument for a picture of no size or with
+///         planes of other lengths, or for a family list the allocator
+///         refuses; else an image's or a write's failure.
+inline core::Result<YuvImage> device_picture(
+    const core::Device& device, core::Allocator& allocator,
+    const HostNv12& picture, std::uint32_t pad = 0,
+    const std::vector<std::uint32_t>& queue_families = {}) {
   const std::uint32_t pairs = (picture.width + 1) / 2;
   const std::uint32_t rows = (picture.height + 1) / 2;
   if (picture.width == 0 || picture.height == 0 ||
@@ -99,10 +107,13 @@ inline core::Result<YuvImage> device_picture(const core::Device& device,
     desc.format = plane.format;
     desc.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                  VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    desc.queue_families =
+        queue_families.empty() ? nullptr : queue_families.data();
+    desc.queue_family_count = static_cast<std::uint32_t>(queue_families.size());
     VKC_ASSIGN(core::Image image, allocator.create_image(desc));
     VKC_TRY(core::test::write_image(device, allocator, image, filled.data(),
                                     filled.size(), VK_IMAGE_LAYOUT_GENERAL));
-    yuv.image[k] = std::make_shared<const core::Image>(std::move(image));
+    yuv.image[k] = std::make_shared<core::Image>(std::move(image));
   }
   return yuv;
 }

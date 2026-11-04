@@ -84,6 +84,10 @@ jobs:
       # Every leg runs the tests under the Khronos validation layer, and
       # `sync_validation` adds synchronization validation on the NVIDIA legs,
       # as the sanitizer job does on lavapipe.
+      #
+      # `nvenc_sanitizers` runs the encoder's test on NVENC under ASan and
+      # UBSan too (_build.yml), on 26.04 alone: the lighter leg, with the
+      # FFmpeg that codes the tall picture in strips.
       matrix:
         include:
           - os: ubuntu-24.04
@@ -113,6 +117,7 @@ jobs:
             hevc_encoder: nvenc
             portaudio: true
             sync_validation: true
+            nvenc_sanitizers: true
           - os: macos-26
             runner: mac
             container: ''
@@ -138,6 +143,7 @@ jobs:
       hevc_backend: ${{ matrix.hevc_backend || '' }}
       hevc_encoder: ${{ matrix.hevc_encoder || '' }}
       sync_validation: ${{ matrix.sync_validation || false }}
+      nvenc_sanitizers: ${{ matrix.nvenc_sanitizers || false }}
 
   camera-only:
     uses: ./.github/workflows/camera_only.yml
