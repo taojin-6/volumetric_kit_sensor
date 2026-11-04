@@ -238,9 +238,14 @@ core::Status Driver::wait_opened(std::chrono::milliseconds timeout) {
   }
   if (!open_error_.empty()) return core::Status::io_error(open_error_);
   if (!opened_) {
-    return core::Status::io_error(std::string(kWho) +
-                                  ": no frame with depth from ARKit within " +
-                                  std::to_string(timeout.count()) + " ms");
+    // The camera did not answer in time: a later open may find it.
+    return core::Status::not_found(
+        std::string(kWho) + ": no frame with depth from ARKit within " +
+        std::to_string(timeout.count()) + " ms" +
+        (status_.interrupted
+             ? ": its session is interrupted (the device locked, the app in "
+               "the background, or the camera in use elsewhere)"
+             : ""));
   }
   return {};
 }

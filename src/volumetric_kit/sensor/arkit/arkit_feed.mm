@@ -4,8 +4,9 @@
 // ARKit's world tracking as the driver's feed, iOS and iPadOS only: the
 // configuration (one depth map, the format at the size and rate asked for,
 // HDR off, gravity-aligned), the LiDAR check, the camera prompt, running and
-// pausing the session, re-running it after an interruption only while
-// started, relocalisation allowed, and each ARFrame's parts handed to the
+// pausing the session as SessionState says at each event (session_state.hpp:
+// run again after an interruption while wanted, and at a start where not
+// running), relocalisation allowed, and each ARFrame's parts handed to the
 // driver. Off iOS it refuses.
 
 #include <TargetConditionals.h>
@@ -20,9 +21,10 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 
-#include <atomic>
 #include <chrono>
 #include <cstdint>
+
+#include "session_state.hpp"
 #endif
 
 #if TARGET_OS_IOS
@@ -161,9 +163,10 @@ class CameraFeed final : public Feed {
     session_.delegateQueue = queue_;
     session_.delegate = delegate_;
   }
+  // Closed first, so an interruption's end ARKit queued late runs nothing;
+  // then paused, and the delegate detached on the queue.
   ~CameraFeed() override {
-    set_started(false);
-    [session_ pause];
+    transition(&SessionState::close);
     session_.delegate = nil;
     VSArkitSessionDelegate* delegate = delegate_;
     dispatch_sync(queue_, ^{
@@ -174,27 +177,19 @@ class CameraFeed final : public Feed {
   CameraFeed& operator=(const CameraFeed&) = delete;
 
   // The first run: the one that sets the world.
-  void run() {
-    [session_ runWithConfiguration:config_
-                           options:ARSessionRunOptionResetTracking |
-                                   ARSessionRunOptionRemoveExistingAnchors];
-  }
+  void run() { transition(&SessionState::open); }
 
-  // started_ moves on the queue, where an interruption's end reads it, so a
-  // stop either lands before that read or pauses after its re-run.
   core::Status start() override {
-    set_started(true);
-    if (paused_) {
-      [session_ runWithConfiguration:config_];  // the world kept
-      paused_ = false;
-    }
+    transition(&SessionState::start);
     return {};
   }
 
+  // Paused, then the queue drained: a frame ARKit had already queued to it
+  // before the pause lands now, and the driver's end lets it go.
   void stop() noexcept override {
-    set_started(false);
-    [session_ pause];
-    paused_ = true;
+    transition(&SessionState::stop);
+    dispatch_sync(queue_, ^{
+                  });
   }
 
   // The delegate's calls, on the queue.
@@ -230,23 +225,54 @@ class CameraFeed final : public Feed {
     driver_.deliver(capture, arrival);
   }
   void failed(NSError* error) {
+    state_.failed();
     NSString* text = error.localizedDescription;
     driver_.fail(text != nil ? std::string(text.UTF8String) : "no reason");
   }
-  void interrupted() { driver_.interrupted(true); }
+  void interrupted() {
+    state_.interruption_began();
+    driver_.interrupted(true);
+  }
   void interruption_ended() {
     driver_.interrupted(false);
-    // ARKit waits to be run again; only while started, so a stopped sensor's
-    // camera stays off.
-    if (started_) [session_ runWithConfiguration:config_];
+    // Run while wanted (from the open until a stop, and from each start), for
+    // a session ARKit left waiting (session_state.hpp), so an open still
+    // waiting gets its frame; a stopped sensor's camera stays off.
+    apply(state_.interruption_ended());
   }
 
  private:
-  void set_started(bool now) {
-    std::atomic<bool>* started = &started_;
+  // `event` moves the state on the queue, where ARKit's calls move it, and a
+  // run it names is made there too, as an interruption's end makes its own:
+  // so a stop either lands before that end reads the state or pauses after
+  // its run, and every run is made on the one queue. A pause is made after,
+  // on the caller's thread, as before.
+  void transition(SessionState::Act (SessionState::*event)()) {
+    __block SessionState::Act act = SessionState::Act::None;
+    CameraFeed* self = this;
     dispatch_sync(queue_, ^{
-      started->store(now);
+      act = (self->state_.*event)();
+      if (act != SessionState::Act::Pause) self->apply(act);
     });
+    if (act == SessionState::Act::Pause) apply(act);
+  }
+
+  void apply(SessionState::Act act) {
+    switch (act) {
+      case SessionState::Act::RunFresh:
+        [session_ runWithConfiguration:config_
+                               options:ARSessionRunOptionResetTracking |
+                                       ARSessionRunOptionRemoveExistingAnchors];
+        break;
+      case SessionState::Act::Run:
+        [session_ runWithConfiguration:config_];  // the world kept
+        break;
+      case SessionState::Act::Pause:
+        [session_ pause];
+        break;
+      case SessionState::Act::None:
+        break;
+    }
   }
 
   Driver& driver_;
@@ -255,8 +281,7 @@ class CameraFeed final : public Feed {
   ARWorldTrackingConfiguration* config_;
   VSArkitSessionDelegate* delegate_;
   ARSession* session_;
-  std::atomic<bool> started_{false};
-  bool paused_ = false;  // the consumer's thread alone
+  SessionState state_;  // the queue's alone
 };
 
 core::Result<std::unique_ptr<Feed>> open_camera_feed(

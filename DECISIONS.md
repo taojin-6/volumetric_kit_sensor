@@ -549,6 +549,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   sensor, untracked frames withheld; times on the host's clock; a test
   pattern on the same driver. `kArkitDepthNoise` is ARKit's curve as
   measured, and `DepthNoise::known()` takes its negative linear term.
+  *Amended 2026-11-04:* the session is run again whenever it is wanted,
+  not only while started, and an open with no frame in time is `NotFound`
+  (the reopen entry).
 
 - [**2026-11-03**](#2026-11-03--a-gpu-fault-leaves-no-reader-waiting-for-good-every-error-nvdecs-decoder-returns-but-invalidargument-comes-back-with-each-ready-value-it-handed-out-set-and-its-wait-for-the-oldest-of-three-kept-pictures-sees-a-failed-stream-amends-the-2026-11-02-hand-over-entry) —
   A GPU fault leaves no reader waiting for good: NVDEC's decoder settles
@@ -584,6 +587,14 @@ entries relevant to your task; later amendments supersede earlier rules.
   driver's own. A picture's ready value is waited for on the device
   (`yuv_image.hpp` says so), and NVDEC's own wait for a kept picture reads
   the counter.
+
+- [**2026-11-04**](#2026-11-04--an-arkit-session-is-run-whenever-it-is-wanted-from-the-open-until-a-stop-and-from-each-start-an-open-with-no-frame-in-time-is-notfound-and-leaves-nothing-open-and-every-drivers-notfound-is-the-failure-an-app-tries-again-amends-the-2026-11-03-arkit-entry) —
+  `ArkitSensor`'s session is run whenever it is wanted, from the open
+  until a stop and from each start: an interruption's end runs it then,
+  and a start runs it where it is not running, by a state machine of its
+  own the Mac tests. An open with no frame in time is `NotFound`, saying
+  where the session is interrupted, and leaves nothing open; every
+  driver's `NotFound` is the failure an app tries again.
 
 ## Decision record
 
@@ -7170,6 +7181,9 @@ public frame every camera hands out.
   Normal and world epoch 0 on every record. The sensor owns its
   `ARSession`: the configuration, the LiDAR check, the camera prompt,
   start and pause, and a re-run after an interruption only while started.
+  (*Amended 2026-11-04 (the reopen entry):* a re-run whenever the session
+  is wanted, from the open until a stop and from each start, and at a
+  start where it is not running.)
 - **Clocks.** `timestamp_ns` is `ARFrame.timestamp`, on the uptime clock,
   plus an offset to `system_clock` measured at each start and again when an
   interruption ends, never smaller, so times increase within a start;
@@ -7603,3 +7617,109 @@ time unreported, and reported in microseconds. The suite on both RTX 4090s
 (the second under the validation layer), on the lab RTX 5090 (the
 validation layer; the handover and decoder tests also under
 synchronization validation) and on the M5 Max (validation).
+
+### 2026-11-04 — An ARKit session is run whenever it is wanted, from the open until a stop and from each start; an open with no frame in time is `NotFound` and leaves nothing open, and every driver's `NotFound` is the failure an app tries again (amends the 2026-11-03 ARKit entry).
+
+**The rule.**
+- **The session is run while wanted.** `ArkitSensor`'s session is wanted
+  from `open` until a `stop`, and from each `start`. What ARKit's feed does
+  to it at each event is a state machine with no ARKit type
+  (`arkit/session_state.hpp`, in `sensor_arkit_units`): the open's run
+  resets tracking, the one world; an interruption's end runs it again
+  while it is wanted, the open's wait and the time between the open and
+  the first start included, and leaves it waiting while stopped; a `start`
+  runs it where it is not running (paused by a stop, or interrupted); a
+  `stop` pauses it; the close, a failed open's or the sensor's, pauses it
+  and runs nothing after, a late end of an interruption included; after
+  ARKit's failure nothing runs it. The feed moves the state on the
+  sensor's queue, where ARKit's calls arrive (a `dispatch_sync` from the
+  consumer's thread, as the started flag moved before), and makes every
+  run there too, as an interruption's end made its own, so no two runs
+  race; a pause stays on the consumer's thread. A stop then drains the
+  queue, so a frame ARKit had already queued to it before the pause lands
+  while the driver is still started and goes at its end. A frame ARKit
+  would hand the queue after `pause` returns is not covered: Apple does
+  not say whether one can come, and none has been seen.
+- **A failed open.** No frame with depth within `open_timeout_ms` is
+  `NotFound` (it was `IoError`), and the message says so where ARKit has
+  the session interrupted then (the device locked, the app in the
+  background, or the camera in use elsewhere). The failure leaves
+  nothing open: the feed closes, pauses its session and detaches its
+  delegate before the driver goes, and a driver that gave up holds none
+  of ARKit's pictures, a late frame's included. `open` stays a factory, so
+  a failed open leaves no object, and the retry is another `open` of the
+  same options. `IoError` stays for a camera not allowed, ARKit's
+  failure and a first frame of the wrong size; `Unsupported` and
+  `InvalidArgument` as they were. A camera prompt still unanswered is no
+  failure: the open waits for the answer, as before.
+- **Every driver's `NotFound`** (`IRgbdSensor`'s doc, "Opening"): what an
+  open looks for is not there now, as no camera attached or answering in
+  time or a missing file, and a later open of the same options may find
+  it, so an app tries again. Orbbec's open already says so of a camera
+  that does not answer in its discovery window, RealSense's of one not
+  attached, DeckLink's of no card and FFS's of a missing model; ARKit's
+  joins them. A camera held by other software is each driver's own case,
+  not the generic rule: ARKit's open gets no frame in time, so
+  `NotFound`, while Orbbec's and RealSense's document `NotFound` only for
+  a camera not there and `IoError` for any other SDK failure. No code is
+  added to the core.
+
+**Why.**
+- The owner (2026-11-03) said yes to "retry a camera open that failed,
+  e.g. when the iPad was locked at launch". The scanner opened the camera
+  once at bring-up, so a lock during the open left it without a camera
+  until a relaunch (ios #62's review, finding 2). Its sensor half: an
+  open with no frame in time failed as `IoError`, as a refused camera
+  does, so the app could not tell "try again" from "never".
+- `NotFound` is what the other drivers already return for a camera that
+  is not there, so one retry rule (open again on `NotFound`) serves every
+  sensor, with no new code in the core.
+- The runs are a guard. The feed ran the session again after an
+  interruption only while started, and at a start only after a stop.
+  Apple documents that ARKit resumes by itself when an interruption ends;
+  that it may wait to be run is the earlier session controller's practice
+  (the scanner's own, before `ArkitSensor`, ran it again on every resume
+  and at each interruption's end), unverified on the device. Where ARKit
+  does wait, an interruption that ended between the open and the first
+  start left a started sensor whose session nothing ran, and one that
+  ended during the open's wait failed the open with the camera back.
+  Where it does not, the run costs nothing: a run of a running session
+  with the same configuration keeps its world, as the run at every
+  interruption's end while started already did.
+
+**Not here.** The scanner's retry (ios, after ios #63): open again off the
+main thread on `NotFound`, at the next foreground and at `-startFusion`,
+and never while an open still waits for the camera prompt's answer,
+which has no bound. A code of its own for a prompt not yet answered:
+there is no such failure, since the open waits for the answer. A way to
+cancel an open in flight. A guard in the driver against a frame ARKit
+hands over after `pause` returns (dropping captures older than the
+start): no such frame has been seen, and the driver's tests feed
+synthetic times off the uptime clock.
+
+**Validation.** Apple M5 Max, Release with warnings as errors, under the
+validation layer: the suite passes, 61 tests (60 on main). The new
+`sensor_arkit_session` (host, 0.01 s; 0.04 s under ThreadSanitizer)
+drives the state against a fake of ARKit's session in
+both behaviours at an interruption's end, resuming by itself and waiting
+to be run: an interruption ending during the open, between the open and
+the start, and still on at the start; two after the start, the world
+kept; one while stopped leaving the camera off until the next start; a
+failed open's session staying off while a new one opens; a close during
+the open; ARKit's failure. `sensor_arkit_sensor` (0.16 s, 4.0 s under
+ThreadSanitizer; 0.16 s and 4.9 s on main) adds the open's `NotFound`,
+plain and interrupted. Its other new cases guard the driver, which this
+entry changes only in the timeout's code: an interruption over before
+the first frame not failing the open; a driver that gave up holding no
+picture, a late frame's included, and a new one on the same pictures
+under the contract; an interruption after the start under the contract,
+each frame its own picture, sequences and times increasing; and the
+driver's end letting a held frame go before the next start. The feed's
+close and its drain run on iOS alone: the build check compiles them, and
+no test runs them. Planted bugs, each failing its test: an interruption's
+end running the session only while started, a start running it only
+after a stop and a close leaving the session wanted
+(`sensor_arkit_session`), and the timeout back to `IoError`
+(`sensor_arkit_sensor`). The iOS build check compiles the state and
+ARKit's feed for iOS 26 and links them. No camera was opened: the
+camera's path is checked by hand on an iPad, with the scanner's retry.
