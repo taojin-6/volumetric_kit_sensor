@@ -55,6 +55,8 @@
 #if !defined(__APPLE__)
 #include <cuda.h>
 #include <dlfcn.h>
+
+#include "volumetric_kit/sensor/video/cuda_interop.hpp"
 #endif
 
 namespace vkc = volumetric_kit::core;
@@ -1125,6 +1127,17 @@ int gpu_main(Gpu& gpu) {
     }
     return vs_test::no_decoder(probe.status().message());
   }
+#if !defined(__APPLE__)
+  // Before anything holds the GPU's primary CUDA context; then it is held
+  // for the rest: each decoder retains it, and one let go by its last holder
+  // is made again by the next, at the cost CudaContext states.
+  if (test_primary_context(gpu) != 0) return 1;
+  auto held = sensor::CudaContext::open(gpu.device);
+  if (!held) {
+    std::fprintf(stderr, "FAIL: %s\n", held.status().message().c_str());
+    return 1;
+  }
+#endif
 
   if (test_pattern(gpu) != 0) return 1;
   if (test_unlabelled_color(gpu) != 0) return 1;
@@ -1147,9 +1160,6 @@ int gpu_main(Gpu& gpu) {
   if (test_refused(gpu) != 0) return 1;
   if (test_create_refusals(gpu) != 0) return 1;
   if (test_queue_families(gpu) != 0) return 1;
-#if !defined(__APPLE__)
-  if (test_primary_context(gpu) != 0) return 1;
-#endif
   if (test_arguments(gpu) != 0) return 1;
   if (test_moves(gpu) != 0) return 1;
   std::puts("sensor_video_hevc: OK");

@@ -14,9 +14,12 @@
 // what the same picture reads unheld, to the bit. With CUDA three pictures
 // behind, the next receive waits on the host for the oldest; a decoder
 // destroyed while its stream is held waits for it, so the picture it handed
-// out reads as unheld. A watchdog raises a flag the test has not after 10 s,
-// so a decoder that waits on the host where it should not fails rather than
-// hangs. The table also drops ready values' signals and reports a faulted
+// out reads as unheld. A step that blocks on the flag has it raised 50 ms
+// after its own submit, or after it starts where it waits on the host, so
+// one that does not wait is done before the raise, and the test waits no
+// fixed second for it. A watchdog raises a flag the test has not after
+// 10 s, so a decoder or reader that waits where it should not fails rather
+// than hangs. The table also drops ready values' signals and reports a faulted
 // stream, as a GPU fault leaves them: the error the decoder then returns comes
 // back with every value it handed out set, so no reader waits for good. Under
 // a validation layer older than 1.4.341 those tests run unvalidated, in a run
@@ -252,22 +255,26 @@ vkc::Result<std::unique_ptr<Flag>> make_flag(const vkc::Device& device) {
   return flag;
 }
 
+using Clock = std::chrono::steady_clock;
+
+// A step that does not wait for a held picture's value is done well inside
+// this after its submit: a 256x144 picture's work takes under a millisecond.
+constexpr auto kMargin = 50ms;
+
 // One hold, armed at construction: the flag stays below its number until
-// raise(), or until `after` has passed, when the watchdog raises it.
+// raise(), or until the time raise_in() sets, or for 10 s, when the
+// watchdog raises it.
 class Hold {
  public:
-  Hold(const Flag& flag, Armed what, std::chrono::milliseconds after)
+  // What raised the flag.
+  enum class By { kNotYet, kTest, kTime, kWatchdog };
+
+  Hold(const Flag& flag, Armed what)
       : flag_(flag), number_(held().number.load() + 1) {
     held().number.store(number_);
     held().failed.store(CUDA_SUCCESS);
     held().armed.store(what);
-    watchdog_ = std::thread([this, after] {
-      std::unique_lock<std::mutex> lock(mutex_);
-      cv_.wait_for(lock, after, [this] { return now_; });
-      raised_result_ = flag_.set(number_);
-      raised_ = true;
-      cv_.notify_all();
-    });
+    watchdog_ = std::thread([this] { watch(); });
   }
   ~Hold() {
     raise();
@@ -277,16 +284,32 @@ class Hold {
   Hold(const Hold&) = delete;
   Hold& operator=(const Hold&) = delete;
 
-  // Raise the flag now, if the watchdog has not; returns once it is up.
+  // Raise the flag kMargin after now, or, given @p device, after its next
+  // submit: for a step about to block on the flag.
+  void raise_in(const vkc::Device* device = nullptr) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    timed_ = true;
+    device_ = device;
+    submits_ = device != nullptr ? device->counters().submits : 0;
+    since_ = Clock::now();
+    cv_.notify_all();
+  }
+  // Raise the flag now, if it is not up; returns once it is.
   void raise() {
     std::unique_lock<std::mutex> lock(mutex_);
     now_ = true;
     cv_.notify_all();
-    cv_.wait(lock, [this] { return raised_; });
+    cv_.wait(lock, [this] { return by_ != By::kNotYet; });
   }
-  bool raised() {
+  bool raised() { return by() != By::kNotYet; }
+  By by() {
     std::lock_guard<std::mutex> lock(mutex_);
-    return raised_;
+    return by_;
+  }
+  // When the raise began: no wait for the flag ends before it.
+  Clock::time_point raised_at() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return raised_at_;
   }
   // Whether the hold reached the stream: armed, then taken by a copy or a
   // decode, and queued.
@@ -296,14 +319,56 @@ class Hold {
   }
 
  private:
+  // The watchdog's thread: waits for raise(), raise_in's time (polling the
+  // device's submits every millisecond until one is seen) or 10 s, then
+  // raises the flag.
+  void watch() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const Clock::time_point give_up = Clock::now() + 10s;
+    By by = By::kWatchdog;
+    for (;;) {
+      const Clock::time_point now = Clock::now();
+      if (now_) {
+        by = By::kTest;
+        break;
+      }
+      if (now >= give_up) break;
+      Clock::time_point until = give_up;
+      if (timed_ && device_ != nullptr &&
+          device_->counters().submits > submits_) {
+        device_ = nullptr;  // the submit seen: the margin runs from here
+        since_ = now;
+      }
+      if (timed_ && device_ == nullptr) {
+        if (now >= since_ + kMargin) {
+          by = By::kTime;
+          break;
+        }
+        until = std::min(until, since_ + kMargin);
+      } else if (timed_) {
+        until = std::min(until, now + 1ms);
+      }
+      cv_.wait_until(lock, until);
+    }
+    raised_at_ = Clock::now();
+    const CUresult r = flag_.set(number_);
+    if (r != CUDA_SUCCESS) held().failed.store(r);
+    by_ = by;
+    cv_.notify_all();
+  }
+
   const Flag& flag_;
   std::uint32_t number_;
   std::mutex mutex_;
   std::condition_variable cv_;
   bool now_ = false;
-  bool raised_ = false;
-  CUresult raised_result_ = CUDA_SUCCESS;
-  std::thread watchdog_;
+  bool timed_ = false;
+  const vkc::Device* device_ = nullptr;
+  std::uint64_t submits_ = 0;
+  Clock::time_point since_;
+  Clock::time_point raised_at_;
+  By by_ = By::kNotYet;
+  std::thread watchdog_;  // last: it runs on the members above
 };
 
 // --- What the readers read ---------------------------------------------------
@@ -446,12 +511,6 @@ sensor::HevcDecoder::Options options_of(const Gpu& gpu) {
   return options;
 }
 
-double ms_since(std::chrono::steady_clock::time_point start) {
-  return std::chrono::duration<double, std::milli>(
-             std::chrono::steady_clock::now() - start)
-      .count();
-}
-
 int read_clip(const Gpu& gpu, sensor::GpuFramePrep& prep, const Frames& frames,
               Clip& clip) {
   clip.units = sensor::testing::access_units_of_file(kPatches);
@@ -486,7 +545,8 @@ int read_clip(const Gpu& gpu, sensor::GpuFramePrep& prep, const Frames& frames,
 
 // The patch clip's pictures held. Picture 0 held for a recorded batch, 1 for
 // prepare, 2 for PictureReadback and 3 for LumaPass, each started before the
-// flag is raised; the rest unheld.
+// flag is raised, and the last three returning only after the raise their
+// submit set off; the rest unheld.
 int test_hevc(const Gpu& gpu, const Flag& flag, sensor::GpuFramePrep& prep,
               const Frames& frames, const Clip& clip) {
   auto luma = sensor::LumaPass::create(gpu.device, gpu.allocator);
@@ -505,7 +565,7 @@ int test_hevc(const Gpu& gpu, const Flag& flag, sensor::GpuFramePrep& prep,
     for (;;) {
       const bool holds = next < 4;
       std::optional<Hold> hold;
-      if (holds) hold.emplace(flag, kCopy, next == 0 ? 10000ms : 1000ms);
+      if (holds) hold.emplace(flag, kCopy);
       auto picture = decoder->receive();
       CHECK(picture.ok());
       if (!picture.value()) {
@@ -526,19 +586,23 @@ int test_hevc(const Gpu& gpu, const Flag& flag, sensor::GpuFramePrep& prep,
       if (next == 0) {
         CHECK(check_record(gpu, prep, frames.of(yuv), *hold, w.words) == 0);
       } else if (next == 1) {
+        hold->raise_in(&gpu.device);
         CHECK(prepared_words(gpu, prep, frames.of(yuv)) == w.words);
-        CHECK(hold->raised());  // prepare waited for it, on the device
+        // prepare waited for it, on the device
+        CHECK(hold->by() == Hold::By::kTime);
       } else if (next == 2) {
         std::vector<std::uint8_t> planes[3];
         sensor::YuvImage copy = yuv;
+        hold->raise_in(&gpu.device);
         vs_test::read_device_picture(copy, gpu.device, gpu.allocator, planes);
-        CHECK(hold->raised());
+        CHECK(hold->by() == Hold::By::kTime);
         for (int p = 0; p < 3; ++p) CHECK(planes[p] == w.planes[p]);
       } else {
         sensor::YuvImage copy = yuv;
+        hold->raise_in(&gpu.device);
         auto made = luma.value()->run({&copy});
         CHECK(made.ok() && made->size() == 1);
-        CHECK(hold->raised());
+        CHECK(hold->by() == Hold::By::kTime);
         CHECK(luma_of(gpu, (*made)[0].full) == w.planes[0]);
       }
       const vkc::Result<std::uint64_t> counter = yuv.ready->value();
@@ -551,23 +615,24 @@ int test_hevc(const Gpu& gpu, const Flag& flag, sensor::GpuFramePrep& prep,
 }
 
 // One hold before picture 0's copy holds every later copy on the stream:
-// pictures 0 to 2 come out at once, and with three kept the decoder waits on
-// the host for picture 0's value before it hands out another, until the
-// watchdog raises the flag, reading the counter, its time in the scope open
-// around it. All four then read as unheld.
+// pictures 0 to 2 come out at once, before anything raises the flag, and
+// with three kept the decoder waits on the host for picture 0's value before
+// it hands out another, until the flag is raised 50 ms into that receive,
+// reading the counter, its time in the scope open around it. All four then
+// read as unheld.
 int test_back_pressure(const Gpu& gpu, const Flag& flag,
                        sensor::GpuFramePrep& prep, const Frames& frames,
                        const Clip& clip) {
-  constexpr auto kAfter = 2000ms;
   auto decoder = sensor::HevcDecoder::create(options_of(gpu));
   CHECK(decoder.ok());
   std::vector<sensor::DecodedPicture> got;
-  std::vector<double> out_ms;    // when each came out, from the hold
+  std::vector<Clock::time_point> out;  // when each came out
   vkc::StageMetrics kept;        // the receives made with three pictures kept
   std::uint64_t kept_waits = 0;  // the device's host waits in them
+  Hold::By by = Hold::By::kNotYet;
+  Clock::time_point raised_at;
   {
-    Hold hold(flag, kCopy, kAfter);
-    const auto start = std::chrono::steady_clock::now();
+    Hold hold(flag, kCopy);
     for (std::size_t i = 0; i < clip.units.size() && got.size() < 4; ++i) {
       CHECK(decoder
                 ->send(clip.units[i].data(), clip.units[i].size(),
@@ -577,24 +642,31 @@ int test_back_pressure(const Gpu& gpu, const Flag& flag,
         const bool three = got.size() == 3;
         const std::uint64_t before = gpu.device.counters().host_waits;
         std::optional<vkc::StageScope> scope;
+        if (three && !hold.raised()) hold.raise_in();  // the first such
         if (three) scope.emplace(kept, "kept");
         auto picture = decoder->receive();
         scope.reset();
         if (three) kept_waits += gpu.device.counters().host_waits - before;
         CHECK(picture.ok());
         if (!picture.value()) break;
-        out_ms.push_back(ms_since(start));
+        out.push_back(Clock::now());
         got.push_back(std::move(*picture.value()));
       }
     }
     CHECK(got.size() == 4 && Hold::taken());
+    by = hold.by();
+    raised_at = hold.raised_at();
   }
-  for (std::size_t k = 0; k < 3; ++k) CHECK(out_ms[k] < 1000.0);
-  CHECK(out_ms[3] >= 1500.0);  // after the watchdog's raise
+  // Raised by the time the fourth receive set off, which a wait earlier
+  // than the fourth would have kept from being set (the watchdog's raise),
+  // and picture 3 out after it.
+  CHECK(by == Hold::By::kTime && out[3] >= raised_at);
   // The wait for picture 0 reads the counter: none of the device's host
   // waits (the one allowed is the fourth picture's new slot's submit), and
   // its time reaches the scope open around it.
-  CHECK(kept.rows().size() == 1 && kept.rows()[0].wait_ms >= 1000.0);
+  const double half_margin =
+      std::chrono::duration<double, std::milli>(kMargin).count() / 2;
+  CHECK(kept.rows().size() == 1 && kept.rows()[0].wait_ms >= half_margin);
   CHECK(kept_waits <= 1);
   for (std::size_t k = 0; k < 4; ++k) {
     CHECK(prepared_words(gpu, prep, frames.of(got[k].yuv)) ==
@@ -604,14 +676,15 @@ int test_back_pressure(const Gpu& gpu, const Flag& flag,
 }
 
 // The decoder destroyed while its stream is held: the destructor waits for
-// the stream (until the watchdog raises the flag), so the picture it handed
-// out reaches its value and reads as unheld, and no batch is left waiting.
+// the stream (until the flag is raised 50 ms into it), so the picture it
+// handed out reaches its value and reads as unheld, and no batch is left
+// waiting.
 int test_destroy_held(const Gpu& gpu, const Flag& flag,
                       sensor::GpuFramePrep& prep, const Frames& frames,
                       const Clip& clip) {
   std::optional<sensor::DecodedPicture> kept;
   {
-    Hold hold(flag, kCopy, 1000ms);  // outlives the decoder
+    Hold hold(flag, kCopy);  // outlives the decoder
     auto decoder = sensor::HevcDecoder::create(options_of(gpu));
     CHECK(decoder.ok());
     for (std::size_t i = 0; i < clip.units.size() && !kept; ++i) {
@@ -624,11 +697,13 @@ int test_destroy_held(const Gpu& gpu, const Flag& flag,
       if (picture.value()) kept = std::move(*picture.value());
     }
     CHECK(kept && Hold::taken() && unset(kept->yuv));
-    const auto start = std::chrono::steady_clock::now();
+    hold.raise_in();
     {
       sensor::HevcDecoder gone = std::move(decoder).value();
     }
-    CHECK(ms_since(start) > 500.0);  // it waited for the raise
+    const Clock::time_point gone_at = Clock::now();
+    // it waited for the raise
+    CHECK(hold.by() == Hold::By::kTime && gone_at >= hold.raised_at());
     CHECK(!unset(kept->yuv));
   }
   CHECK(prepared_words(gpu, prep, frames.of(kept->yuv)) == clip.want[0].words);
@@ -847,7 +922,7 @@ int test_jpeg(const Gpu& gpu, const Flag& flag) {
     CHECK(want.words.size() == kPixels && want.planes[0].size() == kPixels);
   }
   {
-    Hold hold(flag, kJpeg, 10000ms);
+    Hold hold(flag, kJpeg);
     auto picture = decoder->decode(bytes.data(), bytes.size());
     CHECK(picture.ok());
     CHECK(Hold::taken());
@@ -860,7 +935,7 @@ int test_jpeg(const Gpu& gpu, const Flag& flag) {
     // The bytes are read during decode only: overwritten once it returns,
     // with the stream still held, they decode the same.
     std::vector<std::uint8_t> scratch = bytes;
-    Hold hold(flag, kJpeg, 1000ms);
+    Hold hold(flag, kJpeg);
     auto picture = decoder->decode(scratch.data(), scratch.size());
     std::fill(scratch.begin(), scratch.end(), std::uint8_t{0});
     CHECK(picture.ok());
@@ -868,9 +943,10 @@ int test_jpeg(const Gpu& gpu, const Flag& flag) {
     CHECK(!hold.raised());
     CHECK(unset(picture->yuv));
     std::vector<std::uint8_t> planes[3];
+    hold.raise_in(&gpu.device);
     vs_test::read_device_picture(picture->yuv, gpu.device, gpu.allocator,
                                  planes);
-    CHECK(hold.raised());
+    CHECK(hold.by() == Hold::By::kTime);
     for (int p = 0; p < 3; ++p) CHECK(planes[p] == want.planes[p]);
   }
   return 0;
