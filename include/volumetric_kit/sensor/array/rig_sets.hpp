@@ -42,9 +42,10 @@ namespace volumetric_kit::sensor {
 /// @endcode
 class VS_ARRAY_API RigSets {
  public:
-  /// How long @ref next waits for a set before calling the sensors silent.
-  /// A streaming camera delivers one every ~33 ms; a secondary with no
-  /// primary, or a camera that dropped off the network, delivers none.
+  /// How long @ref next waits for a set before calling the sensors silent,
+  /// unless the run is given another limit. A streaming camera delivers one
+  /// every ~33 ms; a secondary with no primary, or a camera that dropped off
+  /// the network, delivers none.
   static constexpr std::chrono::seconds kSilenceLimit{10};
 
   /// @brief A secondary's frame's time less its set's, the primary's, over
@@ -55,11 +56,24 @@ class VS_ARRAY_API RigSets {
     std::uint64_t frames = 0;  ///< The sensor's frames among those sets.
   };
 
-  /// @brief A run that has taken nothing yet. Allocates nothing: the skews'
-  ///        storage comes with the first @ref next.
+  /// @brief A run that has taken nothing yet, its silence limit
+  ///        @ref kSilenceLimit. Allocates nothing: the skews' storage comes
+  ///        with the first @ref next.
   /// @param array   Started; borrowed.
   /// @param frames  The frames the run takes.
   RigSets(SensorArray& array, std::size_t frames) noexcept;
+
+  /// @brief A run that has taken nothing yet, with a silence limit of its
+  ///        own; a test passes a short one.
+  /// @param array          Started; borrowed.
+  /// @param frames         The frames the run takes.
+  /// @param silence_limit  How long @ref next waits for a set, from the last
+  ///                       one (or from here, before the first), before it
+  ///                       calls the sensors silent.
+  /// @pre @p silence_limit is positive and at most a day, so no clock sum
+  ///      overflows.
+  RigSets(SensorArray& array, std::size_t frames,
+          std::chrono::milliseconds silence_limit) noexcept;
 
   /// @return Whether the run has taken its frames.
   bool done() const noexcept { return frames_ >= limit_; }
@@ -80,8 +94,8 @@ class VS_ARRAY_API RigSets {
   /// its `"poll"`. Each secondary's skew to the primary is kept
   /// (@ref skew).
   /// @param metrics  Optional stage rows; null measures nothing.
-  /// @return The set; `Status::Code::IoError` after @ref kSilenceLimit with
-  ///         none, naming a sync secondary's cause;
+  /// @return The set; `Status::Code::IoError` after the silence limit with
+  ///         none, naming the limit and a sync secondary's cause;
   ///         `Status::Code::OutOfMemory` when host memory runs out; or the
   ///         array's error.
   core::Result<FrameSet> next(core::StageMetrics* metrics = nullptr);
@@ -90,6 +104,7 @@ class VS_ARRAY_API RigSets {
   SensorArray& array_;
   std::size_t size_;  // the array's sensors
   std::size_t limit_;
+  std::chrono::milliseconds silence_limit_;
   std::size_t sets_ = 0;
   std::size_t frames_ = 0;
   std::vector<Skew> skews_;  // per sensor; the primary's stays empty

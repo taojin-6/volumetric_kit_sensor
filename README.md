@@ -64,8 +64,12 @@ on Apple). The package fetches the core pinned by commit and checks it is
 sensor_root="$(git rev-parse --show-toplevel)"
 cmake -S "$sensor_root" -B "$sensor_root/build" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$sensor_root/build" --parallel
-ctest --test-dir "$sensor_root/build" --output-on-failure
+ctest --test-dir "$sensor_root/build" --output-on-failure -LE manual
 ```
+
+An entry labelled `manual` only prints a measurement, best taken on an idle
+GPU, and CI never runs it: `ctest --test-dir "$sensor_root/build" -L manual`
+(the rectifier's pass time, `sensor_stereo_rectifier_timing`).
 
 | Option | Default | Effect |
 | --- | --- | --- |

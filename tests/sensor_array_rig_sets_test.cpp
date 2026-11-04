@@ -11,7 +11,7 @@
 // pictures with them; a set past N keeps none. The silence: the limit counted
 // from the last set, then the run's error naming a lone sync secondary's
 // cause. And the array's error, from a sensor that notifies nothing. Host
-// only; the silence waits out the limit, about 10 s.
+// only; the silence runs on a 150 ms limit.
 
 #include <chrono>
 #include <cmath>
@@ -130,6 +130,9 @@ int run() {
       std::is_nothrow_constructible_v<sensor::RigSets, sensor::SensorArray&,
                                       std::size_t>);
   static_assert(
+      std::is_nothrow_constructible_v<sensor::RigSets, sensor::SensorArray&,
+                                      std::size_t, std::chrono::milliseconds>);
+  static_assert(
       std::is_same_v<decltype(std::declval<const sensor::RigSets&>().skew(0)),
                      sensor::RigSets::Skew>);
   sensor::RigSets sets(*array, 4);
@@ -222,12 +225,14 @@ int cut() {
   return 0;
 }
 
-// A lone sync secondary, which captures only on another camera's signal: one
-// set half a second into the run, then none. The limit counts from that set,
-// not from the run's start, and the run then fails naming the camera and why
-// it is silent, counting nothing more.
+// A lone sync secondary, which captures only on another camera's signal, on
+// a run whose silence limit is 150 ms: one set 100 ms into the run, then
+// none. The limit counts from that set, not from the run's start, and the
+// run then fails naming the camera, the limit and why it is silent, counting
+// nothing more.
 int silence() {
   using Clock = std::chrono::steady_clock;
+  constexpr std::chrono::milliseconds kLimit(150);
   auto lone = std::make_unique<Pushed>("S", sensor::SyncRole::Secondary);
   Pushed* s = lone.get();
   std::vector<std::unique_ptr<sensor::IRgbdSensor>> sensors;
@@ -235,8 +240,8 @@ int silence() {
   std::optional<sensor::SensorArray> array = started(std::move(sensors));
   CHECK(array);
 
-  sensor::RigSets sets(*array, 2);
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  sensor::RigSets sets(*array, 2, kLimit);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
   s->push(at(0));
   const Clock::time_point before_set = Clock::now();
   CHECK(sets.next().ok() && sets.sets() == 1 && sets.frames() == 1);
@@ -244,12 +249,14 @@ int silence() {
   const Clock::duration waited = Clock::now() - before_set;
   CHECK(!none.ok() && none.status().domain() == vkc::Status::Code::IoError);
   const std::string why = none.status().message();
-  CHECK(why.find("camera S ") != std::string::npos);
+  CHECK(why.find("camera S in 150 ms") != std::string::npos);
   CHECK(why.find("sync secondary") != std::string::npos);
-  // The whole limit from the set, less the wait's rounding to milliseconds; a
-  // limit counted from the run's start ends half a second early.
-  CHECK(waited >=
-        sensor::RigSets::kSilenceLimit - std::chrono::milliseconds(50));
+  // The whole limit from the set, less the wait's rounding to milliseconds
+  // (under 1 ms; however loaded the host, the wait only grows); a limit
+  // counted from the run's start ends 100 ms early. And not the default
+  // limit's wait: 5 s is 33 limits, which no load reaches.
+  CHECK(waited >= kLimit - std::chrono::milliseconds(10));
+  CHECK(waited < std::chrono::seconds(5));
   CHECK(!sets.done() && sets.sets() == 1 && sets.frames() == 1);
   return 0;
 }

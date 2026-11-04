@@ -27,6 +27,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   further off is refused (`ArkitStatus::refused`). DECISIONS.md, the
   2026-11-04 exact-pose entry.
 
+## [0.45.0] - 2026-11-04
+
+### Added
+
+- **`RigSets` may be given its silence limit**
+  (`RigSets(array, frames, silence_limit)`); `RigSets(array, frames)`
+  keeps `kSilenceLimit`, 10 s, and the error now names the limit.
+  DECISIONS.md, the 2026-11-04 test budget entry.
+
+### Changed
+
+- **The long tests keep to CI's budget, each planted bug they caught
+  still caught** (DECISIONS.md, the 2026-11-04 test budget entry):
+  `sensor_stereo_rectifier`'s layouts compare every third pixel each way,
+  and its 4.5:1 shrink and 4K lens cases skip under AddressSanitizer
+  alone; `sensor_arkit_pattern` plays 30 frames at 1920x1440 and,
+  outside the sanitizers, 300 at 320x240, not 300 at 1920x1440;
+  `sensor_array_rig_sets` waits out a 150 ms silence limit, not 10 s;
+  `sensor_ffs_stereo`'s cases share one plan cache, four plans built, not
+  twelve; and the camera-only consumer builds with four jobs.
+- **The rectifier's pass time is an entry labelled `manual`,
+  `sensor_stereo_rectifier_timing`**, run by hand; CI runs
+  `ctest -LE manual`. The `COST` that started `sensor_array_rig_sets`
+  first is the rectifier's.
+
 ## [0.44.0] - 2026-11-04
 
 ### Changed
