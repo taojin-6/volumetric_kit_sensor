@@ -514,13 +514,17 @@ endif()
 # is host-only: the depth copy out of padded rows and its refusals, the
 # picture's checks and its colour from its tags, ARKit's pinhole and pose, the
 # clock and the missed periods, on the internal units (sensor_arkit_units). The
+# session test, host-only too, drives what ARKit's feed does to its session at
+# each event against a fake of ARKit's session: interruptions before and after
+# the start, a stop, a failed open and a new one, a close during the open. The
 # driver test runs the driver over a scripted feed of captures made here
 # (IOSurface pictures, depth buffers), on the device: the frame contract
 # (rgbd_breach), the counters, the sequences, the colour, the picture's own
-# buffer and its holds, info, a feeding thread, the session's failure. The
-# pattern test opens ArkitSensor with its test pattern: every frame's depth and
-# picture carry its sequence, the contract over 300 frames, a skipped tick, the
-# refusals. Both skip without a device.
+# buffer and its holds, info, a feeding thread, an interruption, the open's
+# refusals and an open again, the session's failure. The pattern test opens
+# ArkitSensor with its test pattern: every frame's depth and picture carry its
+# sequence, the contract over 300 frames, a skipped tick, the refusals. These
+# two skip without a device.
 if(APPLE)
   add_executable(sensor_arkit_conversion_test sensor_arkit_conversion_test.cpp)
   target_link_libraries(
@@ -528,6 +532,12 @@ if(APPLE)
                                          volumetric_kit::sensor_arkit_units)
   vs_target_warnings(sensor_arkit_conversion_test)
   add_test(NAME sensor_arkit_conversion COMMAND sensor_arkit_conversion_test)
+
+  add_executable(sensor_arkit_session_test sensor_arkit_session_test.cpp)
+  target_link_libraries(sensor_arkit_session_test
+                        PRIVATE volumetric_kit::sensor_arkit_units)
+  vs_target_warnings(sensor_arkit_session_test)
+  add_test(NAME sensor_arkit_session COMMAND sensor_arkit_session_test)
 
   add_executable(sensor_arkit_sensor_test sensor_arkit_sensor_test.cpp)
   target_link_libraries(

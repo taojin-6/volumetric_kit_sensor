@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0] - 2026-11-04
+
+### Fixed
+
+- **`ArkitSensor` runs its session again whenever it is wanted**, from
+  `open` until a `stop` and from each `start`: an interruption that ends
+  during the open's wait, or between the open and the first start, no
+  longer leaves ARKit waiting to be run, and `start` runs the session
+  where it is not running (paused, or interrupted). A `stop` drains the
+  sensor's queue after its pause, so no frame from before it is handed
+  out after the next start. DECISIONS.md, the 2026-11-04 reopen entry.
+
+### Changed
+
+- **An `ArkitSensor::open` with no frame in time is `NotFound`**, no
+  longer `IoError`, and its message says so where ARKit has the session
+  interrupted (the device locked, the app in the background, or the
+  camera in use elsewhere). The failed open leaves nothing open, so the app
+  opens again. `IRgbdSensor`'s doc states the rule for every driver: a
+  `NotFound` open may pass later.
+
 ## [0.43.0] - 2026-11-03
 
 ### Added
