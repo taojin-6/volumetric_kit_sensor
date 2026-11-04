@@ -11,7 +11,7 @@
 // pictures with them; a set past N keeps none. The silence: the limit counted
 // from the last set, then the run's error naming a lone sync secondary's
 // cause. And the array's error, from a sensor that notifies nothing. Host
-// only; the silence runs on a 150 ms limit, so the binary takes about 0.4 s.
+// only; the silence runs on a 150 ms limit.
 
 #include <chrono>
 #include <cmath>
@@ -253,8 +253,10 @@ int silence() {
   CHECK(why.find("sync secondary") != std::string::npos);
   // The whole limit from the set, less the wait's rounding to milliseconds
   // (under 1 ms; however loaded the host, the wait only grows); a limit
-  // counted from the run's start ends 100 ms early.
+  // counted from the run's start ends 100 ms early. And not the default
+  // limit's wait: 5 s is 33 limits, which no load reaches.
   CHECK(waited >= kLimit - std::chrono::milliseconds(10));
+  CHECK(waited < std::chrono::seconds(5));
   CHECK(!sets.done() && sets.sets() == 1 && sets.frames() == 1);
   return 0;
 }

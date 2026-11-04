@@ -14,8 +14,8 @@
 //     points half a pixel either side of it land, 5 x 5 taps over it where
 //     its longer side is over 1.5 source pixels): luma, YUYV, NV12 and I420,
 //     as luma bytes and as R'G'B' words, the coverage byte exact, and
-//     limited-range luma, at every third pixel each way (odd and even
-//     columns and rows alike);
+//     limited-range luma, at every third pixel each way (3 has no factor in
+//     common with Luma8's four pixels a word, so each of its bytes is met);
 //   - the prefilter: a D455's 1.33:1 takes one tap, as the one-tap
 //     reference has it byte for byte but at ties, half way between codes; at
 //     4.5:1 a checker grating past the view's Nyquist reads flat within 2
@@ -868,11 +868,11 @@ int test_rows_align() {
 
 // YUYV, NV12 and I420 from the host, and luma in either range, as R'G'B'
 // words and as luma bytes match the host reference within a code, the
-// coverage byte exact, at every third pixel each way: odd and even columns
-// and rows alike, which a chroma pair's two luma columns and a 4:2:0 plane's
-// two rows differ by (the reference's 25 taps a pixel are the case's time);
-// the same planes in device buffers give the same words, bit for bit, at
-// every pixel.
+// coverage byte exact, at every third pixel each way (the reference's 25
+// taps a pixel are the case's time). Luma8 writes four pixels to a word, a
+// byte each, and a stride with no factor in common with 4 meets every byte,
+// where 4 would meet the first alone. The same planes in device buffers give
+// the same words, bit for bit, at every pixel.
 int test_layouts() {
   constexpr std::uint32_t kStep = 3;
   const sensor::StereoInfo info = mild_pair();
