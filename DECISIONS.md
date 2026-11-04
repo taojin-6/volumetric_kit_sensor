@@ -7761,7 +7761,15 @@ camera's path is checked by hand on an iPad, with the scanner's retry.
   only past float's rounding.
 - **The wire** carries transforms as f64 bit for bit and checks no values,
   as before, so a recording of exact poses reads back exact. One made
-  before 0.46.0 carries ARKit's poses as float left them.
+  before 0.46.0 carries ARKit's poses as float left them, which the
+  contract names and the prep refuses unless its reader makes them exact
+  (recon's stream reader does).
+- **Drivers whose float poses were rigid already keep their own path**:
+  RealSense's factory extrinsic, float but within `check_rigid`'s bounds,
+  goes through `check_rigid`; the Femto Mega's, a row 0.6% short, through
+  `nearest_rotation`, which `exact_rigid`'s 1e-4 would refuse. The rule is
+  rigid as `check_rigid` holds it; `exact_rigid` is the way there for a
+  pose float leaves off it.
 
 **Why.**
 - recon #347 found it replaying a recorded iPad take: ARKit's corner reads

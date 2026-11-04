@@ -851,7 +851,7 @@ from Y'CbCr in the same pass. The frame carries each camera's
 `camera::CameraModel` in double, narrowed to float once for the passes; the
 colour camera's pose, `color_to_world`, and the sensor's `depth_to_color`,
 both refused unless rigid, pose the outputs (every driver hands them out
-rigid, one whose poses come through float through `exact_rigid`); a
+rigid, one whose float leaves a pose off rigid through `exact_rigid`); a
 sequence number; and
 `pixels`, the owner of its host depth, any host colour and any
 `color_bitstream` (the colour as the camera coded it, when that decodes on

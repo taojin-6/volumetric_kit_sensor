@@ -78,6 +78,8 @@ core::Result<Mat4d> exact_rigid(const Mat4d& transform) {
   if (!finite(transform)) {
     return core::Status::invalid_argument("transform is not finite");
   }
+  // The refusals name kFloatRowTolerance and kFloatRotationTolerance's
+  // values: change a message with its constant.
   if (row_offset(transform) > kFloatRowTolerance) {
     return core::Status::invalid_argument(
         "transform's bottom row is more than 1e-6 off [0, 0, 0, 1]");

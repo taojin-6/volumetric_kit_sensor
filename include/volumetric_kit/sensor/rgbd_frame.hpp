@@ -183,10 +183,10 @@ struct RgbdFrame {
   /// for a tracked sensor, its own estimate for this frame.
   ///
   /// Rigid, as every driver hands it out and `camera::check_rigid` holds it:
-  /// its bottom row exactly [0, 0, 0, 1], its rotation orthonormal and
-  /// proper. A driver whose poses come through float, as a tracked one's
-  /// (ARKit's) do, makes each so with `camera::exact_rigid` and refuses a
-  /// pose that call refuses.
+  /// its bottom row [0, 0, 0, 1] (to 1e-12), its rotation orthonormal (to
+  /// 1e-6) and proper. A driver whose float leaves a pose off that, as
+  /// ARKit's corner a few ulp off 1, makes it exact with
+  /// `camera::exact_rigid` and refuses a pose that call refuses.
   camera::Mat4d color_to_world = camera::Mat4d(1.0);
   /// The depth camera's frame to the colour camera's: the sensor's own
   /// extrinsic, so the depth camera sits at `color_to_world * depth_to_color`.

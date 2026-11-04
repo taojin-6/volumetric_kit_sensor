@@ -501,7 +501,9 @@ int test_frame(const Gpu& gpu) {
     CHECK(g->color_camera.size.width == kW);
     CHECK(std::fabs(g->depth_camera.intrinsics.fx - 252.0 * kDepthW / kW) <
           1e-4);
-    CHECK(g->color_to_world == *arkit::color_to_world_of(moved));
+    const vkc::Result<sensor::camera::Mat4d> pose =
+        arkit::color_to_world_of(moved);
+    CHECK(pose.ok() && g->color_to_world == *pose);
     CHECK(g->color_to_world[1][1] == -1.0 && g->color_to_world[2][2] == -1.0);
     CHECK(g->color_to_world[3][0] == 0.5 && g->color_to_world[3][1] == -1.0);
   }

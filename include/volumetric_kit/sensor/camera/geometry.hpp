@@ -77,7 +77,7 @@ inline constexpr double kFloatRotationTolerance = 1e-4;
 /// and the rotation orthonormal to double's rounding. One whose rotation is
 /// orthonormal to 1e-12 already, as a calibration's is, keeps it bit for
 /// bit. Deterministic: the same transform gives the same bits. A driver
-/// whose poses come through float hands them out through this
+/// whose float leaves a pose off rigid hands it out through this
 /// (`RgbdFrame::color_to_world`).
 /// @param transform  A transform that went through float.
 /// @return The rigid transform, which @ref check_rigid takes; or

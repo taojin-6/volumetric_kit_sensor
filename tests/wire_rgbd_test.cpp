@@ -883,8 +883,6 @@ int test_color() {
   return 0;
 }
 
-// Pattern depth's records, decoded with an info decoded from the params,
-// keep the frame contract, and each carries its own index.
 // A tracked pose as a float device writes it: a turn of `angle` about +Y and a
 // translation, rounded to float, its first column 2e-7 long (R^T R 4e-7 off
 // the identity), the corner 3 ulp past 1.
@@ -901,6 +899,8 @@ camera::Mat4d float_pose(double angle) {
   return rounded;
 }
 
+// Pattern depth's records, decoded with an info decoded from the params,
+// keep the frame contract, and each carries its own index and its exact pose.
 int test_contract() {
   const sensor::SensorInfo arkit = arkit_info();
   const vkc::Result<std::string> params = wire::encode_sensor(arkit);
