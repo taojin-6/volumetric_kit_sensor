@@ -16,43 +16,87 @@ namespace {
 // one, and accepts one rounded through float.
 constexpr double kOrthonormalTolerance = 1e-6;
 constexpr double kBottomRowTolerance = 1e-12;
+// A rotation this close to orthonormal is so to double's rounding: exact_rigid
+// keeps it as it is.
+constexpr double kDoubleRounding = 1e-12;
 
 // Element (row, column), so the formulas below read as they are written on
 // paper; GLM indexes column first.
 double at(const Mat3d& m, int row, int column) { return m[column][row]; }
 
+bool finite(const Mat4d& m) {
+  for (int c = 0; c < 4; ++c) {
+    for (int r = 0; r < 4; ++r) {
+      if (!std::isfinite(m[c][r])) return false;
+    }
+  }
+  return true;
+}
+
+// The largest bottom-row entry's distance from [0, 0, 0, 1]'s.
+double row_offset(const Mat4d& m) {
+  return std::max({std::fabs(m[0][3]), std::fabs(m[1][3]), std::fabs(m[2][3]),
+                   std::fabs(m[3][3] - 1.0)});
+}
+
+// The largest entry's distance of R^T R from the identity's: each pair of
+// columns' dot product.
+double orthonormal_offset(const Mat3d& rotation) {
+  double offset = 0.0;
+  for (int a = 0; a < 3; ++a) {
+    for (int b = 0; b < 3; ++b) {
+      const double d = glm::dot(rotation[a], rotation[b]);
+      offset = std::max(offset, std::fabs(d - (a == b ? 1.0 : 0.0)));
+    }
+  }
+  return offset;
+}
+
 }  // namespace
 
 core::Status check_rigid(const Mat4d& transform) {
-  for (int c = 0; c < 4; ++c) {
-    for (int r = 0; r < 4; ++r) {
-      if (!std::isfinite(transform[c][r])) {
-        return core::Status::invalid_argument("transform is not finite");
-      }
-    }
+  if (!finite(transform)) {
+    return core::Status::invalid_argument("transform is not finite");
   }
-  if (std::fabs(transform[0][3]) > kBottomRowTolerance ||
-      std::fabs(transform[1][3]) > kBottomRowTolerance ||
-      std::fabs(transform[2][3]) > kBottomRowTolerance ||
-      std::fabs(transform[3][3] - 1.0) > kBottomRowTolerance) {
+  if (row_offset(transform) > kBottomRowTolerance) {
     return core::Status::invalid_argument(
         "transform's bottom row is not [0, 0, 0, 1]");
   }
   const Mat3d rotation(transform);
-  for (int a = 0; a < 3; ++a) {
-    for (int b = 0; b < 3; ++b) {
-      const double d = glm::dot(rotation[a], rotation[b]);
-      if (std::fabs(d - (a == b ? 1.0 : 0.0)) > kOrthonormalTolerance) {
-        return core::Status::invalid_argument(
-            "transform's rotation is not orthonormal");
-      }
-    }
+  if (orthonormal_offset(rotation) > kOrthonormalTolerance) {
+    return core::Status::invalid_argument(
+        "transform's rotation is not orthonormal");
   }
   if (!(glm::determinant(rotation) > 0.0)) {
     return core::Status::invalid_argument(
         "transform's rotation is a reflection");
   }
   return {};
+}
+
+core::Result<Mat4d> exact_rigid(const Mat4d& transform) {
+  if (!finite(transform)) {
+    return core::Status::invalid_argument("transform is not finite");
+  }
+  if (row_offset(transform) > kFloatRowTolerance) {
+    return core::Status::invalid_argument(
+        "transform's bottom row is more than 1e-6 off [0, 0, 0, 1]");
+  }
+  const Mat3d rotation(transform);
+  const double offset = orthonormal_offset(rotation);
+  if (offset > kFloatRotationTolerance) {
+    return core::Status::invalid_argument(
+        "transform's rotation is more than 1e-4 off orthonormal");
+  }
+  if (!(glm::determinant(rotation) > 0.0)) {
+    return core::Status::invalid_argument(
+        "transform's rotation is a reflection");
+  }
+  // Mat4d(Mat3d) writes the bottom row [0, 0, 0, 1] exactly.
+  Mat4d exact(offset <= kDoubleRounding ? rotation
+                                        : nearest_rotation(rotation));
+  exact[3] = glm::dvec4(Vec3d(transform[3]), 1.0);
+  return exact;
 }
 
 Mat4d rigid_inverse(const Mat4d& transform) noexcept {

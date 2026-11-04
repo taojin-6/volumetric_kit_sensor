@@ -73,8 +73,9 @@ struct ArkitStatus {
   /// normally; part of `SensorStats::failed`.
   std::uint64_t withheld = 0;
   /// Frames refused since the last start: a depth or confidence map, or a
-  /// picture, of a format or size the sensor does not take, or colour tags
-  /// `ColorEncoding` cannot name; part of `SensorStats::failed`.
+  /// picture, of a format or size the sensor does not take, colour tags
+  /// `ColorEncoding` cannot name, or a pose further from rigid than float
+  /// leaves one (`camera::exact_rigid`); part of `SensorStats::failed`.
   std::uint64_t refused = 0;
   /// Capture periods ARKit skipped since the last start, from each frame's
   /// time after the one before at the session's rate, counted as the frame
@@ -122,7 +123,11 @@ constexpr std::uint16_t arkit_depth_mm(float metres) noexcept {
 /// The depth camera is therefore the same camera at the depth map's size
 /// (`depth_from_registered_color`), and `RgbdFrame::depth_to_color` is the
 /// identity. Each frame's pose is ARKit's for it (@ref PoseSource::Tracked),
-/// in this package's camera axes (`cv_from_gl_camera`), in ARKit's world:
+/// in this package's camera axes (`cv_from_gl_camera`), made exactly rigid
+/// (`camera::exact_rigid`): its bottom row exactly [0, 0, 0, 1] and its
+/// rotation the nearest one, orthonormal to double's rounding, where ARKit's
+/// float leaves the corner up to 3 ulp off 1 and the rotation orthonormal to
+/// float's. The pose is in ARKit's world:
 /// gravity-aligned, with its origin where the camera was when @ref open ran
 /// the session. That world lasts as long as the sensor does: the session
 /// never resets its tracking, and after an interruption ARKit finds its world

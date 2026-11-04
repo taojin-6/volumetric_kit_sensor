@@ -204,12 +204,21 @@ core::Result<camera::CameraModel> depth_camera_of(
   return model;
 }
 
-camera::Mat4d color_to_world_of(const std::array<float, 16>& transform) {
+core::Result<camera::Mat4d> color_to_world_of(
+    const std::array<float, 16>& transform) {
   Mat4f gl(1.0f);
   for (int c = 0; c < 4; ++c) {
     for (int r = 0; r < 4; ++r) gl[c][r] = transform[std::size_t(c * 4 + r)];
   }
-  return camera::Mat4d(cv_from_gl_camera(gl));
+  // The column negation and the widening are exact: what float left off is
+  // ARKit's, up to 3 ulp of 1 in the corner and the rotation's rounding.
+  core::Result<camera::Mat4d> exact =
+      camera::exact_rigid(camera::Mat4d(cv_from_gl_camera(gl)));
+  if (!exact.ok()) {
+    return core::Status::invalid_argument("ARKit's pose: " +
+                                          exact.status().message());
+  }
+  return exact;
 }
 
 void ClockMap::start(std::int64_t system_ns, std::int64_t uptime_ns) noexcept {

@@ -551,7 +551,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   measured, and `DepthNoise::known()` takes its negative linear term.
   *Amended 2026-11-04:* the session is run again whenever it is wanted,
   not only while started, and an open with no frame in time is `NotFound`
-  (the reopen entry).
+  (the reopen entry); each pose is made exactly rigid (the exact-pose
+  entry).
 
 - [**2026-11-03**](#2026-11-03--a-gpu-fault-leaves-no-reader-waiting-for-good-every-error-nvdecs-decoder-returns-but-invalidargument-comes-back-with-each-ready-value-it-handed-out-set-and-its-wait-for-the-oldest-of-three-kept-pictures-sees-a-failed-stream-amends-the-2026-11-02-hand-over-entry) —
   A GPU fault leaves no reader waiting for good: NVDEC's decoder settles
@@ -595,6 +596,13 @@ entries relevant to your task; later amendments supersede earlier rules.
   own the Mac tests. An open with no frame in time is `NotFound`, saying
   where the session is interrupted, and leaves nothing open; every
   driver's `NotFound` is the failure an app tries again.
+
+- [**2026-11-04**](#2026-11-04--every-driver-hands-out-rigid-poses-one-made-in-float-is-made-exact-by-cameraexact_rigid-its-bottom-row-set-and-its-rotation-the-nearest-one-arkits-among-them-and-the-frame-contract-checks-them-amends-the-2026-11-03-arkit-entry) —
+  Every driver hands out rigid poses, as `GpuFramePrep` takes them, and
+  `testing::RgbdContract` checks them. A pose made in float is made exact
+  by `camera::exact_rigid`: the bottom row `[0, 0, 0, 1]`, the rotation the
+  nearest one, within 1e-6 of the row and 1e-4 of orthonormal; further off
+  refused. `ArkitSensor` takes every pose through it.
 
 ## Decision record
 
@@ -7173,7 +7181,9 @@ public frame every camera hands out.
   variant.
 - **Pose and cameras**, per frame: `cv_from_gl_camera(ARCamera.transform)`,
   that frame's pinhole, and the depth camera registered to it; the
-  conversions are sensor's own, reused, not copied.
+  conversions are sensor's own, reused, not copied. (*Amended 2026-11-04
+  (the exact-pose entry):* the pose then made exactly rigid by
+  `camera::exact_rigid`, one it refuses a refused frame.)
 - **One world for the sensor.** The first run resets tracking and none
   after it does; relocalisation is allowed, so ARKit finds its world again
   after an interruption; frames ARKit did not track normally are withheld
@@ -7723,3 +7733,79 @@ after a stop and a close leaving the session wanted
 (`sensor_arkit_sensor`). The iOS build check compiles the state and
 ARKit's feed for iOS 26 and links them. No camera was opened: the
 camera's path is checked by hand on an iPad, with the scanner's retry.
+
+### 2026-11-04 — Every driver hands out rigid poses: one made in float is made exact by `camera::exact_rigid`, its bottom row set and its rotation the nearest one, ARKit's among them, and the frame contract checks them (amends the 2026-11-03 ARKit entry).
+
+**The rule.**
+- **Rigid poses, from every driver.** `RgbdFrame::color_to_world` and
+  `depth_to_color` are rigid as `camera::check_rigid` holds them, which
+  `GpuFramePrep` already required: the bottom row within 1e-12 of
+  `[0, 0, 0, 1]`, the rotation orthonormal within 1e-6 and proper.
+  `testing::RgbdContract` checks it on every frame, after the cameras,
+  naming the pose and `check_rigid`'s words, so each driver's contract
+  test (ARKit's, Orbbec's, RealSense's, FFS's, the wire's) holds it.
+- **`camera::exact_rigid`** makes a transform made in float exact: the
+  bottom row set to `[0, 0, 0, 1]`, the rotation the nearest one
+  (`nearest_rotation`, Newton's polar iteration, orthonormal to double's
+  rounding), the translation as given. A rotation orthonormal to 1e-12
+  already, as a calibration's is, is kept bit for bit. It takes a row
+  within `kFloatRowTolerance` (1e-6; 3 ulp of 1 is 3.6e-7) and a rotation
+  within `kFloatRotationTolerance` (1e-4, each entry of `R^T R` against the
+  identity's; a float rotation is about 1e-7 off, and one composed on such
+  rotations drifts to 1e-5); further off, a reflection or not finite is
+  `InvalidArgument`. The same input gives the same bits.
+- **ARKit.** `ArkitSensor` takes every pose through it after
+  `cv_from_gl_camera`, whose column negation and widening are exact. A
+  pose it refuses is a refused frame (`ArkitStatus::refused`, named in
+  `last_refusal`). The rotation is made orthonormal on every frame, not
+  only past float's rounding.
+- **The wire** carries transforms as f64 bit for bit and checks no values,
+  as before, so a recording of exact poses reads back exact. One made
+  before 0.46.0 carries ARKit's poses as float left them.
+
+**Why.**
+- recon #347 found it replaying a recorded iPad take: ARKit's corner reads
+  up to 3 ulp off 1 on many frames, which `check_rigid` refuses (it holds
+  the row to 1e-12), so frame prep passed over each of them. recon now
+  repairs them in its stream reader and asked for the fix at the source
+  (its owner item 3).
+- Every frame's rotation, not only one past float's rounding: a rotation
+  orthonormal only to float's 1e-7 drifts when a consumer composes on it.
+  The scanner's map-step removal, fed ARKit-like float poses (corner 2 ulp
+  off on a third of them), leaves its output 1.7e-5 off orthonormal after
+  seven steps, past `check_rigid`'s 1e-6; fed the same poses made exact,
+  4.6e-13 (a host probe of its `MapSteps` on a synthetic 720-frame path).
+  The call costs 0.03 µs on the Mac.
+- One function in the camera tier, not a copy per driver or consumer:
+  recon's reader of older recordings calls it too once it re-pins.
+- A driver refuses a pose it cannot make rigid, since the contract says
+  every frame's pose is; ARKit's floats come nowhere near the tolerances.
+
+**Not here.** recon's own repair in its stream reader stays until recon
+re-pins sensor; it then calls `camera::exact_rigid`, kept for recordings
+made before 0.46.0. The scanner's step removal needs no change of its own
+beyond the re-pin (the probe above). Orbbec's, RealSense's and the array's
+poses were rigid already (`check_rigid` at open, `nearest_rotation` for the
+Femto Mega's extrinsic), as were the stereo tier's products.
+
+**Validation.** Apple M5 Max, Release with warnings as errors, under the
+validation layer, Orbbec on: the suite passes, 70 tests (70 on main), in
+10.5 s. The touched tests, Release (3 runs) and ThreadSanitizer (2 runs):
+`sensor_camera_geometry` 0.00 s / 0.03-0.08 s, `sensor_arkit_conversion`
+0.01 s / 2.1-2.2 s, `sensor_arkit_sensor` 0.15-0.17 s / 4.0-4.2 s,
+`sensor_wire_rgbd` 0.01 s / 0.24-0.26 s, `sensor_rgbd_contract` 0.00 s /
+0.04-0.09 s; no reports. `exact_rigid` is tested at and past each
+tolerance, bit for bit on an exact transform, for the same bits twice and
+as a fixed point; ARKit-like float transforms (the corner 3 ulp above or 1
+ulp below 1, a row entry 1e-7, `R^T R` 4e-7 off) come out of the
+conversion with the row exact and `R^T R` within 1e-12, and one 1e-3 off,
+1e-3 in the row or NaN is refused, named; the driver hands such a pose out
+under the contract and counts a far one refused; the wire returns an
+exact pose bit for bit. Planted bugs, each failing its tests: the row
+kept as given (`sensor_camera_geometry`, `sensor_arkit_conversion`,
+`sensor_arkit_sensor`, `sensor_wire_rgbd`), the rotation kept as given
+(`sensor_camera_geometry`, `sensor_arkit_conversion`), a refused pose
+handed on as float left it (`sensor_arkit_conversion`,
+`sensor_arkit_sensor`), and the contract's `color_to_world` rule dropped
+(`sensor_rgbd_contract`, `sensor_wire_rgbd`). The iOS build check
+compiles the conversion for iOS. No camera was opened.

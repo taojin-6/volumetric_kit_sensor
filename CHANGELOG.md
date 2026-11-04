@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.0] - 2026-11-04
+
+### Added
+
+- **`camera::exact_rigid`** (`camera/geometry.hpp`): the rigid transform a
+  transform made in float stands for, its bottom row exactly
+  `[0, 0, 0, 1]` and its rotation the nearest one, within
+  `kFloatRowTolerance` (1e-6) and `kFloatRotationTolerance` (1e-4);
+  further off, a reflection or not finite is `InvalidArgument`. A rotation
+  orthonormal to 1e-12 already is kept bit for bit.
+- **The frame contract checks the poses**: `testing::RgbdContract` names a
+  `color_to_world` or `depth_to_color` that `check_rigid` refuses, as
+  `GpuFramePrep` would. `RgbdFrame`'s doc states the rule for every driver.
+
+### Fixed
+
+- **`ArkitSensor` hands out exactly rigid poses.** ARKit's float transform
+  reads up to 3 ulp off 1 in its corner, which `check_rigid` and so
+  `GpuFramePrep` refused; each pose now goes through `exact_rigid`, its
+  corner 1 and its rotation orthonormal to double's rounding. A pose
+  further off is refused (`ArkitStatus::refused`). DECISIONS.md, the
+  2026-11-04 exact-pose entry.
+
 ## [0.44.0] - 2026-11-04
 
 ### Changed

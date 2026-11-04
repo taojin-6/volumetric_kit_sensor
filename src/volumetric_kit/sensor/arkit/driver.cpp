@@ -196,7 +196,7 @@ core::Result<Driver::Held> Driver::convert(const Capture& capture) {
       held.depth_camera,
       depth_camera_of(held.color_camera, depth_size.width, depth_size.height,
                       options_.min_depth, options_.max_depth));
-  held.color_to_world = color_to_world_of(capture.transform);
+  VKC_ASSIGN(held.color_to_world, color_to_world_of(capture.transform));
   held.exposure = capture.exposure;
   held.picture = Retained(capture.picture);
   held.depth = depth;

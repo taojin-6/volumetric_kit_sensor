@@ -10,7 +10,8 @@
 // (rgbd_breach) over 120 frames with a withheld frame, refused pictures, a
 // frame without the map, queue drops at depths 1 and 3 and drain oldest first;
 // the counters; the sequences; a 3-period gap counted as 2 missed; each
-// frame's colour from its tags, its depth and levels, its cameras, pose,
+// frame's colour from its tags, its depth and levels, its cameras, pose (one
+// as float leaves it handed out exactly rigid, one far off refused),
 // exposure and noise; the picture's own buffer and how long it is held; the
 // clock; a feeding thread; ARKit's failure; an open that gave up holding no
 // picture, and an open again; an interruption after the start under the
@@ -500,9 +501,40 @@ int test_frame(const Gpu& gpu) {
     CHECK(g->color_camera.size.width == kW);
     CHECK(std::fabs(g->depth_camera.intrinsics.fx - 252.0 * kDepthW / kW) <
           1e-4);
-    CHECK(g->color_to_world == arkit::color_to_world_of(moved));
+    CHECK(g->color_to_world == *arkit::color_to_world_of(moved));
     CHECK(g->color_to_world[1][1] == -1.0 && g->color_to_world[2][2] == -1.0);
     CHECK(g->color_to_world[3][0] == 0.5 && g->color_to_world[3][1] == -1.0);
+  }
+  {
+    // A pose as ARKit's float leaves one -- the corner 3 ulp past 1, the
+    // rotation's first column 2 ulp long -- handed out exactly rigid, under
+    // the contract; one 1e-3 off refused, counted and named.
+    std::array<float, 16> rounded = {0.6f,  0.0f, -0.8f, 0.0f,  //
+                                     0.0f,  1.0f, 0.0f,  0.0f,  //
+                                     0.8f,  0.0f, 0.6f,  0.0f,  //
+                                     0.25f, 1.5f, -2.0f, 1.0f};
+    for (int k = 0; k < 3; ++k) rounded[std::size_t(k)] *= 1.0f + 2.0e-7f;
+    rounded[15] =
+        std::nextafter(std::nextafter(std::nextafter(1.0f, 2.0f), 2.0f), 2.0f);
+    const sensor::ArkitStatus before = driver->status();
+    const std::optional<sensor::RgbdFrame> g = one(p601.ref, 250.0f, rounded);
+    CHECK(g);
+    const sensor::camera::Mat4d& m = g->color_to_world;
+    CHECK(m[0][3] == 0.0 && m[1][3] == 0.0 && m[2][3] == 0.0 && m[3][3] == 1.0);
+    CHECK(sensor::camera::check_rigid(m).ok());
+    CHECK(m[3][0] == 0.25 && m[3][1] == 1.5 && m[3][2] == -2.0);
+    sensor::SensorStats taken_one;
+    taken_one.received = 1;
+    taken_one.delivered = 1;
+    CHECK(testing::rgbd_breach(driver->info(), {*g}, taken_one).empty());
+    std::array<float, 16> stretched = rounded;
+    for (int k = 0; k < 3; ++k) stretched[std::size_t(k)] *= 1.001f;
+    CHECK(!one(p601.ref, 250.0f, stretched));
+    const sensor::ArkitStatus after = driver->status();
+    CHECK(after.refused == before.refused + 1);
+    CHECK(after.last_refusal ==
+          "ARKit's pose: transform's rotation is more than 1e-4 off "
+          "orthonormal");
   }
   driver->end();
 

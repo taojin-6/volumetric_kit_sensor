@@ -10,13 +10,16 @@
 // colour, with a colour camera or a picture of another size, without one a
 // frame with colour, delivered other than taken and the counters past
 // received, a confidence plane at a floor of 0 or beside device depth and a
-// floor without one. Each size differs in its width alone and in its height
-// alone. A time of 0 is none: frames with none pass, the sequence still
+// floor without one, a pose a ulp off in the corner and a reflected
+// extrinsic, each pose named. Each size differs in its width alone and in its
+// height alone. A time of 0 is none: frames with none pass, the sequence still
 // ordered, and a time that goes back past a 0 breaks the rule. A plane
 // beside host depth at a floor of 1 or 2 passes. A sensor without a depth
 // camera may hand out frames without depth. Only the first breach is kept,
 // and rgbd_breach over a vector says what the class says.
 
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -216,6 +219,27 @@ int test_rules() {
     f.color_packed = kPacked;
   }
   CHECK(names(info, packed, stats_of(4), ""));
+
+  // The poses (RgbdFrame::color_to_world, depth_to_color): rigid ones keep
+  // it; one a ulp off in the corner, or a reflection, breaks it, named with
+  // check_rigid's words.
+  std::vector<sensor::RgbdFrame> posed = clean;
+  for (std::size_t i = 0; i < posed.size(); ++i) {
+    posed[i].color_to_world = camera::Mat4d(
+        camera::rotation_from_rodrigues({0.1 * double(i), -0.4, 0.25}));
+    posed[i].color_to_world[3] = glm::dvec4(1.5, -0.25, 2.0, 1.0);
+  }
+  CHECK(names(info, posed, stats_of(4), ""));
+  bad = posed;
+  bad[2].color_to_world[3][3] = double(std::nextafter(1.0f, 2.0f));
+  CHECK(names(info, bad, stats_of(4),
+              "frame 2: color_to_world: transform's bottom row is not "
+              "[0, 0, 0, 1]"));
+  bad = posed;
+  bad[1].depth_to_color[0][0] = -1.0;
+  CHECK(names(info, bad, stats_of(4),
+              "frame 1: depth_to_color: transform's rotation is a "
+              "reflection"));
 
   // A sensor without a colour camera: frames without colour keep it, one
   // with colour breaks it.

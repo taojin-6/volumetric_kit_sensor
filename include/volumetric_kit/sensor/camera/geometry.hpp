@@ -53,6 +53,39 @@ VS_CAMERA_API core::Status check_rigid(const Mat4d& transform);
 /// @return The transform that undoes @p transform.
 VS_CAMERA_API Mat4d rigid_inverse(const Mat4d& transform) noexcept;
 
+/// @brief How far a bottom-row entry of a transform made in float may be
+///        from `[0, 0, 0, 1]`'s for @ref exact_rigid to take it as rounding:
+///        float leaves the row a few ulp off (3 ulp of 1 is 3.6e-7).
+inline constexpr double kFloatRowTolerance = 1e-6;
+
+/// @brief How far an entry of `R^T R` of a transform made in float may be
+///        from the identity's for @ref exact_rigid to take it as rounding: a
+///        rotation rounded to float is about 1e-7 off orthonormal, and one
+///        composed from such rotations drifts further (1e-5 after a few
+///        corrections composed on it); one further off is not a rotation.
+inline constexpr double kFloatRotationTolerance = 1e-4;
+
+/// @brief The rigid transform a transform made in float stands for: its
+///        bottom row exactly `[0, 0, 0, 1]`, its rotation the nearest one
+///        (@ref nearest_rotation), its translation as given.
+///
+/// Float leaves a rigid transform a little off: ARKit's own read up to 3 ulp
+/// off 1 in the corner, which @ref check_rigid refuses, and its rotation is
+/// orthonormal only to float's rounding, which a product of such rotations
+/// carries on. A transform within @ref kFloatRowTolerance of the row and
+/// @ref kFloatRotationTolerance of orthonormal is made exact: the row set,
+/// and the rotation orthonormal to double's rounding. One whose rotation is
+/// orthonormal to 1e-12 already, as a calibration's is, keeps it bit for
+/// bit. Deterministic: the same transform gives the same bits. A driver
+/// whose poses come through float hands them out through this
+/// (`RgbdFrame::color_to_world`).
+/// @param transform  A transform that went through float.
+/// @return The rigid transform, which @ref check_rigid takes; or
+///         `Status::Code::InvalidArgument` naming what is wrong: a transform
+///         that is not finite, a row or rotation further off than the
+///         tolerances, or a reflection.
+VS_CAMERA_API core::Result<Mat4d> exact_rigid(const Mat4d& transform);
+
 /// @brief The rotation nearest @p m: the orthogonal factor of its polar
 ///        decomposition.
 ///

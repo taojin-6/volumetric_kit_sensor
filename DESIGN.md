@@ -212,7 +212,10 @@ decision): unprojection and rescaling come with their first caller.
   reference.
 - **`camera/geometry.hpp`** — GLM's double types, `check_rigid`,
   `rigid_inverse`, `nearest_rotation` (the polar factor, for an SDK's
-  rotation that is not one), and Rodrigues both ways
+  rotation that is not one), `exact_rigid` (a transform made in float
+  made exact: the bottom row set, the rotation the nearest one, within
+  `kFloatRowTolerance` 1e-6 and `kFloatRotationTolerance` 1e-4; further
+  off refused; the 2026-11-04 exact-pose entry), and Rodrigues both ways
   (`rotation_from_rodrigues`, `rodrigues_from_rotation`, accurate near 0 and
   pi). `RodriguesTransform` is OpenCV's `x' = R(rvec) x + tvec`.
 - **`camera/color_controls.hpp`** — `ColorControls`, a colour camera's
@@ -758,10 +761,13 @@ capture on the sensor's serial queue: its period after the one before
 counts `missed` where ARKit skipped some; a frame without the map takes no
 number; the rest are numbered and received, then withheld where ARKit did
 not track them normally, refused where a map or the picture is not of a
-format or size the sensor takes or its colour tags `ColorEncoding` cannot
-name, or held: the depth copied once, in one pass, into a pooled buffer as
+format or size the sensor takes, its colour tags `ColorEncoding` cannot
+name or its pose is further from rigid than float leaves one, or held: the
+depth copied once, in one pass, into a pooled buffer as
 u16 millimetres (`arkit_depth_mm`) and the levels as ARKit gave them, the
-picture retained as it is, the pose through `cv_from_gl_camera`, the time
+picture retained as it is, the pose through `cv_from_gl_camera` and
+`exact_rigid` (its corner, up to 3 ulp off 1 in ARKit's float, set to 1;
+the 2026-11-04 exact-pose entry), the time
 on the host's clock by an offset measured at each start and again when an
 interruption ends, never smaller. `poll` and `drain` import the picture
 on the caller's thread (`PixelBufferImporter`, its images holding
@@ -844,7 +850,9 @@ is never blended (2026-10-29). Colour is sampled bilinearly and converted
 from Y'CbCr in the same pass. The frame carries each camera's
 `camera::CameraModel` in double, narrowed to float once for the passes; the
 colour camera's pose, `color_to_world`, and the sensor's `depth_to_color`,
-both refused unless rigid, pose the outputs; a sequence number; and
+both refused unless rigid, pose the outputs (every driver hands them out
+rigid, one whose poses come through float through `exact_rigid`); a
+sequence number; and
 `pixels`, the owner of its host depth, any host colour and any
 `color_bitstream` (the colour as the camera coded it, when that decodes on
 its own), so a consumer may keep frames past the next poll and past the
@@ -1413,7 +1421,8 @@ none, for a run of any length, one checker a start, and its
 `SensorInfo::depth`, depth present and its camera that size; a confidence
 plane only beside host depth at a floor of 1 or more, and a floor only with
 one; with `SensorInfo::color`, colour present, its camera that size and the picture
-its camera's, without it no colour; then `order_breach` (sequences
+its camera's, without it no colour; both poses rigid (`check_rigid`, as
+`GpuFramePrep` takes them); then `order_breach` (sequences
 increase, and times where both are reported, each on the last one
 reported: 0 is no time) and
 `stats_breach` (`delivered` the frames taken, `delivered + dropped +
