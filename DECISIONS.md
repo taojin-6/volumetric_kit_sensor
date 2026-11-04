@@ -7699,14 +7699,14 @@ synthetic times off the uptime clock.
 
 **Validation.** Apple M5 Max, Release with warnings as errors, under the
 validation layer: the suite passes, 61 tests (60 on main). The new
-`sensor_arkit_session` (host, 0.00-0.02 s; 0.04-0.08 s under
-ThreadSanitizer) drives the state against a fake of ARKit's session in
+`sensor_arkit_session` (host, 0.01 s; 0.04 s under ThreadSanitizer)
+drives the state against a fake of ARKit's session in
 both behaviours at an interruption's end, resuming by itself and waiting
 to be run: an interruption ending during the open, between the open and
 the start, and still on at the start; two after the start, the world
 kept; one while stopped leaving the camera off until the next start; a
 failed open's session staying off while a new one opens; a close during
-the open; ARKit's failure. `sensor_arkit_sensor` (0.16 s, 3.9 s under
+the open; ARKit's failure. `sensor_arkit_sensor` (0.16 s, 4.0 s under
 ThreadSanitizer; 0.16 s and 4.9 s on main) adds the open's `NotFound`,
 plain and interrupted. Its other new cases guard the driver, which this
 entry changes only in the timeout's code: an interruption over before
@@ -7716,10 +7716,10 @@ under the contract; an interruption after the start under the contract,
 each frame its own picture, sequences and times increasing; and the
 driver's end letting a held frame go before the next start. The feed's
 close and its drain run on iOS alone: the build check compiles them, and
-no test runs them. Planted bugs, each failing its test: an interruption's end
-running the session only while started, and a start running it only
-after a stop (`sensor_arkit_session`), a close leaving the session
-wanted (`sensor_arkit_session`), and the timeout back to `IoError`
+no test runs them. Planted bugs, each failing its test: an interruption's
+end running the session only while started, a start running it only
+after a stop and a close leaving the session wanted
+(`sensor_arkit_session`), and the timeout back to `IoError`
 (`sensor_arkit_sensor`). The iOS build check compiles the state and
 ARKit's feed for iOS 26 and links them. No camera was opened: the
 camera's path is checked by hand on an iPad, with the scanner's retry.
