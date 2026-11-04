@@ -19,7 +19,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   still caught** (DECISIONS.md, the 2026-11-04 test budget entry):
   `sensor_stereo_rectifier`'s layouts compare every third pixel each way,
   and its 4.5:1 shrink and 4K lens cases skip under AddressSanitizer
-  alone; `sensor_arkit_pattern` plays 30 frames, not 300;
+  alone; `sensor_arkit_pattern` plays 30 frames at 1920x1440 and,
+  outside the sanitizers, 300 at 320x240, not 300 at 1920x1440;
   `sensor_array_rig_sets` waits out a 150 ms silence limit, not 10 s;
   `sensor_ffs_stereo`'s cases share one plan cache, four plans built, not
   twelve; and the camera-only consumer builds with four jobs.

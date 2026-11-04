@@ -603,7 +603,7 @@ entries relevant to your task; later amendments supersede earlier rules.
   a sanitizer): a long case runs less only where every planted bug it
   caught still fails. A case that only prints a measurement is an entry
   labelled `manual`, which CI leaves out (`ctest -LE manual`); a case left
-  out under one sanitizer is skipped in code and runs on every other leg;
+  out under a sanitizer is skipped in code and runs on every other leg;
   a real-time constant a test would wait out is an option with today's
   default, as `RigSets`' silence limit is.
 
@@ -7295,7 +7295,8 @@ levels, cameras, pose, exposure and noise; `pixel_buffer_of` the fed
 buffer, held while any copy of the frame is, past three polls; the clock;
 a feeding thread against a notified consumer; ARKit's failure; the
 option checks) and `sensor_arkit_pattern` (`ArkitSensor` itself: 300
-frames, 30 since 2026-11-04 (the test budget entry), whose depth band and
+frames; since 2026-11-04 (the test budget entry) 30, and 300 small ones
+outside the sanitizers, whose depth band and
 luma, read back by `PictureReadback`, name
 their sequence, `rgbd_breach` empty and none failed; skipped ticks with
 all 4 pictures held, counted missed, no gap; restarts; the refusals; moves).
@@ -7756,24 +7757,27 @@ it caught still fails a case that stays. So:
   `--timing`) prints the pass's time: run it on an idle GPU when the
   rectify shader, the prefilter or the V210 path changes, or when a figure
   here needs refreshing.
-- A case left out under one sanitizer skips in the test's own code, on
-  the compiler's test for that sanitizer (`__has_feature`,
-  `__SANITIZE_ADDRESS__`), and runs on every other leg: `prefilter_shrink`
-  and `prefilter_anisotropic` under AddressSanitizer, where on 4K pictures
-  they would rerun the rectify path that layouts and fold check.
+- A case left out under a sanitizer skips in the test's own code, on the
+  compiler's test for it, and runs on every other leg: `prefilter_shrink`
+  and `prefilter_anisotropic` under AddressSanitizer (`__has_feature`,
+  `__SANITIZE_ADDRESS__`), where on 4K pictures they would rerun the
+  rectify path that layouts and fold check; ARKit's 300 small frames under
+  either (the core's `VKC_TEST_SANITIZED`), where they would add 5 s to
+  ThreadSanitizer's run and its 30 frames find the races.
 - A real-time constant a test would wait out is an option with today's
   default: `RigSets(array, frames, silence_limit)`, while
   `RigSets(array, frames)` keeps `kSilenceLimit` (10 s); a limit is
   positive and at most a day. Its test runs on 150 ms, the set 100 ms into
   the run, so a limit counted from the run's start ends 100 ms early.
-- `layouts` compares every third pixel each way: a stride of 3 meets odd
-  and even columns and rows alike, where a chroma pair's two luma columns
-  and a 4:2:0 plane's two rows differ, and 2 or 4 would meet one parity.
-  Views from device buffers still match the host's bit for bit at every
-  pixel.
+- `layouts` compares every third pixel each way: `Luma8` writes four
+  pixels to a word, a byte each, and a stride with no factor in common with
+  4 meets every byte, where 4 would meet the first alone. Views from device
+  buffers still match the host's bit for bit at every pixel.
 - `sensor_arkit_pattern` plays 30 frames at the pattern's 1920x1440:
   ThreadSanitizer finds a race on the depth pool within a few frames, and
-  more add only the host's time drawing the pattern.
+  more add only the host's time drawing the pattern. Then 300 at 320x240,
+  the pattern ticking at 2400 Hz, carry indices past a byte through the
+  feed, 0.1 s more in Release.
 - `sensor_ffs_stereo`'s cases share one plan cache, the plan cache case
   first, on it empty: a plan is keyed by the GPU, TensorRT, the model and
   the network's size, which the other cases share, so the binary builds
@@ -7806,19 +7810,25 @@ fail, the rectifier's first failing case named:
 | C1: the umbrella names `sensor_frame` camera-only | camera_only (its consumer's link) | the same |
 
 The new option's own bug, the limit given and ignored, fails rig_sets
-(the error names 10 s, not 150 ms).
+(the error names 10 s, not 150 ms). Three more, on this change alone
+(the M5 Max): `Luma8`'s fourth byte ignoring limited range fails layouts
+at a stride of 3 and passes at 4; the pattern's index cut to 8 bits
+passed the 30 frames and fails the 300 small ones, as it failed main's
+300; and a wait on `kSilenceLimit` while the error names the option's
+fails silence on the wait's upper bound, 5 s.
 
 **Measured** (seconds, each entry run alone; before is main, after this
 change; the M5 Max under maclock's exclusive lock, two rounds alternated;
-the RTX 4090 idle, two rounds alternated; nunga's camera-only build):
+the RTX 4090 idle, two rounds alternated; the camera-only build on a
+64-core Linux box, pinned to 4 cores):
 
 | Entry | M5 Max Release / Debug / TSan | RTX 4090 Release / ASan |
 | --- | --- | --- |
 | sensor_stereo_rectifier | 2.4-2.8 → 1.2 / 23.3-23.5 → 10.6-10.9 / — | 4.6 → 2.1 / 55.5-56.2 → 16.6 |
-| sensor_arkit_pattern | 5.4-5.5 → 0.9 / 9.1-9.3 → 1.5 / 79.5-81.9 → 11.2-11.9 | — |
+| sensor_arkit_pattern | 5.4-5.5 → 1.0-1.1 / 9.1-9.3 → 1.9-2.0 / 79.5-81.9 → 11.1-11.9 | — |
 | sensor_array_rig_sets | 10.6 → 0.3 / 10.6 → 0.3 / — | 10.5 → 0.25 / 10.5 → 0.26 |
 | sensor_ffs_stereo | — | 7.7-7.8 → 2.6-2.7 / — |
-| sensor_subproject_camera_only | — | nunga, 4 cores: 18.1 → 6.7-6.8 |
+| sensor_subproject_camera_only | — | 64-core Linux, 4 cores: 18.1 → 6.7-6.8 |
 
 The RTX 4090's whole suite, four at a time, went from 18.9 to 8.3-9.0 s in
 Release and from 58.9 to 16.8-17.5 s under ASan; the M5 Max's Release
