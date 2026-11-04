@@ -1,4 +1,5 @@
-# LeakSanitizer suppressions for the sanitizer CI job (.github/workflows/sanitizers.yml).
+# LeakSanitizer suppressions for the sanitizer CI job (.github/workflows/sanitizers.yml)
+# and the NVIDIA leg's encoder run under ASan (.github/workflows/_build.yml).
 #
 # These cover third-party driver/runtime allocations that legitimately persist to
 # process exit (TLS caches, JIT contexts, dlopen'd ICD globals) — not bugs we can
@@ -22,3 +23,10 @@ leak:loader_
 
 # dlopen-resident globals from loading the driver / layers.
 leak:__libc_dlopen
+
+# NVIDIA's encode and decode libraries (libnvidia-encode, libnvcuvid), which
+# FFmpeg loads and unloads before the leak check, so their frames name no
+# module: they are built against glibc's pre-2.3.2 condition variables, whose
+# shim allocates each on first use and keeps it. No code built against the
+# current ABI reaches the shim's files.
+leak:old_pthread_cond_

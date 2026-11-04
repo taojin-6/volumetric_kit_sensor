@@ -116,6 +116,13 @@ on:
         required: false
         type: boolean
         default: false
+      nvenc_sanitizers:
+        description: >-
+          Build the HEVC encoder's test again in Debug under AddressSanitizer
+          and UndefinedBehaviorSanitizer and run it on NVENC. Needs cuda.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -227,6 +234,11 @@ jobs:
           if [ "${{ inputs.portaudio }}" = "true" ]; then
             pkgs="$pkgs pkg-config portaudio19-dev"
           fi
+          # lavapipe, beside the GPU: a device CUDA does not reach, which the
+          # encoder's off-CUDA test runs on (tests/CMakeLists.txt).
+          if [ "${{ inputs.cuda }}" = "true" ]; then
+            pkgs="$pkgs mesa-vulkan-drivers"
+          fi
           # shellcheck disable=SC2086  # intentional: split $pkgs into separate args
           sudo apt-get install -y --no-install-recommends $pkgs
           # The CUDA toolkit for VS_WITH_CUDA (cmake/vs_cuda.cmake): cuda.h,
@@ -271,10 +283,31 @@ jobs:
                 "libnvonnxparsers11=${trt}" "libnvonnxparsers-dev=${trt}"
             fi
           fi
-          # The loader is pinned to nothing: the NVIDIA Vulkan ICD injected by
-          # the container toolkit is then the only ICD, so the Vulkan tests run
-          # on the real GPU — and if it is absent, the GPU diagnostic below
-          # fails the leg.
+
+      # The loader is pinned to the NVIDIA Vulkan ICD the container toolkit
+      # mounts, so the Vulkan tests run on the real GPU — and if it is absent,
+      # the GPU diagnostic below fails the leg — though lavapipe is installed
+      # beside it: only the encoder's off-CUDA test, which ctest gives
+      # lavapipe alone, runs there. Mesa's device-select layer, which comes
+      # with lavapipe as an implicit layer, is kept off (NODEVICE_SELECT).
+      - name: Pin the loader to the GPU's ICD (Linux, cuda)
+        if: runner.os == 'Linux' && inputs.cuda
+        run: |
+          icd=""
+          for f in /etc/vulkan/icd.d/nvidia_icd*.json /usr/share/vulkan/icd.d/nvidia_icd*.json; do
+            [ -e "$f" ] && { icd="$f"; break; }
+          done
+          if [ -z "$icd" ]; then
+            echo "::error::no NVIDIA Vulkan ICD mounted"
+            exit 1
+          fi
+          if ! ls /usr/share/vulkan/icd.d/lvp_icd*.json >/dev/null 2>&1; then
+            echo "::error::mesa-vulkan-drivers installed no lavapipe ICD"
+            exit 1
+          fi
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "NODEVICE_SELECT=1" >> "$GITHUB_ENV"
 
       # The leg's Homebrew formulae, named once for the key below: glm
       # supplies the GLM math headers the package's vector types alias;
@@ -464,7 +497,48 @@ jobs:
           VKC_TEST_VALIDATION: '1'
           VKC_TEST_SYNC_VALIDATION: ${{ inputs.sync_validation && '1' || '' }}
           DYLD_LIBRARY_PATH: ${{ env.VS_LAYER_LIBRARY_PATH }}
-        run: ctest --test-dir build --output-on-failure --no-tests=error
+        run: |
+          # The pin step found lavapipe, so the off-CUDA test is one: were it
+          # left out, nothing would say so.
+          if [ "${{ inputs.cuda }}" = "true" ] && ! ctest --test-dir build -N \
+              -R '^sensor_video_hevc_encoder_off_cuda$' | grep -q 'Total Tests: 1'; then
+            echo "::error::lavapipe is installed, but sensor_video_hevc_encoder_off_cuda is no test"
+            exit 1
+          fi
+          ctest --test-dir build --output-on-failure --no-tests=error
+
+      # NVENC's code under AddressSanitizer and UndefinedBehaviorSanitizer,
+      # which the sanitizer job, building no FFmpeg or CUDA, never runs: the
+      # encoder's test again in a Debug tree of its own, built for it alone
+      # from the sources FetchContent fetched for build/, on the GPU, without
+      # the validation layer the Test step ran it under. CUDA maps memory in
+      # ASan's shadow gap, so the gap stays unprotected; the NVIDIA libraries'
+      # own leaks are suppressed by name in tools/lsan.supp, whose path is the
+      # container's (github.workspace names the host's).
+      - name: The encoder under ASan and UBSan (NVENC)
+        if: inputs.nvenc_sanitizers && matrix.build_type == 'Release'
+        env:
+          ASAN_OPTIONS: protect_shadow_gap=0:detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          VS_TEST_HEVC_ENCODER: ${{ inputs.hevc_encoder }}
+          VKC_REQUIRE_VULKAN_DEVICE: '1'
+        run: |
+          shopt -s nullglob
+          flags=()
+          for src in build/_deps/*-src; do
+            dep=$(basename "${src}" -src | tr '[:lower:]' '[:upper:]')
+            flags+=("-DFETCHCONTENT_SOURCE_DIR_${dep}=${PWD}/${src}")
+          done
+          rm -rf build-asan
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+            -DVS_SANITIZE="address;undefined" -DVS_WITH_FFMPEG=ON \
+            -DVS_WITH_CUDA=ON "${flags[@]}"
+          cmake --build build-asan \
+            --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}" \
+            --target sensor_video_hevc_encoder_test
+          export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/tools/lsan.supp:print_suppressions=0"
+          ctest --test-dir build-asan --output-on-failure --no-tests=error \
+            -R '^sensor_video_hevc_encoder$'
 
       # The tests whose code runs threads again under ThreadSanitizer: the
       # Orbbec decode workers, the audio capture's queue, the DeckLink
