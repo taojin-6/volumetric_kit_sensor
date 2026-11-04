@@ -822,8 +822,9 @@ submit and its wait. A `FrameSet`'s
 `RigSets(array, frames)` (`array/rig_sets.hpp`) reads a run of N
 frames from a started array: `next` waits for each set (`wait_set`), keeps
 each secondary's skew to the primary, and cuts the set that reaches N to its
-first frames in the array's order; after `kSilenceLimit` (10 s) with no set
-it returns `IoError`, naming a lone sync secondary's cause. The prep stays
+first frames in the array's order; after its silence limit with no set
+(`kSilenceLimit`, 10 s, unless the run is given another: a test's 150 ms)
+it returns `IoError`, naming the limit and a lone sync secondary's cause. The prep stays
 the caller's, recorded into the caller's batch (2026-10-25).
 **`prep/`'s `GpuFramePrep`** undistorts an `RgbdFrame`
 (`rgbd_frame.hpp`) on the device, each camera keeping its intrinsics.

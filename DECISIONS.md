@@ -239,7 +239,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   `tsdf::create_fusion_grid` and `fusion_buckets` in `recon_tsdf`, and
   `volume::block_grid_params`, which `codec::make_decode_grid` builds with
   too. Opening a rig stays the three public calls, and a set's prep and all
-  printing stay the caller's.
+  printing stay the caller's. *Amended 2026-11-04:* `RigSets` may be given
+  its silence limit, `kSilenceLimit` (10 s) when not (the test budget
+  entry).
 - [**2026-10-26**](#2026-10-26--nvdecs-pictures-land-in-two-plane-images-videotoolboxs-form-cudas-one-copy-writes-them-a-reader-takes-each-over-from-outside-vulkan-and-nothing-hands-it-back-amends-the-2026-10-08-decoded-picture-and-2026-10-25-plane-image-entries) —
   NVDEC's pictures land in two plane images, an R8 luma and an R8G8 chroma,
   VideoToolbox's form: CUDA's one copy writes them, handed to it once in
@@ -584,6 +586,15 @@ entries relevant to your task; later amendments supersede earlier rules.
   driver's own. A picture's ready value is waited for on the device
   (`yuv_image.hpp` says so), and NVDEC's own wait for a kept picture reads
   the counter.
+
+- [**2026-11-04**](#2026-11-04--the-tests-keep-to-cis-budget-long-cases-run-less-and-still-catch-every-planted-bug-they-caught-a-measurement-is-a-manual-entry-and-rigsets-silence-limit-is-an-option-amends-the-2026-10-25-runs-sets-entry) —
+  The tests keep to CI's budget (about 5 s an entry in Release, 30 s under
+  a sanitizer): a long case runs less only where every planted bug it
+  caught still fails. A case that only prints a measurement is an entry
+  labelled `manual`, which CI leaves out (`ctest -LE manual`); a case left
+  out under one sanitizer is skipped in code and runs on every other leg;
+  a real-time constant a test would wait out is an option with today's
+  default, as `RigSets`' silence limit is.
 
 ## Decision record
 
@@ -3816,6 +3827,10 @@ lavapipe, which is why the entry rounds.
 
 ### 2026-10-25 — A run's sets, the fusion grid and the block layout are library calls: `RigSets` in the array's tier, `create_fusion_grid` in `tsdf` and `block_grid_params` in `volume`; opening a rig stays the caller's.
 
+*Amended 2026-11-04 (the test budget entry):* `RigSets(array, frames,
+silence_limit)` takes the limit; `RigSets(array, frames)` keeps
+`kSilenceLimit`, and the error names the limit.
+
 **The rule.** Three pieces the examples kept in `examples/common` move to
 the tier each depends on, and no copy is left:
 - `sensor::RigSets(array, frames)` (`sensor/array/rig_sets.hpp`, in
@@ -4643,7 +4658,9 @@ decodes on the GPU yet) and vertical pairs.
   past the next keeps its views, a view no pair holds is written again,
   exported and from `VK_QUEUE_FAMILY_EXTERNAL` where the device exports;
 - refused: fourteen cases at create, eight per frame, the rectifier working
-  after each; the pass's time, printed.
+  after each; the pass's time, printed (since 2026-11-04 by
+  `sensor_stereo_rectifier_timing`, an entry labelled `manual` that CI never
+  runs: the test budget entry).
 
 `sensor_stereo_cuda` (with FFmpeg and CUDA) maps each exported view once
 through `CudaBufferMapping` and reads three pairs through CUDA, byte for
@@ -5870,10 +5887,12 @@ TensorRT 11.4), Release with warnings as errors, RealSense, FFmpeg, CUDA
 and FFS on, under the validation layer: the whole suite passes, 48
 tests. The D455 view's FNV-1a hash is the same built on this branch and on
 0.17.0 (`95cdad83d4b9af47`). A 3840x2160 V210 pair in device buffers,
-rectified to 960x544 `Rgba8`, every pixel averaged, takes 0.77-0.78 ms of
+rectified to 960x544 `Rgba8`, every pixel averaged, took 0.77-0.78 ms of
 device time for both views, with other jobs on the GPU; the 1.33:1 cases
-take 0.008 ms more than on 0.17.0 (0.023 ms against 0.015 ms, luma in
-device buffers), the four neighbours' lens. No camera was opened.
+took 0.008 ms more than on 0.17.0 (0.023 ms against 0.015 ms, luma in
+device buffers), the four neighbours' lens. These are that day's figures,
+from the timing case, which since 2026-11-04 is a manual entry run by hand
+(the test budget entry). No camera was opened.
 
 ### 2026-11-01 — A DeckLink stereo camera: two SDI inputs as one `IStereoSensor`, their 10-bit pictures written by the card into pages the GPU imports and copied once on the device; free-running cameras paired by the card's frame times, each pair's skew stated; the calibration optional.
 
@@ -7262,7 +7281,8 @@ levels, cameras, pose, exposure and noise; `pixel_buffer_of` the fed
 buffer, held while any copy of the frame is, past three polls; the clock;
 a feeding thread against a notified consumer; ARKit's failure; the
 option checks) and `sensor_arkit_pattern` (`ArkitSensor` itself: 300
-frames whose depth band and luma, read back by `PictureReadback`, name
+frames, 30 since 2026-11-04 (the test budget entry), whose depth band and
+luma, read back by `PictureReadback`, name
 their sequence, `rgbd_breach` empty and none failed; skipped ticks with
 all 4 pictures held, counted missed, no gap; restarts; the refusals; moves).
 `sensor_frame_depth_noise` takes ARKit's curve and refuses b^2 >= 4ac and
@@ -7603,3 +7623,84 @@ time unreported, and reported in microseconds. The suite on both RTX 4090s
 (the second under the validation layer), on the lab RTX 5090 (the
 validation layer; the handover and decoder tests also under
 synchronization validation) and on the M5 Max (validation).
+
+### 2026-11-04 — The tests keep to CI's budget: long cases run less and still catch every planted bug they caught, a measurement is a manual entry, and `RigSets`' silence limit is an option (amends the 2026-10-25 run's sets entry).
+
+**The rule.** The owner's budget (2026-11-03): a CI entry runs in about
+5 s in Release and about 30 s under a sanitizer, each entry judged run
+alone on a quiet box. A long case runs less only where every planted bug
+it caught still fails a case that stays. So:
+- A case that only prints a measurement is an entry of its own labelled
+  `manual`, which CI leaves out (`ctest -LE manual`) and nothing
+  schedules. `sensor_stereo_rectifier_timing` (the rectifier test with
+  `--timing`) prints the pass's time: run it on an idle GPU when the
+  rectify shader, the prefilter or the V210 path changes, or when a figure
+  here needs refreshing.
+- A case left out under one sanitizer skips in the test's own code, on
+  that sanitizer's macro, and runs on every other leg: `prefilter_shrink`
+  and `prefilter_anisotropic` under AddressSanitizer, where on 4K pictures
+  they would rerun the rectify path that layouts and fold check.
+- A real-time constant a test would wait out is an option with today's
+  default: `RigSets(array, frames, silence_limit)`, while
+  `RigSets(array, frames)` keeps `kSilenceLimit` (10 s). Its test runs on
+  150 ms, the set 200 ms into the run, so a limit counted from the run's
+  start fails at once.
+- `layouts` compares every third pixel each way: a stride of 3 meets odd
+  and even columns and rows alike, where a chroma pair's two luma columns
+  and a 4:2:0 plane's two rows differ, and 2 or 4 would meet one parity.
+  Views from device buffers still match the host's bit for bit at every
+  pixel.
+- `sensor_arkit_pattern` plays 30 frames at the pattern's 1920x1440:
+  ThreadSanitizer finds a race on the depth pool within a few frames, and
+  more add only the host's time drawing the pattern.
+- `sensor_ffs_stereo`'s cases share one plan cache, the plan cache case
+  first, on it empty: a plan is keyed by the GPU, TensorRT, the model and
+  the network's size, which the other cases share, so the binary builds
+  four plans, not twelve.
+- The camera-only consumer builds with four jobs.
+
+**Planted bugs.** Each was planted in main (1c5dd48) and in this change,
+and the whole suite run on both: the RTX 4090's Release tree (FFmpeg,
+CUDA, FFS) for the rectifier's and FFS's, its ASan tree for the three
+whose other catchers skip there, the M5 Max (Release, and
+ThreadSanitizer's ARKit entries) for ARKit's and `RigSets`', and the
+camera-only build on four cores for the umbrella's. The entries that
+fail, the rectifier's first failing case named:
+
+| Bug | Main | This change |
+| --- | --- | --- |
+| R1: the colour average's weights sum to 25/24 | rectifier (layouts) | rectifier (layouts) |
+| R2: `Luma8` ignores limited range | rectifier (layouts) | rectifier (layouts, at every third pixel) |
+| R3: the taps shifted half a cell | rectifier (layouts); under ASan too | rectifier (layouts); under ASan too |
+| R4: the footprint taken at the view's centre | rectifier (layouts); under ASan too | rectifier (layouts); under ASan too |
+| R5: the fold cut removed | rectifier (fold) | rectifier (fold) |
+| R6: the luma average's weights sum to 25/24 | rectifier (layouts); under ASan too | rectifier (layouts); under ASan too |
+| R8: no baseline turn in `rectify_stereo` | camera_stereo_rectification, rectifier (rows_align), stereo_sensor | the same |
+| R11: chroma's vertical siting dropped | gpu_frame_prep, rectifier (layouts) | the same |
+| R12: chroma's right edge unclamped | gpu_frame_prep, rectifier (layouts) | the same |
+| F1: a plan's name ignores the model | ffs_stereo (plan_cache) | ffs_stereo (plan_cache) |
+| MA1: an odd frame's depth band names the frame before | arkit_pattern (frames) | arkit_pattern (frames, 30) |
+| MA4: the depth pool's return without its lock | TSan: arkit_sensor, arkit_pattern | the same |
+| S1: the silence limit not counted from the last set | rig_sets (silence) | rig_sets (silence, 150 ms) |
+| C1: the umbrella names `sensor_frame` camera-only | camera_only (its consumer's link) | the same |
+
+The new option's own bug, the limit given and ignored, fails rig_sets
+(the error names 10 s, not 150 ms).
+
+**Measured** (seconds, each entry run alone; before is main, after this
+change; the M5 Max under maclock's exclusive lock, two rounds alternated;
+the RTX 4090 idle, two rounds alternated; nunga's camera-only build):
+
+| Entry | M5 Max Release / Debug / TSan | RTX 4090 Release / ASan |
+| --- | --- | --- |
+| sensor_stereo_rectifier | 2.4-2.8 → 1.2 / 23.3-23.5 → 10.6-10.8 / — | 4.6 → 2.2 / 55.5-56.2 → 16.7-16.9 |
+| sensor_arkit_pattern | 5.4-5.5 → 0.9 / 9.1-9.3 → 1.5 / 79.5-81.9 → 11.2-11.9 | — |
+| sensor_array_rig_sets | 10.6 → 0.4 / 10.6 → 0.4-0.5 / — | 10.5 → 0.35 / 10.5 → 0.36 |
+| sensor_ffs_stereo | — | 7.7-7.8 → 2.8-2.9 / — |
+| sensor_subproject_camera_only | — | nunga, 4 cores: 18.1 → 6.7-6.8 |
+
+The RTX 4090's whole suite, four at a time, went from 18.9 to 8.4-9.0 s in
+Release and from 58.9 to 16.8-17.5 s under ASan; the M5 Max's Release
+suite from 10.5 to 7.4-8.4 s. The timing entry takes 1.4 s on the RTX
+4090 and 1.6 s on the M5 Max; the 4K V210 pass, idle, 0.47 ms and 1.04 ms
+of device time for both views.

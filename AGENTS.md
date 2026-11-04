@@ -91,7 +91,7 @@ PCM in host memory.
 sensor_root="$(git rev-parse --show-toplevel)"
 cmake -S "$sensor_root" -B "$sensor_root/build" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$sensor_root/build" --parallel
-ctest --test-dir "$sensor_root/build" --output-on-failure
+ctest --test-dir "$sensor_root/build" --output-on-failure -LE manual
 pre-commit run --all-files --show-diff-on-failure
 ```
 

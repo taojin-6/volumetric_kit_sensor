@@ -21,9 +21,9 @@
 //     4.5:1 a checker grating past the view's Nyquist reads flat within 2
 //     levels, and step edges stay within 0.03 view pixels at every phase;
 //     through a near-equidistant 4K lens, a side edge's 1.5 x 3 footprint
-//     keeps rings that a centre-sized box would flatten (these two not
-//     under AddressSanitizer, where they would run on 4K pictures the
-//     rectify path layouts and fold already check);
+//     keeps rings that a centre-sized box would flatten (these two skip
+//     under AddressSanitizer: on 4K pictures they would rerun the rectify
+//     path that layouts and fold already check);
 //   - the same pictures in device buffers give the same views, bit for bit;
 //   - V210 of a YUYV pair's codes times 4 gives YUYV's views bit for bit,
 //     both outputs, from the host and from device buffers;
@@ -869,7 +869,7 @@ int test_rows_align() {
 // words and as luma bytes match the host reference within a code, the
 // coverage byte exact, at every third pixel each way: odd and even columns
 // and rows alike, which a chroma pair's two luma columns and a 4:2:0 plane's
-// two rows differ by, and the reference's 25 taps a pixel the case's cost;
+// two rows differ by (the reference's 25 taps a pixel are the case's time);
 // the same planes in device buffers give the same words, bit for bit, at
 // every pixel.
 int test_layouts() {
