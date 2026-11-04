@@ -12,8 +12,11 @@
 // frame states the noise its options' disparity sigma makes over the rig's fx
 // and baseline, or none for none, and GpuFramePrep hands it on. The
 // plan cache is checked by what it loads: another model's plan put under a
-// model's name is the one that runs. Rgba8 coverage is checked on views made
-// here, and pairs kept past the next on the rectifier's new views.
+// model's name is the one that runs. It is checked first, on an empty cache
+// that every later case then shares, so the binary builds four plans: each
+// model's, the one built again and the unkept one. Rgba8 coverage is checked
+// on views made here, and pairs kept past the next on the rectifier's new
+// views.
 //
 // Where CUDA does not reach the device's GPU, or the device exports no
 // memory, the test skips; VS_TEST_HEVC_BACKEND, which CI sets on the NVIDIA
@@ -222,6 +225,9 @@ std::vector<fs::path> plans_in(const fs::path& dir) {
 struct Fixture {
   vkc::test::GpuContext& gpu;
   fs::path scratch;
+  // The plan cache plan_cache checks and every later case shares: its plans
+  // are keyed by the model and the network's size, which the cases share.
+  fs::path cache = scratch / "cache";
 };
 
 std::unique_ptr<sensor::StereoRectifier> rectifier_for(
@@ -288,7 +294,7 @@ int depth_units(Fixture& t) {
   const sensor::StereoInfo info = pair_info(64, 32);
   auto rectifier = rectifier_for(t, info, Output::Luma8);
   CHECK(rectifier != nullptr);
-  const sensor::FfsStereo::Options o = options_for(kModel, t.scratch / "units");
+  const sensor::FfsStereo::Options o = options_for(kModel, t.cache);
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
 
@@ -381,8 +387,7 @@ int depth_units(Fixture& t) {
 int near_gate(Fixture& t) {
   std::puts("the near gate");
   const sensor::StereoInfo info = pair_info(64, 32);
-  const sensor::FfsStereo::Options base =
-      options_for(kModel, t.scratch / "gate");
+  const sensor::FfsStereo::Options base = options_for(kModel, t.cache);
   const double focal_baseline = kFocal * kBaseline;
   struct Case {
     float max_disparity;
@@ -412,12 +417,15 @@ int near_gate(Fixture& t) {
 
 // --- The plan cache -------------------------------------------------------
 
+// The first case: the cache it checks starts empty, and it leaves each
+// model's plan there, as built, for the cases after it.
 int plan_cache(Fixture& t) {
   std::puts("the plan cache");
   const sensor::StereoInfo info = pair_info(64, 32);
   auto rectifier = rectifier_for(t, info, Output::Luma8);
   CHECK(rectifier != nullptr);
-  const fs::path cache = t.scratch / "cache";
+  const fs::path& cache = t.cache;
+  CHECK(plans_in(cache).empty());
   const sensor::FfsStereo::Options o = options_for(kModel, cache);
 
   // A miss builds and keeps one plan; a hit leaves it as it was.
@@ -432,12 +440,16 @@ int plan_cache(Fixture& t) {
   CHECK(run_luma(t, *rectifier, *ffs, o, 0, 1.0) == 0);
   std::printf("  built once: %s\n", plan.filename().c_str());
 
+  // Another model is another plan.
+  CHECK(ffs_for(t, *rectifier, options_for(kHalfModel, cache)) != nullptr);
+  const std::vector<fs::path> both = plans_in(cache);
+  CHECK(both.size() == 2);
+  const fs::path half = both[0] == plan ? both[1] : both[0];
+  std::puts("  another model: a plan of its own");
+
   // The plan under the model's name is the one that runs: the half model's,
   // put there, halves the disparity.
-  const fs::path other = t.scratch / "other";
-  CHECK(ffs_for(t, *rectifier, options_for(kHalfModel, other)) != nullptr);
-  CHECK(plans_in(other).size() == 1);
-  fs::copy_file(plans_in(other)[0], plan, fs::copy_options::overwrite_existing);
+  fs::copy_file(half, plan, fs::copy_options::overwrite_existing);
   // Each matcher that runs on a rectifier of its own: the first matcher to
   // read a view maps it.
   auto second = rectifier_for(t, info, Output::Luma8);
@@ -447,7 +459,8 @@ int plan_cache(Fixture& t) {
   CHECK(run_luma(t, *second, *swapped, o, 1, 0.5) == 0);
   std::puts("  a cached plan is loaded, not built: another's runs");
 
-  // A plan TensorRT will not load is built again.
+  // A plan TensorRT will not load is built again, leaving the model's own
+  // plan for the cases after this one.
   {
     std::ofstream bad(plan, std::ios::binary | std::ios::trunc);
     bad << "not a plan";
@@ -458,12 +471,8 @@ int plan_cache(Fixture& t) {
   CHECK(rebuilt != nullptr);
   CHECK(fs::file_size(plan) > 10);
   CHECK(run_luma(t, *third, *rebuilt, o, 2, 1.0) == 0);
-  std::puts("  a plan cut short is built again");
-
-  // Another model is another plan.
-  CHECK(ffs_for(t, *rectifier, options_for(kHalfModel, cache)) != nullptr);
   CHECK(plans_in(cache).size() == 2);
-  std::puts("  another model: a plan of its own");
+  std::puts("  a plan cut short is built again");
 
   // A cache that cannot be written runs the plan it built, unkept (a root
   // user writes it anyway).
@@ -491,7 +500,7 @@ int padding(Fixture& t) {
   const sensor::StereoInfo info = pair_info(60, 30);
   auto rectifier = rectifier_for(t, info, Output::Luma8);
   CHECK(rectifier != nullptr);
-  const sensor::FfsStereo::Options o = options_for(kModel, t.scratch / "pad");
+  const sensor::FfsStereo::Options o = options_for(kModel, t.cache);
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
   CHECK(run_luma(t, *rectifier, *ffs, o, 0, 1.0) == 0);
@@ -521,7 +530,7 @@ int rgba_views(Fixture& t) {
   const sensor::StereoInfo info = pair_info(kW, kH);
   auto rectifier = rectifier_for(t, info, Output::Rgba8);
   CHECK(rectifier != nullptr);
-  const sensor::FfsStereo::Options o = options_for(kModel, t.scratch / "rgba");
+  const sensor::FfsStereo::Options o = options_for(kModel, t.cache);
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
 
@@ -652,8 +661,7 @@ int coverage(Fixture& t) {
   auto left_view = exported_view(t.gpu, left);
   auto right_view = exported_view(t.gpu, right);
   CHECK(left_view.ok() && right_view.ok());
-  const sensor::FfsStereo::Options o =
-      options_for(kModel, t.scratch / "coverage");
+  const sensor::FfsStereo::Options o = options_for(kModel, t.cache);
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
 
@@ -702,7 +710,7 @@ int kept_pairs(Fixture& t) {
   const sensor::StereoInfo info = pair_info(64, 32);
   auto rectifier = rectifier_for(t, info, Output::Luma8);
   CHECK(rectifier != nullptr);
-  const sensor::FfsStereo::Options o = options_for(kModel, t.scratch / "kept");
+  const sensor::FfsStereo::Options o = options_for(kModel, t.cache);
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
 
@@ -823,7 +831,7 @@ int into_prep(Fixture& t) {
   const sensor::StereoInfo info = pair_info(64, 32);
   auto rectifier = rectifier_for(t, info, Output::Luma8);
   CHECK(rectifier != nullptr);
-  sensor::FfsStereo::Options o = options_for(kModel, t.scratch / "prep");
+  sensor::FfsStereo::Options o = options_for(kModel, t.cache);
   o.disparity_sigma = 0.1f;
   auto ffs = ffs_for(t, *rectifier, o);
   CHECK(ffs != nullptr);
@@ -871,7 +879,9 @@ int refusals(Fixture& t) {
   const sensor::StereoInfo info = pair_info(64, 32);
   auto rectifier = rectifier_for(t, info, Output::Luma8);
   CHECK(rectifier != nullptr);
-  const fs::path cache = t.scratch / "refusals";
+  // The shared cache holds the test model's plan: a model TensorRT cannot
+  // parse is refused all the same, its own bytes naming no plan there.
+  const fs::path& cache = t.cache;
   const auto code = [&](const sensor::FfsStereo::Options& o) {
     return sensor::FfsStereo::create(t.gpu.device, t.gpu.allocator, *rectifier,
                                      o)
@@ -992,9 +1002,9 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   }
   const vkc::test::Scratch scratch("sensor_ffs_stereo_");
   Fixture t{gpu, scratch.path};
+  CHECK(plan_cache(t) == 0);
   CHECK(depth_units(t) == 0);
   CHECK(near_gate(t) == 0);
-  CHECK(plan_cache(t) == 0);
   CHECK(padding(t) == 0);
   CHECK(rgba_views(t) == 0);
   CHECK(coverage(t) == 0);

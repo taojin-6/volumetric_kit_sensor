@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Tao Jin
 
 // ArkitSensor with its test pattern (ArkitSource::Pattern), through the
-// public header alone, on the device: info; 300 frames taken through
+// public header alone, on the device: info; 30 frames taken through
 // set_frame_notify, each one's depth band (depth_index) and picture band
 // (pattern_index, its luma read back on the device's queue by
 // PictureReadback) naming its sequence, the frame contract (rgbd_breach) and
@@ -134,8 +134,12 @@ int test_info(const Gpu& gpu) {
   return 0;
 }
 
-// 300 frames, each carrying its sequence in its depth and its picture.
+// 30 frames at the pattern's 1920x1440, each carrying its sequence in its
+// depth and its picture: odd and even frames alike, every picture imported
+// and read back. ThreadSanitizer finds a race on the depth pool within a few
+// frames; more add only the host's time drawing the pattern.
 int test_frames(const Gpu& gpu) {
+  constexpr std::uint64_t kFrames = 30;
   vkc::Result<ArkitSensor> opened = ArkitSensor::open(pattern(gpu));
   CHECK(opened.ok());
   ArkitSensor camera = std::move(opened).value();
@@ -151,7 +155,7 @@ int test_frames(const Gpu& gpu) {
   std::uint64_t seen = 0;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(120);
-  while (taken < 300) {
+  while (taken < kFrames) {
     CHECK(std::chrono::steady_clock::now() < deadline);
     seen = waker.wait(seen, std::chrono::milliseconds(200));
     std::vector<sensor::RgbdFrame> frames;

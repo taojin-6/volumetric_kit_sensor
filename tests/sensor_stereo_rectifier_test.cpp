@@ -14,13 +14,16 @@
 //     points half a pixel either side of it land, 5 x 5 taps over it where
 //     its longer side is over 1.5 source pixels): luma, YUYV, NV12 and I420,
 //     as luma bytes and as R'G'B' words, the coverage byte exact, and
-//     limited-range luma;
+//     limited-range luma, at every third pixel each way (odd and even
+//     columns and rows alike);
 //   - the prefilter: a D455's 1.33:1 takes one tap, as the one-tap
 //     reference has it byte for byte but at ties, half way between codes; at
 //     4.5:1 a checker grating past the view's Nyquist reads flat within 2
 //     levels, and step edges stay within 0.03 view pixels at every phase;
 //     through a near-equidistant 4K lens, a side edge's 1.5 x 3 footprint
-//     keeps rings that a centre-sized box would flatten;
+//     keeps rings that a centre-sized box would flatten (these two not
+//     under AddressSanitizer, where they would run on 4K pictures the
+//     rectify path layouts and fold already check);
 //   - the same pictures in device buffers give the same views, bit for bit;
 //   - V210 of a YUYV pair's codes times 4 gives YUYV's views bit for bit,
 //     both outputs, from the host and from device buffers;
@@ -45,10 +48,11 @@
 //     views are exported buffers handed out from VK_QUEUE_FAMILY_EXTERNAL;
 //   - a pair holds its frame's left picture but lets the right one go, its
 //     own owner (StereoFrame::right_pixels) or its device buffer;
-//   - what it refuses, at create and per frame;
-//   - the pass's time at 1280x720 to 960x544, and at 3840x2160 V210 to
-//     960x544 through the 4K lens, every pixel averaged, both views,
-//     printed.
+//   - what it refuses, at create and per frame.
+// With --timing (sensor_stereo_rectifier_timing, labelled manual: run by
+// hand, never in CI) it prints the pass's time instead, at 1280x720 to
+// 960x544, and at 3840x2160 V210 to 960x544 through the 4K lens, every pixel
+// averaged, both views.
 // Runs on the real driver; exits 0 (skip) where no device is present.
 
 #include <algorithm>
@@ -101,6 +105,22 @@ using Rectifier = sensor::StereoRectifier;
 
 vkc::Device* g_device = nullptr;
 vkc::Allocator* g_allocator = nullptr;
+
+// Under AddressSanitizer alone (the core's VKC_TEST_SANITIZED is
+// ThreadSanitizer's too).
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define VS_TEST_ASAN 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) && !defined(VS_TEST_ASAN)
+#define VS_TEST_ASAN 1
+#endif
+#ifdef VS_TEST_ASAN
+constexpr bool kAddressSanitizer = true;
+#else
+constexpr bool kAddressSanitizer = false;
+#endif
 
 // --- The pinned pairs -------------------------------------------------------
 
@@ -648,11 +668,11 @@ int channel_diff(std::uint32_t a, std::uint32_t b) {
 
 // A view against the host reference of the remap: luma codes, or R'G'B'
 // words from `picture`'s own planes as its layout subsamples them, by its
-// range. Returns the worst code off, -1 for a coverage mismatch; `compared`
-// counts pixels.
+// range, at every `step`th pixel each way from (0, 0). Returns the worst
+// code off, -1 for a coverage mismatch; `compared` counts pixels.
 int compare_view(const std::vector<std::uint8_t>& got, const Remap& remap,
                  const Picture& picture, Rectifier::Output output,
-                 std::size_t* compared) {
+                 std::size_t* compared, std::uint32_t step = 1) {
   const sensor::YuvLayout layout = picture.image.layout;
   const bool full = picture.image.full_range;
   const std::uint32_t cw = (picture.w + 1) / 2, ch = (picture.h + 1) / 2;
@@ -692,8 +712,8 @@ int compare_view(const std::vector<std::uint8_t>& got, const Remap& remap,
   };
   int worst = 0;
   *compared = 0;
-  for (std::uint32_t v = 0; v < remap.h; ++v) {
-    for (std::uint32_t u = 0; u < remap.w; ++u) {
+  for (std::uint32_t v = 0; v < remap.h; v += step) {
+    for (std::uint32_t u = 0; u < remap.w; u += step) {
       const std::size_t i = std::size_t{v} * remap.w + u;
       float sx = 0, sy = 0, r = 0;
       const bool inside = remap.source(u, v, &sx, &sy, &r);
@@ -847,9 +867,13 @@ int test_rows_align() {
 
 // YUYV, NV12 and I420 from the host, and luma in either range, as R'G'B'
 // words and as luma bytes match the host reference within a code, the
-// coverage byte exact; the same planes in device buffers give the same
-// words, bit for bit.
+// coverage byte exact, at every third pixel each way: odd and even columns
+// and rows alike, which a chroma pair's two luma columns and a 4:2:0 plane's
+// two rows differ by, and the reference's 25 taps a pixel the case's cost;
+// the same planes in device buffers give the same words, bit for bit, at
+// every pixel.
 int test_layouts() {
+  constexpr std::uint32_t kStep = 3;
   const sensor::StereoInfo info = mild_pair();
   const Scene scene;
   const Mat4d right_to_left =
@@ -863,6 +887,10 @@ int test_layouts() {
   const sensor::StereoRig& rig = rectifier->rig();
   const std::size_t bytes = view_bytes(rig, Rectifier::Output::Rgba8);
   const std::size_t luma_bytes = view_bytes(rig, Rectifier::Output::Luma8);
+  // The pixels compare_view reaches at kStep.
+  const std::size_t reached =
+      std::size_t{(rig.camera.size.width + kStep - 1) / kStep} *
+      ((rig.camera.size.height + kStep - 1) / kStep);
   struct Form {
     sensor::YuvLayout layout;
     bool full_range;
@@ -901,19 +929,19 @@ int test_layouts() {
       std::size_t compared = 0, luma_compared = 0;
       const int worst =
           compare_view(host_views[v], remap, v == 0 ? left : right,
-                       Rectifier::Output::Rgba8, &compared);
+                       Rectifier::Output::Rgba8, &compared, kStep);
       const int luma_worst =
           compare_view(luma_views[v], remap, v == 0 ? left : right,
-                       Rectifier::Output::Luma8, &luma_compared);
+                       Rectifier::Output::Luma8, &luma_compared, kStep);
       std::printf(
           "  layout %d, %s range, %s view: as R'G'B' %zu pixels, worst %d; "
           "as luma %zu pixels, worst %d\n",
           static_cast<int>(layout), form.full_range ? "full" : "limited",
           v == 0 ? "left" : "right", compared, worst, luma_compared,
           luma_worst);
-      CHECK(compared > bytes / 8);
+      CHECK(compared > reached / 2);
       CHECK(worst >= 0 && worst <= 1);
-      CHECK(luma_compared > luma_bytes / 2);
+      CHECK(luma_compared > reached / 2);
       CHECK(luma_worst >= 0 && luma_worst <= 1);
     }
     // The same planes in device buffers, from an offset the binding rounds.
@@ -1738,8 +1766,18 @@ int prefilter_anisotropic() {
   return 0;
 }
 
+// The 4.5:1 shrink and the 4K lens's footprints run on every leg but
+// AddressSanitizer's: there they would rectify 4K pictures down a path that
+// layouts and fold check already, each planted bug they catch failing those
+// too (DECISIONS.md, the 2026-11-04 test budget entry).
 int test_prefilter() {
   if (prefilter_one_tap() != 0) return 1;
+  if (kAddressSanitizer) {
+    std::puts(
+        "  the 4.5:1 shrink and the 4K lens's footprints: not under "
+        "AddressSanitizer");
+    return 0;
+  }
   if (prefilter_shrink() != 0) return 1;
   if (prefilter_anisotropic() != 0) return 1;
   return 0;
@@ -2025,7 +2063,9 @@ int test_refusals() {
 }
 
 // The pass at a RealSense IR pair's 1280x720 to FFS's 960x544, both views:
-// device time from the batch's timestamps, host time around rectify.
+// device time from the batch's timestamps, host time around rectify. Run by
+// hand (--timing), on an otherwise idle GPU: it asserts nothing the other
+// cases do not.
 int test_timing() {
 #ifdef VKC_TEST_SANITIZED
   constexpr int kRuns = 3;
@@ -2130,13 +2170,29 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_prefilter() != 0) return 1;
   if (test_taken_over() != 0) return 1;
   if (test_refusals() != 0) return 1;
-  if (test_timing() != 0) return 1;
   std::puts("sensor_stereo_rectifier: OK");
+  return 0;
+}
+
+int timing_main(vkc::test::GpuContext& gpu) {
+  g_device = &gpu.device;
+  g_allocator = &gpu.allocator;
+  std::printf("sensor_stereo_rectifier --timing on %s\n",
+              gpu.physical.properties().deviceName);
+  if (test_timing() != 0) return 1;
+  std::puts("sensor_stereo_rectifier --timing: OK");
   return 0;
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--timing") {
+    return vkc::test::run_on_gpu(sensor::device_requirements(), timing_main);
+  }
+  if (argc != 1) {
+    std::fprintf(stderr, "usage: %s [--timing]\n", argv[0]);
+    return 1;
+  }
   return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

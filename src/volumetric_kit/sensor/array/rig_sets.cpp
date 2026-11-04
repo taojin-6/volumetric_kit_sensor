@@ -31,16 +31,20 @@ std::size_t cut_set(FrameSet& set, std::size_t frames) {
   return kept;
 }
 
-// No set in kSilenceLimit: the IoError naming the rig or its one sensor, and
-// why a lone sync secondary delivers none.
-core::Status silence(SensorArray& array) {
+// No set in `limit`: the IoError naming the rig or its one sensor, the limit
+// (in whole seconds where it is whole), and why a lone sync secondary
+// delivers none.
+core::Status silence(SensorArray& array, std::chrono::milliseconds limit) {
   const bool one = array.size() == 1;
   const bool secondary =
       one && array.sensor(0).info().role == SyncRole::Secondary;
+  const std::string within = limit.count() % 1000 == 0
+                                 ? std::to_string(limit.count() / 1000) + " s"
+                                 : std::to_string(limit.count()) + " ms";
   return core::Status::io_error(
       "no frame from " +
       (one ? "camera " + array.sensor(0).info().id : std::string("the rig")) +
-      " in " + std::to_string(RigSets::kSilenceLimit.count()) + " s" +
+      " in " + within +
       (secondary ? std::string(" -- it is a sync secondary, which captures "
                                "only on another camera's signal; start the "
                                "camera that drives it")
@@ -50,10 +54,18 @@ core::Status silence(SensorArray& array) {
 }  // namespace
 
 RigSets::RigSets(SensorArray& array, std::size_t frames) noexcept
+    : RigSets(array, frames, kSilenceLimit) {}
+
+RigSets::RigSets(SensorArray& array, std::size_t frames,
+                 std::chrono::milliseconds silence_limit) noexcept
     : array_(array),
       size_(array.size()),
       limit_(frames),
-      last_set_(std::chrono::steady_clock::now()) {}
+      silence_limit_(silence_limit),
+      last_set_(std::chrono::steady_clock::now()) {
+  VKC_CHECK(silence_limit.count() > 0,
+            "RigSets: the silence limit must be positive");
+}
 
 RigSets::Skew RigSets::skew(std::size_t camera) const {
   VKC_CHECK(camera < size_, "RigSets::skew: index past the array");
@@ -64,11 +76,11 @@ core::Result<FrameSet> RigSets::next(core::StageMetrics* metrics) try {
   // Before the wait, so a failed allocation takes no set.
   if (skews_.empty()) skews_.resize(size_);
   const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
-      kSilenceLimit - (std::chrono::steady_clock::now() - last_set_));
+      silence_limit_ - (std::chrono::steady_clock::now() - last_set_));
   VKC_ASSIGN(
       std::optional<FrameSet> set,
       array_.wait_set(std::max(left, std::chrono::milliseconds(0)), metrics));
-  if (!set) return silence(array_);
+  if (!set) return silence(array_, silence_limit_);
   last_set_ = std::chrono::steady_clock::now();
   for (std::size_t c = 0; c < set->frames.size(); ++c) {
     const std::optional<std::int64_t> skew_ns = set->skew_ns(c);
