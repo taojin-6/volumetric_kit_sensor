@@ -507,11 +507,10 @@ jobs:
           fi
           ctest --test-dir build --output-on-failure --no-tests=error
 
-      # NVENC's code under AddressSanitizer and UndefinedBehaviorSanitizer,
-      # which the sanitizer job, building no FFmpeg or CUDA, never runs: the
-      # encoder's test again in a Debug tree of its own, built for it alone
-      # from the sources FetchContent fetched for build/, on the GPU, without
-      # the validation layer the Test step ran it under. CUDA maps memory in
+      # NVENC's code under AddressSanitizer and UndefinedBehaviorSanitizer
+      # (DECISIONS.md, the 2026-11-03 NVENC entry): a Debug tree of its own
+      # from the sources FetchContent fetched for build/, without the
+      # validation layer the Test step ran the test under. CUDA maps memory in
       # ASan's shadow gap, so the gap stays unprotected; the NVIDIA libraries'
       # own leaks are suppressed by name in tools/lsan.supp, whose path is the
       # container's (github.workspace names the host's). The NVIDIA ICD's EGL

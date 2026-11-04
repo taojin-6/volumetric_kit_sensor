@@ -18,19 +18,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`sensor_video_hevc_encoder_off_cuda`, off Apple wherever lavapipe is
   installed): the encoder test with `--off-cuda`, the loader given
   lavapipe alone. DECISIONS.md, the 2026-11-03 NVENC entry.
-- **CI: NVENC under AddressSanitizer and UndefinedBehaviorSanitizer**: the
-  26.04 leg builds the encoder test again in Debug with both and runs it on
-  the GPU, LeakSanitizer on (`tools/lsan.supp` names the NVIDIA libraries'
-  condition-variable shim). The NVIDIA legs install lavapipe and pin the
-  loader to the GPU's ICD for every other test.
+- **CI: NVENC under AddressSanitizer and UndefinedBehaviorSanitizer, and
+  lavapipe on the NVIDIA legs**: DECISIONS.md, the 2026-11-03 NVENC entry.
+  `tools/lsan.supp` gains the NVIDIA libraries' condition-variable shim.
 
 ### Changed
 
 - **`sensor_video_handover` and `sensor_video_hevc` run in a fifth and a
   third of their time.** The hand-over test raises a held picture's flag
-  50 ms after the step it holds submits, or starts its host wait, rather
-  than after a 1 or 2 s watchdog, and now asserts that the step's own
-  submit or wait is what let it go. The decoder test holds the GPU's
+  50 ms after the step it holds last submits, or, for a step that waits on
+  the host, after the step starts, rather than after a 1 or 2 s watchdog,
+  and now asserts that this raise is what let the step go. The decoder test holds the GPU's
   primary CUDA context after its context case, which now runs first.
 
 ## [0.42.0] - 2026-11-03
