@@ -39,9 +39,11 @@ struct RodriguesTransform {
 /// @brief Whether @p transform is rigid: finite, a proper rotation, and a
 ///        bottom row of `[0, 0, 0, 1]`.
 ///
-/// The rotation's columns must be orthonormal to within 1e-6, which refuses a
-/// matrix that is not a rotation without refusing one that went through float
-/// on its way here, and its determinant positive, which refuses a reflection.
+/// The bottom row must be `[0, 0, 0, 1]` to within 1e-12, which float's
+/// rounding is not (@ref exact_rigid sets it). The rotation's columns must be
+/// orthonormal to within 1e-6, which refuses a matrix that is not a rotation
+/// without refusing one that went through float on its way here, and its
+/// determinant positive, which refuses a reflection.
 /// @param transform  The transform to check.
 /// @return OK; or `Status::Code::InvalidArgument` naming what is wrong.
 VS_CAMERA_API core::Status check_rigid(const Mat4d& transform);

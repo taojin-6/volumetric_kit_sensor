@@ -4,8 +4,8 @@
 // The camera tier's geometry: what check_rigid refuses, the rigid inverse,
 // Rodrigues against OpenCV's matrix and back to its vector at every angle,
 // exact_rigid on a transform as float leaves one (made exact, deterministic,
-// at and past its tolerances), and OpenCV's extrinsic turned into a camera's
-// pose and back. Host-only.
+// the polar factor of a shear, at and past its tolerances), and OpenCV's
+// extrinsic turned into a camera's pose and back. Host-only.
 
 #include <algorithm>
 #include <cmath>
@@ -183,6 +183,22 @@ int test_exact_rigid() {
   CHECK(again.ok() && *again == m);
   const vkc::Result<camera::Mat4d> fixed = camera::exact_rigid(m);
   CHECK(fixed.ok() && *fixed == m);
+
+  // A shear, column 0 leaning 4e-5 toward column 1: the rotation is the
+  // polar factor, so R^T M is symmetric; Gram-Schmidt's would leave it
+  // triangular, 4e-5 off symmetric.
+  camera::Mat4d sheared = general;
+  sheared[0] += 4e-5 * sheared[1];
+  const vkc::Result<camera::Mat4d> polar = camera::exact_rigid(sheared);
+  CHECK(polar.ok());
+  CHECK(orthonormal_offset(*polar) < 1e-12);
+  const camera::Mat3d factor =
+      glm::transpose(camera::Mat3d(*polar)) * camera::Mat3d(sheared);
+  for (int a = 0; a < 3; ++a) {
+    for (int b = 0; b < 3; ++b) {
+      CHECK(std::fabs(factor[a][b] - factor[b][a]) < 1e-12);
+    }
+  }
 
   // At the tolerances, taken; past them, refused, each named.
   camera::Mat4d row = general;

@@ -124,10 +124,7 @@ constexpr std::uint16_t arkit_depth_mm(float metres) noexcept {
 /// (`depth_from_registered_color`), and `RgbdFrame::depth_to_color` is the
 /// identity. Each frame's pose is ARKit's for it (@ref PoseSource::Tracked),
 /// in this package's camera axes (`cv_from_gl_camera`), made exactly rigid
-/// (`camera::exact_rigid`): its bottom row exactly [0, 0, 0, 1] and its
-/// rotation the nearest one, orthonormal to double's rounding, where ARKit's
-/// float leaves the corner up to 3 ulp off 1 and the rotation orthonormal to
-/// float's. The pose is in ARKit's world:
+/// by `camera::exact_rigid` from ARKit's float. The pose is in ARKit's world:
 /// gravity-aligned, with its origin where the camera was when @ref open ran
 /// the session. That world lasts as long as the sensor does: the session
 /// never resets its tracking, and after an interruption ARKit finds its world

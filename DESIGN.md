@@ -214,8 +214,8 @@ decision): unprojection and rescaling come with their first caller.
   `rigid_inverse`, `nearest_rotation` (the polar factor, for an SDK's
   rotation that is not one), `exact_rigid` (a transform made in float
   made exact: the bottom row set, the rotation the nearest one, within
-  `kFloatRowTolerance` 1e-6 and `kFloatRotationTolerance` 1e-4; further
-  off refused; the 2026-11-04 exact-pose entry), and Rodrigues both ways
+  `kFloatRowTolerance` and `kFloatRotationTolerance`; further off
+  refused; the 2026-11-04 exact-pose entry), and Rodrigues both ways
   (`rotation_from_rodrigues`, `rodrigues_from_rotation`, accurate near 0 and
   pi). `RodriguesTransform` is OpenCV's `x' = R(rvec) x + tvec`.
 - **`camera/color_controls.hpp`** — `ColorControls`, a colour camera's
@@ -766,8 +766,9 @@ name or its pose is further from rigid than float leaves one, or held: the
 depth copied once, in one pass, into a pooled buffer as
 u16 millimetres (`arkit_depth_mm`) and the levels as ARKit gave them, the
 picture retained as it is, the pose through `cv_from_gl_camera` and
-`exact_rigid` (its corner, up to 3 ulp off 1 in ARKit's float, set to 1;
-the 2026-11-04 exact-pose entry), the time
+`exact_rigid` on every frame (its corner, up to 3 ulp off 1 in ARKit's
+float, set to 1 and its rotation the nearest one; the 2026-11-04
+exact-pose entry), the time
 on the host's clock by an offset measured at each start and again when an
 interruption ends, never smaller. `poll` and `drain` import the picture
 on the caller's thread (`PixelBufferImporter`, its images holding

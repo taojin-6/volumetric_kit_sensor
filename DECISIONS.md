@@ -7763,7 +7763,8 @@ camera's path is checked by hand on an iPad, with the scanner's retry.
   as before, so a recording of exact poses reads back exact. One made
   before 0.46.0 carries ARKit's poses as float left them, which the
   contract names and the prep refuses unless its reader makes them exact
-  (recon's stream reader does).
+  (recon's stream reader does); such a reader is a driver, so it drops a
+  frame whose pose `exact_rigid` refuses.
 - **Drivers whose float poses were rigid already keep their own path**:
   RealSense's factory extrinsic, float but within `check_rigid`'s bounds,
   goes through `check_rigid`; the Femto Mega's, a row 0.6% short, through
@@ -7778,12 +7779,18 @@ camera's path is checked by hand on an iPad, with the scanner's retry.
   repairs them in its stream reader and asked for the fix at the source
   (its owner item 3).
 - Every frame's rotation, not only one past float's rounding: a rotation
-  orthonormal only to float's 1e-7 drifts when a consumer composes on it.
-  The scanner's map-step removal, fed ARKit-like float poses (corner 2 ulp
-  off on a third of them), leaves its output 1.7e-5 off orthonormal after
-  seven steps, past `check_rigid`'s 1e-6; fed the same poses made exact,
-  4.6e-13 (a host probe of its `MapSteps` on a synthetic 720-frame path).
-  The call costs 0.03 µs on the Mac.
+  orthonormal only to float's 1e-7 drifts when a consumer composes on it,
+  and exact poses start a consumer's products from double's rounding. A
+  host probe of the scanner's map-step removal (its `MapSteps`, a
+  synthetic path with a step every 100 frames, ARKit-like float poses with
+  the corner 2 ulp off on a third of them) leaves its output past
+  `check_rigid`'s 1e-6 after 5 steps and past `kFloatRotationTolerance`
+  after 9; fed the same poses made exact, under 5e-13 after 7 steps, past
+  1e-6 after 21 and 1e-4 after 25. Each step there is composed on the last
+  with a transpose for the inverse, which multiplies the drift by about
+  2.5-3 a step from any start, so exact poses delay its drift and do not
+  end it; a step made exact as it is kept holds it at 6.7e-13 over 59
+  steps. The call costs 0.02-0.03 µs on the Mac.
 - One function in the camera tier, not a copy per driver or consumer:
   recon's reader of older recordings calls it too once it re-pins.
 - A driver refuses a pose it cannot make rigid, since the contract says
@@ -7791,10 +7798,13 @@ camera's path is checked by hand on an iPad, with the scanner's retry.
 
 **Not here.** recon's own repair in its stream reader stays until recon
 re-pins sensor; it then calls `camera::exact_rigid`, kept for recordings
-made before 0.46.0. The scanner's step removal needs no change of its own
-beyond the re-pin (the probe above). Orbbec's, RealSense's and the array's
-poses were rigid already (`check_rigid` at open, `nearest_rotation` for the
-Femto Mega's extrinsic), as were the stereo tier's products.
+made before 0.46.0, and drops a record whose pose it refuses, as the rule
+says a driver does. The scanner's step removal makes each step exact
+(`camera::exact_rigid`) as it keeps it, in the scanner after its re-pin:
+exact poses alone hold it rigid for about 20 steps (the probe above).
+Orbbec's, RealSense's and the array's poses were rigid already
+(`check_rigid` at open, `nearest_rotation` for the Femto Mega's
+extrinsic), as were the stereo tier's products.
 
 **Validation.** Apple M5 Max, Release with warnings as errors, under the
 validation layer, Orbbec on: the suite passes, 70 tests (70 on main), in
@@ -7803,8 +7813,9 @@ validation layer, Orbbec on: the suite passes, 70 tests (70 on main), in
 0.01 s / 2.1-2.2 s, `sensor_arkit_sensor` 0.15-0.17 s / 4.0-4.2 s,
 `sensor_wire_rgbd` 0.01 s / 0.24-0.26 s, `sensor_rgbd_contract` 0.00 s /
 0.04-0.09 s; no reports. `exact_rigid` is tested at and past each
-tolerance, bit for bit on an exact transform, for the same bits twice and
-as a fixed point; ARKit-like float transforms (the corner 3 ulp above or 1
+tolerance, bit for bit on an exact transform, for the same bits twice, as
+a fixed point and for a sheared rotation's polar factor (`R^T M`
+symmetric); ARKit-like float transforms (the corner 3 ulp above or 1
 ulp below 1, a row entry 1e-7, `R^T R` 4e-7 off) come out of the
 conversion with the row exact and `R^T R` within 1e-12, and one 1e-3 off,
 1e-3 in the row or NaN is refused, named; the driver hands such a pose out
@@ -7812,7 +7823,8 @@ under the contract and counts a far one refused; the wire returns an
 exact pose bit for bit. Planted bugs, each failing its tests: the row
 kept as given (`sensor_camera_geometry`, `sensor_arkit_conversion`,
 `sensor_arkit_sensor`, `sensor_wire_rgbd`), the rotation kept as given
-(`sensor_camera_geometry`, `sensor_arkit_conversion`), a refused pose
+(`sensor_camera_geometry`, `sensor_arkit_conversion`), Gram-Schmidt in
+place of the polar factor (`sensor_camera_geometry`), a refused pose
 handed on as float left it (`sensor_arkit_conversion`,
 `sensor_arkit_sensor`), and the contract's `color_to_world` rule dropped
 (`sensor_rgbd_contract`, `sensor_wire_rgbd`). The iOS build check
