@@ -101,8 +101,9 @@ class Driver {
 
   // --- The sensor's side: from the consumer's thread, but status and stats.
 
-  // To `timeout` for the first capture with the map. IoError where none
-  // came, the session failed first (its message), or the first one is not a
+  // To `timeout` for the first capture with the map. NotFound where none
+  // came, saying so where ARKit has the session interrupted then; IoError
+  // where the session failed first (its message), or the first one is not a
   // picture of the options' size or a usable camera.
   core::Status wait_opened(std::chrono::milliseconds timeout);
   const SensorInfo& info() const noexcept { return info_; }

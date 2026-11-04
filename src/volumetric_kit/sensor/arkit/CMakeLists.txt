@@ -8,9 +8,10 @@
 # targets, as DeckLink's driver is split over any capture:
 #
 # * sensor_arkit_units (static, internal): the host arithmetic on an ARFrame's
-#   parts (conversion.cpp) and the driver over any feed (driver.cpp): the queue,
-#   the depth copies, the counters, the import at poll. Plain C++ on Core Video,
-#   no ARKit, so the tests run it over a scripted feed.
+#   parts (conversion.cpp), the driver over any feed (driver.cpp): the queue,
+#   the depth copies, the counters, the import at poll, and what ARKit's feed
+#   does to its session at each event (session_state.cpp). Plain C++ on Core
+#   Video, no ARKit, so the tests run it over a scripted feed.
 # * sensor_arkit: ArkitSensor, its two feeds and its queue (Objective-C++, with
 #   ARC). ARKit and AVFoundation link only on iOS; no ARKit type reaches the
 #   public header.
@@ -32,7 +33,8 @@ generate_export_header(
 
 get_target_property(_vs_arkit_type sensor_arkit TYPE)
 
-add_library(sensor_arkit_units STATIC conversion.cpp driver.cpp)
+add_library(sensor_arkit_units STATIC conversion.cpp driver.cpp
+                                      session_state.cpp)
 add_library(volumetric_kit::sensor_arkit_units ALIAS sensor_arkit_units)
 set_target_properties(
   sensor_arkit_units

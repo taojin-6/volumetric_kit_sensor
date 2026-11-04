@@ -355,7 +355,10 @@ VKC_TRY(camera.start());  // then as any IRgbdSensor; camera.status() for a read
 ```
 
 ARKit's camera runs on iOS and iPadOS: `open` runs the session off the
-main thread and asks for the camera the first time. With
+main thread and asks for the camera the first time. An open that gets no
+frame in time (the device locked, the app in the background, the camera in
+use elsewhere) fails with `NotFound` and leaves nothing open: open again
+once the app is in front. With
 `options.source = ArkitSource::Pattern` it runs the same driver with no
 camera on any Apple platform, each frame's sequence coded in its depth and
 its picture, as the Mac's tests run it. CI compiles and links the camera's

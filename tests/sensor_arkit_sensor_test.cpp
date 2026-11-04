@@ -5,13 +5,16 @@
 // feed of captures made here -- IOSurface pictures tagged as a camera tags
 // them, ARKit's float depth and its levels -- as ARKit's feed and the pattern
 // hand them over, on the device the pictures are imported on: the cameras
-// from the first frame (info), and the open's refusals; the frame contract
+// from the first frame (info), and the open's refusals (NotFound for no frame
+// in time, saying where the session is interrupted); the frame contract
 // (rgbd_breach) over 120 frames with a withheld frame, refused pictures, a
 // frame without the map, queue drops at depths 1 and 3 and drain oldest first;
 // the counters; the sequences; a 3-period gap counted as 2 missed; each
 // frame's colour from its tags, its depth and levels, its cameras, pose,
 // exposure and noise; the picture's own buffer and how long it is held; the
-// clock; a feeding thread; ARKit's failure; and the option checks.
+// clock; a feeding thread; ARKit's failure; an open that gave up holding no
+// picture, and an open again; an interruption after the start under the
+// contract, and a stop letting its frames go; and the option checks.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -239,6 +242,7 @@ int test_open_refusals(const Gpu& gpu) {
           "format's 320 x 240");
   }
   // Nothing with depth arrives: a frame without the map does not open it.
+  // NotFound, which a later open may pass.
   {
     const Pixels pic = picture(kArkitTags);
     auto made = arkit::Driver::create(options(gpu), "ARKit, test");
@@ -247,9 +251,32 @@ int test_open_refusals(const Gpu& gpu) {
     no_map.depth = nullptr;
     (*made)->deliver(no_map, 1);
     const vkc::Status s = (*made)->wait_opened(std::chrono::milliseconds(20));
-    CHECK(s.domain() == vkc::Status::Code::IoError);
+    CHECK(s.domain() == vkc::Status::Code::NotFound);
     CHECK(s.message() ==
           "ArkitSensor: no frame with depth from ARKit within 20 ms");
+  }
+  // ARKit has the session interrupted when the wait ends (the device locked
+  // at launch): NotFound, saying so.
+  {
+    auto made = arkit::Driver::create(options(gpu), "ARKit, test");
+    CHECK(made.ok());
+    (*made)->interrupted(true);
+    const vkc::Status s = (*made)->wait_opened(std::chrono::milliseconds(0));
+    CHECK(s.domain() == vkc::Status::Code::NotFound);
+    CHECK(s.message() ==
+          "ArkitSensor: no frame with depth from ARKit within 0 ms: its "
+          "session is interrupted (the device locked, the app in the "
+          "background, or the camera in use elsewhere)");
+  }
+  // An interruption over before the first frame does not fail the open.
+  {
+    const Pixels pic = picture(kArkitTags);
+    auto made = arkit::Driver::create(options(gpu), "ARKit, test");
+    CHECK(made.ok());
+    (*made)->interrupted(true);
+    (*made)->interrupted(false);
+    (*made)->deliver(capture(maps, pic.ref, 1.0), 1);
+    CHECK((*made)->wait_opened(std::chrono::milliseconds(0)).ok());
   }
   // The session failed first: its message.
   {
@@ -679,6 +706,105 @@ int test_failure(const Gpu& gpu) {
   return 0;
 }
 
+// An open that gave up (NotFound: interrupted) holds none of ARKit's pictures,
+// a late frame included, and an open again on the same pictures hands frames
+// out under the contract.
+int test_reopen(const Gpu& gpu) {
+  DepthMaps maps;
+  const Pixels pic = picture(kArkitTags);
+  CHECK(pic.ref != nullptr);
+  const CFIndex alone = CFGetRetainCount(pic.ref);
+  {
+    auto made = arkit::Driver::create(options(gpu), "ARKit, test");
+    CHECK(made.ok());
+    arkit::Driver& gave_up = **made;
+    gave_up.interrupted(true);
+    CHECK(gave_up.wait_opened(std::chrono::milliseconds(0)).domain() ==
+          vkc::Status::Code::NotFound);
+    gave_up.interrupted(false);
+    gave_up.deliver(capture(maps, pic.ref, 1.0), 1);  // late, after the wait
+    gave_up.deliver(capture(maps, pic.ref, 1.0 + kPeriod), 2);
+    CHECK(CFGetRetainCount(pic.ref) == alone);
+  }
+  CHECK(CFGetRetainCount(pic.ref) == alone);
+  const std::unique_ptr<arkit::Driver> driver =
+      opened(options(gpu), maps, pic.ref);
+  CHECK(driver != nullptr);
+  CHECK(driver->begin().ok());
+  std::vector<sensor::RgbdFrame> frames;
+  for (int i = 0; i < 3; ++i) {
+    driver->deliver(capture(maps, pic.ref, 2.0 + i * kPeriod), now_ns());
+    if (take_newest(*driver, frames) != 0) return 1;
+  }
+  CHECK(frames.size() == 3 && frames.front().sequence == 0);
+  CHECK(testing::rgbd_breach(driver->info(), frames, driver->stats()).empty());
+  frames.clear();
+  driver->end();
+  CHECK(CFGetRetainCount(pic.ref) == alone);
+  return 0;
+}
+
+// An interruption after the start keeps the contract: no new frame while it
+// lasts; after it, the next sequences at later times, each frame with its
+// own picture, the relocalising one withheld. The driver's end at a stop lets
+// go of the frames it holds: the next start hands out none of them.
+int test_interruption(const Gpu& gpu) {
+  DepthMaps maps;
+  std::vector<Pixels> pics;
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    pics.push_back(picture(kArkitTags, kW, kH, i));
+    CHECK(pics.back().ref != nullptr);
+  }
+  const std::unique_ptr<arkit::Driver> driver =
+      opened(options(gpu), maps, pics[0].ref);
+  CHECK(driver != nullptr);
+  CHECK(driver->begin().ok());
+  std::vector<sensor::RgbdFrame> frames;
+  std::vector<CVPixelBufferRef> fed;
+  double t = 70.0;
+  const auto send = [&](std::size_t k, sensor::ArkitTracking tracking =
+                                           sensor::ArkitTracking::Normal) {
+    t += kPeriod;
+    driver->deliver(capture(maps, pics[k].ref, t, tracking), now_ns());
+    if (tracking == sensor::ArkitTracking::Normal) fed.push_back(pics[k].ref);
+  };
+  for (std::size_t k = 0; k < 3; ++k) {
+    send(k);
+    if (take_newest(*driver, frames) != 0) return 1;
+  }
+  driver->interrupted(true);
+  if (take_newest(*driver, frames) != 0) return 1;
+  CHECK(frames.size() == 3);  // no new frame while it lasts
+  driver->interrupted(false);
+  t += 2.0;  // the device was locked for 2 s
+  send(3, sensor::ArkitTracking::Relocalizing);
+  for (std::size_t k = 0; k < 3; ++k) {
+    send((k + 1) % 4);
+    if (take_newest(*driver, frames) != 0) return 1;
+  }
+  CHECK(frames.size() == 6 && fed.size() == 6);
+  CHECK(testing::rgbd_breach(driver->info(), frames, driver->stats()).empty());
+  const std::uint64_t want[] = {0, 1, 2, 4, 5, 6};
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    CHECK(frames[i].sequence == want[i]);
+    CHECK(sensor::pixel_buffer_of(frames[i].color) == fed[i]);
+    if (i > 0) CHECK(frames[i].timestamp_ns > frames[i - 1].timestamp_ns);
+  }
+  CHECK(driver->status().withheld == 1);
+  // A frame held at the stop is let go; the next start hands out none.
+  send(0);
+  driver->end();
+  CHECK(driver->begin().ok());
+  vkc::Result<std::optional<sensor::RgbdFrame>> none = driver->poll();
+  CHECK(none.ok() && !none.value());
+  send(1);
+  vkc::Result<std::optional<sensor::RgbdFrame>> next = driver->poll();
+  CHECK(next.ok() && next.value() && next.value()->sequence == 0);
+  CHECK(sensor::pixel_buffer_of(next.value()->color) == pics[1].ref);
+  driver->end();
+  return 0;
+}
+
 int test_options(const Gpu& gpu) {
   const auto refused = [](const sensor::ArkitSensor::Options& o) {
     return arkit::check_options(o).domain() ==
@@ -743,6 +869,8 @@ int gpu_main(Gpu& gpu) {
   if (test_clock(gpu) != 0) return 1;
   if (test_threaded(gpu) != 0) return 1;
   if (test_failure(gpu) != 0) return 1;
+  if (test_reopen(gpu) != 0) return 1;
+  if (test_interruption(gpu) != 0) return 1;
   if (test_options(gpu) != 0) return 1;
   std::puts("sensor_arkit_sensor: OK");
   return 0;
