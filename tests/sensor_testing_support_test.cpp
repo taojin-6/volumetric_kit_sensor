@@ -10,8 +10,9 @@
 // different picture at each index, its bytes pinned by MD5, and the test
 // depth's band at the same pixels; and,
 // on the GPU, its device picture's two plane images, their usage, layout and
-// size, each plane at their corner with 0xEE past it, and the refusals. The
-// host parts run without a device.
+// size, each plane at their corner with 0xEE past it, their sharing across
+// the queue families named, and the refusals. The host parts run without a
+// device.
 
 #include <algorithm>
 #include <cstddef>
@@ -270,8 +271,50 @@ int test_device_picture(const vkc::test::Gpu& gpu) {
   return 0;
 }
 
+// The planes CONCURRENT across the queue families named when they are two
+// or more distinct ones, exclusive with none or one family twice, and still
+// the plane at their corner; a family the GPU lacks refused. On a GPU of
+// one family the CONCURRENT case cannot be made, and is skipped.
+int test_device_picture_families(const vkc::test::Gpu& gpu) {
+  std::uint32_t count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(gpu.device.physical_device(), &count,
+                                           nullptr);
+  const std::uint32_t own = gpu.device.queue_family();
+  const testing::HostNv12 p = testing::test_pattern(37, 21, 9);
+  const auto shared = [&](const std::vector<std::uint32_t>& families,
+                          VkSharingMode want) {
+    auto made =
+        testing::device_picture(gpu.device, gpu.allocator, p, 0, families);
+    if (!made) std::fprintf(stderr, "%s\n", made.status().message().c_str());
+    CHECK(made.ok());
+    CHECK(made->queue_family == sensor::kQueueFamilyIgnored);
+    CHECK(made->image[0]->sharing_mode() == want &&
+          made->image[1]->sharing_mode() == want);
+    if (check_plane(gpu, *made->image[0], VK_FORMAT_R8_UNORM, 1, p.luma, 37, 21,
+                    0) != 0 ||
+        check_plane(gpu, *made->image[1], VK_FORMAT_R8G8_UNORM, 2, p.chroma, 19,
+                    11, 0) != 0) {
+      return 1;
+    }
+    return 0;
+  };
+  CHECK(shared({}, VK_SHARING_MODE_EXCLUSIVE) == 0);
+  CHECK(shared({own, own}, VK_SHARING_MODE_EXCLUSIVE) == 0);
+  if (count > 1) {
+    const std::uint32_t other = own == 0 ? 1 : 0;
+    CHECK(shared({other, own}, VK_SHARING_MODE_CONCURRENT) == 0);
+  } else {
+    std::puts("one queue family on this GPU: the CONCURRENT case skipped");
+  }
+  CHECK(testing::device_picture(gpu.device, gpu.allocator, p, 0, {own, count})
+            .status()
+            .domain() == vkc::Status::Code::InvalidArgument);
+  return 0;
+}
+
 int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_device_picture(gpu) != 0) return 1;
+  if (test_device_picture_families(gpu) != 0) return 1;
   std::puts("sensor_testing_support: OK");
   return 0;
 }
