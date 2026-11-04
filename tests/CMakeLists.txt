@@ -655,6 +655,26 @@ if(APPLE OR VS_WITH_FFMPEG)
   vs_target_warnings(sensor_video_hevc_encoder_test)
   add_test(NAME sensor_video_hevc_encoder
            COMMAND sensor_video_hevc_encoder_test)
+  # Off Apple, where lavapipe is installed (CI's NVIDIA legs): the test again
+  # with the loader given lavapipe alone, a device CUDA does not reach, which
+  # create refuses.
+  if(NOT APPLE)
+    find_file(
+      VS_LAVAPIPE_ICD
+      NAMES lvp_icd.json lvp_icd.x86_64.json lvp_icd.aarch64.json
+      PATHS /usr/share/vulkan/icd.d
+      NO_DEFAULT_PATH)
+    if(VS_LAVAPIPE_ICD)
+      add_test(NAME sensor_video_hevc_encoder_off_cuda
+               COMMAND sensor_video_hevc_encoder_test --off-cuda)
+      set_tests_properties(
+        sensor_video_hevc_encoder_off_cuda
+        PROPERTIES
+          ENVIRONMENT
+          "VK_DRIVER_FILES=${VS_LAVAPIPE_ICD};VK_ICD_FILENAMES=${VS_LAVAPIPE_ICD}"
+      )
+    endif()
+  endif()
 
   add_executable(sensor_video_jpeg_test sensor_video_jpeg_test.cpp)
   target_link_libraries(
