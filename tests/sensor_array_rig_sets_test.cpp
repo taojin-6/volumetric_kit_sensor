@@ -226,7 +226,7 @@ int cut() {
 }
 
 // A lone sync secondary, which captures only on another camera's signal, on
-// a run whose silence limit is 150 ms: one set 200 ms into the run, then
+// a run whose silence limit is 150 ms: one set 100 ms into the run, then
 // none. The limit counts from that set, not from the run's start, and the
 // run then fails naming the camera, the limit and why it is silent, counting
 // nothing more.
@@ -241,7 +241,7 @@ int silence() {
   CHECK(array);
 
   sensor::RigSets sets(*array, 2, kLimit);
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
   s->push(at(0));
   const Clock::time_point before_set = Clock::now();
   CHECK(sets.next().ok() && sets.sets() == 1 && sets.frames() == 1);
@@ -251,10 +251,10 @@ int silence() {
   const std::string why = none.status().message();
   CHECK(why.find("camera S in 150 ms") != std::string::npos);
   CHECK(why.find("sync secondary") != std::string::npos);
-  // The whole limit from the set, less the wait's rounding to milliseconds; a
-  // limit counted from the run's start ran out before the set came, so the
-  // run would fail at once.
-  CHECK(waited >= kLimit - std::chrono::milliseconds(50));
+  // The whole limit from the set, less the wait's rounding to milliseconds
+  // (under 1 ms; however loaded the host, the wait only grows); a limit
+  // counted from the run's start ends 100 ms early.
+  CHECK(waited >= kLimit - std::chrono::milliseconds(10));
   CHECK(!sets.done() && sets.sets() == 1 && sets.frames() == 1);
   return 0;
 }

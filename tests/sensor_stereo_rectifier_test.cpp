@@ -26,7 +26,8 @@
 //     path that layouts and fold already check);
 //   - the same pictures in device buffers give the same views, bit for bit;
 //   - V210 of a YUYV pair's codes times 4 gives YUYV's views bit for bit,
-//     both outputs, from the host and from device buffers;
+//     both outputs, from the host and from device buffers, the device's
+//     timed (one stage row, its host and device time);
 //   - past a lens's fold the pass writes 0: on the strong barrel pair at
 //     alpha 1, 5-10% of each view's rays are past it, where the lens model
 //     would put them back inside the picture, mirrored, and every one is 0,
@@ -1010,9 +1011,10 @@ int test_v210() {
     const auto rectifier = make(info, {{640, 360}, 0.25f, output});
     CHECK(rectifier != nullptr);
     const std::size_t bytes = view_bytes(rectifier->rig(), output);
-    const auto views = [&](const sensor::StereoFrame& f) {
+    const auto views = [&](const sensor::StereoFrame& f,
+                           vkc::StageMetrics* metrics) {
       std::array<std::vector<std::uint8_t>, 2> out;
-      auto pair = rectifier->rectify(f);
+      auto pair = rectifier->rectify(f, metrics);
       if (!pair) {
         std::fprintf(stderr, "%s\n", pair.status().message().c_str());
         return out;
@@ -1021,14 +1023,22 @@ int test_v210() {
       out[1] = read_view(*pair, *pair->right, bytes);
       return out;
     };
-    const auto want = views(frame_of(yuyv[0], yuyv[1]));
+    const auto want = views(frame_of(yuyv[0], yuyv[1]), nullptr);
     CHECK(want[0].size() == bytes && want[1].size() == bytes);
     sensor::StereoFrame dev = frame_of(v210[0], v210[1]);
     dev.left = on_device(v210[0], 300);
     dev.right = on_device(v210[1], 8);
     CHECK(dev.left.device != nullptr && dev.right.device != nullptr);
-    const bool host_same = views(frame_of(v210[0], v210[1])) == want;
-    const bool device_same = views(dev) == want;
+    const bool host_same = views(frame_of(v210[0], v210[1]), nullptr) == want;
+    // Timed, as a caller's stage rows ask: the same views, and one row with
+    // the pass's host time and its device time where the queue keeps time.
+    vkc::StageMetrics metrics;
+    const bool device_same = views(dev, &metrics) == want;
+    CHECK(metrics.rows().size() == 1);
+    const vkc::StageRow& row = metrics.rows()[0];
+    CHECK(std::strcmp(row.name, "stereo rectify") == 0 && row.cpu_ms > 0.0);
+    CHECK(row.device == vkc::DeviceTime::Unavailable ||
+          (row.device == vkc::DeviceTime::Measured && row.gpu_ms > 0.0));
     const auto lit = std::count_if(want[0].begin(), want[0].end(),
                                    [](std::uint8_t b) { return b != 0; });
     std::printf(

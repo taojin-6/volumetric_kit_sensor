@@ -63,8 +63,9 @@ RigSets::RigSets(SensorArray& array, std::size_t frames,
       limit_(frames),
       silence_limit_(silence_limit),
       last_set_(std::chrono::steady_clock::now()) {
-  VKC_CHECK(silence_limit.count() > 0,
-            "RigSets: the silence limit must be positive");
+  VKC_CHECK(
+      silence_limit.count() > 0 && silence_limit <= std::chrono::hours(24),
+      "RigSets: the silence limit must be positive and at most a day");
 }
 
 RigSets::Skew RigSets::skew(std::size_t camera) const {

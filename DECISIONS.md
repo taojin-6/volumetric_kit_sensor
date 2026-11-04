@@ -7637,14 +7637,15 @@ it caught still fails a case that stays. So:
   rectify shader, the prefilter or the V210 path changes, or when a figure
   here needs refreshing.
 - A case left out under one sanitizer skips in the test's own code, on
-  that sanitizer's macro, and runs on every other leg: `prefilter_shrink`
+  the compiler's test for that sanitizer (`__has_feature`,
+  `__SANITIZE_ADDRESS__`), and runs on every other leg: `prefilter_shrink`
   and `prefilter_anisotropic` under AddressSanitizer, where on 4K pictures
   they would rerun the rectify path that layouts and fold check.
 - A real-time constant a test would wait out is an option with today's
   default: `RigSets(array, frames, silence_limit)`, while
-  `RigSets(array, frames)` keeps `kSilenceLimit` (10 s). Its test runs on
-  150 ms, the set 200 ms into the run, so a limit counted from the run's
-  start fails at once.
+  `RigSets(array, frames)` keeps `kSilenceLimit` (10 s); a limit is
+  positive and at most a day. Its test runs on 150 ms, the set 100 ms into
+  the run, so a limit counted from the run's start ends 100 ms early.
 - `layouts` compares every third pixel each way: a stride of 3 meets odd
   and even columns and rows alike, where a chroma pair's two luma columns
   and a 4:2:0 plane's two rows differ, and 2 or 4 would meet one parity.

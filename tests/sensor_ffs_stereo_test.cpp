@@ -1002,6 +1002,8 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   }
   const vkc::test::Scratch scratch("sensor_ffs_stereo_");
   Fixture t{gpu, scratch.path};
+  // First, on the empty cache it checks for; a failure stops the run, so no
+  // later case meets a plan it left swapped or cut short.
   CHECK(plan_cache(t) == 0);
   CHECK(depth_units(t) == 0);
   CHECK(near_gate(t) == 0);

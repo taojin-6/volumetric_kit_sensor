@@ -70,7 +70,8 @@ class VS_ARRAY_API RigSets {
   /// @param silence_limit  How long @ref next waits for a set, from the last
   ///                       one (or from here, before the first), before it
   ///                       calls the sensors silent.
-  /// @pre @p silence_limit is positive.
+  /// @pre @p silence_limit is positive and at most a day, so no clock sum
+  ///      overflows.
   RigSets(SensorArray& array, std::size_t frames,
           std::chrono::milliseconds silence_limit) noexcept;
 
