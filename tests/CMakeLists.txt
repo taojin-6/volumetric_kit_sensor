@@ -515,16 +515,16 @@ endif()
 # picture's checks and its colour from its tags, ARKit's pinhole and pose, the
 # clock and the missed periods, on the internal units (sensor_arkit_units). The
 # session test, host-only too, drives what ARKit's feed does to its session at
-# each event against a fake of ARKit's session: interruptions before and after
-# the start, a stop, a failed open and a new one, a close during the open. The
-# driver test runs the driver over a scripted feed of captures made here
-# (IOSurface pictures, depth buffers), on the device: the frame contract
-# (rgbd_breach), the counters, the sequences, the colour, the picture's own
-# buffer and its holds, info, a feeding thread, an interruption, the open's
-# refusals and an open again, the session's failure. The pattern test opens
-# ArkitSensor with its test pattern: every frame's depth and picture carry its
-# sequence, the contract over 300 frames, a skipped tick, the refusals. These
-# two skip without a device.
+# each event against a fake of ARKit's session, resuming by itself after an
+# interruption or waiting to be run: interruptions before and after the start, a
+# stop, a failed open and a new one, a close during the open. The driver test
+# runs the driver over a scripted feed of captures made here (IOSurface
+# pictures, depth buffers), on the device: the frame contract (rgbd_breach), the
+# counters, the sequences, the colour, the picture's own buffer and its holds,
+# info, a feeding thread, an interruption, the open's refusals and an open
+# again, the session's failure. The pattern test opens ArkitSensor with its test
+# pattern: every frame's depth and picture carry its sequence, the contract over
+# 300 frames, a skipped tick, the refusals. These two skip without a device.
 if(APPLE)
   add_executable(sensor_arkit_conversion_test sensor_arkit_conversion_test.cpp)
   target_link_libraries(

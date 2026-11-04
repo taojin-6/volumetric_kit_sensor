@@ -744,10 +744,10 @@ int test_reopen(const Gpu& gpu) {
   return 0;
 }
 
-// An interruption after the start keeps the contract: nothing handed out
-// while it lasts; after it, the next sequences at later times, each frame
-// with its own picture, the relocalising one withheld. A stop lets go of the
-// frames before it: the next start hands out none of them.
+// An interruption after the start keeps the contract: no new frame while it
+// lasts; after it, the next sequences at later times, each frame with its
+// own picture, the relocalising one withheld. The driver's end at a stop lets
+// go of the frames it holds: the next start hands out none of them.
 int test_interruption(const Gpu& gpu) {
   DepthMaps maps;
   std::vector<Pixels> pics;
@@ -774,7 +774,7 @@ int test_interruption(const Gpu& gpu) {
   }
   driver->interrupted(true);
   if (take_newest(*driver, frames) != 0) return 1;
-  CHECK(frames.size() == 3);  // nothing while it lasts
+  CHECK(frames.size() == 3);  // no new frame while it lasts
   driver->interrupted(false);
   t += 2.0;  // the device was locked for 2 s
   send(3, sensor::ArkitTracking::Relocalizing);

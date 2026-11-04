@@ -159,9 +159,8 @@ struct SensorStats {
 ///
 /// **Opening** is each driver's own factory (`open` or `create`). Where one
 /// fails with `Status::Code::NotFound`, what it looks for is not there now --
-/// no camera answered in time (unplugged, still starting, or held by the
-/// system or other software), or a file is missing --, and a later open of
-/// the same options may find it: an app may try again.
+/// no camera attached or answering in time, or a file missing --, and a later
+/// open of the same options may find it: an app may try again.
 ///
 /// @code
 /// VKC_TRY(sensor.start());

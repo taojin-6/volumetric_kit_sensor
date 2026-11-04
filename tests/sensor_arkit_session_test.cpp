@@ -3,16 +3,18 @@
 
 // What ARKit's feed does to its session at each event (arkit/session_state.hpp,
 // sensor_arkit_units), with no session and no device: the state drives a fake
-// of ARKit's session as the project observed it, which delivers once run until
-// paused or interrupted, and after an interruption waits to be run again. An
-// interruption that ends during the open, between the open and the start, or
-// after the start runs it again, and one still on at a start is run at the
-// start; a stop pauses it and keeps it off through an interruption; a failed
-// open's session, closed, stays off while a new one opens; a close during the
-// open runs nothing after; ARKit's failure runs nothing again; one world (one
-// run that resets tracking) for each open.
+// of ARKit's session, which delivers once run until paused or interrupted.
+// Every case runs in both behaviours at an interruption's end: resuming by
+// itself, as Apple documents, and waiting to be run again, the case the feed's
+// run covers. An interruption that ends during the open, between the open and
+// the start, or after the start runs it again, and one still on at a start is
+// run at the start; a stop pauses it and keeps it off through an interruption;
+// a failed open's session, closed, stays off while a new one opens; a close
+// during the open runs nothing after; ARKit's failure runs nothing again; one
+// world (one run that resets tracking) for each open.
 
 #include <cstdio>
+#include <initializer_list>
 
 #include "session_state.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
@@ -24,8 +26,10 @@ namespace {
 using Act = arkit::SessionState::Act;
 
 // ARKit's session: running once run, until paused; an interruption stops its
-// frames, and at its end it waits to be run again.
+// frames, and at its end it resumes by itself (`resumes`) or waits to be run
+// again.
 struct FakeSession {
+  bool resumes = false;
   bool run = false;
   bool interrupted = false;
   bool waiting = false;  // an interruption ended, not run since
@@ -58,6 +62,8 @@ struct FakeSession {
 
 // The feed: each event to the state, and its act to the session.
 struct Feed {
+  explicit Feed(bool resumes) { session.resumes = resumes; }
+
   arkit::SessionState state;
   FakeSession session;
 
@@ -71,7 +77,7 @@ struct Feed {
   }
   Act end_interruption() {
     session.interrupted = false;
-    session.waiting = true;
+    session.waiting = !session.resumes;
     return applied(state.interruption_ended());
   }
   void fail() {
@@ -86,8 +92,8 @@ struct Feed {
   }
 };
 
-int test_events() {
-  Feed f;
+int test_events(bool resumes) {
+  Feed f(resumes);
   // Nothing runs before the open, and a new state never ran.
   CHECK(f.start() == Act::None && f.stop() == Act::None);
   CHECK(!f.state.wanted() && !f.state.running());
@@ -108,21 +114,21 @@ int test_events() {
   return 0;
 }
 
-int test_interrupted_before_start() {
+int test_interrupted_before_start(bool resumes) {
   // During the open: its end runs the session again, so the open still gets
   // its first frame.
   {
-    Feed f;
+    Feed f(resumes);
     f.open();
     f.interrupt();
-    CHECK(f.state.interrupted() && !f.session.delivers());
+    CHECK(!f.state.running() && !f.session.delivers());
     CHECK(f.end_interruption() == Act::Run);
-    CHECK(!f.state.interrupted() && f.session.delivers());
+    CHECK(f.state.running() && f.session.delivers());
   }
   // Between the open and the start (the session opened, not started): run
   // again at its end, and not again at the start.
   {
-    Feed f;
+    Feed f(resumes);
     f.open();
     f.interrupt();
     CHECK(f.end_interruption() == Act::Run);
@@ -131,7 +137,7 @@ int test_interrupted_before_start() {
   }
   // Still on at the start: run at the start, and again at its end.
   {
-    Feed f;
+    Feed f(resumes);
     f.open();
     f.interrupt();
     CHECK(!f.state.running());
@@ -143,8 +149,8 @@ int test_interrupted_before_start() {
   return 0;
 }
 
-int test_interrupted_after_start() {
-  Feed f;
+int test_interrupted_after_start(bool resumes) {
+  Feed f(resumes);
   f.open();
   CHECK(f.start() == Act::None);
   for (int i = 0; i < 2; ++i) {  // twice: the device locked, then an app over
@@ -157,8 +163,8 @@ int test_interrupted_after_start() {
   return 0;
 }
 
-int test_stopped() {
-  Feed f;
+int test_stopped(bool resumes) {
+  Feed f(resumes);
   f.open();
   f.start();
   CHECK(f.stop() == Act::Pause && !f.session.delivers());
@@ -172,26 +178,26 @@ int test_stopped() {
   return 0;
 }
 
-int test_failed_open_then_reopen() {
+int test_failed_open_then_reopen(bool resumes) {
   // The open gives up while ARKit has the session interrupted (the device
   // locked at launch): the feed closes it, and an end that comes later runs
   // nothing.
-  Feed first;
+  Feed first(resumes);
   first.open();
   first.interrupt();
   CHECK(first.close() == Act::Pause);
   CHECK(first.end_interruption() == Act::None);
   CHECK(!first.session.delivers() && first.session.runs == 0);
   // The open again: a new feed, its own world.
-  Feed second;
+  Feed second(resumes);
   CHECK(second.open() == Act::RunFresh && second.session.delivers());
   CHECK(second.start() == Act::None && second.session.delivers());
   CHECK(!first.session.delivers());
   return 0;
 }
 
-int test_close_during_open() {
-  Feed f;
+int test_close_during_open(bool resumes) {
+  Feed f(resumes);
   f.open();  // no frame yet
   CHECK(f.close() == Act::Pause && !f.session.delivers());
   f.interrupt();
@@ -202,8 +208,8 @@ int test_close_during_open() {
   return 0;
 }
 
-int test_failure() {
-  Feed f;
+int test_failure(bool resumes) {
+  Feed f(resumes);
   f.open();
   f.start();
   f.fail();
@@ -219,13 +225,15 @@ int test_failure() {
 }  // namespace
 
 int main() {
-  if (test_events() != 0) return 1;
-  if (test_interrupted_before_start() != 0) return 1;
-  if (test_interrupted_after_start() != 0) return 1;
-  if (test_stopped() != 0) return 1;
-  if (test_failed_open_then_reopen() != 0) return 1;
-  if (test_close_during_open() != 0) return 1;
-  if (test_failure() != 0) return 1;
+  for (const bool resumes : {false, true}) {
+    if (test_events(resumes) != 0) return 1;
+    if (test_interrupted_before_start(resumes) != 0) return 1;
+    if (test_interrupted_after_start(resumes) != 0) return 1;
+    if (test_stopped(resumes) != 0) return 1;
+    if (test_failed_open_then_reopen(resumes) != 0) return 1;
+    if (test_close_during_open(resumes) != 0) return 1;
+    if (test_failure(resumes) != 0) return 1;
+  }
   std::puts("sensor_arkit_session: OK");
   return 0;
 }

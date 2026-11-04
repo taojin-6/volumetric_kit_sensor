@@ -184,8 +184,8 @@ class CameraFeed final : public Feed {
     return {};
   }
 
-  // Paused, then the queue drained: a frame ARKit had queued before the pause
-  // lands now, and the driver's end lets it go.
+  // Paused, then the queue drained: a frame ARKit had already queued to it
+  // before the pause lands now, and the driver's end lets it go.
   void stop() noexcept override {
     transition(&SessionState::stop);
     dispatch_sync(queue_, ^{
@@ -235,9 +235,9 @@ class CameraFeed final : public Feed {
   }
   void interruption_ended() {
     driver_.interrupted(false);
-    // ARKit waits to be run again: run while wanted (from the open until a
-    // stop, and from each start), so an open still waiting gets its frame and
-    // a stopped sensor's camera stays off.
+    // Run while wanted (from the open until a stop, and from each start), for
+    // a session ARKit left waiting (session_state.hpp), so an open still
+    // waiting gets its frame; a stopped sensor's camera stays off.
     apply(state_.interruption_ended());
   }
 

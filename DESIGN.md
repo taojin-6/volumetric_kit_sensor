@@ -748,17 +748,12 @@ identity extrinsic, free running on the host's clock, tracked. The session
 is ARKit's world tracking on the back wide camera's format at the size and
 rate asked for (the binned one where two have them), one depth map
 (smoothed by default, or raw), HDR off, gravity-aligned; the first run
-resets the world and none after it, and relocalisation is allowed. What
-the feed does to the session at each event is an internal state machine
-of its own (`arkit/session_state.hpp`, in the units, tested on the Mac
-against a fake of ARKit's session): the session is wanted from `open`
-until a `stop` and from each `start`, an interruption that ends while it
-is wanted runs it again (the open's wait included, so a short one does
-not fail it), a `start` runs it where it is not running (paused, or
-interrupted), a `stop` pauses it and drains the queue, and the close runs
-nothing after it. An open with no frame in time is `NotFound`, saying
-where ARKit has the session interrupted, and leaves nothing open, so the
-app opens again (the 2026-11-04 reopen entry). Each `ARFrame` is one
+resets the world and none after it, and relocalisation is allowed. The
+session is run whenever it is wanted, from `open` until a `stop` and from
+each `start`; what the feed does to it at each event is an internal state
+machine (`arkit/session_state.hpp`, tested on the Mac). An open with no
+frame in time is `NotFound` and leaves nothing open, so the app opens
+again (the 2026-11-04 reopen entry). Each `ARFrame` is one
 capture on the sensor's serial queue: its period after the one before
 counts `missed` where ARKit skipped some; a frame without the map takes no
 number; the rest are numbered and received, then withheld where ARKit did
@@ -793,9 +788,9 @@ the same copy.
 opened modes, `depth_to_color`, rig role, clock, pose source, rate, the
 colour exposure as read back), and
 frames held up to `set_queue_depth`, the newest taken by `poll` or all,
-oldest first, by `drain`. Every driver's open fails alike where what it
-looks for is not there now: `NotFound`, which a later open may pass, so an
-app tries again (no camera answered in time, or a file is missing).
+oldest first, by `drain`. An open that fails with `NotFound` did not find
+what it looks for (no camera attached or answering in time, or a file
+missing), which a later open may: an app tries again.
 **`OrbbecSensor`** implements it: `open` refuses
 a `min_depth` of 0, which the GPU pass would, a camera in a sync mode the
 driver does not know, and one whose sync settings differ from

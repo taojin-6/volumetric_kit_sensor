@@ -38,13 +38,9 @@ SessionState::Act SessionState::close() {
   return ran ? Act::Pause : Act::None;
 }
 
-void SessionState::interruption_began() {
-  interrupted_ = true;
-  running_ = false;
-}
+void SessionState::interruption_began() { running_ = false; }
 
 SessionState::Act SessionState::interruption_ended() {
-  interrupted_ = false;
   return wanted() ? run() : Act::None;
 }
 

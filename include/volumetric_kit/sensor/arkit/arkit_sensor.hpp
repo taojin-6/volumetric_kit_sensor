@@ -142,11 +142,12 @@ constexpr std::uint16_t arkit_depth_mm(float metres) noexcept {
 /// The sensor owns its `ARSession`. It configures and runs the session and
 /// asks for the camera. The session is wanted from @ref open until a
 /// @ref stop, and from each @ref start: an interruption that ends then runs
-/// it again (ARKit waits to be run after one), and a @ref start runs it
-/// where it is not running. An interruption keeps the frame contract: nothing
-/// is handed out while it lasts, and the frames after it go on from the next
-/// sequence, at later times. An app shows the session's state through
-/// @ref status.
+/// it again, and a @ref start runs it where it is not running. Apple
+/// documents that ARKit resumes by itself after an interruption; the run
+/// covers a session left waiting, and keeps its world. An interruption keeps
+/// the frame contract: no new frame arrives while it lasts, and the frames
+/// after it go on from the next sequence, at later times. An app shows the
+/// session's state through @ref status.
 ///
 /// **The test pattern** (@ref ArkitSource::Pattern) runs the same queue,
 /// conversion, import and counters with no camera: frame n's depth is
@@ -286,9 +287,9 @@ class VS_ARKIT_API ArkitSensor final : public IRgbdSensor {
   ///         has failed.
   core::Status start() override;
   /// @brief As `IRgbdSensor::stop`, pausing the session, which lets the
-  ///        camera go; a frame ARKit had queued before the pause is let go
-  ///        too, so no frame from before a stop is handed out after the next
-  ///        @ref start. The sensor stays open, for another @ref start.
+  ///        camera go; a frame ARKit had already queued to the sensor before
+  ///        the pause is let go too. The sensor stays open, for another
+  ///        @ref start.
   void stop() noexcept override;
   /// @return As `IRgbdSensor::poll`: the newest frame's picture becomes images
   ///         here, on the caller's thread. `Status::Code::IoError` once
