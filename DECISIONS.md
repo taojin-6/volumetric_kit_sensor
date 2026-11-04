@@ -7694,14 +7694,14 @@ the RTX 4090 idle, two rounds alternated; nunga's camera-only build):
 
 | Entry | M5 Max Release / Debug / TSan | RTX 4090 Release / ASan |
 | --- | --- | --- |
-| sensor_stereo_rectifier | 2.4-2.8 → 1.2 / 23.3-23.5 → 10.6-10.8 / — | 4.6 → 2.2 / 55.5-56.2 → 16.7-16.9 |
+| sensor_stereo_rectifier | 2.4-2.8 → 1.2 / 23.3-23.5 → 10.6-10.9 / — | 4.6 → 2.1 / 55.5-56.2 → 16.6 |
 | sensor_arkit_pattern | 5.4-5.5 → 0.9 / 9.1-9.3 → 1.5 / 79.5-81.9 → 11.2-11.9 | — |
-| sensor_array_rig_sets | 10.6 → 0.4 / 10.6 → 0.4-0.5 / — | 10.5 → 0.35 / 10.5 → 0.36 |
-| sensor_ffs_stereo | — | 7.7-7.8 → 2.8-2.9 / — |
+| sensor_array_rig_sets | 10.6 → 0.3 / 10.6 → 0.3 / — | 10.5 → 0.25 / 10.5 → 0.26 |
+| sensor_ffs_stereo | — | 7.7-7.8 → 2.6-2.7 / — |
 | sensor_subproject_camera_only | — | nunga, 4 cores: 18.1 → 6.7-6.8 |
 
-The RTX 4090's whole suite, four at a time, went from 18.9 to 8.4-9.0 s in
+The RTX 4090's whole suite, four at a time, went from 18.9 to 8.3-9.0 s in
 Release and from 58.9 to 16.8-17.5 s under ASan; the M5 Max's Release
-suite from 10.5 to 7.4-8.4 s. The timing entry takes 1.4 s on the RTX
+suite from 10.5 to 4.7-8.4 s. The timing entry takes 1.4 s on the RTX
 4090 and 1.6 s on the M5 Max; the 4K V210 pass, idle, 0.47 ms and 1.04 ms
 of device time for both views.
