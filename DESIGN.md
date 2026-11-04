@@ -1355,7 +1355,8 @@ The band's layout, `kIndexSquare` and `kIndexBits`, is `index_band.hpp`'s
 (the standard library alone), which the pattern and the test depth both
 include. `nv12_picture.hpp`'s `device_picture` writes a picture into R8 and
 R8G8 plane images in `GENERAL` through the core's `write_image`, padded
-past the planes where a test asks, as VideoToolbox's images can be; on
+past the planes where a test asks, as VideoToolbox's images can be, and
+shared across the queue families it names; on
 Apple `nv12_pixel_buffer.hpp`'s `pixel_buffer` makes it an IOSurface
 `CVPixelBuffer`, tagged, as a camera's. `hevc_slices.hpp`'s `SliceReader`
 (in `sensor_video_syntax`, test use only) reads each picture's first slice

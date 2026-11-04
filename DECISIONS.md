@@ -566,7 +566,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   7.1 refuses. FFmpeg's log level is sensor's to set, once. *Amended
   2026-11-03:* a failed reopen keeps the lost session's buffers; the facts,
   `receive`'s limit and the open failures say what NVENC does; C13 holds
-  the dropped picture's writer on NVENC.
+  the dropped picture's writer on NVENC; the refusal of a device CUDA does
+  not reach is asserted on lavapipe, and NVENC's code runs under ASan and
+  UBSan in CI.
 
 - [**2026-11-03**](#2026-11-03--a-tracked-sensors-posed-stills-are-a-file-of-their-own-cameratracked_stillshpp-with-one-reader-and-one-writer-that-the-recorder-and-calibs-solve-share-built-from-the-registrations-and-the-array-files-blocks-the-registrations-edge_m-is-the-edge-the-solve-fitted-the-corners-to-amends-the-2026-11-02-tracked-registration-entry) —
   A tracked sensor's stills of one session's world epoch, each with its
@@ -7440,8 +7442,14 @@ quality case).
   opens again; the quality case at 258x146 too, so a chroma placed after
   an aligned luma height fails; the colour sweep on Apple back to the
   stream's rules (C6 and C11 on every code); the writer's other row
-  refusals. That a device CUDA does not reach is refused (lavapipe) is
-  checked by hand, as no CI leg has both ICDs.
+  refusals. That a device CUDA does not reach is refused is asserted on
+  lavapipe (`sensor_video_hevc_encoder_off_cuda`, wherever lavapipe is
+  installed), which CI's NVIDIA legs install beside the GPU; their other
+  tests keep the GPU's ICD alone. NVENC's code runs under AddressSanitizer
+  and UndefinedBehaviorSanitizer on the 26.04 leg (Debug, the encoder test
+  alone); ThreadSanitizer stays VideoToolbox's, as gcc refuses
+  `std::atomic_thread_fence` under it and the NVIDIA driver faults at
+  start-up under it.
 
 ### 2026-11-03 — A tracked sensor's posed stills are a file of their own (`camera/tracked_stills.hpp`), with one reader and one writer that the recorder and calib's solve share, built from the registration's and the array file's blocks; the registration's `edge_m` is the edge the solve fitted the corners to (amends the 2026-11-02 tracked registration entry).
 
