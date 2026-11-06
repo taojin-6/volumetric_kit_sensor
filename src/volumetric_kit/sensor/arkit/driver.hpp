@@ -86,9 +86,10 @@ class Driver {
   // One ARFrame, as ArkitSensor's documentation says. Before the first with
   // the map, its cameras become the sensor's, which wait_opened waits for.
   // Before a start and after a stop, let go uncounted. While started: its
-  // period after the one before counted missed; without the map, let go
-  // uncounted; else numbered and received, then withheld, refused or held,
-  // the consumer notified once it is.
+  // period after the one before counted missed; its picture the withheld one
+  // once a consumer has asked, unless tracked normally, when the last goes
+  // back; without the map, let go uncounted; else numbered and received, then
+  // withheld, refused or held, the consumer notified once it is.
   void deliver(const Capture& capture, std::uint64_t arrival_ns);
   // ARKit stopped or resumed the camera; at the end, while started, the
   // clock is measured again (ClockMap::remeasure).
@@ -112,11 +113,15 @@ class Driver {
   // Frames from now: the counters and sequences from 0, the clock measured
   // (ClockMap::start). IoError once the session failed.
   core::Status begin();
-  // Frames from now let go, and those held dropped uncounted.
+  // Frames from now let go, and those held dropped uncounted, the withheld
+  // picture with them.
   void end() noexcept;
   bool started() const;
   core::Result<std::optional<RgbdFrame>> poll();
   core::Status drain(std::vector<RgbdFrame>* out);
+  // As ArkitSensor::poll_withheld_picture. Counted as an import alone: its
+  // frame already counts as withheld, or took no number.
+  core::Result<std::optional<YuvImage>> poll_withheld_picture();
   bool failed() const noexcept { return queue_.failed(); }
   SensorStats stats() const noexcept;
   ArkitStatus status() const;
@@ -167,6 +172,10 @@ class Driver {
   void open_from(const Capture& capture);
   // A received capture converted to what a frame holds; or why it is refused.
   core::Result<Held> convert(const Capture& capture);
+  // A picture as `out`'s images, described by `color`, and the importer's
+  // counts in the status: every picture handed out comes through here.
+  core::Status import_picture(CVPixelBufferRef picture,
+                              const PictureColor& color, YuvImage& out);
   // A taken frame's picture imported and the frame made; its import's
   // failure counted failed.
   core::Result<RgbdFrame> hand_out(Held held);
@@ -189,6 +198,11 @@ class Driver {
   std::uint64_t received_ = 0;
   std::uint64_t delivered_ = 0;
   std::uint64_t import_failed_ = 0;
+  // The first poll_withheld_picture has come; stays set for the sensor's life.
+  bool withheld_asked_ = false;
+  // The newest picture while not tracked normally, from that first call: null
+  // once it is, at a stop and once handed out.
+  Retained withheld_picture_;
   ArkitStatus status_;
   std::function<void()> notify_;
 };

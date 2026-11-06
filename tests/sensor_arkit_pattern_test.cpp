@@ -6,10 +6,10 @@
 // at 320x240 (not under a sanitizer) taken through set_frame_notify, each
 // one's depth band (depth_index) and picture band (pattern_index, its luma
 // read back on the device's queue by PictureReadback) naming its sequence,
-// the frame contract (rgbd_breach) and no failures; a tick finding all 4
-// pictures held is skipped and counted missed, leaving no gap in the
-// sequences; sequences and counters from 0 at each start; the refusals of
-// open; and moves.
+// the frame contract (rgbd_breach), no failures and no withheld picture; a
+// tick finding all 4 pictures held is skipped and counted missed, leaving no
+// gap in the sequences; sequences and counters from 0 at each start; the
+// refusals of open; and moves.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -182,6 +182,10 @@ int test_frames(const Gpu& gpu, std::uint32_t width, std::uint32_t height,
             static_cast<long>(index));
       ++taken;
     }
+    // Its tracking is always normal: nothing withheld to look at.
+    vkc::Result<std::optional<sensor::YuvImage>> withheld =
+        camera.poll_withheld_picture();
+    CHECK(withheld.ok() && !withheld.value());
   }
   camera.stop();
   const sensor::SensorStats stats = camera.stats();
@@ -291,6 +295,8 @@ int test_moves(const Gpu& gpu) {
   CHECK(a.exhausted());
   CHECK(a.start().domain() == vkc::Status::Code::InvalidArgument);
   CHECK(a.poll().status().domain() == vkc::Status::Code::InvalidArgument);
+  CHECK(a.poll_withheld_picture().status().domain() ==
+        vkc::Status::Code::InvalidArgument);
   std::vector<sensor::RgbdFrame> frames;
   CHECK(a.drain(&frames).domain() == vkc::Status::Code::InvalidArgument);
   CHECK(a.set_queue_depth(2).domain() == vkc::Status::Code::InvalidArgument);

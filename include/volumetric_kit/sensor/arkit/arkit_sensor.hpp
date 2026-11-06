@@ -28,7 +28,7 @@
 #include "volumetric_kit/sensor/frame/depth_noise.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/sensor/rgbd_sensor.hpp"
-#include "volumetric_kit/sensor/yuv_image.hpp"  // kMaxColorQueueFamilies
+#include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace volumetric_kit::sensor {
 
@@ -136,17 +136,20 @@ constexpr std::uint16_t arkit_depth_mm(float metres) noexcept {
 /// the session. That world lasts as long as the sensor does: the session
 /// never resets its tracking, and after an interruption ARKit finds its world
 /// again before frames go out again. A frame that ARKit did not track
-/// normally is withheld. Timestamps are ARKit's capture times moved onto the
-/// host's `std::chrono::system_clock` (@ref ClockDomain::Host), by an offset
-/// measured at each @ref start and again when an interruption ends, never
-/// smaller than before, so they increase within a start. Each frame states
-/// the camera's exposure (`RgbdFrame::color_exposure`) and
+/// normally is withheld; only its picture may still reach a live view
+/// (@ref poll_withheld_picture). Timestamps are ARKit's capture times moved
+/// onto the host's `std::chrono::system_clock` (@ref ClockDomain::Host), by an
+/// offset measured at each @ref start and again when an interruption ends,
+/// never smaller than before, so they increase within a start. Each frame
+/// states the camera's exposure (`RgbdFrame::color_exposure`) and
 /// @ref kArkitDepthNoise.
 ///
 /// A frame holds its depth and ARKit's picture, so it outlives the next poll.
 /// ARKit has its picture back once every copy of the frame is gone. ARKit
 /// keeps a small pool of pictures, so a consumer that holds many frames
-/// starves the camera: keep a few.
+/// starves the camera: keep a few. While tracking is not normal the sensor
+/// holds one picture of that pool itself, once a consumer has asked for one
+/// (@ref poll_withheld_picture).
 ///
 /// The sensor owns its `ARSession`. It configures and runs the session and
 /// asks for the camera. The session is wanted from @ref open until a
@@ -168,8 +171,8 @@ constexpr std::uint16_t arkit_depth_mm(float metres) noexcept {
 /// is the identity, the pinhole centred with a focal length of 0.75 times the
 /// width, and a timer on the sensor's queue ticks at @ref Options::fps; a
 /// tick whose 4 buffers are all held is skipped, which counts as
-/// `ArkitStatus::missed`. The model is "ARKit test pattern, " and the
-/// device's model.
+/// `ArkitStatus::missed`. Its tracking is always normal. The model is
+/// "ARKit test pattern, " and the device's model.
 ///
 /// @code
 /// ArkitSensor::Options options;  // 1920x1440 at 60 Hz, smoothed depth
@@ -185,8 +188,9 @@ constexpr std::uint16_t arkit_depth_mm(float metres) noexcept {
 /// @endcode
 ///
 /// @warning Not thread-safe, except @ref status and @ref stats: open, start,
-///          poll, drain and stop from one thread. ARKit delivers on a queue of
-///          the sensor's own, which this class hands over internally.
+///          poll, drain, poll_withheld_picture and stop from one thread. ARKit
+///          delivers on a queue of the sensor's own, which this class hands
+///          over internally.
 class VS_ARKIT_API ArkitSensor final : public IRgbdSensor {
  public:
   /// @brief Which source, which picture, which depth, and the device.
@@ -309,6 +313,46 @@ class VS_ARKIT_API ArkitSensor final : public IRgbdSensor {
   /// @return As @ref poll; on a failure, the frames before it stay appended,
   ///         and those after it are counted dropped.
   core::Status drain(std::vector<RgbdFrame>* out) override;
+  /// @brief The newest picture ARKit gave while its tracking is not normal, for
+  ///        a live view alone: it has no pose to trust, so it never comes from
+  ///        poll or drain. Each is handed out once.
+  ///
+  /// A frame without the requested map has its picture here too. The first
+  /// call starts the hold, for the sensor's life, and may itself find none: a
+  /// consumer that never calls this has nothing held for it. From then the
+  /// sensor holds one between a @ref start and a @ref stop: the next replaces
+  /// it, a frame tracked normally or the stop gives it back to ARKit's pool,
+  /// and the hand-out makes it the image's, back when that goes. It comes as a
+  /// frame's picture does: its images, its colour from its tags, imported on
+  /// the caller's thread and counted as an import
+  /// (`ArkitStatus::pictures_imported`, `ArkitStatus::surfaces_made`), no
+  /// frame's counter moving. A picture a frame would be refused for gives
+  /// none, and no count.
+  ///
+  /// No frame notification comes with it (@ref set_frame_notify): a consumer
+  /// blocked on one wakes on its own timeout to ask.
+  ///
+  /// While it is held, a consumer keeping every other picture of ARKit's pool
+  /// leaves none for the next frame, and that frame is what would replace it.
+  /// Calling this and letting go of what it gives, or of another, frees one
+  /// with no new frame; a consumer that does neither stalls the camera while
+  /// tracking stays lost.
+  ///
+  /// @code
+  /// VKC_ASSIGN(auto frame, camera.poll());
+  /// if (frame) {
+  ///   // stream and view
+  /// } else {
+  ///   VKC_ASSIGN(auto picture, camera.poll_withheld_picture());
+  ///   if (picture) view.offer(*picture);
+  /// }
+  /// @endcode
+  /// @return The picture; nullopt with tracking normal, or with none new.
+  ///         `Status::Code::InvalidArgument` on a moved-from sensor;
+  ///         `Status::Code::IoError` once ARKit's session has failed; the
+  ///         importer's failure (`Status::Code::OutOfMemory`,
+  ///         `Status::Code::Backend`).
+  core::Result<std::optional<YuvImage>> poll_withheld_picture();
   /// @return `true` on a moved-from sensor and once ARKit's session has
   ///         failed; never for the pattern.
   bool exhausted() const noexcept override;

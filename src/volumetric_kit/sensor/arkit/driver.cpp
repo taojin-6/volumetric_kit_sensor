@@ -12,6 +12,10 @@ namespace volumetric_kit::sensor::arkit {
 
 namespace {
 constexpr const char* kWho = "ArkitSensor";
+
+std::string session_failure(const std::string& why) {
+  return std::string(kWho) + ": ARKit's session failed: " + why;
+}
 }  // namespace
 
 core::Status check_options(const ArkitSensor::Options& options) {
@@ -154,6 +158,12 @@ void Driver::deliver(const Capture& capture, std::uint64_t arrival_ns) {
           missed_periods(*last_time_s_, capture.timestamp_s, options_.fps);
     }
     last_time_s_ = capture.timestamp_s;
+    // With or without the map: a live view wants the picture either way. Not
+    // before one asks: a consumer that never will keeps the whole pool.
+    withheld_picture_ =
+        withheld_asked_ && capture.tracking != ArkitTracking::Normal
+            ? Retained(capture.picture)
+            : Retained();
     if (capture.depth == nullptr) return;  // a frame without the map
     const std::uint64_t sequence = next_sequence_++;
     ++received_;
@@ -217,7 +227,7 @@ void Driver::fail(const std::string& why) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (status_.session_error.empty()) status_.session_error = why;
-    queue_.fail(std::string(kWho) + ": ARKit's session failed: " + why);
+    queue_.fail(session_failure(why));
     opened_cv_.notify_all();
     notify = notify_;
   }
@@ -235,9 +245,7 @@ core::Status Driver::wait_opened(std::chrono::milliseconds timeout) {
     return opened_ || !open_error_.empty() || !status_.session_error.empty();
   });
   if (!status_.session_error.empty()) {
-    return core::Status::io_error(
-        std::string(kWho) +
-        ": ARKit's session failed: " + status_.session_error);
+    return core::Status::io_error(session_failure(status_.session_error));
   }
   if (!open_error_.empty()) return core::Status::io_error(open_error_);
   if (!opened_) {
@@ -278,9 +286,7 @@ core::Status Driver::set_frame_notify(std::function<void()> notify) {
 core::Status Driver::begin() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (queue_.failed()) {
-    return core::Status::io_error(
-        std::string(kWho) +
-        ": ARKit's session failed: " + status_.session_error);
+    return core::Status::io_error(session_failure(status_.session_error));
   }
   if (started_) return {};
   queue_.clear();
@@ -303,6 +309,7 @@ void Driver::end() noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
   started_ = false;
   queue_.clear();
+  withheld_picture_ = Retained();
 }
 
 bool Driver::started() const {
@@ -310,25 +317,34 @@ bool Driver::started() const {
   return started_;
 }
 
-core::Result<RgbdFrame> Driver::hand_out(Held held) {
+core::Status Driver::import_picture(CVPixelBufferRef picture,
+                                    const PictureColor& color, YuvImage& out) {
   const camera::ImageSize& size = info_.color->size;
-  RgbdFrame frame;
-  const core::Status imported = importer_.import(held.picture.get(), size.width,
-                                                 size.height, frame.color);
+  const core::Status imported =
+      importer_.import(picture, size.width, size.height, out);
   const PixelBufferImporter::Stats counts = importer_.stats();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     status_.pictures_imported = counts.pictures;
     status_.surfaces_made = counts.surfaces;
-    if (!imported.ok()) {
-      ++import_failed_;
-      return imported;
-    }
   }
-  frame.color.kr = held.color.kr;
-  frame.color.kb = held.color.kb;
-  frame.color.full_range = held.color.full_range;
-  frame.color.chroma_location = held.color.chroma_location;
+  VKC_TRY(imported);
+  out.kr = color.kr;
+  out.kb = color.kb;
+  out.full_range = color.full_range;
+  out.chroma_location = color.chroma_location;
+  return {};
+}
+
+core::Result<RgbdFrame> Driver::hand_out(Held held) {
+  RgbdFrame frame;
+  const core::Status imported =
+      import_picture(held.picture.get(), held.color, frame.color);
+  if (!imported.ok()) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++import_failed_;
+    return imported;
+  }
   frame.depth = held.depth->depth.data();
   if (options_.min_confidence > 0) {
     frame.depth_confidence = held.depth->confidence.data();
@@ -377,6 +393,31 @@ core::Status Driver::drain(std::vector<RgbdFrame>* out) {
     out->push_back(std::move(frame).value());
   }
   return {};
+}
+
+core::Result<std::optional<YuvImage>> Driver::poll_withheld_picture() {
+  Retained picture;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    withheld_asked_ = true;
+    if (queue_.failed()) {
+      return core::Status::io_error(session_failure(status_.session_error));
+    }
+    picture = std::move(withheld_picture_);
+  }
+  const auto none = [] { return std::optional<YuvImage>{}; };
+  if (picture.get() == nullptr) return none();
+  // A picture a frame would be refused for gives none, as a refused frame does
+  // not fail a poll.
+  const camera::ImageSize& size = info_.color->size;
+  if (!check_picture(picture.get(), size.width, size.height).ok()) {
+    return none();
+  }
+  const core::Result<PictureColor> color = picture_color(picture.get());
+  if (!color.ok()) return none();
+  YuvImage image;
+  VKC_TRY(import_picture(picture.get(), color.value(), image));
+  return std::optional<YuvImage>(std::move(image));
 }
 
 SensorStats Driver::stats() const noexcept {
