@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.0] - 2026-11-05
+
+### Added
+
+- **`PixelBufferImporter::stats`**: the pictures that reached their surface
+  and the surfaces whose images were made. `ArkitStatus` carries them since
+  the open, as `pictures_imported` and `surfaces_made`.
+
+### Fixed
+
+- **`PixelBufferImporter` knows a surface by its `IOSurfaceGetID`, not its
+  `IOSurfaceRef`.** A surface from another process comes under a new pointer
+  each time, so each picture on it would make its images again, ending in a
+  wait on the device's queue, behind whatever is queued there. DECISIONS.md,
+  the 2026-11-05 surface id entry.
+
 ## [0.46.0] - 2026-11-04
 
 ### Added

@@ -462,7 +462,7 @@ pixel buffers or on targets, which `testing/nv12_writer.hpp`'s
 
 ## Versions
 
-The version is `project()`'s (0.46.0), carried by the umbrella as
+The version is `project()`'s (0.47.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

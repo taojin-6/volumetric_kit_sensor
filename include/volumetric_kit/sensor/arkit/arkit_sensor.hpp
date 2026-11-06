@@ -83,6 +83,13 @@ struct ArkitStatus {
   /// shows. The pattern's ticks skipped for want of a free picture count
   /// here too.
   std::uint64_t missed = 0;
+  /// Pictures that came to the importer since the open, not since the last
+  /// start (`PixelBufferImporter::Stats::pictures`).
+  std::uint64_t pictures_imported = 0;
+  /// Surfaces whose images those pictures made, since the open
+  /// (`PixelBufferImporter::Stats::surfaces`). ARKit's pool keeps it near its
+  /// size; a poll that adds to it waits on the device's queue.
+  std::uint64_t surfaces_made = 0;
   std::string last_refusal;   ///< Why the last frame was refused; or empty.
   std::string session_error;  ///< ARKit's failure, which ended the session.
 };

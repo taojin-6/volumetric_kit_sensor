@@ -615,6 +615,12 @@ entries relevant to your task; later amendments supersede earlier rules.
   nearest one, within 1e-6 of the row and 1e-4 of orthonormal; further off
   refused. `ArkitSensor` takes every pose through it.
 
+- [**2026-11-05**](#2026-11-05--pixelbufferimporter-knows-a-surface-by-its-iosurfacegetid-not-its-iosurfaceref-and-counts-the-pictures-and-the-surfaces-that-made-images) —
+  `PixelBufferImporter` knows a surface by its `IOSurfaceGetID`, since one
+  from another process comes under a new `IOSurfaceRef` each time; holding
+  a listed surface keeps its id its own. `PixelBufferImporter::stats` and
+  `ArkitStatus` count the pictures and the surfaces that made images.
+
 ## Decision record
 
 ### 2026-08-02 — The `sensor` tier is a *contract*, not a driver collection: a capture driver lives here only if this repo can build
@@ -7941,3 +7947,70 @@ handed on as float left it (`sensor_arkit_conversion`,
 `sensor_arkit_sensor`), and the contract's `color_to_world` rule dropped
 (`sensor_rgbd_contract`, `sensor_wire_rgbd`). The iOS build check
 compiles the conversion for iOS. No camera was opened.
+
+### 2026-11-05 — `PixelBufferImporter` knows a surface by its `IOSurfaceGetID`, not its `IOSurfaceRef`, and counts the pictures and the surfaces that made images.
+
+**The rule.**
+- **A surface is its id.** The importer looks a picture's surface up by
+  `IOSurfaceGetID`. A known surface's import is a lookup; a new one's makes
+  two textures, images and views, and ends in a host-waited barrier on the
+  device's queue (why `HevcEncoder::create` readies its targets, the
+  2026-11-02 target entry).
+- **`PixelBufferImporter::stats`** gives the pictures that reached their
+  surface and the surfaces whose images were made. `ArkitStatus` carries them
+  since the open, as `pictures_imported` and `surfaces_made`, read on the
+  consumer's thread and copied under the driver's lock.
+
+**Why.**
+- On an iPad, `ArkitSensor::poll`'s p95 grew from 0.5 ms to 61 ms over a 57 s
+  walk, each slow poll ending as a stage of the fusion sharing its queue ends.
+  Only the new-surface path can wait on the device there, and a replay of the
+  threads fits the walk only if nearly every picture takes it. A pattern
+  source's pictures, on surfaces of its own process, poll in 0.005 ms.
+- A surface from another process comes under a new pointer per lookup. On
+  macOS, `IOSurfaceLookupFromMachPort` and `IOSurfaceLookupFromXPCObject` each
+  return a new `IOSurfaceRef` with the same id, and a pixel buffer over it
+  holds another. **That ARKit's pictures arrive this way is inferred, not yet
+  seen on a device.** `surfaces_made` settles it in one walk: near the pool's
+  size, this was the cause; keeping pace with `pictures_imported`, ARKit
+  really hands out new surfaces, and the barrier would have to go without the
+  wait (`Device::submit_pending`, not built).
+- `surfaces_made` is not capped at the pool's size: a surface a pool leaves
+  unused for 64 pictures is let go and counts again when it comes back. The
+  pattern's 4 buffers made 4 or 5 over 300 pictures.
+
+**Why an id is safe.** Ids are the system's, and short-lived: a surface freed
+gives its id to the next one made, at once and at any size (a 64x48 surface
+released, then a 128x96 one, on macOS 27; the test prints when it sees this).
+So the id names a surface only while something holds it:
+- A listed `Surface` holds a retain, and its textures hold the surface too, so
+  its id stays its own: made alongside, others have other ids.
+- The list is erased before the lookup, so an entry let go is never compared.
+  It holds at most 65: an entry goes after 64 pictures with none on it, and an
+  import adds at most one.
+- `Held` keeps retaining each picture's own buffer, so `pixel_buffer_of` names
+  the buffer the picture came in, not the one the images were made from, and
+  ARKit has its buffer back as before. A picture kept past its surface's
+  letting go holds the `Surface`, so the id stays; a buffer arriving on it then
+  has new images over the same planes.
+
+**Not here.** The scanner's re-pin and its console line, and any change to
+the queue the poll shares: a stream's copy offered after a poll will land
+anywhere in a stage, not at its end, which that re-pin measures.
+
+**Validation.** Apple M5 Max, Release with warnings as errors, under the
+validation layer (the loader shows it inserted), Orbbec on: the suite passes,
+70 tests (70 on main), in 18-22 s; `sensor_apple_pixel_buffer_importer`
+0.11-0.16 s, `sensor_arkit_sensor` 0.20-0.24 s, `sensor_arkit_pattern`
+1.07-1.11 s. Under ThreadSanitizer (Debug, 2 runs), `sensor_arkit_sensor` 4-5 s and
+`sensor_arkit_pattern` 11-12 s, no reports. The importer compiles against the
+iOS SDK. Over a buffer looked up by Mach port, the importer returns the same
+images, makes none, and names each picture's own buffer, on after the first
+buffer has gone; a surface of the same size makes its own. Planted bugs, each
+failing its tests: pointers compared again (`sensor_apple_pixel_buffer_importer`,
+`sensor_arkit_sensor`), never reusing (those and `sensor_arkit_pattern`),
+reusing whatever is listed (the same three, the new cases each on their own),
+a surface counted per picture (the same three), and the status not copied
+(`sensor_arkit_sensor`, `sensor_arkit_pattern`). Dropping `Surface`'s retain
+fails nothing, since the textures hold the surface too; the retain stays so
+the hold does not rest on what Metal keeps. No camera was opened.
