@@ -315,10 +315,15 @@ core::Result<RgbdFrame> Driver::hand_out(Held held) {
   RgbdFrame frame;
   const core::Status imported = importer_.import(held.picture.get(), size.width,
                                                  size.height, frame.color);
-  if (!imported.ok()) {
+  const PixelBufferImporter::Stats counts = importer_.stats();
+  {
     std::lock_guard<std::mutex> lock(mutex_);
-    ++import_failed_;
-    return imported;
+    status_.pictures_imported = counts.pictures;
+    status_.surfaces_made = counts.surfaces;
+    if (!imported.ok()) {
+      ++import_failed_;
+      return imported;
+    }
   }
   frame.color.kr = held.color.kr;
   frame.color.kb = held.color.kb;

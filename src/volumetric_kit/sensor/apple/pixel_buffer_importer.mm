@@ -26,20 +26,27 @@
 namespace volumetric_kit::sensor {
 namespace {
 
-// A surface no picture has arrived on in this many has left its producer's
-// pool, as a decoder's after a reset, and is let go; frames still holding it
-// keep it.
+// A surface no picture has arrived on in this many has most likely left its
+// producer's pool, as a decoder's after a reset, and is let go; one that comes
+// back has its images made again, and frames still holding it keep it.
 constexpr std::uint64_t kStale = 64;
 
 // A surface's two planes as images, made once: a producer cycles its
 // pictures through a few surfaces (VideoToolbox five for the lab's 4K clip).
+// Known by its id: a surface from another process comes under a new
+// IOSurfaceRef each time. The retain (and the textures) keep the id its own,
+// since the system gives a freed surface's id to the next one made, at any
+// size.
 struct Surface {
-  explicit Surface(IOSurfaceRef s) : surface(s) { CFRetain(s); }
+  explicit Surface(IOSurfaceRef s) : surface(s), id(IOSurfaceGetID(s)) {
+    CFRetain(s);
+  }
   ~Surface() { CFRelease(surface); }
   Surface(const Surface&) = delete;
   Surface& operator=(const Surface&) = delete;
 
   IOSurfaceRef surface;
+  IOSurfaceID id;
   core::Image luma;
   core::Image chroma;
   std::uint64_t seen = 0;  // the last picture that arrived on it
@@ -80,6 +87,7 @@ struct PixelBufferImporter::Impl {
   std::vector<std::uint32_t> families;
   std::vector<std::shared_ptr<Surface>> surfaces;
   std::uint64_t pictures = 0;
+  std::uint64_t surfaces_made = 0;
 
   core::Status error(const std::string& what) const {
     return core::Status::out_of_memory(who + ": " + what);
@@ -275,6 +283,11 @@ PixelBufferImporter& PixelBufferImporter::operator=(
     PixelBufferImporter&& other) noexcept = default;
 PixelBufferImporter::~PixelBufferImporter() = default;
 
+PixelBufferImporter::Stats PixelBufferImporter::stats() const noexcept {
+  return impl_ != nullptr ? Stats{impl_->pictures, impl_->surfaces_made}
+                          : Stats{};
+}
+
 core::Status PixelBufferImporter::import(CVPixelBufferRef pixels,
                                          std::uint32_t width,
                                          std::uint32_t height, YuvImage& out) {
@@ -308,16 +321,17 @@ core::Status PixelBufferImporter::import(CVPixelBufferRef pixels,
                                   return s->seen + kStale < now;
                                 }),
                  surfaces.end());
-  auto found = std::find_if(surfaces.begin(), surfaces.end(),
-                            [surface](const std::shared_ptr<Surface>& s) {
-                              return s->surface == surface;
-                            });
+  const IOSurfaceID id = IOSurfaceGetID(surface);
+  auto found = std::find_if(
+      surfaces.begin(), surfaces.end(),
+      [id](const std::shared_ptr<Surface>& s) { return s->id == id; });
   std::shared_ptr<Surface> entry;
   if (found != surfaces.end()) {
     entry = *found;
   } else {
     VKC_ASSIGN(entry, impl.import_surface(pixels, surface));
     surfaces.push_back(entry);
+    ++impl.surfaces_made;
   }
   entry->seen = now;
   // Not make_shared: get_deleter finds a deleter only where one was given.

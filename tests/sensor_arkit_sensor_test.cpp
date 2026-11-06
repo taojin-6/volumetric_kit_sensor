@@ -15,7 +15,9 @@
 // exposure and noise; the picture's own buffer and how long it is held; the
 // clock; a feeding thread; ARKit's failure; an open that gave up holding no
 // picture, and an open again; an interruption after the start under the
-// contract, and a stop letting its frames go; and the option checks.
+// contract, and a stop letting its frames go; the pictures imported and the
+// surfaces that made images, a surface under a new pointer per picture making
+// them once; and the option checks.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -41,6 +43,7 @@
 #include <vector>
 
 #include "driver.hpp"
+#include "same_surface_buffer.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
 #include "volumetric_kit/core/vulkan/device.hpp"
@@ -600,6 +603,48 @@ int test_holds(const Gpu& gpu) {
   return 0;
 }
 
+// The status says how many pictures were imported and how many surfaces made
+// images. Over one surface under a new pointer per picture, as a surface from
+// another process comes, each frame holds its own buffer and the images are
+// made once; another surface makes its own. The counts outlast a stop, as the
+// images do.
+int test_import_counts(const Gpu& gpu) {
+  DepthMaps maps;
+  const Pixels pic = picture(kArkitTags);
+  const Pixels other = picture(kArkitTags);
+  CHECK(pic.ref != nullptr && other.ref != nullptr);
+  const std::unique_ptr<arkit::Driver> driver =
+      opened(options(gpu), maps, pic.ref);
+  CHECK(driver != nullptr);
+  CHECK(driver->begin().ok());
+  const auto counted = [&](std::uint64_t pictures, std::uint64_t surfaces) {
+    const sensor::ArkitStatus status = driver->status();
+    return status.pictures_imported == pictures &&
+           status.surfaces_made == surfaces;
+  };
+  CHECK(counted(0, 0));
+  double t = 50.0;
+  for (int i = 0; i < 4; ++i) {
+    const Pixels again(vs_test::same_surface_buffer(pic.ref));
+    CHECK(again.ref != nullptr);
+    t += kPeriod;
+    driver->deliver(capture(maps, again.ref, t), 2);
+    vkc::Result<std::optional<sensor::RgbdFrame>> got = driver->poll();
+    CHECK(got.ok() && got.value());
+    CHECK(sensor::pixel_buffer_of(got.value()->color) == again.ref);
+  }
+  CHECK(driver->stats().failed == 0);
+  CHECK(counted(4, 1));
+  driver->deliver(capture(maps, other.ref, t + kPeriod), 3);
+  vkc::Result<std::optional<sensor::RgbdFrame>> got = driver->poll();
+  CHECK(got.ok() && got.value());
+  CHECK(counted(5, 2));
+  driver->end();
+  CHECK(driver->begin().ok());
+  CHECK(counted(5, 2));
+  return 0;
+}
+
 int test_clock(const Gpu& gpu) {
   DepthMaps maps;
   const Pixels pic = picture(kArkitTags);
@@ -900,6 +945,7 @@ int gpu_main(Gpu& gpu) {
   if (test_contract(gpu) != 0) return 1;
   if (test_frame(gpu) != 0) return 1;
   if (test_holds(gpu) != 0) return 1;
+  if (test_import_counts(gpu) != 0) return 1;
   if (test_clock(gpu) != 0) return 1;
   if (test_threaded(gpu) != 0) return 1;
   if (test_failure(gpu) != 0) return 1;

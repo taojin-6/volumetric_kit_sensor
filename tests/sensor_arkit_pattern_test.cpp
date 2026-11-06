@@ -189,6 +189,10 @@ int test_frames(const Gpu& gpu, std::uint32_t width, std::uint32_t height,
   CHECK(stats.failed == 0);
   CHECK(stats.delivered == taken);
   CHECK(camera.status().withheld == 0 && camera.status().refused == 0);
+  CHECK(camera.status().pictures_imported == taken);
+  // The pattern's 4 buffers, each let go and back at most once in 65 pictures.
+  CHECK(camera.status().surfaces_made >= 1 &&
+        camera.status().surfaces_made <= 4 * (1 + taken / 65));
   CHECK(!camera.exhausted());
   return 0;
 }

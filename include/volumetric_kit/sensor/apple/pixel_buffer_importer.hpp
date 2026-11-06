@@ -31,7 +31,11 @@ namespace volumetric_kit::sensor {
 /// its bytes per element. A surface's images are made the first time a
 /// picture arrives on it and kept while pictures keep arriving, as a decoder
 /// or a camera cycles its pictures through a few surfaces; one no picture has
-/// arrived on in 64 is let go, and the pictures still holding it keep it.
+/// arrived on in 64 is let go, and the pictures still holding it keep it. A
+/// surface is known by its `IOSurfaceGetID`: one from another process comes
+/// under a new `IOSurfaceRef` each time. Making its images waits on the
+/// device's queue, behind whatever is queued there; a known surface's import
+/// is a lookup. @ref stats says which a producer's pictures take.
 ///
 /// The images hold the pixel buffer, so its producer does not reuse the
 /// surface while anything reads them. Its writer must have finished: the
@@ -126,6 +130,20 @@ class VS_APPLE_API PixelBufferImporter {
   ///         importer. @p out is left as it was unless this is OK.
   core::Status import(CVPixelBufferRef pixels, std::uint32_t width,
                       std::uint32_t height, YuvImage& out);
+
+  /// @brief What an importer has done since @ref create, for a read-out.
+  struct Stats {
+    /// Pictures that reached their surface: every @ref import but the
+    /// refusals of a picture it does not take, a failed one counted.
+    std::uint64_t pictures = 0;
+    /// Surfaces whose images were made, one let go and back counting again. A
+    /// producer's pool should keep this near its size; a count that keeps pace
+    /// with @ref pictures means images made for every picture.
+    std::uint64_t surfaces = 0;
+  };
+
+  /// @return The counts; zero on a moved-from importer.
+  Stats stats() const noexcept;
 
  private:
   struct Impl;

@@ -13,8 +13,9 @@
 // family copying them on a device shared with recon; what it refuses; and
 // moves. Made for writing (Access::Write), the images are storage images a
 // compute pass stores into, read back through the locked IOSurface, which
-// allocate nothing more in Metal; and a surface no picture arrived on in 64
-// is let go.
+// allocate nothing more in Metal; a surface no picture arrived on in 64 is
+// let go; and a surface is known by its id, under whatever pointer it comes,
+// its id its own for as long as it is listed.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -37,6 +38,7 @@
 #include "decoder_test.hpp"
 #include "device_picture_readback.hpp"
 #include "metal_allocation.hpp"
+#include "same_surface_buffer.hpp"
 #include "volumetric_kit/core/testing/buffer_readback.hpp"
 #include "volumetric_kit/core/testing/gpu_test.hpp"
 #include "volumetric_kit/core/testing/test_check.hpp"
@@ -475,6 +477,161 @@ int test_lets_stale_surfaces_go(const Gpu& gpu) {
   return 0;
 }
 
+IOSurfaceID surface_id(const Pixels& pixels) {
+  return IOSurfaceGetID(CVPixelBufferGetIOSurface(pixels.ref));
+}
+
+// A surface is known by its id, not its IOSurfaceRef. A buffer over it under
+// another pointer, as a picture from another process arrives, takes the
+// images made for it, and no more are made; the picture holds its own buffer,
+// and the images read the surface after the buffer they were made from has
+// gone. A surface of the same size makes images of its own.
+int test_knows_a_surface_by_its_id(const Gpu& gpu) {
+  auto importer = PixelBufferImporter::create(gpu.device, "test");
+  CHECK(importer.ok());
+  const auto counted = [&](std::uint64_t pictures, std::uint64_t surfaces) {
+    const PixelBufferImporter::Stats stats = importer->stats();
+    return stats.pictures == pictures && stats.surfaces == surfaces;
+  };
+  CHECK(counted(0, 0));
+
+  std::optional<Pixels> made_on;
+  made_on.emplace(make_pixels(64, 48, kFull));
+  CHECK(made_on->ref != nullptr && fill(made_on->ref, 1));
+  YuvImage first;
+  CHECK(importer->import(made_on->ref, 64, 48, first).ok());
+  CHECK(counted(1, 1));
+  CHECK(check_holds(first, gpu, 1) == 0);
+
+  const Pixels looked_up(vs_test::same_surface_buffer(made_on->ref));
+  CHECK(looked_up.ref != nullptr);
+  CHECK(CVPixelBufferGetIOSurface(looked_up.ref) !=
+        CVPixelBufferGetIOSurface(made_on->ref));
+  CHECK(surface_id(looked_up) == surface_id(*made_on));
+  const CFIndex alone = CFGetRetainCount(looked_up.ref);
+  YuvImage again;
+  CHECK(importer->import(looked_up.ref, 64, 48, again).ok());
+  CHECK(again.image[0] == first.image[0] && again.image[1] == first.image[1]);
+  CHECK(counted(2, 1));
+  CHECK(sensor::pixel_buffer_of(first) == made_on->ref);
+  CHECK(sensor::pixel_buffer_of(again) == looked_up.ref);
+  CHECK(CFGetRetainCount(looked_up.ref) == alone + 1);
+
+  first = {};
+  made_on.reset();
+  CHECK(fill(looked_up.ref, 2));
+  CHECK(check_holds(again, gpu, 2) == 0);
+
+  // A new pointer per picture, as a surface from another process comes.
+  for (int i = 0; i < 4; ++i) {
+    const Pixels next(vs_test::same_surface_buffer(looked_up.ref));
+    CHECK(next.ref != nullptr);
+    YuvImage picture;
+    CHECK(importer->import(next.ref, 64, 48, picture).ok());
+    CHECK(picture.image[0] == again.image[0] &&
+          picture.image[1] == again.image[1]);
+    CHECK(sensor::pixel_buffer_of(picture) == next.ref);
+  }
+  CHECK(counted(6, 1));
+
+  const Pixels other(make_pixels(64, 48, kFull));
+  CHECK(other.ref != nullptr && fill(other.ref, 3));
+  CHECK(surface_id(other) != surface_id(looked_up));
+  YuvImage elsewhere;
+  CHECK(importer->import(other.ref, 64, 48, elsewhere).ok());
+  CHECK(elsewhere.image[0] != again.image[0] &&
+        elsewhere.image[1] != again.image[1]);
+  CHECK(counted(7, 2));
+  CHECK(check_holds(elsewhere, gpu, 3) == 0);
+  CHECK(check_holds(again, gpu, 2) == 0);
+
+  // A refusal counts neither.
+  const Pixels bgra(make_pixels(64, 64, kCVPixelFormatType_32BGRA));
+  CHECK(bgra.ref != nullptr);
+  YuvImage refused;
+  CHECK(!importer->import(bgra.ref, 64, 64, refused).ok());
+  CHECK(counted(7, 2));
+
+  PixelBufferImporter moved = std::move(importer).value();
+  CHECK(moved.stats().pictures == 7);
+  PixelBufferImporter into = std::move(moved);
+  CHECK(moved.stats().pictures == 0);  // NOLINT: moved from
+  CHECK(into.stats().surfaces == 2);
+  return 0;
+}
+
+// A surface released and replaced. The system gives a freed id to the next
+// surface made, at any size, so the id names a surface only while something
+// holds it. Listed with nothing else holding it, the id stays its own: a new
+// surface has another, and images of its own. Let go, its id may come to a
+// new surface, whose images are made for it. A picture kept past the letting
+// go holds the surface, and a buffer arriving on it then has new images over
+// the same planes.
+int test_surface_replaced(const Gpu& gpu) {
+  auto importer = PixelBufferImporter::create(gpu.device, "test");
+  CHECK(importer.ok());
+  const Pixels kept(make_pixels(32, 32, kFull));
+  CHECK(kept.ref != nullptr);
+  const auto let_listed_go = [&]() {
+    bool ok = true;
+    for (int i = 0; i < 66; ++i) {
+      YuvImage yuv;
+      ok = importer->import(kept.ref, 32, 32, yuv).ok() && ok;
+    }
+    return ok;
+  };
+
+  IOSurfaceID freed = 0;
+  {
+    const Pixels gone(make_pixels(64, 48, kFull));
+    CHECK(gone.ref != nullptr && fill(gone.ref, 1));
+    freed = surface_id(gone);
+    YuvImage yuv;
+    CHECK(importer->import(gone.ref, 64, 48, yuv).ok());
+  }
+  CHECK(importer->stats().surfaces == 1);
+  {
+    const Pixels next(make_pixels(96, 64, kFull));
+    CHECK(next.ref != nullptr && fill(next.ref, 2));
+    CHECK(surface_id(next) != freed);
+    YuvImage yuv;
+    CHECK(importer->import(next.ref, 96, 64, yuv).ok());
+    CHECK(importer->stats().surfaces == 2);
+    CHECK(yuv.image[0]->width() == 96 && yuv.image[0]->height() == 64);
+    CHECK(check_holds(yuv, gpu, 2) == 0);
+  }
+
+  CHECK(let_listed_go());
+  CHECK(importer->stats().surfaces == 3);  // `kept`'s
+  {
+    const Pixels replaced(make_pixels(128, 96, kFull));
+    CHECK(replaced.ref != nullptr && fill(replaced.ref, 3));
+    std::printf("a new surface %s the freed id\n",
+                surface_id(replaced) == freed ? "took" : "did not take");
+    YuvImage yuv;
+    CHECK(importer->import(replaced.ref, 128, 96, yuv).ok());
+    CHECK(importer->stats().surfaces == 4);
+    CHECK(yuv.image[0]->width() == 128 && yuv.image[0]->height() == 96);
+    CHECK(check_holds(yuv, gpu, 3) == 0);
+  }
+
+  const Pixels held(make_pixels(64, 48, kFull));
+  CHECK(held.ref != nullptr && fill(held.ref, 4));
+  YuvImage old_picture;
+  CHECK(importer->import(held.ref, 64, 48, old_picture).ok());
+  CHECK(importer->stats().surfaces == 5);
+  CHECK(let_listed_go());
+  const Pixels back(vs_test::same_surface_buffer(held.ref));
+  CHECK(back.ref != nullptr);
+  YuvImage new_picture;
+  CHECK(importer->import(back.ref, 64, 48, new_picture).ok());
+  CHECK(importer->stats().surfaces == 6);
+  CHECK(new_picture.image[0] != old_picture.image[0]);
+  CHECK(check_holds(old_picture, gpu, 4) == 0);
+  CHECK(check_holds(new_picture, gpu, 4) == 0);
+  return 0;
+}
+
 // The imported picture is a frame's colour as it is, with the matrix and range
 // its caller describes, taking a named matrix's weights from yuv_image.hpp, as
 // a camera's caller does with no decoder: one colour throughout, prepared on
@@ -807,6 +964,8 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   if (test_allocates_only_textures(gpu, Access::Write) != 0) return 1;
   if (test_writes_in_place(gpu) != 0) return 1;
   if (test_lets_stale_surfaces_go(gpu) != 0) return 1;
+  if (test_knows_a_surface_by_its_id(gpu) != 0) return 1;
+  if (test_surface_replaced(gpu) != 0) return 1;
   if (test_prepares(gpu) != 0) return 1;
   if (test_samples_as_buffer(gpu) != 0) return 1;
   if (test_sharing(gpu) != 0) return 1;
