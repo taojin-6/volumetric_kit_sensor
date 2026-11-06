@@ -343,9 +343,10 @@ Apple build with the system's frameworks alone. Each frame is one
 confidence levels beside it, which `GpuFramePrep` gates on the GPU, and
 ARKit's own picture as NV12 plane images, with no copy. The pose is
 ARKit's, in this package's camera axes, in one world for the sensor's
-life; frames ARKit did not track normally are withheld; times are on the
-host's `system_clock`. `pixel_buffer_of(frame.color)` gives the picture's
-own buffer back, to code it as it is.
+life; frames ARKit did not track normally are withheld, and
+`poll_withheld_picture` gives a live view the newest of their pictures; times
+are on the host's `system_clock`. `pixel_buffer_of(frame.color)` gives the
+picture's own buffer back, to code it as it is.
 
 ```cpp
 sensor::ArkitSensor::Options options;  // 1920x1440 at 60 Hz, smoothed depth
@@ -462,7 +463,7 @@ pixel buffers or on targets, which `testing/nv12_writer.hpp`'s
 
 ## Versions
 
-The version is `project()`'s (0.47.0), carried by the umbrella as
+The version is `project()`'s (0.48.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

@@ -527,10 +527,10 @@ endif()
 # pictures, depth buffers), on the device: the frame contract (rgbd_breach), the
 # counters, the sequences, the colour, the picture's own buffer and its holds,
 # info, a feeding thread, an interruption, the open's refusals and an open
-# again, the session's failure. The pattern test opens ArkitSensor with its test
-# pattern: every frame's depth and picture carry its sequence, the contract over
-# 30 frames and over 300 small ones, a skipped tick, the refusals. These two
-# skip without a device.
+# again, the session's failure, the withheld picture through a pool of 4. The
+# pattern test opens ArkitSensor with its test pattern: every frame's depth and
+# picture carry its sequence, the contract over 30 frames and over 300 small
+# ones, a skipped tick, the refusals. These two skip without a device.
 if(APPLE)
   add_executable(sensor_arkit_conversion_test sensor_arkit_conversion_test.cpp)
   target_link_libraries(

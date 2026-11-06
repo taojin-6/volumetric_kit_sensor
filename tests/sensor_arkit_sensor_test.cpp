@@ -17,7 +17,10 @@
 // picture, and an open again; an interruption after the start under the
 // contract, and a stop letting its frames go; the pictures imported and the
 // surfaces that made images, a surface under a new pointer per picture making
-// them once; and the option checks.
+// them once; the withheld picture (from poll_withheld_picture alone, the
+// newest, once, its colour a frame's, the counters as without it; through a
+// pool of 4 as the pattern's, one held and let go by each thing that lets it
+// go; a feeding thread); and the option checks.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -769,15 +772,24 @@ int test_failure(const Gpu& gpu) {
   driver->deliver(capture(maps, pic.ref, 60.0), 1);
   CHECK(notified == 1);
   CHECK(!driver->failed());
+  driver->deliver(capture(maps, pic.ref, 60.0 + kPeriod,
+                          sensor::ArkitTracking::Relocalizing),
+                  2);
+  CHECK(notified == 1);  // a withheld frame wakes no one
   driver->fail("The camera went away.");
   CHECK(notified == 2);
   CHECK(driver->failed());
   CHECK(driver->status().session_error == "The camera went away.");
-  // The failure, not the frame held.
+  // The failure, not the frame held, nor the picture.
   vkc::Result<std::optional<sensor::RgbdFrame>> got = driver->poll();
   CHECK(!got.ok() && got.status().domain() == vkc::Status::Code::IoError);
   CHECK(got.status().message() ==
         "ArkitSensor: ARKit's session failed: The camera went away.");
+  vkc::Result<std::optional<sensor::YuvImage>> withheld =
+      driver->poll_withheld_picture();
+  CHECK(!withheld.ok() &&
+        withheld.status().domain() == vkc::Status::Code::IoError);
+  CHECK(withheld.status().message() == got.status().message());
   std::vector<sensor::RgbdFrame> frames;
   CHECK(driver->drain(&frames).domain() == vkc::Status::Code::IoError);
   driver->end();
@@ -884,6 +896,431 @@ int test_interruption(const Gpu& gpu) {
   return 0;
 }
 
+// What the driver hands out as the withheld picture is `want`'s, or none where
+// `want` is null; a failed call is neither.
+bool withheld_is(arkit::Driver& driver, CVPixelBufferRef want) {
+  vkc::Result<std::optional<sensor::YuvImage>> got =
+      driver.poll_withheld_picture();
+  if (!got.ok()) return false;
+  if (!got.value()) return want == nullptr;
+  return want != nullptr && sensor::pixel_buffer_of(*got.value()) == want;
+}
+
+bool no_frame(arkit::Driver& driver) {
+  vkc::Result<std::optional<sensor::RgbdFrame>> got = driver.poll();
+  return got.ok() && !got.value();
+}
+
+// Tracking lost: the pictures come from poll_withheld_picture alone, the
+// newest, each once, and tracking back ends them; the frame's counters as
+// without it.
+int test_withheld_picture(const Gpu& gpu) {
+  DepthMaps maps;
+  std::vector<Pixels> pics;
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    pics.push_back(picture(kArkitTags, kW, kH, i));
+    CHECK(pics.back().ref != nullptr);
+  }
+  const Pixels small = picture(kArkitTags, kW, kH - 16);
+  const Pixels hlg = picture(kHlg);
+  const std::unique_ptr<arkit::Driver> driver =
+      opened(options(gpu), maps, pics[0].ref);
+  CHECK(driver != nullptr);
+  const sensor::ArkitTracking lost = sensor::ArkitTracking::Relocalizing;
+  double t = 80.0;
+  const auto send = [&](CVPixelBufferRef pic,
+                        sensor::ArkitTracking tracking =
+                            sensor::ArkitTracking::Normal) {
+    t += kPeriod;
+    driver->deliver(capture(maps, pic, t, tracking), now_ns());
+  };
+  const auto send_no_map = [&](CVPixelBufferRef pic,
+                               sensor::ArkitTracking tracking) {
+    t += kPeriod;
+    arkit::Capture no_map = capture(maps, pic, t, tracking);
+    no_map.depth = nullptr;
+    driver->deliver(no_map, now_ns());
+  };
+
+  // Before the start: nothing kept.
+  send(pics[0].ref, lost);
+  CHECK(withheld_is(*driver, nullptr));
+  CHECK(driver->begin().ok());
+  CHECK(withheld_is(*driver, nullptr));
+
+  std::vector<sensor::RgbdFrame> frames;
+  // Tracked normally: a frame, no picture here.
+  send(pics[0].ref);
+  CHECK(withheld_is(*driver, nullptr));
+  if (take_newest(*driver, frames) != 0) return 1;
+  CHECK(frames.size() == 1);
+
+  // Each state short of normal: no frame, its picture once.
+  for (const sensor::ArkitTracking tracking :
+       {sensor::ArkitTracking::NotAvailable,
+        sensor::ArkitTracking::Initializing, lost,
+        sensor::ArkitTracking::ExcessiveMotion,
+        sensor::ArkitTracking::InsufficientFeatures}) {
+    send(pics[1].ref, tracking);
+    CHECK(no_frame(*driver));
+    CHECK(driver->drain(&frames).ok());
+    CHECK(frames.size() == 1);
+    CHECK(withheld_is(*driver, pics[1].ref));
+    CHECK(withheld_is(*driver, nullptr));
+  }
+
+  // Several before anyone asks: the newest, once.
+  send(pics[1].ref, lost);
+  send(pics[2].ref, lost);
+  send(pics[3].ref, lost);
+  CHECK(no_frame(*driver));
+  CHECK(withheld_is(*driver, pics[3].ref));
+  CHECK(withheld_is(*driver, nullptr));
+
+  // A frame without the map has its picture here too, and takes no number.
+  const sensor::SensorStats before_no_map = driver->stats();
+  send_no_map(pics[2].ref, lost);
+  CHECK(driver->stats().received == before_no_map.received);
+  CHECK(withheld_is(*driver, pics[2].ref));
+
+  // Tracking back: nothing more from it, and the frames go on.
+  send(pics[1].ref, lost);
+  send(pics[2].ref);
+  CHECK(withheld_is(*driver, nullptr));
+  if (take_newest(*driver, frames) != 0) return 1;
+  CHECK(frames.size() == 2);
+  CHECK(sensor::pixel_buffer_of(frames.back().color) == pics[2].ref);
+  // Without the map, tracking back ends it just the same.
+  send(pics[1].ref, lost);
+  send_no_map(pics[2].ref, sensor::ArkitTracking::Normal);
+  CHECK(withheld_is(*driver, nullptr));
+
+  // Where a frame would be refused: none, and no refusal it did not have
+  // before.
+  send(small.ref, lost);
+  CHECK(withheld_is(*driver, nullptr));
+  send(hlg.ref, lost);
+  CHECK(withheld_is(*driver, nullptr));
+  // A newer one replaces it at once, so no such picture hides the next.
+  send(small.ref, lost);
+  send(pics[3].ref, lost);
+  CHECK(withheld_is(*driver, pics[3].ref));
+  // A capture with no picture at all leaves none.
+  send_no_map(nullptr, lost);
+  CHECK(withheld_is(*driver, nullptr));
+
+  // A picture held at a stop does not come back at the next start.
+  send(pics[3].ref, lost);
+  const sensor::SensorStats s = driver->stats();
+  const sensor::ArkitStatus st = driver->status();
+  driver->end();
+  CHECK(withheld_is(*driver, nullptr));
+  CHECK(driver->begin().ok());
+  CHECK(withheld_is(*driver, nullptr));
+  driver->end();
+
+  // The counters as they are without it: of 17 captures with the map, 2 are
+  // frames and 15 withheld, the pictures a frame would refuse among them; the
+  // 3 without the map are uncounted.
+  CHECK(testing::rgbd_breach(driver->info(), frames, s).empty());
+  CHECK(st.withheld == 15 && st.refused == 0 && st.last_refusal.empty());
+  CHECK(st.missed == 0);
+  CHECK(s.received == 17 && s.delivered == 2 && s.dropped == 0);
+  CHECK(s.failed == st.withheld);
+  // Through the importer: the 2 frames, and the 8 handed out here.
+  CHECK(st.pictures_imported == 10);
+  return 0;
+}
+
+// A withheld picture carries what a frame's does, through the same path.
+int test_withheld_picture_color(const Gpu& gpu) {
+  DepthMaps maps;
+  const Pixels p601 = picture(kArkitTags);
+  const Pixels p709 = picture({1, 1, 1, true, 0});
+  const Pixels untagged = picture({2, 2, 2, true, 0});
+  const Pixels video = picture({6, 1, 1, false, 0});
+  const Pixels centred = picture(kArkitTags);
+  CVBufferSetAttachment(centred.ref, kCVImageBufferChromaLocationTopFieldKey,
+                        kCVImageBufferChromaLocation_Center,
+                        kCVAttachmentMode_ShouldPropagate);
+  const std::unique_ptr<arkit::Driver> driver =
+      opened(options(gpu), maps, p601.ref);
+  CHECK(driver != nullptr);
+  CHECK(driver->begin().ok());
+  double t = 90.0;
+  for (const CVPixelBufferRef pic :
+       {p601.ref, p709.ref, untagged.ref, video.ref, centred.ref}) {
+    t += kPeriod;
+    driver->deliver(capture(maps, pic, t), now_ns());
+    vkc::Result<std::optional<sensor::RgbdFrame>> framed = driver->poll();
+    CHECK(framed.ok() && framed.value());
+    const sensor::YuvImage& want = framed.value()->color;
+    t += kPeriod;
+    driver->deliver(
+        capture(maps, pic, t, sensor::ArkitTracking::ExcessiveMotion),
+        now_ns());
+    vkc::Result<std::optional<sensor::YuvImage>> got =
+        driver->poll_withheld_picture();
+    CHECK(got.ok() && got.value());
+    const sensor::YuvImage& image = *got.value();
+    CHECK(sensor::pixel_buffer_of(image) == pic);
+    CHECK(image.layout == sensor::YuvLayout::Nv12);
+    CHECK(image.image[0] != nullptr && image.image[1] != nullptr);
+    CHECK(image.device == nullptr && image.host == nullptr);
+    CHECK(image.width == kW && image.height == kH);
+    CHECK(image.kr == want.kr && image.kb == want.kb);
+    CHECK(image.full_range == want.full_range);
+    CHECK(image.chroma_location == want.chroma_location);
+    if (pic == p709.ref) {
+      const sensor::YcbcrWeights w709 =
+          sensor::ycbcr_weights(sensor::VideoColorMatrix::Bt709);
+      CHECK(image.kr == w709.kr && image.kb == w709.kb);
+    }
+    if (pic == video.ref) CHECK(!image.full_range);
+    if (pic == centred.ref) {
+      CHECK(image.chroma_location == sensor::ChromaLocation::Center);
+    }
+  }
+  driver->end();
+  return 0;
+}
+
+// Pictures from a pool of 4 refusing a fifth, as the pattern's are
+// (pattern_feed.mm), so a picture held is seen as the camera sees it.
+class PicturePool {
+ public:
+  PicturePool() {
+    const auto dictionary = [] {
+      return CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+                                       &kCFTypeDictionaryKeyCallBacks,
+                                       &kCFTypeDictionaryValueCallBacks);
+    };
+    const auto set_int = [](CFMutableDictionaryRef dict, CFStringRef key,
+                            int value) {
+      CFNumberRef number =
+          CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &value);
+      CFDictionarySetValue(dict, key, number);
+      CFRelease(number);
+    };
+    CFMutableDictionaryRef pool_attrs = dictionary();
+    CFMutableDictionaryRef attrs = dictionary();
+    CFMutableDictionaryRef surface = dictionary();
+    threshold_ = dictionary();
+    set_int(pool_attrs, kCVPixelBufferPoolMinimumBufferCountKey, kPictures);
+    set_int(attrs, kCVPixelBufferPixelFormatTypeKey,
+            static_cast<int>(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange));
+    set_int(attrs, kCVPixelBufferWidthKey, static_cast<int>(kW));
+    set_int(attrs, kCVPixelBufferHeightKey, static_cast<int>(kH));
+    CFDictionarySetValue(attrs, kCVPixelBufferIOSurfacePropertiesKey, surface);
+    CFDictionarySetValue(attrs, kCVPixelBufferMetalCompatibilityKey,
+                         kCFBooleanTrue);
+    set_int(threshold_, kCVPixelBufferPoolAllocationThresholdKey, kPictures);
+    CVPixelBufferPoolCreate(kCFAllocatorDefault, pool_attrs, attrs, &pool_);
+    CFRelease(surface);
+    CFRelease(attrs);
+    CFRelease(pool_attrs);
+  }
+  ~PicturePool() {
+    if (pool_ != nullptr) CVPixelBufferPoolRelease(pool_);
+    CFRelease(threshold_);
+  }
+  PicturePool(const PicturePool&) = delete;
+  PicturePool& operator=(const PicturePool&) = delete;
+
+  // A picture of the pool; a null one where all 4 are out.
+  Pixels take() {
+    CVPixelBufferRef picture = nullptr;
+    if (CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
+            kCFAllocatorDefault, pool_, threshold_, &picture) !=
+        kCVReturnSuccess) {
+      return Pixels();
+    }
+    return Pixels(picture);
+  }
+  // How many are free now.
+  int free_count() {
+    std::vector<Pixels> taken;
+    for (Pixels p = take(); p.ref != nullptr; p = take()) {
+      taken.push_back(std::move(p));
+    }
+    return static_cast<int>(taken.size());
+  }
+
+  static constexpr int kPictures = 4;
+
+ private:
+  CVPixelBufferPoolRef pool_ = nullptr;
+  CFMutableDictionaryRef threshold_ = nullptr;
+};
+
+// The hold, seen through the pool: one picture however many frames pass, let
+// go by each thing that lets it go, and a camera that keeps running.
+int test_withheld_picture_pool(const Gpu& gpu) {
+  DepthMaps maps;
+  PicturePool pool;
+  CHECK(pool.free_count() == PicturePool::kPictures);
+  std::unique_ptr<arkit::Driver> driver;
+  {
+    const Pixels first = pool.take();
+    CHECK(first.ref != nullptr);
+    driver = opened(options(gpu), maps, first.ref);
+    CHECK(driver != nullptr);
+  }
+  CHECK(pool.free_count() == PicturePool::kPictures);
+  CHECK(driver->begin().ok());
+  double t = 100.0;
+  // One capture on a free picture; false where none is free.
+  const auto send = [&](sensor::ArkitTracking tracking) {
+    const Pixels pic = pool.take();
+    if (pic.ref == nullptr) return false;
+    t += kPeriod;
+    driver->deliver(capture(maps, pic.ref, t, tracking), now_ns());
+    return true;
+  };
+  const sensor::ArkitTracking lost =
+      sensor::ArkitTracking::InsufficientFeatures;
+  const sensor::ArkitTracking normal = sensor::ArkitTracking::Normal;
+
+  // Several frames while nobody polls: each finds a picture, and one is held.
+  for (int i = 0; i < 2 * PicturePool::kPictures; ++i) {
+    CHECK(send(lost));
+    CHECK(pool.free_count() == PicturePool::kPictures - 1);
+  }
+
+  // Handed out, it is the picture's alone.
+  {
+    vkc::Result<std::optional<sensor::YuvImage>> got =
+        driver->poll_withheld_picture();
+    CHECK(got.ok() && got.value());
+    CHECK(pool.free_count() == PicturePool::kPictures - 1);
+  }
+  CHECK(pool.free_count() == PicturePool::kPictures);
+
+  // Tracking back lets it go at that capture: with no map to hold, none out;
+  // with one, the frame's alone.
+  CHECK(send(lost));
+  CHECK(pool.free_count() == PicturePool::kPictures - 1);
+  {
+    const Pixels pic = pool.take();
+    CHECK(pic.ref != nullptr);
+    t += kPeriod;
+    arkit::Capture no_map = capture(maps, pic.ref, t, normal);
+    no_map.depth = nullptr;
+    driver->deliver(no_map, now_ns());
+  }
+  CHECK(pool.free_count() == PicturePool::kPictures);
+  CHECK(send(lost));
+  CHECK(send(normal));
+  CHECK(pool.free_count() == PicturePool::kPictures - 1);
+  {
+    vkc::Result<std::optional<sensor::RgbdFrame>> got = driver->poll();
+    CHECK(got.ok() && got.value());
+  }
+  CHECK(pool.free_count() == PicturePool::kPictures);
+
+  // A stop lets it go: every picture free, and the camera runs on them.
+  CHECK(send(lost));
+  CHECK(pool.free_count() == PicturePool::kPictures - 1);
+  driver->end();
+  CHECK(pool.free_count() == PicturePool::kPictures);
+  CHECK(driver->begin().ok());
+  for (int i = 0; i < 2 * PicturePool::kPictures; ++i) {
+    CHECK(send(normal));
+    vkc::Result<std::optional<sensor::RgbdFrame>> got = driver->poll();
+    CHECK(got.ok() && got.value());
+  }
+  CHECK(pool.free_count() == PicturePool::kPictures);
+
+  // The arithmetic: 2 frames kept and the one withheld leave one for the next
+  // capture, so the captures go on.
+  std::vector<sensor::RgbdFrame> kept;
+  for (int i = 0; i < 2; ++i) {
+    CHECK(send(normal));
+    if (take_newest(*driver, kept) != 0) return 1;
+  }
+  for (int i = 0; i < 2 * PicturePool::kPictures; ++i) {
+    CHECK(send(lost));
+    CHECK(pool.free_count() == 1);
+  }
+  // 3 kept and the one withheld leave none, and no capture can come to replace
+  // it: the hand-out frees it with no newer frame.
+  CHECK(send(normal));
+  if (take_newest(*driver, kept) != 0) return 1;
+  CHECK(kept.size() == 3);
+  CHECK(pool.free_count() == 1);
+  CHECK(send(lost));
+  CHECK(pool.free_count() == 0);
+  CHECK(!send(lost));
+  {
+    vkc::Result<std::optional<sensor::YuvImage>> got =
+        driver->poll_withheld_picture();
+    CHECK(got.ok() && got.value());
+    CHECK(pool.free_count() == 0);  // now the caller's
+  }
+  CHECK(pool.free_count() == 1);
+  CHECK(send(lost));
+  kept.clear();
+  driver->end();
+  CHECK(pool.free_count() == PicturePool::kPictures);
+  return 0;
+}
+
+// A feed on a thread of its own, tracking lost, and a consumer asking on its
+// own: pictures, no frames, every capture counted withheld.
+int test_withheld_picture_threaded(const Gpu& gpu) {
+  DepthMaps maps;
+  PicturePool pool;
+  std::unique_ptr<arkit::Driver> driver;
+  {
+    const Pixels first = pool.take();
+    CHECK(first.ref != nullptr);
+    driver = opened(options(gpu), maps, first.ref);
+    CHECK(driver != nullptr);
+  }
+  CHECK(driver->begin().ok());
+  constexpr int kCaptures = 100;
+  std::atomic<int> starved{0};
+  std::atomic<bool> done{false};
+  std::thread feed([&] {
+    for (int i = 0; i < kCaptures; ++i) {
+      // The consumer's picture, the one withheld and this one: never all 4.
+      const Pixels pic = pool.take();
+      if (pic.ref == nullptr) {
+        ++starved;
+        continue;
+      }
+      driver->deliver(capture(maps, pic.ref, 110.0 + i * kPeriod,
+                              sensor::ArkitTracking::Relocalizing),
+                      now_ns());
+    }
+    done = true;
+  });
+  int pictures = 0;
+  bool frames_out = false;
+  bool failed = false;
+  // Once more after the feed ended, for the last it may have left.
+  for (bool last = false; !failed;) {
+    last = done;
+    vkc::Result<std::optional<sensor::RgbdFrame>> frame = driver->poll();
+    vkc::Result<std::optional<sensor::YuvImage>> image =
+        driver->poll_withheld_picture();
+    failed = !frame.ok() || !image.ok();
+    if (!failed && frame.value()) frames_out = true;
+    if (!failed && image.value()) ++pictures;
+    if (last) break;
+  }
+  feed.join();
+  CHECK(!failed && !frames_out);
+  CHECK(pictures >= 1);
+  CHECK(starved == 0);
+  CHECK(driver->status().withheld == kCaptures);
+  CHECK(driver->stats().received == kCaptures);
+  CHECK(driver->stats().delivered == 0);
+  driver->end();
+  CHECK(pool.free_count() == PicturePool::kPictures);
+  return 0;
+}
+
 int test_options(const Gpu& gpu) {
   const auto refused = [](const sensor::ArkitSensor::Options& o) {
     return arkit::check_options(o).domain() ==
@@ -951,6 +1388,10 @@ int gpu_main(Gpu& gpu) {
   if (test_failure(gpu) != 0) return 1;
   if (test_reopen(gpu) != 0) return 1;
   if (test_interruption(gpu) != 0) return 1;
+  if (test_withheld_picture(gpu) != 0) return 1;
+  if (test_withheld_picture_color(gpu) != 0) return 1;
+  if (test_withheld_picture_pool(gpu) != 0) return 1;
+  if (test_withheld_picture_threaded(gpu) != 0) return 1;
   if (test_options(gpu) != 0) return 1;
   std::puts("sensor_arkit_sensor: OK");
   return 0;

@@ -139,6 +139,14 @@ core::Status ArkitSensor::drain(std::vector<RgbdFrame>* out) {
   return impl_->driver->drain(out);
 }
 
+core::Result<std::optional<YuvImage>> ArkitSensor::poll_withheld_picture() {
+  if (impl_ == nullptr) {
+    return core::Status::invalid_argument(
+        "ArkitSensor: poll_withheld_picture on a moved-from sensor");
+  }
+  return impl_->driver->poll_withheld_picture();
+}
+
 bool ArkitSensor::exhausted() const noexcept {
   return impl_ == nullptr || impl_->driver->failed();
 }

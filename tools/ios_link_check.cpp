@@ -40,6 +40,10 @@ int main(int argc, char** argv) {
     if (frame.ok() && frame.value()) {
       picture = sensor::pixel_buffer_of(frame.value()->color);
     }
+    auto withheld = camera->poll_withheld_picture();
+    if (withheld.ok() && withheld.value()) {
+      picture = sensor::pixel_buffer_of(*withheld.value());
+    }
     std::printf("%s\n", sensor::to_string(camera->status().tracking));
   }
   const auto tags = sensor::color_codes_of(picture);

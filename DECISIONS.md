@@ -621,6 +621,12 @@ entries relevant to your task; later amendments supersede earlier rules.
   a listed surface keeps its id its own. `PixelBufferImporter::stats` and
   `ArkitStatus` count the pictures and the surfaces that made images.
 
+- [**2026-11-06**](#2026-11-06--arkitsensorpoll_withheld_picture-gives-a-live-view-the-newest-picture-while-tracking-is-not-normal-one-held-and-never-through-poll-or-drain-amends-the-2026-11-03-arkit-entry) —
+  `ArkitSensor::poll_withheld_picture` gives a live view the newest picture
+  while tracking is not normal. Withheld frames stay withheld: `poll`,
+  `drain`, the notification and the counters do not change. The sensor holds
+  one picture, let go by a capture tracked normally, a stop or the hand-out.
+
 ## Decision record
 
 ### 2026-08-02 — The `sensor` tier is a *contract*, not a driver collection: a capture driver lives here only if this repo can build
@@ -8014,3 +8020,60 @@ a surface counted per picture (the same three), and the status not copied
 (`sensor_arkit_sensor`, `sensor_arkit_pattern`). Dropping `Surface`'s retain
 fails nothing, since the textures hold the surface too; the retain stays so
 the hold does not rest on what Metal keeps. No camera was opened.
+
+### 2026-11-06 — `ArkitSensor::poll_withheld_picture` gives a live view the newest picture while tracking is not normal: one held, and never through `poll` or `drain` (amends the 2026-11-03 ARKit entry).
+
+**The rule.**
+- **A frame ARKit did not track normally stays withheld.** `poll`, `drain`, the
+  frame contract, the notification and every counter are as they were: the
+  stream and every fuser get trusted frames alone.
+- **Its picture alone may reach a live view.** `poll_withheld_picture`, on the
+  polling thread, gives the newest, each once, imported and described from its
+  tags by the path a frame's picture takes (`Driver::import_picture`). It
+  counts only as an import (`pictures_imported`, `surfaces_made`): its frame is
+  already withheld, or took no number.
+- **The driver holds one picture.** While started, a capture not tracked
+  normally replaces it, the older going back at once; a capture tracked
+  normally, a stop and the hand-out let it go. A capture without the map leaves
+  its picture too: a view needs no depth.
+- A picture a frame would be refused for gives none, with no count and no
+  error, as a refused frame does not fail a `poll`. Once the session has
+  failed, the call says so as `poll` does.
+
+**Why.** On an iPad, after a lock, tracking was lost for 2 to 13 s: the camera
+view froze with no explanation, as the stream stopped. A pose ARKit does not
+trust would fuse a ghost surface, but a person looking at the picture needs no
+pose. A separate call, on `ArkitSensor` alone, leaves no frame a consumer must
+check for trust, and no other driver has this state.
+
+**The pool's arithmetic**, against the pattern's 4 pictures (`kPictures`), where
+a tick finding none free is skipped. While tracking is not normal the holders
+are the withheld picture, 1; the capture being delivered, which becomes it as
+the older goes back; the queue, up to its depth from before the loss, until a
+poll; and what the consumer keeps. The next capture needs one free, so a
+consumer may keep 2 of the 4, not 3 as without this.
+
+**The limit that leaves.** With every other picture of the pool kept, none is
+free, and the capture that would replace the hold cannot come. The consumer
+calling `poll_withheld_picture` frees one with no newer frame, as does letting
+one go. A consumer that does neither until a newer frame comes stalls the
+camera for good while tracking stays lost. The pattern never gets there, its
+tracking being always normal. ARKit's pool is ARKit's, and its size is not
+documented.
+
+**Not here.** The notification stays one per frame held, so a consumer blocked
+on it wakes on its own timeout to ask. The pattern's tracking stays normal: the
+tests drive a loss through scripted captures, on a pool of 4 made as the
+pattern's.
+
+**Validation.** Apple M5 Max, Release with warnings as errors, under the
+validation layer (the loader shows it inserted), the optional drivers off: the
+suite passes, 61 tests; `sensor_arkit_sensor` 0.17-0.25 s (0.20-0.24 s before),
+`sensor_arkit_pattern` 1.01-1.09 s. Under ThreadSanitizer (Debug),
+`sensor_arkit_sensor` 4.5-5.0 s over 6 runs and `sensor_arkit_pattern` 11-12 s
+over 4, no reports. The driver compiles and an app's call links against the iOS
+SDK. Planted bugs, each failing `sensor_arkit_sensor`: withheld frames reaching
+the queue, the picture kept once tracking is normal, older pictures kept beside
+the newest (seen through the pool), the first kept instead of the newest, a stop
+keeping it (seen through the pool too), and, under ThreadSanitizer, the call
+taking no lock. No camera was opened.
