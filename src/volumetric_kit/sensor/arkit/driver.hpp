@@ -87,9 +87,9 @@ class Driver {
   // the map, its cameras become the sensor's, which wait_opened waits for.
   // Before a start and after a stop, let go uncounted. While started: its
   // period after the one before counted missed; its picture the withheld one
-  // unless tracked normally, when the last goes back; without the map, let go
-  // uncounted; else numbered and received, then withheld, refused or held,
-  // the consumer notified once it is.
+  // once a consumer has asked, unless tracked normally, when the last goes
+  // back; without the map, let go uncounted; else numbered and received, then
+  // withheld, refused or held, the consumer notified once it is.
   void deliver(const Capture& capture, std::uint64_t arrival_ns);
   // ARKit stopped or resumed the camera; at the end, while started, the
   // clock is measured again (ClockMap::remeasure).
@@ -198,8 +198,10 @@ class Driver {
   std::uint64_t received_ = 0;
   std::uint64_t delivered_ = 0;
   std::uint64_t import_failed_ = 0;
-  // The newest picture while not tracked normally: null once it is, at a stop
-  // and once handed out.
+  // The first poll_withheld_picture has come; stays set for the sensor's life.
+  bool withheld_asked_ = false;
+  // The newest picture while not tracked normally, from that first call: null
+  // once it is, at a stop and once handed out.
   Retained withheld_picture_;
   ArkitStatus status_;
   std::function<void()> notify_;

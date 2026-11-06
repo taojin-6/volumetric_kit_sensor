@@ -776,15 +776,12 @@ interruption ends, never smaller. `poll` and `drain` import the picture
 on the caller's thread (`PixelBufferImporter`, its images holding
 ARKit's buffer) and describe it from its tags (`color_codes_of`, then
 `frame_color.hpp`; an untagged matrix BT.601); the frame holds the buffer,
-which goes back to the pool with its last copy. While a start lasts, a capture
-ARKit did not track normally, with or without the map, also leaves its picture
-for a live view: one retained, which the next replaces and a capture tracked
-normally, a stop or `poll_withheld_picture` lets go, that call importing and
-describing it as a frame's (the 2026-11-06 withheld picture entry). Every
-frame states
-`kArkitDepthNoise` and its exposure (`RgbdFrame::color_exposure`: ARKit's
-duration and offset, the ISO from the frame's EXIF). The frames wait in
-RealSense's internal queue (`realsense/frame_queue.hpp`). Behind the class
+which goes back to the pool with its last copy. A withheld frame's picture
+may reach a live view (`poll_withheld_picture`, the 2026-11-06 withheld
+picture entry). Every frame states `kArkitDepthNoise` and its exposure
+(`RgbdFrame::color_exposure`: ARKit's duration and offset, the ISO from the
+frame's EXIF). The frames wait in RealSense's internal queue
+(`realsense/frame_queue.hpp`). Behind the class
 are an internal driver over any feed (`arkit/driver.hpp`, with the
 conversions in `conversion.hpp`: the static `sensor_arkit_units`, no ARKit
 type), ARKit's feed (`arkit_feed.mm`, iOS and iPadOS; elsewhere `open`

@@ -158,10 +158,12 @@ void Driver::deliver(const Capture& capture, std::uint64_t arrival_ns) {
           missed_periods(*last_time_s_, capture.timestamp_s, options_.fps);
     }
     last_time_s_ = capture.timestamp_s;
-    // With or without the map: a live view wants the picture either way.
-    withheld_picture_ = capture.tracking == ArkitTracking::Normal
-                            ? Retained()
-                            : Retained(capture.picture);
+    // With or without the map: a live view wants the picture either way. Not
+    // before one asks: a consumer that never will keeps the whole pool.
+    withheld_picture_ =
+        withheld_asked_ && capture.tracking != ArkitTracking::Normal
+            ? Retained(capture.picture)
+            : Retained();
     if (capture.depth == nullptr) return;  // a frame without the map
     const std::uint64_t sequence = next_sequence_++;
     ++received_;
@@ -397,6 +399,7 @@ core::Result<std::optional<YuvImage>> Driver::poll_withheld_picture() {
   Retained picture;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    withheld_asked_ = true;
     if (queue_.failed()) {
       return core::Status::io_error(session_failure(status_.session_error));
     }

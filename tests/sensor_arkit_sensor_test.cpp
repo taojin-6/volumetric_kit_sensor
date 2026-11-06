@@ -19,8 +19,8 @@
 // surfaces that made images, a surface under a new pointer per picture making
 // them once; the withheld picture (from poll_withheld_picture alone, the
 // newest, once, its colour a frame's, the counters as without it; through a
-// pool of 4 as the pattern's, one held and let go by each thing that lets it
-// go; a feeding thread); and the option checks.
+// pool of 4 as the pattern's, none held before the first ask, one held and let
+// go by each thing that lets it go; a feeding thread); and the option checks.
 //
 // Skips where no Vulkan device is present, unless VKC_REQUIRE_VULKAN_DEVICE
 // says this machine has one.
@@ -772,6 +772,7 @@ int test_failure(const Gpu& gpu) {
   driver->deliver(capture(maps, pic.ref, 60.0), 1);
   CHECK(notified == 1);
   CHECK(!driver->failed());
+  CHECK(driver->poll_withheld_picture().ok());  // asked, so the next is held
   driver->deliver(capture(maps, pic.ref, 60.0 + kPeriod,
                           sensor::ArkitTracking::Relocalizing),
                   2);
@@ -942,7 +943,8 @@ int test_withheld_picture(const Gpu& gpu) {
     driver->deliver(no_map, now_ns());
   };
 
-  // Before the start: nothing kept.
+  // Before the start: nothing kept, even asked.
+  CHECK(withheld_is(*driver, nullptr));
   send(pics[0].ref, lost);
   CHECK(withheld_is(*driver, nullptr));
   CHECK(driver->begin().ok());
@@ -1047,6 +1049,7 @@ int test_withheld_picture_color(const Gpu& gpu) {
       opened(options(gpu), maps, p601.ref);
   CHECK(driver != nullptr);
   CHECK(driver->begin().ok());
+  CHECK(withheld_is(*driver, nullptr));  // asked: pictures are held from here
   double t = 90.0;
   for (const CVPixelBufferRef pic :
        {p601.ref, p709.ref, untagged.ref, video.ref, centred.ref}) {
@@ -1181,6 +1184,23 @@ int test_withheld_picture_pool(const Gpu& gpu) {
       sensor::ArkitTracking::InsufficientFeatures;
   const sensor::ArkitTracking normal = sensor::ArkitTracking::Normal;
 
+  // Nobody has asked: nothing held, so 3 kept leave the last free for each
+  // capture, as without the call. The first ask finds none and starts the hold.
+  {
+    std::vector<sensor::RgbdFrame> kept;
+    for (int i = 0; i < 3; ++i) {
+      CHECK(send(normal));
+      if (take_newest(*driver, kept) != 0) return 1;
+    }
+    CHECK(kept.size() == 3);
+    for (int i = 0; i < 2 * PicturePool::kPictures; ++i) {
+      CHECK(send(lost));
+      CHECK(pool.free_count() == 1);
+    }
+    CHECK(withheld_is(*driver, nullptr));
+  }
+  CHECK(pool.free_count() == PicturePool::kPictures);
+
   // Several frames while nobody polls: each finds a picture, and one is held.
   for (int i = 0; i < 2 * PicturePool::kPictures; ++i) {
     CHECK(send(lost));
@@ -1278,6 +1298,7 @@ int test_withheld_picture_threaded(const Gpu& gpu) {
     CHECK(driver != nullptr);
   }
   CHECK(driver->begin().ok());
+  CHECK(withheld_is(*driver, nullptr));  // asked: pictures are held from here
   constexpr int kCaptures = 100;
   std::atomic<int> starved{0};
   std::atomic<bool> done{false};

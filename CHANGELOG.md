@@ -10,8 +10,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`ArkitSensor::poll_withheld_picture`**: the newest picture ARKit gave while
   its tracking is not normal, for a live view alone, each handed out once.
-  The sensor holds one, let go as soon as tracking is normal, at a stop and
-  when handed out. `poll`, `drain`, the frame notification and every counter
+  From the first call the sensor holds one, let go as soon as tracking is
+  normal, at a stop and when handed out; a consumer that never calls it has
+  none held. `poll`, `drain`, the frame notification and every frame counter
   are as they were. DECISIONS.md, the 2026-11-06 withheld picture entry.
 
 ## [0.47.0] - 2026-11-05

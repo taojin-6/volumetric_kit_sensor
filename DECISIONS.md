@@ -554,7 +554,8 @@ entries relevant to your task; later amendments supersede earlier rules.
   *Amended 2026-11-04:* the session is run again whenever it is wanted,
   not only while started, and an open with no frame in time is `NotFound`
   (the reopen entry); each pose is made exactly rigid (the exact-pose
-  entry).
+  entry). *Amended 2026-11-06 (the withheld picture entry):* a withheld
+  frame's picture may reach a live view (`poll_withheld_picture`).
 
 - [**2026-11-03**](#2026-11-03--a-gpu-fault-leaves-no-reader-waiting-for-good-every-error-nvdecs-decoder-returns-but-invalidargument-comes-back-with-each-ready-value-it-handed-out-set-and-its-wait-for-the-oldest-of-three-kept-pictures-sees-a-failed-stream-amends-the-2026-11-02-hand-over-entry) —
   A GPU fault leaves no reader waiting for good: NVDEC's decoder settles
@@ -624,8 +625,9 @@ entries relevant to your task; later amendments supersede earlier rules.
 - [**2026-11-06**](#2026-11-06--arkitsensorpoll_withheld_picture-gives-a-live-view-the-newest-picture-while-tracking-is-not-normal-one-held-and-never-through-poll-or-drain-amends-the-2026-11-03-arkit-entry) —
   `ArkitSensor::poll_withheld_picture` gives a live view the newest picture
   while tracking is not normal. Withheld frames stay withheld: `poll`,
-  `drain`, the notification and the counters do not change. The sensor holds
-  one picture, let go by a capture tracked normally, a stop or the hand-out.
+  `drain`, the notification and the frame counters do not change. From the
+  first call the sensor holds one picture, let go by a capture tracked
+  normally, a stop or the hand-out.
 
 ## Decision record
 
@@ -7218,7 +7220,9 @@ public frame every camera hands out.
 - **One world for the sensor.** The first run resets tracking and none
   after it does; relocalisation is allowed, so ARKit finds its world again
   after an interruption; frames ARKit did not track normally are withheld
-  (`failed`, `ArkitStatus::withheld`). A writer therefore writes tracking
+  (`failed`, `ArkitStatus::withheld`). (*Amended 2026-11-06 (the withheld
+  picture entry):* a withheld frame's picture may reach a live view
+  (`poll_withheld_picture`).) A writer therefore writes tracking
   Normal and world epoch 0 on every record. The sensor owns its
   `ARSession`: the configuration, the LiDAR check, the camera prompt,
   start and pause, and a re-run after an interruption only while started.
@@ -8025,17 +8029,19 @@ the hold does not rest on what Metal keeps. No camera was opened.
 
 **The rule.**
 - **A frame ARKit did not track normally stays withheld.** `poll`, `drain`, the
-  frame contract, the notification and every counter are as they were: the
-  stream and every fuser get trusted frames alone.
+  frame contract, the notification and every frame counter are as they were:
+  the stream and every fuser get trusted frames alone.
 - **Its picture alone may reach a live view.** `poll_withheld_picture`, on the
   polling thread, gives the newest, each once, imported and described from its
   tags by the path a frame's picture takes (`Driver::import_picture`). It
   counts only as an import (`pictures_imported`, `surfaces_made`): its frame is
   already withheld, or took no number.
-- **The driver holds one picture.** While started, a capture not tracked
-  normally replaces it, the older going back at once; a capture tracked
-  normally, a stop and the hand-out let it go. A capture without the map leaves
-  its picture too: a view needs no depth.
+- **The driver holds one picture, once asked.** It holds none until the first
+  `poll_withheld_picture`, which may itself find none, and from then for the
+  sensor's life. While started, a capture not tracked normally replaces it, the
+  older going back at once; a capture tracked normally or a stop gives it back,
+  and the hand-out makes it the image's, back when that goes. A capture without
+  the map leaves its picture too: a view needs no depth.
 - A picture a frame would be refused for gives none, with no count and no
   error, as a refused frame does not fail a `poll`. Once the session has
   failed, the call says so as `poll` does.
@@ -8051,15 +8057,19 @@ a tick finding none free is skipped. While tracking is not normal the holders
 are the withheld picture, 1; the capture being delivered, which becomes it as
 the older goes back; the queue, up to its depth from before the loss, until a
 poll; and what the consumer keeps. The next capture needs one free, so a
-consumer may keep 2 of the 4, not 3 as without this.
+consumer that has asked may keep 2 of the 4; one that never asks may still keep
+3.
 
-**The limit that leaves.** With every other picture of the pool kept, none is
-free, and the capture that would replace the hold cannot come. The consumer
-calling `poll_withheld_picture` frees one with no newer frame, as does letting
-one go. A consumer that does neither until a newer frame comes stalls the
-camera for good while tracking stays lost. The pattern never gets there, its
-tracking being always normal. ARKit's pool is ARKit's, and its size is not
-documented.
+**The limit that leaves.** With a picture held and every other picture of the
+pool kept, none is free, and the capture that would replace the hold cannot
+come. The consumer calling `poll_withheld_picture` and letting go of what it
+gives, or of another, frees one with no newer frame. A consumer that asked once,
+then stops asking while keeping every other picture, stalls the camera for good
+while tracking stays lost; closing that needs a copy or a timer, and neither is
+worth it. A loop that asks on each empty poll, as the call's example does, does
+not get there, a view keeping its last picture counting as one kept. The pattern
+never does either, its tracking being always normal. ARKit's pool is ARKit's,
+and its size is not documented.
 
 **Not here.** The notification stays one per frame held, so a consumer blocked
 on it wakes on its own timeout to ask. The pattern's tracking stays normal: the
@@ -8068,12 +8078,13 @@ pattern's.
 
 **Validation.** Apple M5 Max, Release with warnings as errors, under the
 validation layer (the loader shows it inserted), the optional drivers off: the
-suite passes, 61 tests; `sensor_arkit_sensor` 0.17-0.25 s (0.20-0.24 s before),
-`sensor_arkit_pattern` 1.01-1.09 s. Under ThreadSanitizer (Debug),
-`sensor_arkit_sensor` 4.5-5.0 s over 6 runs and `sensor_arkit_pattern` 11-12 s
-over 4, no reports. The driver compiles and an app's call links against the iOS
-SDK. Planted bugs, each failing `sensor_arkit_sensor`: withheld frames reaching
-the queue, the picture kept once tracking is normal, older pictures kept beside
-the newest (seen through the pool), the first kept instead of the newest, a stop
-keeping it (seen through the pool too), and, under ThreadSanitizer, the call
-taking no lock. No camera was opened.
+suite passes, 61 tests; `sensor_arkit_sensor` 0.16-0.21 s (0.20-0.24 s before),
+`sensor_arkit_pattern` 1.01-1.10 s. Under ThreadSanitizer (Debug),
+`sensor_arkit_sensor` 4.2-4.7 s over 4 runs and `sensor_arkit_pattern` 11-12 s
+over 2, no reports. The driver compiles and an app's call links against the iOS
+SDK. Planted bugs, each failing `sensor_arkit_sensor`: the hold taken before
+anyone asked (seen through the pool), asking not starting it, withheld frames
+reaching the queue, the picture kept once tracking is normal, older pictures
+kept beside the newest (seen through the pool), the first kept instead of the
+newest, a stop keeping it (seen through the pool too), and, under
+ThreadSanitizer, the call taking no lock. No camera was opened.
