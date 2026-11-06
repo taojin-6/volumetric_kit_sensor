@@ -604,8 +604,8 @@ int test_holds(const Gpu& gpu) {
 }
 
 // The status says how many pictures were imported and how many surfaces made
-// images. Over one surface under a new pointer per picture, as ARKit's come
-// from its camera server, each frame holds its own buffer and the images are
+// images. Over one surface under a new pointer per picture, as a surface from
+// another process comes, each frame holds its own buffer and the images are
 // made once; another surface makes its own. The counts outlast a stop, as the
 // images do.
 int test_import_counts(const Gpu& gpu) {

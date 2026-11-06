@@ -87,7 +87,7 @@ struct ArkitStatus {
   /// start (`PixelBufferImporter::Stats::pictures`).
   std::uint64_t pictures_imported = 0;
   /// Surfaces whose images those pictures made, since the open
-  /// (`PixelBufferImporter::Stats::surfaces`). ARKit's pool keeps it near its
+  /// (`PixelBufferImporter::Stats::surfaces`). A pool should keep it near its
   /// size; a poll that adds to it waits on the device's queue.
   std::uint64_t surfaces_made = 0;
   std::string last_refusal;   ///< Why the last frame was refused; or empty.

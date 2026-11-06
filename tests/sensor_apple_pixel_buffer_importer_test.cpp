@@ -522,7 +522,7 @@ int test_knows_a_surface_by_its_id(const Gpu& gpu) {
   CHECK(fill(looked_up.ref, 2));
   CHECK(check_holds(again, gpu, 2) == 0);
 
-  // A new pointer per picture, as a camera's come.
+  // A new pointer per picture, as a surface from another process comes.
   for (int i = 0; i < 4; ++i) {
     const Pixels next(vs_test::same_surface_buffer(looked_up.ref));
     CHECK(next.ref != nullptr);

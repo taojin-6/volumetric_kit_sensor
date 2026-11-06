@@ -26,17 +26,17 @@
 namespace volumetric_kit::sensor {
 namespace {
 
-// A surface no picture has arrived on in this many has left its producer's
-// pool, as a decoder's after a reset, and is let go; frames still holding it
-// keep it.
+// A surface no picture has arrived on in this many has most likely left its
+// producer's pool, as a decoder's after a reset, and is let go; one that comes
+// back has its images made again, and frames still holding it keep it.
 constexpr std::uint64_t kStale = 64;
 
 // A surface's two planes as images, made once: a producer cycles its
 // pictures through a few surfaces (VideoToolbox five for the lab's 4K clip).
-// Known by its id: a surface from another process, as a camera server's, comes
-// under a new IOSurfaceRef each time. The retain (and the textures) keep the id
-// its own, since the system gives a freed surface's id to the next one made, at
-// any size.
+// Known by its id: a surface from another process comes under a new
+// IOSurfaceRef each time. The retain (and the textures) keep the id its own,
+// since the system gives a freed surface's id to the next one made, at any
+// size.
 struct Surface {
   explicit Surface(IOSurfaceRef s) : surface(s), id(IOSurfaceGetID(s)) {
     CFRetain(s);

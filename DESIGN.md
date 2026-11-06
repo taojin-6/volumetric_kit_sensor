@@ -658,12 +658,8 @@ Metal texture imported as an image (`VK_EXT_metal_objects`), with a view and
 `PictureReadback` copies it, made once per
 surface and kept while pictures keep arriving on it (one no picture arrived
 on in 64 is let go, so the list holds at most 65), the images holding the
-pixel buffer. A surface is known by its `IOSurfaceGetID`, since one from
-another process comes under a new `IOSurfaceRef` each time; a listed surface
-is retained, which keeps its id its own, as the system gives a freed id to the
-next surface made. Making a surface's images ends in a host-waited barrier on
-the device's queue, behind whatever is queued there; a known surface's import
-is a lookup, and `stats()` counts the pictures and the surfaces. Made for
+pixel buffer. A surface is known by its `IOSurfaceGetID` (DECISIONS.md, the
+2026-11-05 surface id entry). Made for
 `Access::Write`, the images also have `STORAGE` and
 `TRANSFER_DST` usage and the textures are written as well as read, so a
 compute shader stores into the surface in place (`r8`, `rg8`): the

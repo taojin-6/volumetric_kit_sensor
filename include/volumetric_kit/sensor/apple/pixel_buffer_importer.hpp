@@ -137,8 +137,8 @@ class VS_APPLE_API PixelBufferImporter {
     /// refusals of a picture it does not take, a failed one counted.
     std::uint64_t pictures = 0;
     /// Surfaces whose images were made, one let go and back counting again. A
-    /// producer's pool keeps this near its size; a count that keeps pace with
-    /// @ref pictures means images made for every picture.
+    /// producer's pool should keep this near its size; a count that keeps pace
+    /// with @ref pictures means images made for every picture.
     std::uint64_t surfaces = 0;
   };
 
