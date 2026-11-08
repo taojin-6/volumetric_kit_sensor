@@ -1,7 +1,8 @@
 name: Install the Orbbec SDK
 description: >-
-  The pinned Orbbec SDK release for this runner, hash-checked and unpacked
-  under RUNNER_TEMP, its root exported as OrbbecSDK_ROOT.
+  The pinned Orbbec SDK release for this runner, from the runner's tool cache
+  or downloaded, hash-checked and unpacked under RUNNER_TEMP, its root
+  exported as OrbbecSDK_ROOT.
 
 # The build finds the SDK and never fetches it (the 2026-09-24 decision), so
 # CI installs it the way a developer does and hands the build its root through
@@ -9,7 +10,14 @@ description: >-
 # cmake/vs_orbbec.cmake requires (VS_ORBBEC_SDK_MIN_VERSION): keep the two in
 # lockstep, so CI builds against exactly the oldest SDK the module accepts.
 # Every leg that builds VS_WITH_ORBBEC, here or in a consumer's CI (by commit),
-# installs it through this action, so the pin lives here alone. Needs curl.
+# installs it through this action, so the pin lives here alone.
+#
+# The archive comes from the runner's tool cache,
+# ${RUNNER_TOOL_CACHE}/orbbec-sdk/<asset>, which outlives the job: the owner
+# seeds it on each host (~/ci-runners/cache/orbbec-sdk/seed.sh), and each
+# archive downloaded here is stored there. GitHub's release downloads
+# returned 504 for hours on 2026-11-08; a seeded runner downloads nothing,
+# and a new pin downloads once per runner. Needs curl to download.
 runs:
   using: composite
   steps:
@@ -32,14 +40,67 @@ runs:
             exit 1
             ;;
         esac
+        sha256_of() {
+          { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1
+        }
+        cache="${RUNNER_TOOL_CACHE:+${RUNNER_TOOL_CACHE}/orbbec-sdk}"
         archive="${RUNNER_TEMP}/${asset}"
-        curl -fsSL --retry 3 -o "${archive}" \
-          "https://github.com/orbbec/OrbbecSDK_v2/releases/download/v${version}/${asset}"
-        actual=$({ sha256sum "${archive}" 2>/dev/null ||
-                   shasum -a 256 "${archive}"; } | cut -d' ' -f1)
-        if [ "${actual}" != "${sha256}" ]; then
-          echo "::error::${asset}: sha256 ${actual}, expected ${sha256}"
-          exit 1
+        cached=
+        # A cached copy is used only if it matches the pin. It is copied here
+        # first, so tar unpacks the bytes that were hashed; one that cannot be
+        # read or does not match is removed, and the download below replaces
+        # it.
+        if [ -n "${cache}" ] && [ -f "${cache}/${asset}" ]; then
+          if cp "${cache}/${asset}" "${archive}" &&
+             actual=$(sha256_of "${archive}"); then
+            found="sha256 ${actual}"
+          else
+            actual=
+            found=unreadable
+          fi
+          if [ "${actual}" = "${sha256}" ]; then
+            cached=1
+            echo "${asset}: from the runner's tool cache, ${cache}/${asset}"
+          else
+            if rm -f "${cache}/${asset}"; then
+              note=removed
+            else
+              note="could not be removed"
+            fi
+            echo "::warning::${asset} in the runner's tool cache: ${found}, expected ${sha256}; ${note}, downloading"
+          fi
+        fi
+        if [ -z "${cached}" ]; then
+          # --retry alone retries timeouts and HTTP 408, 429, 500 and 502-504;
+          # --retry-all-errors (curl 7.71) retries every failure.
+          retry="--retry 5 --retry-delay 10"
+          if curl --retry-all-errors --version >/dev/null 2>&1; then
+            retry="${retry} --retry-all-errors"
+          fi
+          # shellcheck disable=SC2086 # retry is a list of options.
+          curl -fsSL ${retry} -o "${archive}" \
+            "https://github.com/orbbec/OrbbecSDK_v2/releases/download/v${version}/${asset}"
+          actual=$(sha256_of "${archive}")
+          if [ "${actual}" != "${sha256}" ]; then
+            echo "::error::${asset}: sha256 ${actual}, expected ${sha256}"
+            exit 1
+          fi
+          echo "${asset}: downloaded"
+          # Written under a temporary name and moved into place, so the cache
+          # never holds a partial copy. Not storing it costs the next job a
+          # download, so it fails nothing.
+          if [ -n "${cache}" ]; then
+            tmp=
+            if mkdir -p "${cache}" &&
+               tmp=$(mktemp "${cache}/.${asset}.XXXXXX") &&
+               cp "${archive}" "${tmp}" && chmod 644 "${tmp}" &&
+               mv -f "${tmp}" "${cache}/${asset}"; then
+              echo "${asset}: stored in the runner's tool cache, ${cache}/${asset}"
+            else
+              [ -z "${tmp}" ] || rm -f "${tmp}" || true
+              echo "::warning::${asset}: not stored in the runner's tool cache, ${cache}"
+            fi
+          fi
         fi
         root="${RUNNER_TEMP}/OrbbecSDK_v${version}"
         rm -rf "${root}"

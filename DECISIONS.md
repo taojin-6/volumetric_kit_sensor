@@ -38,7 +38,8 @@ entries relevant to your task; later amendments supersede earlier rules.
 - [**2026-09-24**](#2026-09-24--the-orbbec-sdk-is-a-prerequisite-behind-vr_with_orbbec-installed-once-for-the-family-found-and-never-fetched) —
   The Orbbec SDK is a prerequisite behind `VR_WITH_ORBBEC`: installed once for
   the family, found, and never fetched. The floor rose to 2.10.6 on
-  2026-10-07.
+  2026-10-07. *Amended 2026-11-08:* CI's action takes the SDK from the
+  runner's tool cache first, and stores there what it downloads.
 - [**2026-09-26**](#2026-09-26--the-orbbec-driver-lands-as-sensororbbec-a-target-of-its-own-it-undistorts-colour-and-then-registers-depth-to-it-on-the-host-and-it-reads-the-rigs-sync-roles-without-writing-them) —
   The Orbbec driver lands as `sensor/orbbec`, a target of its own: it
   undistorts colour and then registers depth to it on the host, and it reads
@@ -992,6 +993,16 @@ of those example runs clean.
 *Amended 2026-10-07 (the rig entry, below):* the floor and CI's pin are
 2.10.6, for its global timestamps, and CI installs it through one composite
 action, `.github/actions/install-orbbec-sdk`.
+
+*Amended 2026-11-08:* the action takes the pinned archive from the runner's
+tool cache (`$RUNNER_TOOL_CACHE/orbbec-sdk/<asset>`, which outlives the job)
+when its SHA-256 matches the pin, and stores there each archive it downloads
+and checks; a cached copy that cannot be read or does not match is removed
+and downloaded again. GitHub's release downloads returned 504 for hours
+that day, failing every leg that installs the SDK before it compiled; the
+owner seeded each runner, so a job downloads only on a runner without the
+copy, and a new pin once per runner. The build still only finds the SDK;
+it never fetches it.
 
 The next capture source is the Orbbec rig — Femto Mega units, calibrated by
 `volumetric_kit_calib` for their poses — and its driver needs the Orbbec SDK
