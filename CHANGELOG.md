@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- CI: **`.github/actions/install-orbbec-sdk` takes the pinned archive from
+  the runner's tool cache** (`$RUNNER_TOOL_CACHE/orbbec-sdk/<asset>`) when
+  its SHA-256 matches the pin (checked and unpacked from a copy under
+  `RUNNER_TEMP`), and stores there each archive it downloads and checks,
+  written under a temporary name and moved into place. A cached copy that
+  cannot be read or does not match is removed with a warning, which says
+  if it could not be, and downloaded again; a failed store is a warning.
+  The download retries every error, 5xx included (`--retry-all-errors`
+  where curl has it, five retries 10 s apart). `OrbbecSDK_ROOT` is as it
+  was. A consumer's CI, which keeps the action at its sensor pin, takes it
+  at its next re-pin onto a sensor that has it; until then a seeded cache
+  is not read. DECISIONS.md, the 2026-09-24 entry's 2026-11-08 amendment.
+
 ## [0.48.0] - 2026-11-06
 
 ### Added
