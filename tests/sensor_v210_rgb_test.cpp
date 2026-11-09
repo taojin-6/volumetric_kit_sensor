@@ -12,7 +12,8 @@
 //     primaries' checked against the published codes);
 //   - a chroma step pins where each pixel's chroma comes from: co-sited, an
 //     even pixel's own sample and an odd one's mean of the two either side;
-//     centred, 3/4 and 1/4; the last pixel clamped to the last sample;
+//     centred, 3/4 and 1/4; the last pixel clamped to the last sample; past
+//     2^24 pixels across too, where float coordinates lose a pixel's low bits;
 //   - random 10-bit codes off the 8-bit grid at widths 2 to 4096 (last groups
 //     of 2, 4 and 6 pixels) within half a code of the reference, which the
 //     same codes cut to 8 bits miss by more; the same picture after a lead
@@ -315,6 +316,42 @@ int test_chroma_step() {
   return 0;
 }
 
+// The same step 2^24 + 4 pixels across, its last two Cr samples, past where
+// a float holds every pixel's x (2^24; 2^23 for x - 1/2): each of the last
+// pixels takes the chroma written out for it. Taps worked out in float gave
+// pixel 2^24 + 1 one sample alone at either siting, and at some wider widths
+// read a sample past the row. About 300 MB, a fraction of a second.
+int test_wide() {
+  const std::uint32_t w = (1u << 24) + 4;
+  Samples s = flat(w, 1, 200, 512, 512);
+  s.cr[s.cw() - 1] = 960;
+  const std::vector<std::uint8_t> bytes = pack(s);
+  for (const bool centred : {false, true}) {
+    YuvImage p = picture(bytes, w, 1);
+    p.chroma_location = centred ? ChromaLocation::Center : ChromaLocation::Left;
+    const std::vector<std::uint8_t> rgb = convert(p);
+    CHECK(rgb.size() == std::size_t{w} * 3);
+    for (std::uint32_t x = w - 8; x < w; ++x) {
+      const std::array<double, 3> want = reference(s, 0, x, centred);
+      for (int c = 0; c < 3; ++c) {
+        const double got = rgb[std::size_t{x} * 3 + c];
+        if (std::fabs(got - want[c]) > 0.5 + 1e-3) {
+          std::fprintf(stderr, "  %s pixel %u channel %d: %.0f, want %.2f\n",
+                       centred ? "centred" : "co-sited", x, c, got, want[c]);
+        }
+        CHECK(std::fabs(got - want[c]) <= 0.5 + 1e-3);
+      }
+    }
+    // Pixel 2^24 + 1: the mean of 512 and 960 co-sited, 3/4 and 1/4 centred.
+    CHECK(std::fabs(rgb[(std::size_t{w} - 3) * 3] -
+                    red_at(centred ? 624 : 736)) <= 0.5 + 1e-3);
+  }
+  std::printf(
+      "  wide: 2^24 + 4 pixels across, the last pixels' chroma where it is "
+      "written, either siting\n");
+  return 0;
+}
+
 // Random codes at widths ending in every partial group, within half a code
 // of the reference at either siting, its two low bits read; after a lead and
 // with padded rows, the same bytes, and nothing past the pixels written.
@@ -577,6 +614,7 @@ int main(int argc, char** argv) {
   CHECK(test_levels() == 0);
   CHECK(test_bars() == 0);
   CHECK(test_chroma_step() == 0);
+  CHECK(test_wide() == 0);
   CHECK(test_codes_and_rows() == 0);
   CHECK(test_refusals() == 0);
   std::puts("sensor_v210_rgb: OK");

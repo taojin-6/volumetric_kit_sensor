@@ -107,21 +107,17 @@ core::Status v210_to_rgb8(const YuvImage& picture, std::uint8_t* rgb,
     const std::uint32_t h = picture.height;
     const std::uint32_t cw = w / 2;
     const std::uint32_t groups = (w + 5) / 6;
-    // Each column's two chroma samples and the weight of the second, where
-    // the pass's bilinear_taps puts them for a pixel left where it is: chroma
-    // coordinate (x - chroma_x) / 2, clamped to the row's samples. Every row
-    // takes the same: 4:2:2 has chroma on every row.
-    const float chroma_x = chroma_offset(picture.chroma_location)[0];
-    std::vector<std::uint32_t> lo(w), hi(w);
-    std::vector<float> f(w);
-    for (std::uint32_t x = 0; x < w; ++x) {
-      const float c =
-          std::min(std::max((static_cast<float>(x) - chroma_x) * 0.5f, 0.0f),
-                   static_cast<float>(cw - 1));
-      lo[x] = static_cast<std::uint32_t>(std::floor(c));
-      hi[x] = std::min(lo[x] + 1, cw - 1);
-      f[x] = c - static_cast<float>(lo[x]);
-    }
+    // Each pixel's two chroma samples, and the weight of the second, are
+    // where the pass's bilinear_taps puts them for a pixel left where it is:
+    // chroma coordinate (x - chroma_x) / 2, clamped to the row's samples.
+    // chroma_x is 0 or 1/2, so that is 2 x - 2 chroma_x quarter samples,
+    // worked out in integers: exact at any width, where float loses x's low
+    // bits past 2^24 pixels across (past 2^23 centred) and picks the wrong
+    // samples, at some widths one past the row. Every row takes the same:
+    // 4:2:2 has chroma on every row.
+    const std::uint64_t centred =
+        chroma_offset(picture.chroma_location)[0] != 0.0f ? 1 : 0;
+    const std::uint64_t last_quarter = std::uint64_t{cw - 1} * 4;
     // One row's samples on the 8-bit scale, code / 4, a whole last group's
     // worth (the samples past the width unused).
     std::vector<float> y(std::size_t{groups} * 6), cb(std::size_t{groups} * 3),
@@ -156,10 +152,16 @@ core::Status v210_to_rgb8(const YuvImage& picture, std::uint8_t* rgb,
       }
       std::uint8_t* out = rgb + std::size_t{r} * w * 3;
       for (std::uint32_t x = 0; x < w; ++x) {
+        const std::uint64_t twice = std::uint64_t{x} * 2;
+        const std::uint64_t quarter =
+            std::min(twice < centred ? 0 : twice - centred, last_quarter);
+        const std::size_t lo = static_cast<std::size_t>(quarter / 4);
+        const std::size_t hi = std::min<std::size_t>(lo + 1, cw - 1);
+        const float f = static_cast<float>(quarter % 4) * 0.25f;
         // luma_level, ycbcr_to_word: limited range.
         const float luma = (y[x] - 16.0f) / 219.0f;
-        const float pb = (mix(cb[lo[x]], cb[hi[x]], f[x]) - 128.0f) / 224.0f;
-        const float pr = (mix(cr[lo[x]], cr[hi[x]], f[x]) - 128.0f) / 224.0f;
+        const float pb = (mix(cb[lo], cb[hi], f) - 128.0f) / 224.0f;
+        const float pr = (mix(cr[lo], cr[hi], f) - 128.0f) / 224.0f;
         const float red = luma + r_from_pr * pr;
         const float blue = luma + b_from_pb * pb;
         const float green = (luma - kr * red - kb * blue) / kg;

@@ -8137,7 +8137,10 @@ ThreadSanitizer, the call taking no lock. No camera was opened.
   tightly packed 8-bit R'G'B', each pixel as the colour pass converts one
   its lens leaves where it is, in float, step for step: each sample code /
   4; chroma at `(x - chroma_x) / 2`, clamped to the row's samples, the two
-  taps and the weight `bilinear_taps` gives, mixed as GLSL's `mix`;
+  taps and the weight `bilinear_taps` gives, mixed as GLSL's `mix`, but
+  worked out in integers, in quarter samples (`chroma_x` is 0 or 1/2), so
+  exact at any width, where float loses a pixel's low bits past 2^24 pixels
+  across (past 2^23 centred) and at some widths reads a sample past the row;
   `luma_level` and `ycbcr_to_word`'s limited-range matrix by the picture's
   `kr` and `kb`; each channel clamped to [0, 1] and rounded once, half up
   (`code`). It refuses, writing nothing, what the colour pass refuses of a
@@ -8193,8 +8196,11 @@ DeckLink capture was saved as `LumaPass`'s 8-bit grey, since
   691, 167, 105; 127, 960, 471); a Cr step with a different last sample,
   through `Left`, `TopLeft`, `Center` and `Bottom`, each pixel's red that of
   the Cr written out for it (co-sited 736 between 512 and 960, centred 624
-  and 848, the last pixel the last sample's 700); random 10-bit codes, none
-  a multiple of 4, at widths 2, 4, 6, 8, 10, 38, 40, 42, 3840, 3842, 3844
+  and 848, the last pixel the last sample's 700); the same step in the last
+  two Cr samples of a row 2^24 + 4 wide, its last 8 pixels within half a
+  code of the reference at either siting (pixel 2^24 + 1 co-sited 736,
+  centred 624; about 300 MB, 0.15 s); random 10-bit codes, none a multiple
+  of 4, at widths 2, 4, 6, 8, 10, 38, 40, 42, 3840, 3842, 3844
   and 4096 (last groups of every size), within 0.5000 of a code of BT.709
   in double at either siting, where the same codes cut to 8 bits miss by
   2.96; the same pictures from byte 20 with rows 36 bytes past theirs, junk
@@ -8221,7 +8227,10 @@ Planted bugs, each failing `sensor_v210_rgb`: Cb and Cr swapped in a group,
 odd pixels not interpolated, the last chroma tap not clamped, a word's
 first sample's two low bits dropped, the siting ignored, the stride
 ignored, the offset ignored, the code truncated rather than rounded, luma
-scaled as full range, Y2 read from Cb2's place, and full range not refused.
+scaled as full range, Y2 read from Cb2's place, full range not refused, and
+the taps worked out in float (the review's find: pixel 2^24 + 1 took one
+sample alone; at 33,554,448 wide the last pixel read one float past the Cb
+row, which AddressSanitizer reports and the integer taps do not).
 Seven of them fail `sensor_picture_readback`'s comparison with the colour
 pass too; the stride, offset, rounding and refusal ones do not (its picture
 is tight and from byte 0; a truncation differs by at most one code).
@@ -8248,3 +8257,11 @@ portable host code and the existing copy, which CI's NVIDIA legs and
 lavapipe sanitizer job run. recon's suite was not run: `frame` is
 unchanged. No camera was opened, and the DeckLink driver does not build on
 macOS.
+After the review, the chroma taps in integers: on random codes at 110
+widths from 2 to 8192 and all six sitings, 2,400,768 pixels, the bytes are
+the float taps' exactly, and 3840x2160 still takes p50 17.8-18.4 ms over
+15 runs. `sensor_v210_rgb` takes 0.15 s in Release, about 300 MB at its
+peak, and about 8 s under AddressSanitizer and UBSan (Debug), 7 of them
+the 2^24 + 4 row. A probe 33,554,448, 33,554,446, 33,554,450, 16,777,218
+and 16,777,220 wide, co-sited and centred, runs clean under
+AddressSanitizer, where the float taps read past the Cb row at the first.

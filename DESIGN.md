@@ -906,8 +906,9 @@ conversion on the host, for colour stills: each pixel as the pass converts
 one its lens leaves where it is, in float, step for step (code / 4, the
 chroma's taps where `bilinear_taps` puts them, `luma_level`,
 `ycbcr_to_word`, `code`), into tightly packed R'G'B' bytes; one row's
-samples unpacked at a time, a column's two chroma taps and weight worked
-out once a call. On random 10-bit codes it agrees with the pass within a
+samples unpacked at a time, each pixel's two chroma taps and weight worked
+out in integers, in quarter samples, which float holds exactly only to
+2^23 pixels across. On random 10-bit codes it agrees with the pass within a
 code (the 2026-11-09 colour stills decision).
 A dataset decoded on the host hands its colour over as packed R'G'B' words
 instead (`RgbdFrame::color_packed`, `io::load_color_packed`'s layout; the

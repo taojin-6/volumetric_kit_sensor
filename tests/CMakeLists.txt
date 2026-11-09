@@ -357,7 +357,8 @@ vs_target_warnings(sensor_conventions_test)
 add_test(NAME sensor_conventions COMMAND sensor_conventions_test)
 
 # A V210 picture's R'G'B' on the host (v210_rgb.hpp): levels, BT.709's bars, a
-# chroma step through each siting, random 10-bit codes at widths ending in each
+# chroma step through each siting, at 2^24 + 4 pixels across too (about 300 MB
+# for a fraction of a second), random 10-bit codes at widths ending in each
 # partial group against BT.709 in double, padded rows and the refusals. Pure
 # host math, so it always runs. Its time on a noisy 3840x2160 picture, and its
 # PNG's time and size (sensor_image_io), printed and asserting nothing more, is

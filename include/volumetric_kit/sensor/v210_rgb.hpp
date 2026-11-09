@@ -43,7 +43,9 @@ constexpr std::uint64_t v210_row_bytes(std::uint32_t width) noexcept {
 ///   co-sited (`Left`, DeckLink's; `TopLeft`, `BottomLeft`), an even pixel
 ///   takes its own sample and an odd one the mean of the two either side,
 ///   the last odd one the last sample; centred (`Center`, `Top`, `Bottom`),
-///   three quarters of the nearer and a quarter of the farther;
+///   three quarters of the nearer and a quarter of the farther; the taps and
+///   their weight worked out in quarter samples, in integers, so exact at
+///   any width (in float they drift past 2^23 pixels across);
 /// - R', G' and B' by the picture's @ref YuvImage::kr and @ref YuvImage::kb,
 ///   each clamped to [0, 1] and rounded once to 8 bits, half up.
 /// No transfer function is applied: the bytes are encoded R'G'B', as the
