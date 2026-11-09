@@ -44,6 +44,8 @@ struct PictureView {
   std::uint32_t height = 0;  ///< Luma height (rows).
   std::size_t stride = 0;    ///< Bytes from one @ref luma row to the next.
   /// Y in 0..255 rather than 16..235: the picture's `YuvImage::full_range`.
+  /// For `YuvLayout::V210`, false, as that layout is limited range only: its
+  /// luma is 10-bit codes, 64..940.
   bool full_range = true;
   /// @ref height rows of @ref width bytes, @ref stride apart. For
   /// `YuvLayout::V210`, its one plane instead: @ref height rows of
