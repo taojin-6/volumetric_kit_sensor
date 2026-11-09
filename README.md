@@ -36,8 +36,8 @@ umbrella `volumetric_kit::sensor` links every tier the build has.
 | --- | --- | --- | --- |
 | `sensor_camera` | `camera/` | `CameraModel`, rigid geometry, the lens model, the calibration file, a tracked sensor's registration into it and its posed stills; a stereo pair (`stereo_calibration`), its rectification (`rectify_stereo`) and a lens's fold (`fold_radius2`) on the host; no Vulkan | core base, GLM |
 | `sensor_frame` | `frame/` | `DeviceFrame`, the pinhole cameras, `DepthNoise`, `ColorEncoding` and the sRGB curve, `pinhole.glsl`, `device_requirements()`; header-only | core Vulkan |
-| `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions; `IAudioSensor`, `AudioChunk` | camera, frame |
-| `sensor_prep` | `prep/` | `GpuFramePrep`, `LumaPass` (any picture's 8-bit luma and its half, on the GPU), `PictureReadback` | interface |
+| `sensor_interface` | the root | `IRgbdSensor`, `RgbdFrame`, `YuvImage`, camera and colour conventions, `v210_to_rgb8` (a V210 picture's R'G'B' on the host); `IAudioSensor`, `AudioChunk` | camera, frame |
+| `sensor_prep` | `prep/` | `GpuFramePrep`, `LumaPass` (any picture's 8-bit luma and its half, on the GPU), `PictureReadback` (a V210 picture's words too) | interface |
 | `sensor_array` | `array/` | `SensorArray`, `RigSets` | prep |
 | `sensor_stereo` | `stereo/` | `IStereoSensor`, `StereoFrame`, `StereoRectifier` (a calibrated pair rectified on the GPU) | interface; prep, privately |
 | `sensor_video_syntax` | `video/` | H.265 syntax read on the host and `KeyGate` (which units decode after a loss), every build | core base |
@@ -69,7 +69,9 @@ ctest --test-dir "$sensor_root/build" --output-on-failure -LE manual
 
 An entry labelled `manual` only prints a measurement, best taken on an idle
 GPU, and CI never runs it: `ctest --test-dir "$sensor_root/build" -L manual`
-(the rectifier's pass time, `sensor_stereo_rectifier_timing`).
+(the rectifier's pass time, `sensor_stereo_rectifier_timing`; a DeckLink
+pair's read, `sensor_picture_readback_timing`; a 4K V210 picture's
+conversion and PNG, `sensor_v210_rgb_timing`).
 
 | Option | Default | Effect |
 | --- | --- | --- |
@@ -127,10 +129,12 @@ two packages' requirements:
 ## Image files
 
 `volumetric_kit::sensor_image_io` provides encoded RGB image loading, 16-bit
-grayscale depth PNG loading with explicit units, and RGBA8 and 16-bit
-grayscale PNG writing (`io/image_io.hpp`, namespace `sensor::io`); it links
-the core's base tier alone, with no Vulkan. These are host file operations;
-they allocate no Vulkan resources.
+grayscale depth PNG loading with explicit units, and RGBA8, RGB8 and 16-bit
+grayscale PNG writing, RGB8 and 16-bit also encoded in memory
+(`io/image_io.hpp`, namespace `sensor::io`); it links the core's base tier
+alone, with no Vulkan. These are host file operations; they allocate no
+Vulkan resources, and the encoders share no setting, so calls may run on
+several threads at once.
 
 ## Orbbec driver
 
@@ -334,6 +338,23 @@ built and tested on every leg, and its SDK part on the 24.04 leg, against
 the SDK's headers the core keeps
 (`tools/ci/decklink-sdk-16.0`, at the core pin).
 
+A pair's colour stills, for photogrammetry or NeRF, say: `PictureReadback`
+reads both pictures' V210 words in one submit (`Planes::All`), and a copy of
+them is converted on the host later, on any thread, as the GPU's colour pass
+converts them (`v210_rgb.hpp`), then written as a PNG:
+
+```cpp
+VKC_ASSIGN(std::vector<sensor::PictureView> views,
+           readback->read({&pair.left, &pair.right},
+                          sensor::PictureReadback::Planes::All));
+// Copy each view's rows, (height - 1) * stride + v210_row_bytes(width)
+// bytes, and describe the copy as its picture (v210_rgb.hpp); then:
+std::vector<std::uint8_t> rgb(std::size_t{copy.width} * copy.height * 3);
+VKC_TRY(sensor::v210_to_rgb8(copy, rgb.data(), rgb.size()));
+VKC_TRY(sensor::io::write_png_rgb8(path, rgb.data(), rgb.size(), copy.width,
+                                   copy.height));
+```
+
 ## ARKit driver
 
 `ArkitSensor` (`arkit/arkit_sensor.hpp`, `volumetric_kit::sensor_arkit`)
@@ -463,7 +484,7 @@ pixel buffers or on targets, which `testing/nv12_writer.hpp`'s
 
 ## Versions
 
-The version is `project()`'s (0.48.0), carried by the umbrella as
+The version is `project()`'s (0.49.0), carried by the umbrella as
 `VKC_PACKAGE_VERSION`. Before 1.0, a change to a public header, the
 exported GLSL, a target or option name, or the calibration file's format
 bumps the minor in the PR that makes it; CHANGELOG.md has a section per

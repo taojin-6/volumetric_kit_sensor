@@ -73,6 +73,44 @@ VS_IMAGE_IO_API core::Status write_png_rgba8(const std::string& path,
                                              std::uint32_t width,
                                              std::uint32_t height);
 
+/// @brief Encode tightly packed, encoded RGB8 rows as an 8-bit RGB PNG in
+///        memory: a colour still, such as `v210_to_rgb8`'s output.
+///
+/// Bytes are preserved without flipping rows or color conversion, and no
+/// color profile is attached, so @ref load_color_packed returns them exactly.
+/// The compression is the encoder's default for every call: no setting is
+/// shared or changed, so calls may run concurrently, on several threads.
+/// @param pixels Pointer to top-left-origin RGB bytes, R first, valid for
+///        this call.
+/// @param byte_count Available bytes; must cover `width * height * 3`.
+/// @param width Positive width supported by the encoder's integer bounds.
+/// @param height Positive height supported by the encoder's integer bounds.
+/// @return The PNG file's bytes, or non-OK Status for invalid input or
+///         allocation failure.
+VS_IMAGE_IO_API core::Result<std::vector<std::uint8_t>> encode_png_rgb8(
+    const std::uint8_t* pixels, std::size_t byte_count, std::uint32_t width,
+    std::uint32_t height);
+
+/// @brief Write tightly packed, encoded RGB8 rows to an 8-bit RGB PNG file.
+///
+/// Writes the bytes of @ref encode_png_rgb8. The output is opened only after
+/// encoding succeeds, so invalid input or an allocation failure leaves an
+/// existing file intact; an I/O failure can leave a partial file.
+/// @param path Output path, without embedded NUL characters; replaced on
+///        success.
+/// @param pixels Pointer to top-left-origin RGB bytes, R first, valid for
+///        this call.
+/// @param byte_count Available bytes; must cover `width * height * 3`.
+/// @param width Positive width supported by the encoder's integer bounds.
+/// @param height Positive height supported by the encoder's integer bounds.
+/// @return OK after closing the file, or non-OK Status for invalid input,
+///         allocation failure, or encoding/write failure.
+VS_IMAGE_IO_API core::Status write_png_rgb8(const std::string& path,
+                                            const std::uint8_t* pixels,
+                                            std::size_t byte_count,
+                                            std::uint32_t width,
+                                            std::uint32_t height);
+
 /// @brief Encode tightly packed 16-bit samples as a 16-bit grayscale PNG in
 ///        memory.
 ///

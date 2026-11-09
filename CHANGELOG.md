@@ -4,10 +4,36 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.49.0] - 2026-11-09
+
+### Added
+
+- **`v210_to_rgb8`** (`v210_rgb.hpp`, `volumetric_kit::sensor_interface`):
+  a V210 picture on the host as tightly packed 8-bit R'G'B', each pixel as
+  `GpuFramePrep`'s colour pass converts one its lens leaves where it is
+  (code / 4, chroma sited by `chroma_location`, the picture's matrix,
+  limited range, rounded once), for colour stills from a DeckLink pair, for
+  photogrammetry or NeRF, say. No device; calls may run concurrently;
+  3840x2160 in about 18 ms on one M5 Max core. `v210_row_bytes(width)`, the
+  bytes a V210 row takes. On random 10-bit codes it is within half a code
+  of BT.709 in double, and within a code of the colour pass (1 channel in
+  92,208 differs, by one).
+- **`io::encode_png_rgb8`** and **`io::write_png_rgb8`**: tightly packed
+  RGB8 rows as an 8-bit RGB PNG, in memory or to a file, with
+  `write_png_rgba8`'s checks and errors; every call at the encoder's default
+  compression, no setting shared, so encodes may run on several threads.
+- Manual entries `sensor_v210_rgb_timing` (the conversion, and its PNG's
+  time and size, on a noisy 3840x2160 picture) and
+  `sensor_picture_readback_timing` (a DeckLink pair's read).
 
 ### Changed
 
+- **`PictureReadback` reads a V210 picture with `Planes::All`**: its one
+  plane of words, copied where it sits, the view's `luma` pointing at them
+  at the buffer's stride, `layout` V210 and no chroma. V210 with
+  `Planes::Luma` stays `Unsupported`, naming `LumaPass`. Every other layout
+  reads as it did; YUYV's refusal names V210 among what it reads.
+  DECISIONS.md, the 2026-11-09 colour stills entry.
 - CI: **`.github/actions/install-orbbec-sdk` takes the pinned archive from
   the runner's tool cache** (`$RUNNER_TOOL_CACHE/orbbec-sdk/<asset>`) when
   its SHA-256 matches the pin (checked and unpacked from a copy under

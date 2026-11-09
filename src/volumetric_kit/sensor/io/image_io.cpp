@@ -266,6 +266,30 @@ core::Status write_png_rgba8(const std::string& path,
   return core::exception_status("write_png_rgba8", core::Status::Code::IoError);
 }
 
+core::Result<std::vector<std::uint8_t>> encode_png_rgb8(
+    const std::uint8_t* pixels, std::size_t byte_count, std::uint32_t width,
+    std::uint32_t height) try {
+  const std::string where = "encode_png_rgb8";
+  VKC_TRY(
+      check_png_input(where, pixels, byte_count, "bytes", 3, width, height, 3));
+  return encode_png(where, pixels, width, height, 3);
+} catch (...) {
+  return core::exception_status("encode_png_rgb8", core::Status::Code::IoError);
+}
+
+core::Status write_png_rgb8(const std::string& path, const std::uint8_t* pixels,
+                            std::size_t byte_count, std::uint32_t width,
+                            std::uint32_t height) try {
+  VKC_TRY(core::check_path("write_png_rgb8", path));
+  const std::string where = "write_png_rgb8: " + path;
+  VKC_TRY(
+      check_png_input(where, pixels, byte_count, "bytes", 3, width, height, 3));
+  VKC_ASSIGN(const auto png, encode_png(where, pixels, width, height, 3));
+  return write_bytes(where, path, png);
+} catch (...) {
+  return core::exception_status("write_png_rgb8", core::Status::Code::IoError);
+}
+
 core::Result<std::vector<std::uint8_t>> encode_png_u16(
     const std::uint16_t* samples, std::size_t sample_count, std::uint32_t width,
     std::uint32_t height) try {

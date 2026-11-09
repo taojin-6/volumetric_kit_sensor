@@ -400,7 +400,10 @@ entries relevant to your task; later amendments supersede earlier rules.
   in their outputs. Limited range only; `PictureReadback` refuses them
   (`Unsupported`) until it reads them. *Amended the same day (the luma
   entry):* `LumaPass` rounds their luma to 8 bits on the GPU, and
-  `PictureReadback` reads that; it still refuses V210 itself.
+  `PictureReadback` reads that; it still refuses V210 itself. *Amended
+  2026-11-09 (the colour stills entry):* `PictureReadback` reads a V210
+  picture's words whole with every plane, and `v210_to_rgb8` converts them
+  on the host as the colour pass does; its luma alone stays refused.
 
 - [**2026-11-01**](#2026-11-01--a-stereo-frame-states-its-skew-and-its-sources-bound-the-right-picture-is-let-go-once-rectified-and-a-pair-comes-from-two-calibration-entries) —
   A stereo frame states its skew, the right picture's time less the left's
@@ -447,7 +450,9 @@ entries relevant to your task; later amendments supersede earlier rules.
   Y rounded once, `(code + 2) / 4`, the 8-bit layouts' copied, the half the
   rounded 2x2 mean. The outputs are pooled device buffers, leased like frame
   prep's, CONCURRENT across the families the caller names.
-  `PictureReadback` reads a list in one submit.
+  `PictureReadback` reads a list in one submit. *Amended 2026-11-09 (the
+  colour stills entry):* it reads V210's words with every plane; V210's luma
+  alone is still `LumaPass`'s.
 - [**2026-11-02**](#2026-11-02--which-access-units-decode-after-a-loss-is-keygate-and-whether-one-is-a-key-hevcfirst_slice_type-public-in-sensor_video_syntax-the-orbbec-colour-decoders-gate-and-key-scan-moved-there-unchanged-amends-the-2026-09-28-h265-and-2026-10-25-public-syntax-entries) —
   Which access units of a predicted H.265 stream decode after a loss is
   `KeyGate` (`video/key_gate.hpp`), and whether one is a key
@@ -629,6 +634,16 @@ entries relevant to your task; later amendments supersede earlier rules.
   `drain`, the notification and the frame counters do not change. From the
   first call the sensor holds one picture, let go by a capture tracked
   normally, a stop or the hand-out.
+
+- [**2026-11-09**](#2026-11-09--colour-stills-from-a-decklink-pair-picturereadback-reads-a-v210-pictures-words-whole-with-every-plane-v210_to_rgb8-converts-a-copy-of-them-on-the-host-as-the-colour-pass-converts-them-and-io-writes-rgb8-pngs-amends-the-2026-11-01-v210-and-luma-entries) —
+  Colour stills from a DeckLink pair, for photogrammetry or NeRF:
+  `PictureReadback` reads a V210 picture's words whole with
+  `Planes::All` (the view's `luma` at the buffer's stride, `layout` V210,
+  no chroma), its luma alone still `Unsupported`; `v210_to_rgb8`
+  (`v210_rgb.hpp`, the interface tier) converts a host copy to packed 8-bit
+  R'G'B' as the colour pass converts a pixel its lens leaves where it is,
+  in float, step for step; `io::encode_png_rgb8` and `io::write_png_rgb8`
+  write it at stb's default compression, which nothing sets.
 
 ## Decision record
 
@@ -5730,7 +5745,10 @@ guarantees. `PictureReadback` refuses V210 with `Unsupported`:
 `TODO(sensor)`, its luma unpacked on the GPU, for calib's DeckLink pairs.
 *Amended the same day (the luma entry):* `LumaPass` unpacks it, through
 `luma_at`, and the `TODO(sensor)` goes; `PictureReadback` still refuses
-V210 itself.
+V210 itself. *Amended 2026-11-09 (the colour stills entry):*
+`PictureReadback` reads a V210 picture's words whole with `Planes::All`,
+and `v210_to_rgb8` converts them on the host by this entry's arithmetic;
+`Planes::Luma` still refuses V210.
 
 **Why.** The owner's DeckLink design (2026-11-01): the card captures v210,
 the path measured with no lost frame, and nothing rounds 10 bits to 8
@@ -6141,7 +6159,9 @@ leased as frame prep's outputs are, and CONCURRENT across the queue families
 list in one submit, a view each, and takes a buffer several pictures share
 over once, so it refuses such pictures naming two writers; V210 stays
 `Unsupported` there, and its `TODO(sensor)` goes. How it works is DESIGN.md's
-(`prep`).
+(`prep`). *Amended 2026-11-09 (the colour stills entry):* `PictureReadback`
+reads V210's words with `Planes::All`; with `Planes::Luma` it is still
+`Unsupported`, and a detector's luma of it is this pass's.
 
 **Why** (calib's camera-agnostic calibration, 2026-11-01; the owner
 approved this pass):
@@ -8099,3 +8119,132 @@ reaching the queue, the picture kept once tracking is normal, older pictures
 kept beside the newest (seen through the pool), the first kept instead of the
 newest, a stop keeping it (seen through the pool too), and, under
 ThreadSanitizer, the call taking no lock. No camera was opened.
+
+### 2026-11-09 — Colour stills from a DeckLink pair: `PictureReadback` reads a V210 picture's words whole with every plane, `v210_to_rgb8` converts a copy of them on the host as the colour pass converts them, and `io` writes RGB8 PNGs (amends the 2026-11-01 V210 and luma entries).
+
+**The rule.**
+- **`PictureReadback` reads V210 with `Planes::All`.** Its one plane of
+  words is copied where it sits in its buffer, checked by the plane rules
+  frame prep applies (`check_yuv_planes`: even width, rows of at least
+  `ceil(width / 6) * 16` bytes, offset and stride whole words, inside the
+  buffer) with `TRANSFER_SRC` usage, in the read's one submit. The view's
+  `luma` points at the words at the buffer's stride, `layout` is V210,
+  `chroma` null and `full_range` the picture's. With `Planes::Luma` V210
+  stays `Unsupported`, naming `LumaPass`; as images it is refused, as
+  before. Every other layout reads as it did.
+- **`v210_to_rgb8(picture, rgb, rgb_bytes)`** (`v210_rgb.hpp`,
+  `sensor_interface`): a V210 picture on the host (`YuvImage::host`) as
+  tightly packed 8-bit R'G'B', each pixel as the colour pass converts one
+  its lens leaves where it is, in float, step for step: each sample code /
+  4; chroma at `(x - chroma_x) / 2`, clamped to the row's samples, the two
+  taps and the weight `bilinear_taps` gives, mixed as GLSL's `mix`;
+  `luma_level` and `ycbcr_to_word`'s limited-range matrix by the picture's
+  `kr` and `kb`; each channel clamped to [0, 1] and rounded once, half up
+  (`code`). It refuses, writing nothing, what the colour pass refuses of a
+  V210 picture (odd width, a short stride, an offset or stride off a word,
+  full range, the matrix, an unknown siting), a picture not on the host
+  alone, and an output short of `width * height * 3` bytes.
+  `v210_row_bytes(width)` is public, for a caller copying a view.
+- **`io::encode_png_rgb8` and `io::write_png_rgb8`**: three 8-bit channels
+  through `write_png_rgba8`'s checks and errors, in memory or to a file.
+  stb's compression level and filter are globals of its implementation,
+  private to `sensor_image_io`, which sets neither, so every call takes the
+  defaults (level 8, the filter picked per row) and calls on several
+  threads share nothing.
+
+**Why** (the owner, 2026-11-09): calib_rig's scan mode saves every camera's
+current picture in full-resolution colour at a key press, stills of a room
+from the lab's DeckLink pair for photogrammetry or NeRF. Until now a
+DeckLink capture was saved as `LumaPass`'s 8-bit grey, since
+`PictureReadback` refused V210.
+- **The words from the device, R'G'B' on the host.** calib's live worker
+  hands a set's frames back to the driver at once, so the read must be one
+  quick copy; V210 is 22,118,400 bytes at 2160p, less than its packed
+  R'G'B' (24,883,200), and needs no kernel or output buffer on the device.
+  The conversion and the PNG run later, on a thread of calib's, from its
+  copy. The colour pass would undistort, which a still for photogrammetry
+  does not want, and needs a camera model.
+- **The colour pass's arithmetic.** One conversion in the family: a still
+  and a prepared frame of one picture agree within a code, by the
+  2026-11-01 V210 rule (code / 4, rounded once).
+- **`luma` holds the words.** A view's planes are its picture's, and V210
+  has one, which `layout` names; a second pointer would leave `luma` null
+  for one layout, for a reader that never checks the layout to dereference.
+  `Planes::Luma` stays refused, so a detector reading `luma` as bytes never
+  gets words.
+- **A host `YuvImage`, no new type.** `YuvImage` is the one description of
+  a picture, host planes included (a camera's SDK bytes); the caller
+  describes its copy as the picture is, and the conversion checks what the
+  colour pass checks.
+- **The interface tier.** Host arithmetic with no device, beside
+  `to_canonical`: it builds, and its test runs, on every leg but
+  camera-only, a GPU or not.
+- **One thread, plain code.** 18 ms a 4K picture on one core, far under
+  the 150 ms it was given; no SIMD, threads or table, so the code reads as
+  the shader does. The PNG, 0.64 s, is the cost; calib may encode the
+  pair's two on two threads.
+
+**Tests.**
+- `sensor_v210_rgb` (host, every leg but camera-only): black 64 is 0 and
+  white 940 255 exactly, codes past them clamp, and Y 502 (Y' exactly 1/2)
+  rounds R' and B' up to 128; BT.709's 100% bars exact and its 75% bars
+  within a code of 191 and 0, their codes from the standard's equations,
+  the 100% primaries checked against the published codes (250, 409, 960;
+  691, 167, 105; 127, 960, 471); a Cr step with a different last sample,
+  through `Left`, `TopLeft`, `Center` and `Bottom`, each pixel's red that of
+  the Cr written out for it (co-sited 736 between 512 and 960, centred 624
+  and 848, the last pixel the last sample's 700); random 10-bit codes, none
+  a multiple of 4, at widths 2, 4, 6, 8, 10, 38, 40, 42, 3840, 3842, 3844
+  and 4096 (last groups of every size), within 0.5000 of a code of BT.709
+  in double at either siting, where the same codes cut to 8 bits miss by
+  2.96; the same pictures from byte 20 with rows 36 bytes past theirs, junk
+  between, give the same bytes; an output larger than the picture keeps its
+  tail; every refusal names why and writes nothing.
+- `sensor_picture_readback`: a V210 picture in a buffer from byte 4100 (a
+  word, no binding's alignment), rows padded by 20 bytes, 38 and 40 wide,
+  read with every plane, alone, in a set beside NV12 images and in a list
+  beside an I420 buffer: its words exact at the buffer's stride, no chroma,
+  limited range; its luma alone `Unsupported` naming `LumaPass`, alone and
+  in a set; odd width, a short stride, an offset off a word and planes as
+  images refused. A 3842x8 picture of random 10-bit codes, read back,
+  copied, and converted by `v210_to_rgb8`, against `GpuFramePrep`'s colour
+  pass of the same buffer through a pinhole that leaves each pixel where it
+  is (focal length 512, the centre on a half pixel): co-sited, worst 1
+  code, 1 of 92,208 channels differing; centred, none; every pixel covered.
+- `sensor_io_image`: RGB8 at 1x1, 3x2, 7x5 and 641x577 written and read
+  back exactly through `load_color_packed`, the file's bytes
+  `encode_png_rgb8`'s, IHDR 8-bit RGB; refusals (null, short, zero extent,
+  a row past stb's filter bound, the path's, a missing directory) named,
+  an existing file intact; an allocation failure copying stb's PNG out
+  `OutOfMemory`, naming the file, which stays intact.
+Planted bugs, each failing `sensor_v210_rgb`: Cb and Cr swapped in a group,
+odd pixels not interpolated, the last chroma tap not clamped, a word's
+first sample's two low bits dropped, the siting ignored, the stride
+ignored, the offset ignored, the code truncated rather than rounded, luma
+scaled as full range, Y2 read from Cb2's place, and full range not refused.
+Seven of them fail `sensor_picture_readback`'s comparison with the colour
+pass too; the stride, offset, rounding and refusal ones do not (its picture
+is tight and from byte 0; a truncation differs by at most one code).
+
+**Cost** (Apple M5 Max, Release, no validation layer, load average 2.3 from
+other jobs). `v210_to_rgb8` of a noisy 3840x2160 picture (shading, 300
+patches of colour, stripes and noise of 4 and of 8 10-bit codes): p50 17.8
+and 17.9 ms over 15 runs. Its PNG (`encode_png_rgb8`, `write_png_rgb8`):
+17.0 MB at 4 codes (68% of the 24.9 MB of R'G'B') and 20.7 MB at 8 (83%),
+637-643 ms either way, encoding or writing, over 3 runs. `PictureReadback`
+of the pair's two pictures in one list read: p50 0.38 ms, p95 1.29 ms over
+100 reads; copying both views out into vectors already sized, p50 0.68 ms.
+The Mac's memory is unified; the lab's RTX 5090 copies over PCIe and was
+not measured (`sensor_picture_readback_timing` measures it there).
+
+**Validation.** Apple M5 Max, macOS 27.2.1, MoltenVK 1.4.2, Release with
+warnings as errors, under the validation layer (the loader shows it
+inserted) with `VKC_REQUIRE_VULKAN_DEVICE=1`: the whole suite passes, 62
+tests; `sensor_picture_readback` under synchronization validation too. An
+AddressSanitizer and UBSan build (Debug) of `sensor_v210_rgb`,
+`sensor_io_image` and `sensor_picture_readback` runs clean (no leak check
+on macOS), about 1 s each. No NVIDIA machine was run by hand: the change is
+portable host code and the existing copy, which CI's NVIDIA legs and
+lavapipe sanitizer job run. recon's suite was not run: `frame` is
+unchanged. No camera was opened, and the DeckLink driver does not build on
+macOS.

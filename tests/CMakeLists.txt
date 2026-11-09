@@ -266,16 +266,22 @@ vs_target_warnings(sensor_luma_pass_test)
 add_test(NAME sensor_luma_pass COMMAND sensor_luma_pass_test)
 
 # A set's pictures read back to the host (sensor_prep's PictureReadback) on
-# synthetic NV12 images and NV12 and I420 buffers: exact bytes at odd sizes,
-# offsets and strides, every queue family a buffer comes from, a list read, the
-# host memory grown and reused, the refusals and the stage row. Skips with no
-# device.
+# synthetic NV12 images and NV12, I420 and V210 buffers: exact bytes at odd
+# sizes, offsets and strides, every queue family a buffer comes from, a list
+# read, the host memory grown and reused, the refusals and the stage row; V210's
+# words converted on the host (v210_rgb.hpp) against GpuFramePrep's colour pass.
+# Skips with no device. The read of a DeckLink pair's two 3840x2160 V210
+# pictures, printed and asserting nothing more, is an entry of its own labelled
+# manual (`ctest -L manual -R picture_readback`).
 add_executable(sensor_picture_readback_test sensor_picture_readback_test.cpp)
 target_link_libraries(
   sensor_picture_readback_test PRIVATE volumetric_kit::sensor_prep
                                        volumetric_kit::core_test_policy)
 vs_target_warnings(sensor_picture_readback_test)
 add_test(NAME sensor_picture_readback COMMAND sensor_picture_readback_test)
+add_test(NAME sensor_picture_readback_timing
+         COMMAND sensor_picture_readback_test --timing)
+set_tests_properties(sensor_picture_readback_timing PROPERTIES LABELS manual)
 
 # The test pattern's index read on the GPU (testing/pattern_reader.hpp, in
 # sensor_prep): pictures in images, buffers and on the host and depth on the
@@ -349,6 +355,21 @@ target_link_libraries(sensor_conventions_test
                       PRIVATE volumetric_kit::sensor_interface)
 vs_target_warnings(sensor_conventions_test)
 add_test(NAME sensor_conventions COMMAND sensor_conventions_test)
+
+# A V210 picture's R'G'B' on the host (v210_rgb.hpp): levels, BT.709's bars, a
+# chroma step through each siting, random 10-bit codes at widths ending in each
+# partial group against BT.709 in double, padded rows and the refusals. Pure
+# host math, so it always runs. Its time on a noisy 3840x2160 picture, and its
+# PNG's time and size (sensor_image_io), printed and asserting nothing more, is
+# an entry of its own labelled manual (`ctest -L manual -R v210_rgb`).
+add_executable(sensor_v210_rgb_test sensor_v210_rgb_test.cpp)
+target_link_libraries(
+  sensor_v210_rgb_test PRIVATE volumetric_kit::sensor_interface
+                               volumetric_kit::sensor_image_io)
+vs_target_warnings(sensor_v210_rgb_test)
+add_test(NAME sensor_v210_rgb COMMAND sensor_v210_rgb_test)
+add_test(NAME sensor_v210_rgb_timing COMMAND sensor_v210_rgb_test --timing)
+set_tests_properties(sensor_v210_rgb_timing PROPERTIES LABELS manual)
 
 # The frame contract's checker (testing/rgbd_contract.hpp) on fake frames: each
 # rule broken once and named, a clean script empty, the first breach kept. Host-

@@ -3,6 +3,8 @@
 
 // Host-only image I/O contract tests. PNG fixtures below were encoded
 // independently of the production writer: one unfiltered row, zlib DEFLATE.
+// RGB8 PNGs (encode_png_rgb8, write_png_rgb8) round-trip through
+// load_color_packed, the existing decoder.
 
 #include <algorithm>
 #include <array>
@@ -260,6 +262,137 @@ int u16_out_of_memory(const fs::path& dir) {
   return 0;
 }
 
+// RGB bytes, each channel's run differing: noise, ramps, flat runs and the
+// edge values, so the filters see every kind of row.
+std::vector<std::uint8_t> rgb_pattern(std::uint32_t w, std::uint32_t h) {
+  std::vector<std::uint8_t> rgb(std::size_t{w} * h * 3);
+  std::uint32_t state = 777;
+  for (std::size_t i = 0; i < rgb.size(); ++i) {
+    state = state * 1664525u + 1013904223u;
+    const std::size_t pixel = i / 3, x = pixel % w, y = pixel / w;
+    switch ((x / 5 + y / 3 + i % 3) % 4) {
+      case 0:
+        rgb[i] = static_cast<std::uint8_t>(state >> 24);
+        break;
+      case 1:
+        rgb[i] = static_cast<std::uint8_t>(x * 3 + y * 7 + i % 3);
+        break;
+      case 2:
+        rgb[i] = static_cast<std::uint8_t>(200 + i % 3);
+        break;
+      default:
+        rgb[i] = (x + y) % 2 == 0 ? 0 : 255;
+    }
+  }
+  return rgb;
+}
+
+// What write_png_rgb8 writes, load_color_packed reads back exactly, R in the
+// low byte; it is what encode_png_rgb8 returns, an 8-bit RGB PNG.
+int rgb8_round_trip(const fs::path& dir) {
+  struct Extent {
+    std::uint32_t w, h;
+  };
+  for (const Extent e :
+       {Extent{1, 1}, Extent{3, 2}, Extent{7, 5}, Extent{641, 577}}) {
+    const auto rgb = rgb_pattern(e.w, e.h);
+    const auto path = (dir / ("rgb_" + std::to_string(e.w) + ".png")).string();
+    CHECK(sensor::io::write_png_rgb8(path, rgb.data(), rgb.size(), e.w, e.h));
+    const auto decoded = sensor::io::load_color_packed(path, e.w, e.h);
+    CHECK(decoded && decoded.value().size() == std::size_t{e.w} * e.h);
+    for (std::size_t i = 0; i < decoded.value().size(); ++i) {
+      const std::uint32_t want = std::uint32_t{rgb[3 * i]} |
+                                 std::uint32_t{rgb[3 * i + 1]} << 8 |
+                                 std::uint32_t{rgb[3 * i + 2]} << 16;
+      CHECK(decoded.value()[i] == want);
+    }
+    const auto encoded =
+        sensor::io::encode_png_rgb8(rgb.data(), rgb.size(), e.w, e.h);
+    CHECK(encoded && encoded.value() == read_bytes(path));
+    // IHDR: 8-bit depth, colour type 2 (RGB).
+    CHECK(encoded.value().size() > 26 && encoded.value()[24] == 8 &&
+          encoded.value()[25] == 2);
+  }
+  return 0;
+}
+
+// Invalid input is refused before anything is written, naming why.
+int rgb8_refusals(const fs::path& dir) {
+  using Code = vkc::Status::Code;
+  const std::vector<std::uint8_t> rgb(18, 100);
+  const auto refused = [&](const std::uint8_t* p, std::size_t n,
+                           std::uint32_t w, std::uint32_t h) {
+    const auto png = sensor::io::encode_png_rgb8(p, n, w, h);
+    return !png && has_code(png.status(), Code::InvalidArgument);
+  };
+  CHECK(refused(nullptr, 18, 3, 2));
+  CHECK(refused(rgb.data(), 17, 3, 2));
+  CHECK(refused(rgb.data(), 18, 0, 2));
+  CHECK(refused(rgb.data(), 18, 3, 0));
+  constexpr auto kAll = std::numeric_limits<std::size_t>::max();
+  CHECK(refused(rgb.data(), kAll, 65536, 65536));
+  // A row too long for stb's int filter score (3 bytes a pixel past
+  // INT_MAX / 128), in a real buffer, so accepting it would encode rather
+  // than read out of bounds.
+  constexpr std::uint32_t kLong = 5592406;
+  const std::vector<std::uint8_t> row(std::size_t{3} * kLong);
+  CHECK(refused(row.data(), row.size(), kLong, 1));
+  CHECK(sensor::io::encode_png_rgb8(nullptr, 18, 3, 2).status().message() ==
+        "encode_png_rgb8: null buffer");
+  CHECK(sensor::io::encode_png_rgb8(rgb.data(), 17, 3, 2).status().message() ==
+        "encode_png_rgb8: 17 bytes for 3x2");
+  CHECK(sensor::io::encode_png_rgb8(row.data(), row.size(), kLong, 1)
+            .status()
+            .message() ==
+        "encode_png_rgb8: 5592406x1 exceeds the encoder's bounds");
+
+  CHECK(has_code(sensor::io::write_png_rgb8("", rgb.data(), 18, 3, 2),
+                 Code::InvalidArgument));
+  CHECK(has_code(sensor::io::write_png_rgb8(std::string("a\0b.png", 7),
+                                            rgb.data(), 18, 3, 2),
+                 Code::InvalidArgument));
+  const auto missing = (dir / "missing" / "c.png").string();
+  const auto unwritable =
+      sensor::io::write_png_rgb8(missing, rgb.data(), 18, 3, 2);
+  CHECK(has_code(unwritable, Code::IoError) &&
+        unwritable.message() ==
+            "write_png_rgb8: " + missing + ": cannot write");
+  // A refused write leaves the existing file intact.
+  const auto path = (dir / "kept_rgb.png").string();
+  CHECK(sensor::io::write_png_rgb8(path, rgb.data(), 18, 3, 2));
+  const auto kept = read_bytes(path);
+  CHECK(!sensor::io::write_png_rgb8(path, rgb.data(), 17, 3, 2));
+  CHECK(!sensor::io::write_png_rgb8(path, row.data(), row.size(), kLong, 1));
+  CHECK(read_bytes(path) == kept);
+
+  // An allocation failure copying stb's PNG out is OutOfMemory, naming the
+  // file being written, and leaves it intact.
+  const auto big = rgb_pattern(37, 29);
+  const auto png = sensor::io::encode_png_rgb8(big.data(), big.size(), 37, 29);
+  CHECK(png);
+  auto& failure = vkc::test::allocation_failure;
+  const auto fail = [&](const auto& call) -> vkc::Status {
+    failure = {};
+    failure.bytes = png.value().size();
+    failure.armed = true;
+    const vkc::Status status = call();
+    const bool injected = failure.injected;
+    failure = {};
+    return injected ? status : vkc::Status{};
+  };
+  const vkc::Status encode = fail([&] {
+    return sensor::io::encode_png_rgb8(big.data(), big.size(), 37, 29).status();
+  });
+  CHECK(has_code(encode, Code::OutOfMemory));
+  const vkc::Status write = fail([&] {
+    return sensor::io::write_png_rgb8(path, big.data(), big.size(), 37, 29);
+  });
+  CHECK(has_code(write, Code::OutOfMemory) &&
+        write.message() == "write_png_rgb8: " + path + ": cannot encode");
+  CHECK(read_bytes(path) == kept);
+  return 0;
+}
+
 int rgba8_and_depth_fixtures(const fs::path& dir) {
   const auto color_path = (dir / "color.png").string();
   const auto depth_path = (dir / "depth.png").string();
@@ -303,6 +436,8 @@ int main() {
   CHECK(u16_header() == 0);
   CHECK(u16_refusals(scratch.path) == 0);
   CHECK(u16_out_of_memory(scratch.path) == 0);
+  CHECK(rgb8_round_trip(scratch.path) == 0);
+  CHECK(rgb8_refusals(scratch.path) == 0);
   std::puts("io image tests passed");
   return 0;
 }
