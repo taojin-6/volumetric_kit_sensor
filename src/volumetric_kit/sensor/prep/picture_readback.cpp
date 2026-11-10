@@ -61,16 +61,20 @@ core::Result<Plan> plan(const YuvImage& picture, PictureReadback::Planes planes,
     return refuse("the picture is empty");
   }
   // A view hands out luma as a plane of its own, which YUYV's is not; luma
-  // alone is one, with no chroma.
+  // alone is one, with no chroma. V210's one plane of words goes out whole.
   if (picture.layout == YuvLayout::Yuyv) {
-    return refuse("reads 4:2:0 pictures and luma alone, and this one is YUYV");
+    return refuse(
+        "reads 4:2:0 pictures, luma alone and V210, and this one is YUYV");
   }
-  if (picture.layout == YuvLayout::V210) {
-    // Its 10-bit samples are no bytes to copy: LumaPass rounds its luma to
-    // 8 bits on the GPU, and this reads that.
+  if (picture.layout == YuvLayout::V210 &&
+      planes == PictureReadback::Planes::Luma) {
+    // Its luma is 10-bit samples among the chroma's, no plane of bytes:
+    // LumaPass rounds it to 8 bits on the GPU, and this reads that. Every
+    // plane is its one plane of words, copied as it is.
     return core::Status::unsupported(
         std::string(kWho) +
-        ": does not read V210 pictures; read LumaPass's 8-bit luma of one");
+        ": reads a V210 picture's words whole (Planes::All), not its luma; "
+        "read LumaPass's 8-bit luma of one");
   }
   if (in_buffer && !as_images) {
     if (!picture.device->valid()) {

@@ -2,10 +2,11 @@
 # Copyright (c) 2026 Tao Jin
 
 # --- sensor_interface: the sensor interface ----------------------------------
-# IRgbdSensor, the RgbdFrame it hands out, IAudioSensor (header-only), and the
-# camera- and colour-convention conversions. The calibration file is the camera
-# tier's (camera/array_calibration.hpp). Carries no driver itself: one ships in
-# this package only if it can build *and* test it (the 2026-08-02 decision), and
+# IRgbdSensor, the RgbdFrame it hands out, IAudioSensor (header-only), the
+# camera- and colour-convention conversions, and a V210 picture's R'G'B' on the
+# host. The calibration file is the camera tier's
+# (camera/array_calibration.hpp). Carries no driver itself: one ships in this
+# package only if it can build *and* test it (the 2026-08-02 decision), and
 # those that do are targets of their own (orbbec/, realsense/, decklink/ and
 # arkit/, below).
 #
@@ -21,8 +22,9 @@ set(_vs_interface_generated_inc "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
 add_library(sensor_interface)
 add_library(volumetric_kit::sensor_interface ALIAS sensor_interface)
 
-target_sources(sensor_interface PRIVATE camera_conventions.cpp
-                                        color_conventions.cpp rgbd_sensor.cpp)
+target_sources(
+  sensor_interface PRIVATE camera_conventions.cpp color_conventions.cpp
+                           rgbd_sensor.cpp v210_rgb.cpp)
 
 # Per-tier export header (VS_INTERFACE_API / VS_INTERFACE_STATIC_DEFINE),
 # isolated so the macros never collide with another tier's on one include path.

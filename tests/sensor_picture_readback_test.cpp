@@ -9,12 +9,22 @@
 // the readback's own family, a CONCURRENT buffer's other family and from
 // outside Vulkan, a buffer two pictures share once, and images from outside
 // Vulkan; the host memory grown and reused; views that outlive their
-// pictures; every refusal, V210's naming LumaPass; and the stage row. Skips
-// without a device.
+// pictures; every refusal, V210's luma alone naming LumaPass; and the stage
+// row. A V210 picture in a buffer, after a lead and with padded rows, read
+// whole with every plane, alone, in a set and in a list, its words exact;
+// converted on the host (v210_to_rgb8), within a code of GpuFramePrep's
+// colour pass of the same picture through a pinhole that leaves each pixel
+// where it is, at either chroma siting. Skips without a device. `--timing`
+// (the manual entry sensor_picture_readback_timing) prints the read of a
+// DeckLink pair's two 3840x2160 V210 pictures and asserts nothing more.
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -25,6 +35,7 @@
 
 #include "decoder_test.hpp"
 #include "test_image.hpp"
+#include "v210.hpp"
 #include "volumetric_kit/core/base/result.hpp"
 #include "volumetric_kit/core/base/stage_metrics.hpp"
 #include "volumetric_kit/core/testing/buffer_readback.hpp"
@@ -42,9 +53,11 @@
 #include "volumetric_kit/sensor/prep/picture_readback.hpp"
 #include "volumetric_kit/sensor/rgbd_frame.hpp"
 #include "volumetric_kit/sensor/testing/nv12_picture.hpp"
+#include "volumetric_kit/sensor/v210_rgb.hpp"
 #include "volumetric_kit/sensor/yuv_image.hpp"
 
 namespace sensor = volumetric_kit::sensor;
+namespace camera = volumetric_kit::sensor::camera;
 namespace vkc = volumetric_kit::core;
 using sensor::PictureReadback;
 using sensor::PictureView;
@@ -600,6 +613,16 @@ int test_memory(const vkc::test::Gpu& gpu) {
   return 0;
 }
 
+// Whether `readback` refuses `picture` read with every plane as
+// InvalidArgument, naming `why`.
+bool refused_all(PictureReadback& readback, YuvImage picture, const char* why) {
+  const vkc::Status status = readback.read(picture, Planes::All).status();
+  const bool ok = status.domain() == vkc::Status::Code::InvalidArgument &&
+                  status.message().find(why) != std::string::npos;
+  if (!ok) std::fprintf(stderr, "%s\n", status.message().c_str());
+  return ok;
+}
+
 // What a read refuses, each naming why, a set refused whole; the readback
 // reads again afterwards. create refuses an empty device or allocator.
 int test_refusals(vkc::test::GpuContext& gpu) {
@@ -629,7 +652,9 @@ int test_refusals(vkc::test::GpuContext& gpu) {
   bad = buffer;
   bad.layout = YuvLayout::Yuyv;
   CHECK(refused(bad, "YUYV"));
-  // A V210 picture, not read yet: Unsupported, alone or in a set.
+  // A V210 picture's luma alone, which is no plane of bytes: Unsupported,
+  // alone or in a set; its words whole are test_v210's. Words that are not
+  // whole are refused.
   {
     YuvImage v210 = buffer;
     v210.layout = YuvLayout::V210;
@@ -639,12 +664,27 @@ int test_refusals(vkc::test::GpuContext& gpu) {
     v210.height = 1;
     const vkc::Status status = readback->read(v210, Planes::Luma).status();
     CHECK(status.domain() == vkc::Status::Code::Unsupported &&
-          status.message().find("V210") != std::string::npos);
+          status.message().find("V210") != std::string::npos &&
+          status.message().find("LumaPass") != std::string::npos);
     std::vector<std::optional<sensor::RgbdFrame>> set(2);
     set[0].emplace().color = buffer;
     set[1].emplace().color = v210;
-    CHECK(readback->read(set, Planes::All).status().domain() ==
+    CHECK(readback->read(set, Planes::Luma).status().domain() ==
           vkc::Status::Code::Unsupported);
+    YuvImage bad_v210 = v210;
+    bad_v210.width = 35;
+    CHECK(refused_all(*readback, bad_v210, "width must be even"));
+    bad_v210 = v210;
+    bad_v210.stride[0] = 92;
+    CHECK(refused_all(*readback, bad_v210, "stride is shorter"));
+    bad_v210 = v210;
+    bad_v210.offset[0] = 2;
+    CHECK(refused_all(*readback, bad_v210, "multiples of 4"));
+    bad_v210 = v210;
+    bad_v210.device = nullptr;
+    bad_v210.image[0] = images.image[0];
+    bad_v210.image[1] = images.image[1];
+    CHECK(refused_all(*readback, bad_v210, "NV12's two"));
   }
   YuvImage host;
   const std::uint8_t byte = 0;
@@ -755,6 +795,263 @@ int test_metrics(const vkc::test::Gpu& gpu) {
   return 0;
 }
 
+// A V210 picture's 10-bit samples: luma `w` a row, Cb and Cr `w / 2` a row,
+// every row; random codes, none a multiple of 4, from `seed`.
+struct V210Samples {
+  std::uint32_t w = 0, h = 0;
+  std::vector<std::uint16_t> y, cb, cr;
+};
+
+V210Samples v210_samples(std::uint32_t w, std::uint32_t h, std::uint32_t seed) {
+  V210Samples s;
+  s.w = w;
+  s.h = h;
+  const auto code = [&seed] {
+    seed ^= seed << 13;
+    seed ^= seed >> 17;
+    seed ^= seed << 5;
+    auto c = static_cast<std::uint16_t>(4 + seed % 1016);
+    return static_cast<std::uint16_t>(c % 4 == 0 ? c + 1 : c);
+  };
+  s.y.resize(std::size_t{w} * h);
+  s.cb.resize(std::size_t{w / 2} * h);
+  s.cr.resize(s.cb.size());
+  for (std::uint16_t& c : s.y) c = code();
+  for (std::size_t i = 0; i < s.cb.size(); ++i) {
+    s.cb[i] = code();
+    s.cr[i] = code();
+  }
+  return s;
+}
+
+// `s` packed (tests/v210.hpp) in a device buffer from byte `lead`, rows
+// `stride` apart, described as a DeckLink capture is (BT.709, limited range,
+// chroma co-sited); `bytes` keeps what was packed. No buffer if it cannot be
+// made.
+YuvImage v210_in_buffer(const vkc::test::Gpu& gpu, const V210Samples& s,
+                        std::size_t lead, std::size_t stride,
+                        std::vector<std::uint8_t>& bytes) {
+  bytes = v210::pack(s.y, s.cb, s.cr, s.w, s.h, lead, stride);
+  bytes.resize((bytes.size() + 3) / 4 * 4, 0xCD);  // the kernel reads words
+  YuvImage image;
+  image.layout = YuvLayout::V210;
+  image.device = on_device(gpu, bytes);
+  image.offset[0] = lead;
+  image.stride[0] = stride;
+  image.width = s.w;
+  image.height = s.h;
+  const sensor::YcbcrWeights bt709 =
+      sensor::ycbcr_weights(sensor::VideoColorMatrix::Bt709);
+  image.kr = bt709.kr;
+  image.kb = bt709.kb;
+  image.full_range = false;
+  image.chroma_location = sensor::ChromaLocation::Left;
+  return image;
+}
+
+// `v` holds `picture`'s words exactly, as `bytes` packed them: its one plane
+// at the buffer's stride, no chroma, the range passed through.
+int check_v210_view(const PictureView& v, const YuvImage& picture,
+                    const std::vector<std::uint8_t>& bytes) {
+  const std::size_t row = v210::row_bytes(picture.width);
+  CHECK(v.layout == YuvLayout::V210);
+  CHECK(v.width == picture.width && v.height == picture.height);
+  CHECK(v.stride == picture.stride[0] && !v.full_range);
+  CHECK(v.luma != nullptr);
+  CHECK(v.chroma[0] == nullptr && v.chroma[1] == nullptr);
+  for (std::uint32_t r = 0; r < v.height; ++r) {
+    CHECK(std::memcmp(v.luma + r * v.stride,
+                      &bytes[picture.offset[0] + r * picture.stride[0]],
+                      row) == 0);
+  }
+  return 0;
+}
+
+// The host's copy of a V210 view's words, and a picture describing it as
+// `like` is described: what a caller converts after the next read.
+struct HostWords {
+  std::vector<std::uint8_t> bytes;
+  YuvImage picture;
+};
+
+HostWords copy_of(const PictureView& v, const YuvImage& like) {
+  HostWords out;
+  out.bytes.assign(v.luma, v.luma + (v.height - 1) * v.stride +
+                               sensor::v210_row_bytes(v.width));
+  out.picture.layout = YuvLayout::V210;
+  out.picture.host = out.bytes.data();
+  out.picture.stride[0] = v.stride;
+  out.picture.width = v.width;
+  out.picture.height = v.height;
+  out.picture.kr = like.kr;
+  out.picture.kb = like.kb;
+  out.picture.full_range = v.full_range;
+  out.picture.chroma_location = like.chroma_location;
+  return out;
+}
+
+// V210 in a buffer, read whole with every plane:
+//   - after a lead that is a word but no binding's alignment, rows padded,
+//     38 and 40 wide (last groups of two and four pixels): its words exact,
+//     alone, in a set beside an NV12 picture and in a list beside an I420
+//     one, the readback's memory reused by the next read;
+//   - its luma alone Unsupported (test_refusals has the rest);
+//   - converted on the host from a copy of the view (v210_to_rgb8), within a
+//     code of GpuFramePrep's colour pass of the same picture, 3842x8 of
+//     random 10-bit codes through a pinhole that leaves each pixel where it
+//     is, chroma co-sited and centred; every pixel covered.
+int test_v210(const vkc::test::Gpu& gpu) {
+  const auto readback = readback_on(gpu);
+  CHECK(readback != nullptr);
+  const Packed nv12 = pattern(37, 21, 21);
+  for (const std::uint32_t w : {38u, 40u}) {
+    const V210Samples s = v210_samples(w, 5, 0x1234567u + w);
+    const std::size_t stride = v210::row_bytes(w) + 20;
+    std::vector<std::uint8_t> bytes;
+    YuvImage picture = v210_in_buffer(gpu, s, 4100, stride, bytes);
+    CHECK(made(picture));
+    auto view = readback->read(picture, Planes::All);
+    if (!view) std::fprintf(stderr, "%s\n", view.status().message().c_str());
+    CHECK(view.ok());
+    CHECK(check_v210_view(*view, picture, bytes) == 0);
+    const auto luma = readback->read(picture, Planes::Luma).status();
+    CHECK(luma.domain() == vkc::Status::Code::Unsupported &&
+          luma.message().find("LumaPass") != std::string::npos);
+
+    std::vector<std::optional<sensor::RgbdFrame>> frames(3);
+    frames[0].emplace().color = as_images(gpu, nv12);
+    frames[2].emplace().color = picture;
+    CHECK(made(frames[0]->color));
+    auto views = readback->read(frames, Planes::All);
+    CHECK(views.ok() && views->size() == 3);
+    CHECK((*views)[0] && !(*views)[1] && (*views)[2]);
+    CHECK(check_view(*(*views)[0], nv12, YuvLayout::Nv12, Planes::All) == 0);
+    CHECK(check_v210_view(*(*views)[2], picture, bytes) == 0);
+
+    YuvImage i420 = in_buffer(gpu, nv12, YuvLayout::I420);
+    CHECK(made(i420));
+    auto list = readback->read({&picture, &i420}, Planes::All);
+    CHECK(list.ok() && list->size() == 2);
+    CHECK(check_v210_view((*list)[0], picture, bytes) == 0);
+    CHECK(check_view((*list)[1], nv12, YuvLayout::I420, Planes::All) == 0);
+  }
+
+  // The host's conversion against the colour pass's.
+  auto prep = sensor::GpuFramePrep::create(gpu.device, gpu.allocator);
+  CHECK(prep.ok());
+  const std::uint32_t w = 3842, h = 8;
+  camera::CameraModel pin;
+  pin.size = {w, h};
+  // A power-of-two focal length and a centre on a half pixel: the lens's
+  // arithmetic is exact, so each pixel samples itself.
+  pin.intrinsics = {512.0, 512.0, 0.5 * (w - 1), 0.5 * (h - 1)};
+  const std::vector<std::uint16_t> depth(std::size_t{w} * h, 1500);
+  const V210Samples s = v210_samples(w, h, 0xC0FFEEu);
+  std::vector<std::uint8_t> bytes;
+  YuvImage picture = v210_in_buffer(gpu, s, 0, v210::row_bytes(w), bytes);
+  CHECK(made(picture));
+  for (const sensor::ChromaLocation siting :
+       {sensor::ChromaLocation::Left, sensor::ChromaLocation::Center}) {
+    picture.chroma_location = siting;
+    auto view = readback->read(picture, Planes::All);
+    CHECK(view.ok());
+    const HostWords copy = copy_of(*view, picture);
+    std::vector<std::uint8_t> rgb(std::size_t{w} * h * 3);
+    const vkc::Status converted =
+        sensor::v210_to_rgb8(copy.picture, rgb.data(), rgb.size());
+    if (!converted.ok())
+      std::fprintf(stderr, "%s\n", converted.message().c_str());
+    CHECK(converted.ok());
+
+    sensor::RgbdFrame frame;
+    frame.depth = depth.data();
+    frame.depth_camera = pin;
+    frame.color_camera = pin;
+    frame.min_depth = 0.1f;
+    frame.max_depth = 10.0f;
+    frame.color = picture;
+    auto prepared = prep->prepare(frame);
+    if (!prepared) {
+      std::fprintf(stderr, "%s\n", prepared.status().message().c_str());
+    }
+    CHECK(prepared.ok() && prepared->has_color());
+    auto words = vkc::test::read_back<std::uint32_t>(
+        gpu.device, gpu.allocator, *prepared->color, std::size_t{w} * h);
+    CHECK(words.ok());
+    int worst = 0;
+    std::size_t differ = 0;
+    for (std::size_t i = 0; i < std::size_t{w} * h; ++i) {
+      const std::uint32_t word = (*words)[i];
+      CHECK((word >> 24) == 0xFF);
+      for (int c = 0; c < 3; ++c) {
+        const int d = std::abs(static_cast<int>((word >> (8 * c)) & 0xFF) -
+                               static_cast<int>(rgb[3 * i + c]));
+        worst = std::max(worst, d);
+        differ += d != 0 ? 1 : 0;
+      }
+    }
+    std::printf(
+        "  v210 %ux%u, chroma %s, host conversion against the colour pass: "
+        "worst %d code, %zu of %zu channels differ\n",
+        w, h, siting == sensor::ChromaLocation::Left ? "co-sited" : "centred",
+        worst, differ, rgb.size());
+    CHECK(worst <= 1);
+  }
+  std::printf(
+      "  v210: words exact alone, in a set and in a list; luma alone "
+      "refused\n");
+  return 0;
+}
+
+// What --timing reports: a DeckLink pair's two 3840x2160 V210 pictures, in
+// device buffers at the card's rows (10,240 bytes), read with every plane in
+// one list read, and copied out of the views into host vectors of the
+// caller's, as a capture that converts them later does; p50, p95 and the
+// slowest of 100 reads after 10 warm-up reads.
+int timing_main(vkc::test::GpuContext& gpu) {
+  std::printf("sensor_picture_readback --timing on %s\n",
+              gpu.physical.properties().deviceName);
+  const auto readback = readback_on(gpu);
+  CHECK(readback != nullptr);
+  const std::uint32_t w = 3840, h = 2160;
+  YuvImage pair[2];
+  std::vector<std::uint8_t> bytes;
+  for (int i = 0; i < 2; ++i) {
+    pair[i] = v210_in_buffer(gpu, v210_samples(w, h, 77u + i), 0,
+                             v210::row_bytes(w), bytes);
+    CHECK(made(pair[i]));
+  }
+  std::vector<std::uint8_t> kept[2];
+  std::vector<double> reads, copies;
+  for (int run = 0; run < 110; ++run) {
+    const auto t0 = std::chrono::steady_clock::now();
+    auto views = readback->read({&pair[0], &pair[1]}, Planes::All);
+    const auto t1 = std::chrono::steady_clock::now();
+    CHECK(views.ok());
+    for (int i = 0; i < 2; ++i) {
+      const PictureView& v = (*views)[i];
+      kept[i].assign(v.luma, v.luma + (v.height - 1) * v.stride +
+                                 sensor::v210_row_bytes(v.width));
+    }
+    const auto t2 = std::chrono::steady_clock::now();
+    if (run < 10) continue;
+    reads.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+    copies.push_back(
+        std::chrono::duration<double, std::milli>(t2 - t1).count());
+  }
+  CHECK(kept[1].size() == std::size_t{10240} * h);
+  for (std::vector<double>* times : {&reads, &copies}) {
+    std::sort(times->begin(), times->end());
+  }
+  std::printf(
+      "  two 3840x2160 V210, %zu bytes each: read p50 %.2f ms, p95 %.2f ms, "
+      "slowest %.2f ms; copied out p50 %.2f ms, p95 %.2f ms (100 runs)\n",
+      kept[0].size(), reads[50], reads[95], reads.back(), copies[50],
+      copies[95]);
+  std::puts("sensor_picture_readback --timing: OK");
+  return 0;
+}
+
 int gpu_main(vkc::test::GpuContext& gpu) {
   CHECK(test_layouts(gpu) == 0);
   CHECK(test_set(gpu) == 0);
@@ -764,12 +1061,20 @@ int gpu_main(vkc::test::GpuContext& gpu) {
   CHECK(test_memory(gpu) == 0);
   CHECK(test_refusals(gpu) == 0);
   CHECK(test_metrics(gpu) == 0);
+  CHECK(test_v210(gpu) == 0);
   std::puts("sensor_picture_readback: OK");
   return 0;
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--timing") {
+    return vkc::test::run_on_gpu(sensor::device_requirements(), timing_main);
+  }
+  if (argc != 1) {
+    std::fprintf(stderr, "usage: %s [--timing]\n", argv[0]);
+    return 1;
+  }
   return vkc::test::run_on_gpu(sensor::device_requirements(), gpu_main);
 }

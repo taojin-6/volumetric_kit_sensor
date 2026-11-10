@@ -5,7 +5,8 @@
 
 /// @file prep/picture_readback.hpp
 /// @brief Pictures copied from the device to the host, where the decoder or
-///        a pass left them: a detector's luma, or every plane.
+///        a pass left them: a detector's luma, or every plane, a V210
+///        picture's words among them.
 
 #include <cstddef>
 #include <cstdint>
@@ -29,7 +30,9 @@ namespace volumetric_kit::sensor {
 ///        left them: views into the memory the read copied them to.
 ///
 /// Rows run @ref stride bytes apart, as the picture's buffer had them, or
-/// packed when the planes were images.
+/// packed when the planes were images. A V210 picture's view is its one plane
+/// of words, read with `PictureReadback::Planes::All`: @ref luma points at
+/// them, and `v210_to_rgb8` (`v210_rgb.hpp`) converts a copy of them.
 ///
 /// @code
 /// // An OpenCV detector's input, without a copy:
@@ -39,17 +42,23 @@ namespace volumetric_kit::sensor {
 struct PictureView {
   std::uint32_t width = 0;   ///< Luma width (pixels).
   std::uint32_t height = 0;  ///< Luma height (rows).
-  std::size_t stride = 0;    ///< Bytes from one luma row to the next.
+  std::size_t stride = 0;    ///< Bytes from one @ref luma row to the next.
   /// Y in 0..255 rather than 16..235: the picture's `YuvImage::full_range`.
+  /// For `YuvLayout::V210`, false, as that layout is limited range only: its
+  /// luma is 10-bit codes, 64..940.
   bool full_range = true;
-  /// @ref height rows of @ref width bytes, @ref stride apart.
+  /// @ref height rows of @ref width bytes, @ref stride apart. For
+  /// `YuvLayout::V210`, its one plane instead: @ref height rows of
+  /// `v210_row_bytes(width)` bytes of little-endian 32-bit words, the chroma
+  /// among the luma, as the picture holds them.
   const std::uint8_t* luma = nullptr;
-  /// How @ref chroma is laid out: NV12 for planes that were images.
+  /// How @ref chroma is laid out: NV12 for planes that were images; V210 for
+  /// @ref luma's words, which hold the chroma too.
   YuvLayout layout = YuvLayout::Nv12;
   /// With `PictureReadback::Planes::All`, the chroma, `(height + 1) / 2` rows
   /// each: NV12's interleaved Cb and Cr in `chroma[0]`, `(width + 1) / 2` pairs
   /// a row, or I420's Cb and Cr, `(width + 1) / 2` bytes a row. Null otherwise,
-  /// and for luma alone (`YuvLayout::Luma`).
+  /// for luma alone (`YuvLayout::Luma`) and for V210.
   const std::uint8_t* chroma[2] = {};
   std::size_t chroma_stride[2] = {};  ///< Bytes between @ref chroma rows.
 };
@@ -72,7 +81,9 @@ struct PictureView {
 /// copies. The copies land in one host
 /// buffer the readback keeps (`MemoryUsage::Staging`, cached for reading),
 /// grown to the largest read and reused, so a steady stream of sets
-/// allocates nothing.
+/// allocates nothing. A V210 picture is read whole, its words as they are
+/// (`Planes::All`): a DeckLink pair's colour for stills converted on the host
+/// (`v210_to_rgb8`), the copy a picture's 22 MB at 2160p.
 ///
 /// @code
 /// VKC_ASSIGN(auto readback, PictureReadback::create(device, allocator));
@@ -91,8 +102,8 @@ class VS_PREP_API PictureReadback {
  public:
   /// @brief Which planes @ref read copies.
   enum class Planes : std::uint8_t {
-    Luma,  ///< Y alone: what a detector reads.
-    All,   ///< Y and the chroma.
+    Luma,  ///< Y alone: what a detector reads. V210 has none to copy.
+    All,   ///< Y and the chroma; V210's one plane of words.
   };
 
   /// @brief A readback on @p device; its host memory is allocated at the
@@ -140,18 +151,20 @@ class VS_PREP_API PictureReadback {
   /// @param metrics  As the other overload.
   /// @return The view, valid as the other overload's;
   ///         `Status::Code::InvalidArgument` for a picture that is empty,
-  ///         not on the device or YUYV (it reads 4:2:0 and luma alone,
-  ///         whose view has no chroma), planes both in
+  ///         not on the device or YUYV (it reads 4:2:0, luma alone, whose
+  ///         view has no chroma, and V210), planes both in
   ///         a buffer and as images, a
   ///         buffer that is empty or without `TRANSFER_SRC` usage, a plane
   ///         stride shorter than its rows, planes that overlap or lie
   ///         outside their buffer, images that are not NV12's R8 and R8G8
   ///         planes at least the picture's size with `TRANSFER_SRC` usage,
   ///         in a layout a copy reads, a `queue_family` the device lacks, or
-  ///         `EXCLUSIVE` images from another of its families;
-  ///         `Status::Code::Unsupported` for a V210 picture, whose 10-bit
-  ///         luma @ref LumaPass makes 8-bit first; or a buffer, submit or
-  ///         `Status::Code::OutOfMemory` failure.
+  ///         `EXCLUSIVE` images from another of its families, or V210
+  ///         words that are not whole (an odd width, an offset or stride off
+  ///         a word); `Status::Code::Unsupported` for a V210 picture's luma
+  ///         alone (`Planes::Luma`), which is 10-bit samples among the
+  ///         chroma's and @ref LumaPass makes 8-bit first; or a buffer,
+  ///         submit or `Status::Code::OutOfMemory` failure.
   core::Result<PictureView> read(YuvImage& picture, Planes planes,
                                  core::StageMetrics* metrics = nullptr);
 

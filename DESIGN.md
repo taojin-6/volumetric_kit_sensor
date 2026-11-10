@@ -46,7 +46,8 @@ recon's examples assemble the rest.
   hands out as captured (each camera's `camera::CameraModel`, the pixels it
   holds), and the boundary conversions a capture integration gets silently
   wrong — camera conventions (pose handedness, registered-depth intrinsics)
-  and colour (`to_canonical`). Reads `camera`'s models, and `frame`'s
+  and colour (`to_canonical`; a V210 picture's R'G'B' on the host,
+  `v210_to_rgb8`). Reads `camera`'s models, and `frame`'s
   pinhole cameras and `ColorEncoding`, so it
   depends on **`camera` and `frame` alone** — it sits beside recon's fusion tiers,
   not on top of them — and bundles **no drivers**: one ships here only if this package can build
@@ -900,6 +901,15 @@ share, finds each sample's word and bits and returns it as code / 4, on the
 8-bit layouts' scale, so their levels and conversion apply unchanged and the
 10 bits are rounded once, to the output's 8 (the 2026-11-01 V210 decision).
 V210 is limited range only, its offset and stride whole words.
+`v210_to_rgb8` (`v210_rgb.hpp`, the interface tier, no device) is that
+conversion on the host, for colour stills: each pixel as the pass converts
+one its lens leaves where it is, in float, step for step (code / 4, the
+chroma's taps where `bilinear_taps` puts them, `luma_level`,
+`ycbcr_to_word`, `code`), into tightly packed R'G'B' bytes; one row's
+samples unpacked at a time, each pixel's two chroma taps and weight worked
+out in integers, in quarter samples, which float holds exactly only to
+2^23 pixels across. On random 10-bit codes it agrees with the pass within a
+code (the 2026-11-09 colour stills decision).
 A dataset decoded on the host hands its colour over as packed R'G'B' words
 instead (`RgbdFrame::color_packed`, `io::load_color_packed`'s layout; the
 2026-10-07 packed-colour decision), copied the same way; the colour pass
@@ -987,11 +997,14 @@ cached for reading), grown to the largest read, and each `PictureView` points
 into it until the next read, so the frames may go at once. A picture is
 checked by the rules `GpuFramePrep` applies to one (`yuv_planes.hpp`), with
 `TRANSFER_SRC` where the pass needs a buffer's storage usage, or images'
-`SAMPLED` usage and views. It reads 4:2:0 and luma alone (its view has no
-chroma, whichever planes are asked): a YUYV picture, whose luma is no plane
-of its own, is refused, a V210 one is `Unsupported` (`LumaPass` makes its
-8-bit luma, which this reads), and a frame whose picture is on the host has
-no view. A list read takes pictures in any number, a view each; a buffer
+`SAMPLED` usage and views. It reads 4:2:0, luma alone (its view has no
+chroma, whichever planes are asked) and V210: a YUYV picture, whose luma is
+no plane of its own, is refused; a V210 picture is read whole with every plane, its
+one plane of words copied where it sits into the view's `luma`, at the
+buffer's stride, with `layout` V210 and no chroma (the 2026-11-09 colour
+stills decision), and its luma alone is `Unsupported` (`LumaPass` makes its
+8-bit luma, which this reads); a frame whose picture is on the host has no
+view. A list read takes pictures in any number, a view each; a buffer
 several of them share (a `DeviceLuma`'s full and half) is taken over once,
 so they must name one writer.
 **`prep/`'s `LumaPass`** makes each picture of a list into its 8-bit luma
@@ -1348,7 +1361,13 @@ encoding. `io::load_depth_u16` requires a genuine 16-bit single-channel PNG
 and returns its samples as stored: what a unit is, is the caller's to say
 (the Replica sensor's `RgbdFrame::metres_per_unit`).
 Expected dimensions are explicit so a camera cannot silently use different
-intrinsics. `io::write_png_rgba8` takes already-encoded RGBA8.
+intrinsics. `io::write_png_rgba8` takes already-encoded RGBA8, and
+`io::encode_png_rgb8` and `io::write_png_rgb8` already-encoded RGB8, a
+colour still's bytes as `v210_to_rgb8` leaves them, which
+`load_color_packed` reads back exactly. stb's compression level and filter
+are globals of its implementation, which is private to this target and sets
+neither: every encode takes the defaults (level 8, filters chosen per row),
+so encodes on several threads share nothing.
 `io::encode_png_u16` encodes 16-bit gray samples as stored, and
 `io::write_png_u16` writes them; stb writes 8-bit only, so it encodes the
 samples' big-endian bytes as two 8-bit channels and IHDR is rewritten to
